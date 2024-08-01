@@ -179,7 +179,7 @@ def main():
         astra_ed = time()
         astra_time += (astra_ed - astra_st)*1000
         out_dict = parseOutput(out[-2])
-        # print(out_dict)
+        
         if out_dict != None:
             sys = out_dict['sys']
             id = out_dict['id']

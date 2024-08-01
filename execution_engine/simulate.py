@@ -54,13 +54,13 @@ def run(model_name, model_path, output_path, half=False, parallel='hybrid'):
             # get the tensor size from onnx file
             input_size, weight_size, output_size, comm_size = TS.tensor_size[layer]
 
-            ##### TODO #####
+            ##### Change these at operator scheduling #####
             input_loc = "LOCAL"
             weight_loc = "REMOTE"
             output_loc = "REMOTE"
             misc = "NONE"
             comm_type = "NONE"
-            ################
+            ###############################################
 
             if comm_size != 0 : # ALLREDUCE automatically checked and removed in formatter if parallel is Pipeline
                 comm_type = "ALLREDUCE"
