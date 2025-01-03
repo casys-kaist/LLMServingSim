@@ -1,0 +1,712 @@
+ORCA		model_parallel_NPU_group: 2
+709
+Layername                        comp_time     input_loc   input_size  weight_loc  weight_size output_loc  output_size comm_type   comm_size   misc        
+vllm_load_kv_0                   0             LOCAL       0           REMOTE      108         REMOTE      0           NONE        0           NONE        
+vllm_evict_kv_1                  0             LOCAL       0           REMOTE      149         REMOTE      0           NONE        0           NONE        
+vocab_embedding_2                97863         REMOTE      316         LOCAL       411705344   REMOTE      1294336     NONE        0           NONE        
+input_layernorm_3                44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_4                  19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_6              12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_8              9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_10             8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_12             10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_14             7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_16             8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_18             8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_20               19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_21                        18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_22                      38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_23                      18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_24                59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_25               44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_26                 19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_28             12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_30             9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_32             8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_34             10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_36             7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_38             8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_40             8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_42               19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_43                        18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_44                      38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_45                      18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_46                59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_47               44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_48                 19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_50             12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_52             9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_54             8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_56             10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_58             7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_60             8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_62             8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_64               19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_65                        18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_66                      38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_67                      18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_68                59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_69               44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_70                 19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_72             12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_74             9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_76             8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_78             10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_80             7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_82             8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_84             8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_86               19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_87                        18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_88                      38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_89                      18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_90                59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_91               44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_92                 19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_94             12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_96             9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_98             8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_100            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_102            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_104            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_106            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_108              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_109                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_110                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_111                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_112               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_113              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_114                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_116            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_118            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_120            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_122            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_124            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_126            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_128            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_130              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_131                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_132                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_133                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_134               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_135              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_136                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_138            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_140            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_142            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_144            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_146            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_148            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_150            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_152              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_153                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_154                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_155                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_156               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_157              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_158                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_160            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_162            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_164            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_166            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_168            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_170            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_172            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_174              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_175                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_176                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_177                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_178               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_179              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_180                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_182            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_184            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_186            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_188            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_190            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_192            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_194            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_196              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_197                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_198                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_199                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_200               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_201              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_202                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_204            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_206            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_208            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_210            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_212            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_214            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_216            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_218              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_219                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_220                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_221                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_222               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_223              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_224                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_226            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_228            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_230            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_232            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_234            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_236            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_238            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_240              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_241                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_242                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_243                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_244               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_245              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_246                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_248            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_250            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_252            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_254            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_256            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_258            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_260            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_262              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_263                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_264                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_265                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_266               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_267              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_268                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_270            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_272            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_274            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_276            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_278            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_280            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_282            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_284              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_285                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_286                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_287                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_288               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_289              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_290                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_292            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_294            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_296            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_298            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_300            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_302            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_304            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_306              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_307                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_308                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_309                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_310               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_311              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_312                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_314            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_316            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_318            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_320            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_322            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_324            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_326            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_328              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_329                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_330                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_331                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_332               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_333              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_334                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_336            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_338            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_340            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_342            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_344            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_346            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_348            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_350              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_351                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_352                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_353                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_354               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_355              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_356                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_358            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_360            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_362            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_364            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_366            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_368            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_370            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_372              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_373                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_374                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_375                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_376               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_377              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_378                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_380            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_382            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_384            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_386            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_388            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_390            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_392            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_394              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_395                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_396                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_397                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_398               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_399              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_400                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_402            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_404            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_406            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_408            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_410            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_412            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_414            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_416              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_417                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_418                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_419                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_420               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_421              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_422                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_424            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_426            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_428            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_430            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_432            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_434            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_436            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_438              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_439                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_440                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_441                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_442               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_443              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_444                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_446            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_448            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_450            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_452            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_454            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_456            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_458            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_460              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_461                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_462                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_463                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_464               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_465              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_466                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_468            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_470            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_472            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_474            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_476            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_478            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_480            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_482              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_483                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_484                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_485                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_486               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_487              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_488                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_490            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_492            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_494            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_496            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_498            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_500            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_502            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_504              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_505                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_506                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_507                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_508               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_509              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_510                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_512            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_514            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_516            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_518            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_520            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_522            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_524            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_526              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_527                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_528                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_529                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_530               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_531              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_532                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_534            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_536            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_538            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_540            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_542            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_544            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_546            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_548              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_549                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_550                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_551                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_552               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_553              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_554                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_556            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_558            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_560            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_562            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_564            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_566            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_568            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_570              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_571                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_572                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_573                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_574               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_575              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_576                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_578            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_580            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_582            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_584            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_586            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_588            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_590            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_592              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_593                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_594                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_595                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_596               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_597              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_598                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_600            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_602            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_604            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_606            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_608            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_610            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_612            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_614              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_615                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_616                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_617                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_618               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_619              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_620                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_622            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_624            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_626            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_628            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_630            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_632            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_634            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_636              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_637                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_638                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_639                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_640               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_641              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_642                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_644            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_646            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_648            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_650            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_652            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_654            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_656            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_658              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_659                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_660                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_661                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_662               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_663              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_664                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_666            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_668            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_670            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_672            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_674            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_676            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_678            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_680              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_681                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_682                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_683                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_684               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+input_layernorm_685              44109         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+attention/qkv_686                19815         REMOTE      1294336     LOCAL       100663296   REMOTE      3883008     NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+attention/wrapper_688            12013         REMOTE      5996544     LOCAL       0           REMOTE      1998848     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+attention/wrapper_690            9752          REMOTE      10518528    LOCAL       0           REMOTE      3506176     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+attention/wrapper_692            8281          REMOTE      11624448    LOCAL       0           REMOTE      3874816     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+attention/wrapper_694            10399         REMOTE      3170304     LOCAL       0           REMOTE      1056768     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+attention/wrapper_696            7287          REMOTE      4153344     LOCAL       0           REMOTE      1384448     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+attention/wrapper_698            8768          REMOTE      9043968     LOCAL       0           REMOTE      3014656     NONE        0           NONE        
+ATTENTION 6                                                                                                                                                
+attention/wrapper_700            8513          REMOTE      7495680     LOCAL       0           REMOTE      2498560     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+attention/dense_702              19833         REMOTE      1294336     LOCAL       33554432    REMOTE      1294336     ALLREDUCE   1294336     NONE        
+mlp/fc_703                       18814         REMOTE      1294336     LOCAL       134217728   REMOTE      5177344     NONE        0           NONE        
+mlp/gelu_704                     38294         REMOTE      5177344     LOCAL       0           REMOTE      5177344     NONE        0           NONE        
+mlp/proj_705                     18167         REMOTE      5177344     LOCAL       134217728   REMOTE      1294336     ALLREDUCE   1294336     NONE        
+post_layernorm_706               59922         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+ln_f_707                         60285         REMOTE      1294336     LOCAL       16384       REMOTE      1294336     NONE        0           NONE        
+lm_head_708                      14049         REMOTE      1294336     LOCAL       411705344   REMOTE      15881212    NONE        0           NONE        

@@ -1,9 +1,0 @@
-HYBRID_TENSOR_PIPELINE	model_parallel_NPU_group: 1
-6
-Layername                        comp_time     input_loc   input_size  weight_loc  weight_size output_loc  output_size comm_type   comm_size   misc        
-layer0_elem_pow3d1               365           LOCAL       452610      REMOTE      0           REMOTE      452608      NONE        0           NONE        
-layer1_reduce_mean3d2            7675          LOCAL       452608      REMOTE      0           REMOTE      70          NONE        0           NONE        
-layer2_elem_add3d_const3         294           LOCAL       70          REMOTE      0           REMOTE      68          NONE        0           NONE        
-layer3_elem_sqrt3d4              306           LOCAL       68          REMOTE      0           REMOTE      452676      NONE        0           NONE        
-layer4_elem_div3d3d5             642           LOCAL       452676      REMOTE      0           REMOTE      452608      NONE        0           NONE        
-layer5_elem_mul3d3d6             9425          LOCAL       452608      REMOTE      452608      REMOTE      452608      NONE        0           NONE        

@@ -22,7 +22,7 @@ _dk = E/_nh
 
 
 def estimate_mha_latency(batch):
-    E, _, _nh = get_config(batch.model)
+    E, _, _nh, _ = getConfig(batch.model)
     _dk = E/_nh
     pim_times = []
     for req in batch.requests:
@@ -281,7 +281,7 @@ def mergeText(batch, subbatches, num_npus, npu_group):
             block1.append(['attn_overlap_1',f'{attn_npu2[i]-block1_gemm//npus_per_group}','LOCAL','0','REMOTE','0','REMOTE','0','NONE','0','NONE'])
     block1.append([f'ATTENTION END','','','','','','','','','',''])
     block2.append([f'ATTENTION END','','','','','','','','','',''])
-    _, n_layer, _ = get_config(model)
+    _, n_layer, _, _ = getConfig(model)
 
     # repeat N-1 times
     for _ in range(n_layer-1):

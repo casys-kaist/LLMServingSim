@@ -1,31 +1,31 @@
 # Inference Serving
 Where the techniques for LLM inference are located.
 
-## `model_reference`
-Reference model traces to figure out the weight of the model.
-
 ## `request.py`
 Class of the request. Includes the information about a request.
 
 ## `scheduler.py`
-Class of the scheduler. Manages iteration-level scheduling using `kv_manage.py`.
+Class of the scheduler. Manages iteration-level scheduling.
 
 **You can add your own scheduler here.**
 
-## `kv_manage.py`
-Where management of KV cache happens.
+## `memory_model.py`
+Memory model of LLMServingSim. Calculating KV cache sizes and weight sizes are located here.
 
 ## `control.py`
-Controls the flow between ASTRA-Sim and Scheduler.
+Class that controls the flow between ASTRA-Sim and Scheduler.
 
 ## `generate_graph.py`
 Calls Chakra Graph Converter to convert trace into execution graph.
 
-## `generate_text.py`
-Calls Execution Engine to make model trace.
+## `generate_trace.py`
+Lookup perf_model to generate model trace. Also uses memory_model for tensor sizes.
+
+## `config_generator.py`
+Generates network and memory config json file automatically. You can change it according to your needs.
 
 ## `pim.py`
 Gets the pim trace and add the pim operator in the trace.
 
 ## `utils.py`
-Where various helper functions are located.
+Where various helper functions are located. Especially model config and writing format of the trace file.

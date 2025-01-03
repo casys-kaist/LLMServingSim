@@ -1,10 +1,4 @@
 [submodule "astra-sim"]
 	path = astra-sim
 	url = https://github.com/casys-kaist/astra-sim.git
-	branch = artifact
-[submodule "execution_engine/codelets_src"]
-	path = execution_engine/codelets_src
-	url = https://github.com/JaehongCS20/codelets_src.git
-[submodule "execution_engine/polymath"]
-	path = execution_engine/polymath
-	url = https://github.com/JaehongCS20/polymath.git
+	branch = v0.1.0

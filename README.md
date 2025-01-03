@@ -1,22 +1,33 @@
 # LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale
+
+## Publication
+Paper: [https://doi.org/10.1109/IISWC63097.2024.00012](https://doi.org/10.1109/IISWC63097.2024.00012)
+
+Authors: Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)
+
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
 
 ## Build LLMServingSim
+This version v0.1.0 is an updated version of LLMServingSim (artifact) that uses an NPU simulator, it uses the performance model instead.
 
-### 1. Git Clone
+If you want to use the NPU simulator refer to the artifact branch. Ask for more features in the issue tab or via email.
+
+We are preparing to use another NPU simulator for our next version. 
+
+### 1. Git clone
 ```bash
 git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
-cd LLMServingSim
+cd LLMServingSim.code
 ```
 
-### 2. `Conda` install (Optional)
+### 2. `Conda` install (optional)
 Conda can be downloaded from the following [link](https://repo.anaconda.com/archive/).
 ```
 curl -O https://repo.anaconda.com/archive/Anaconda3-2024.06-1-Linux-x86_64.sh
 bash Anaconda3-2024.06-1-Linux-x86_64.sh
 ```
 
-### 3. Install Dependency (tested in python 3.9, GCC, G++ 7.5.0)
+### 3. Install dependency (tested in python 3.9, GCC, G++ 7.5.0)
 
 ### Using `conda` environment.yml (Recommended)
 ```bash
@@ -24,7 +35,7 @@ conda env create -p ./env -f ./environment.yml
 conda activate ./env
 ```
 
-### Clean `conda` Install 
+### Clean `conda` install 
 ```bash
 conda create -n env_name python=3.9
 conda activate env_name
@@ -35,7 +46,7 @@ conda install cctbx202208::boost-cpp=1.74.0
 pip install -r requirements.txt
 ```
 
-### 4. Build ASTRA-Sim, Chakra, Polymath
+### 4. Build ASTRA-Sim, Chakra
 
 Common issues while building ASTRA-Sim. If error regarding `version of protoc` happens see [here](#common-errors).
 
@@ -44,96 +55,141 @@ cd astra-sim
 ./build/astra_analytical/build.sh
 cd extern/graph_frontend/chakra
 pip install .
-cd ../../../../execution_engine/polymath
-pip install .
-cd ../..
+cd ../../../..
 ```
 
 ## Run LLMServingSim
 
-### 1. Set Input Configurations
+### 1. Set input configurations
 
-Config & Dataset Path:
+Now network and remote memory config are automatically set by `inference_serving/config_generator.py`.
+
+Simply passing arguments to `main.py` is enough.
+See `inference_serving/config_generator.py` for more details.
+
+**Config & Dataset Path:**
 
 - Network config path: `astra-sim/inputs/network/analytical/{config_name}.json`
-- NPU config path: `execution_engine/codelets_src/codelets/examples/genesys/configs/{config_name}.json`
-- Dataset path: `astra-sim/dataset/{dataset_name}.tsv`
+- Remote(Host) memory config path: `astra-sim/inputs/remote_memory/analytical/{config_name}.json`
+- Dataset path: `dataset/{dataset_name}.tsv`
 
 ### 2. Run LLMServingSim
 
 Test Run
 
 ```bash
-python3 -u main.py --model_name 'gpt3-6.7b' --npu_num 1 --npu_group 1 --npu_mem 24 --dataset 'dataset/share-gpt-req100-rate10.tsv'
-
-python3 -u main.py --model_name 'llama-7b' --npu_num 1 --npu_group 1 --npu_mem 24 --dataset 'dataset/share-gpt-req100-rate10.tsv'
+python main.py --model_name 'gpt3-6.7b' --hardware 'RTX3090' --npu_num 1 --npu_group 1 --npu_mem 40 \
+    --local_bw 1024 --remote_bw 512 --link_bw 256 --fp 16 --block_size 4 \
+    --dataset 'dataset/share-gpt-req100-rate10.tsv' --output 'output/example_run.csv' \
+    --verbose --req_num 10
+```
+or simply use
+```bash
+./run.sh
 ```
 
 ## Parameters of `main.py`
 
+The current version only supports gpt3-6.7b and RTX3090. 
+
+Instructions for adding a new model and hardware are located [here](#adding-a-new-model--hardware).
+
 | Parameters | Supporting Options | Default Value | Notes |
 | --- | --- | --- | --- |
-| model_name | 'gpt2', 'gpt3-6.7b', 'gpt3-125m', 'gpt3-350m', 'gpt3-760m', 'gpt3-1.3bm', 'gpt3-2.7b', 'gpt3-6.7b', 'gpt3-13b', 'gpt3-30b', 'gpt3-175b', 'opt-125m', 'opt-350m', 'opt-1.3b', 'opt-2.7b', 'opt-2.7b', 'opt-6.7b', 'opt-13b', 'opt-30b', 'opt-66b', 'opt-175b', 'llama-7b', 'llama-30b', 'llama-70b' | 'gpt2' |  |
+| model_name | 'gpt3-6.7b' | 'gpt3-6.7b' |  |
+| hardware | 'RTX3090' | 'RTX3090' |  |
 | npu_num  | Integer | 16 |  |
 | max_batch | Integer | 0 | 0: no limit |
-| batch_delay  | Integer | 0 |  |
-| scheduling | 'none', 'orca' | 'orca' |  |
-| parallel | 'pipeline', 'tensor', 'hybrid' | 'hybrid' |  |
 | npu_group | Integer | 1 |  |
-| npu_mem | Integer | 40 |  |
-| kv_manage | 'max', 'pow2', 'oracle', 'vllm' | 'vllm' |  |
+| npu_mem | Integer | 40 | GB |
+| local_bw | Integer | 1024 | GB/s |
+| remote_bw | Integer | 512 | GB/s |
+| link_bw | Integer | 256 | GB/s |
+| fp | Integer | 16 | bits |
 | block_size | Integer | 8 |  |
-| pim_type | 'none', 'local', 'pool' | 'none' |  |
-| sub_batch | Flag | False | Sub-batch Scheduling On/Off |
 | dataset | Dataset Path | None | None: manually add requests in main.py |
-| network | JSON File Name | None | None: following convention "fully_connected_{network_dim}d_{number_of_NPUs}d.json" |
-| output | Output TSV Path | None | None: no tsv output only stdout |
+| output | Output CSV Path | None | None: no csv output only stdout |
 | gen | Flag | False | Skip initiation phase On/Off |
-| fast_run | Flag | False | Skip all compilation and force to use cached trace for fast simulation |
+| req_num | Integer | 100 |  |
+| log_interval | Float | 0.5 | Throughput log interval (s) |
+| verbose | Flag | False |  |
 
 ## Outputs of `main.py`
 
-In all outputs, the unit of throughput is `tokens/second`, and the unit of simulation time is `milliseconds`.
-
-### 1. Standard Output
+### 1. Standard output
 
 The standard output shows which requests are being processed in each iteration of the simulator and displays the measured throughput at regular intervals. 
-Additionally, it provides a summary of throughput and simulation time at the end.
 
-### 2. Throughput TSV File
+Additionally, it provides a summary of the simulation at the end.
 
-`{output_filename}-throughput.tsv` contains the prompt and generation throughput at each interval.
+With `--verbose` option, the log includes more specific information including memory load and store.
+
+### 2. Output file
+
+`{output_filename}.csv` contains the simulation result of each request.
+
+You can find an example in `output/example_run.csv`.
+
+## Adding a New Model & Hardware
+
+### 1. Make a new performance model
+
+We used NVIDIA TensorRT-LLM to compile and run the model. 
+While running the model, we used the NVIDIA Nsight system to measure each layer's latency.
+
+You can follow the instructions [here](https://github.com/JaehongCS20/TensorRT-LLM.git) to generate a performance model.
+
+Or, you can use another tool to measure the latency of each layer. 
+Follow the format of a performance model in `perf_model/example.csv` or `perf_model/RTX3090.csv`.
+
+### 2. Modify functions
+
+The current version supports gpt model architecture generated by TensorRT. If the model architecture does not follow gpt or the performance model is not generated by TensorRT, some codes of LLMServingSim should be modified.
+
+1. `inference_serving/utils.py`: function `getConfig`
+   
+Add your new model configuration (n_embd, n_layer, n_head, vocab_size)
+
+2. `inference_serving/memory_model.py`: function `calculateSizes` & `getWeight`
+
+`calculateSizes` function calculates the input, weight, and output tensor size for each specific layer.
+Change this function according to the model architecture.
+
+`getWeight` function calculates the total model size by retrieving weights from `calculateSizes`.
+Also, change this function according to the model architecture.
+
+3. `inference_serving/generate_trace.py`: function `synthsizeTrace`
+
+This is the main function that generates trace for each iteration. 
+It uses `calculatedSizes` to retrieve input, weight, and output tensor size for each layer.
+Then, it stacks layers in the trace according to the model architecture.
+
+While changing this function, there are three important things.
+
+- Make sure ATTENTION layer is well separated for each request
+
+- Make sure ith layer output and i+1th layer input size are matched
+
+- Make sure ALLREDUCE operation is well placed for synchronization
+
+We provide a function to test your trace generation. See `trace_test/` for more details.
 
 
-### 3. Simulation Time TSV File
+## Citation
+If you use LLMServingSim for your research, please cite our paper:
 
-`{output_filename}-simulation-time.tsv` contains the simulation time of each components.
-
-
-## Evaluation
-
-### Move to Evaluation Folder
-
-```bash
-cd evaluation
 ```
-
-### Run Each Evaluation Script
-
-```bash
-./evaluation1.sh
-./evaluation2.sh
-...
-./evaluation5.sh
+@INPROCEEDINGS{10763697,
+  author={Cho, Jaehong and Kim, Minsu and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
+  booktitle={2024 IEEE International Symposium on Workload Characterization (IISWC)}, 
+  title={LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale}, 
+  year={2024},
+  volume={},
+  number={},
+  pages={15-29},
+  keywords={Technological innovation;Program processors;Simulation;Large language models;Heuristic algorithms;Redundancy;Software algorithms;Inference algorithms;Software;System analysis and design;Large language model (LLM);Inference serving;Simulation infrastructure;Neural processing unit (NPU);Processing-in-memory (PIM);Heterogeneous system},
+  doi={10.1109/IISWC63097.2024.00012}}
 ```
-
-### Run All Evaluation Script
-
-```bash
-./evaluation_all.sh
-```
-
-For detailed information about the evaluation, please refer to the `README` file in the `evaluation` folder.
 
 ## Common Errors
 
