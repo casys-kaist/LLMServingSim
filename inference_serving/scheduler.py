@@ -41,9 +41,9 @@ class Scheduler:
         for index, row in data.iterrows():
             if index >= self.req_num:
                 break
-            input_length = row['input_toks']
-            output_length = row['input_toks'] + row['output_toks']
-            arrival_time_ns = row['arrival_time_ns']
+            input_length = int(row['input_toks'])
+            output_length = int(row['input_toks'] + row['output_toks'])
+            arrival_time_ns = int(row['arrival_time_ns'])
             
             self.addRequest([self.model, input_length, output_length, arrival_time_ns], isInit=isInit)
             cnt+=1

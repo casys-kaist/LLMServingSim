@@ -7,12 +7,23 @@ Authors: Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
 
+## Version Information
+
+Please ask for more features in the issue tab or via email.
+
+### Current Version: `v0.2.0`
+
+This version uses the latest versions of ASTRA-Sim and Chakra, enabling simulation of more diverse network configurations.
+
+### Previous Version: `v0.1.0`
+
+This version introduced a performance model for GPU support.
+
+### Artifact
+
+For the NPU simulator version, please refer to the artifact release.
+
 ## Build LLMServingSim
-This version v0.1.0 is an updated version of LLMServingSim (artifact) that uses an NPU simulator, it uses the performance model instead.
-
-If you want to use the NPU simulator refer to the artifact branch. Ask for more features in the issue tab or via email.
-
-We are preparing to use another NPU simulator for our next version. 
 
 ### 1. Git clone
 ```bash
@@ -35,15 +46,11 @@ conda env create -p ./env -f ./environment.yml
 conda activate ./env
 ```
 
-### Clean `conda` install 
+### Clean `conda` install (Try this if `environment.yml` causes an error)
 ```bash
 conda create -n env_name python=3.9
 conda activate env_name
-conda install conda-forge::libprotobuf=3.6.1
-conda install conda-forge::cmake=3.15
-conda install cctbx202208::boost-cpp=1.74.0
-
-pip install -r requirements.txt
+conda install -c conda-forge gcc_linux-64=7.5.0 gxx_linux-64=7.5.0 libprotobuf=3.6.1 cmake=3.22
 ```
 
 ### 4. Build ASTRA-Sim, Chakra
@@ -79,7 +86,7 @@ Test Run
 
 ```bash
 python main.py --model_name 'gpt3-6.7b' --hardware 'RTX3090' --npu_num 1 --npu_group 1 --npu_mem 40 \
-    --local_bw 1024 --remote_bw 512 --link_bw 256 --fp 16 --block_size 4 \
+    --remote_bw 512 --link_bw 256 --fp 16 --block_size 4 \
     --dataset 'dataset/share-gpt-req100-rate10.tsv' --output 'output/example_run.csv' \
     --verbose --req_num 10
 ```

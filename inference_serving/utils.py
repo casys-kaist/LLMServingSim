@@ -12,7 +12,7 @@ def getWorkload(batch, hardware, event=False):
         file_name = f'{hardware}_{batch.model}_batch{batch.batch_id}'
 
     cwd = os.getcwd()
-    return cwd+f"/inputs/custom_workload/{file_name}/llm"
+    return cwd+f"/inputs/workload/{file_name}/llm"
 
 def header():
     string_list = ["Layername","comp_time","input_loc","input_size","weight_loc","weight_size","output_loc","output_size","comm_type","comm_size","misc"]

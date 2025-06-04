@@ -1,4 +1,4 @@
 [submodule "astra-sim"]
 	path = astra-sim
 	url = https://github.com/casys-kaist/astra-sim.git
-	branch = v0.1.0
+	branch = v0.2.0

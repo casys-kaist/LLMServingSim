@@ -1,9 +1,6 @@
 import os
 import subprocess
-import math
-from time import time
 import argparse
-import pandas as pd
 
 from inference_serving.scheduler import *
 from inference_serving.request import *
@@ -35,6 +32,7 @@ def main():
     parser.add_argument('--local_bw', type=int, help='bandwidth of local (device) memory in GB', default=1024)
     parser.add_argument('--remote_bw', type=int, help='bandwidth of remote (host) memory in GB', default=512)
     parser.add_argument('--link_bw', type=int, help='bandwidth of link in GB', default=256)
+    parser.add_argument('--link_latency', type=int, help='latency of link in ns', default=0)
     parser.add_argument('--fp', type=int, help='size of floating point in bit', default=16)
     parser.add_argument('--block_size', type=int, help='kv cache block size unit of tokens', default=8)
     parser.add_argument('--dataset', type=str, help='dataset path', default=None)
@@ -59,6 +57,7 @@ def main():
     isInit=args.gen
     local_bw=args.local_bw
     link_bw=args.link_bw
+    link_latency = args.link_latency
     remote_bw=args.remote_bw
     req_num=args.req_num
     log_interval=args.log_interval
@@ -66,10 +65,10 @@ def main():
 
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config_generator.py and each json file
-    network=createNetworkConfig(astra_sim, npu_num, npu_group, local_bw, link_bw)
-    memory=setRemoteBandwidth(astra_sim+"/inputs/remote_memory/analytical/per_npu_memory_expansion.json", remote_bw)
+    network=createNetworkConfig(astra_sim, npu_num, npu_group, link_bw, link_latency)
+    memory=setRemoteBandwidth(astra_sim+"/inputs/remote_memory/per_npu_memory_expansion.json", remote_bw)
     binary=astra_sim+"/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra"
-    system=astra_sim+"/inputs/system/sample_fully_connected_sys.txt"
+    system=astra_sim+"/inputs/system/system.json"
     ################################################################################################
 
     scheduler = Scheduler(model, max_batch, npu_num, npu_group, npu_mem, fp, block_size, req_num, verbose)
@@ -181,12 +180,12 @@ def main():
     print(f"Total generation: {total_gen} tokens")
     print(f"Throughput per {1/RATIO} sec: {throughput}")
     print(f"Total clocks: {current} ticks")
-    print(f"Total latency: {total_latency} s")
-    print(f"Average prompt throughput: {total_prompt/total_latency} token/s")
-    print(f"Average generation throughput: {total_gen/total_latency} token/s")
-    print(f"Requests per second: {requests/total_latency} request/s")
+    print(f"Total latency: {total_latency:.3f} s")
+    print(f"Average prompt throughput: {total_prompt/total_latency:.3f} token/s")
+    print(f"Average generation throughput: {total_gen/total_latency:.3f} token/s")
+    print(f"Requests per second: {requests/total_latency:.3f} request/s")
     print('---------------------------')
-    
+
     if output_file != None:
         if verbose:
             print(f"Saving each request's information to output file: {output_file}")

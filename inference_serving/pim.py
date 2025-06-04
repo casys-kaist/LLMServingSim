@@ -85,7 +85,7 @@ def addPIMtime(batch, npu_group, pim_times, pim_type):
     input_len = batch.input
     init_cnt = batch.output
     parallel = 'hybrid'
-    output_path = f"inputs/custom_workload/{model}_b{batch_size}_s{input_len}_orca_n{npu_group}.txt"
+    output_path = f"inputs/trace/{model}_b{batch_size}_s{input_len}_orca_n{npu_group}.txt"
 
     with open(output_path, 'r') as f:
         result = []
@@ -180,13 +180,13 @@ def mergeText(batch, subbatches, num_npus, npu_group):
 
     input_len1 = int(subbatches[0].input)
     init_cnt1 = int(subbatches[0].output)
-    output_path1 = f"inputs/custom_workload/{model}_b{batch_size}_s{input_len1}_orca_n{npu_group}.txt"
+    output_path1 = f"inputs/trace/{model}_b{batch_size}_s{input_len1}_orca_n{npu_group}.txt"
     input_len2 = int(subbatches[1].input)
     init_cnt2 = int(subbatches[1].output)
-    output_path2 = f"inputs/custom_workload/{model}_b{batch_size}_s{input_len2}_orca_n{npu_group}.txt"
+    output_path2 = f"inputs/trace/{model}_b{batch_size}_s{input_len2}_orca_n{npu_group}.txt"
     input_len3 = int(batch.input)
     init_cnt3 = int(batch.output)
-    output_path3 = f"inputs/custom_workload/{model}_b{batch_size}_s{input_len3}_orca_n{npu_group}.txt"
+    output_path3 = f"inputs/trace/{model}_b{batch_size}_s{input_len3}_orca_n{npu_group}.txt"
 
     with open(output_path1, 'r') as f1:
         b1 = []

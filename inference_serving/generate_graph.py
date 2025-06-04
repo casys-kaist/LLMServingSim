@@ -14,13 +14,13 @@ def generateGraph(batch, hardware, total_num, event=False):
     else:
         file_name = f'{hardware}_{batch.model}_batch{batch.batch_id}'
 
-    if not os.path.isdir(f'../../../inputs/custom_workload/{file_name}'):
-        os.mkdir(f'../../../inputs/custom_workload/{file_name}')
+    workload_dir = f'../../../inputs/workload/{file_name}'
+    os.makedirs(workload_dir, exist_ok=True)
 
-    cmd = f'python -m chakra.et_converter.et_converter --input_type LLM ' \
-            f'--input_filename ../../../inputs/custom_workload/{file_name}.txt ' \
-            f'--output_filename ../../../inputs/custom_workload/{file_name}/llm ' \
-            f'--num_npus {total_num} --num_dims 1 --num_passes 1'
+    cmd = f'python -m chakra.src.converter.converter LLM ' \
+            f'--input ../../../inputs/trace/{file_name}.txt ' \
+            f'--output ../../../inputs/workload/{file_name}/llm ' \
+            f'--num-npus {total_num}'
 
     cmd = cmd.split()
     subprocess.run(cmd, text=True)

@@ -1,3 +1,5 @@
+import re
+
 class Controller():
     def __init__(self, total_num, verbose=False):
         self.end_dict = {}
@@ -9,7 +11,7 @@ class Controller():
 
     def readWait(self, p):
         out = [""]
-        while out[-1] != "Waiting\n" and out[-1] != "Checking Non-Exited Systems ...\n":
+        while "Waiting" not in out[-1] and out[-1] != "Checking Non-Exited Systems ...\n":
             out.append(p.stdout.readline())
             p.stdout.flush()
         return out
@@ -29,16 +31,17 @@ class Controller():
         return
 
     def parseOutput(self, output):
-        if 'cycles' in output:
-            sp = output.split()
-            sys = int(sp[0].split('[')[1].split(']')[0])
-            id = int(sp[2])
-            cycle = int(sp[4])
+        pattern = r"sys\[(\d+)\] iteration (\d+) finished, (\d+) cycles"
+        match = re.search(pattern, output)
+        if match:
+            sys = int(match.group(1))
+            id = int(match.group(2))
+            cycle = int(match.group(3))
 
             if self.end_dict[sys] != id:
                 if self.verbose:
-                    print('Control: ' + output, end='')
+                    trimmed_output = output[output.find("sys["):]
+                    print('Control: ' + trimmed_output, end='')
                 self.end_dict[sys] = id
-            # print('Control: ' + output, end='')
-            return {'sys':sys,'id':id,'cycle':cycle}
+            return {'sys': sys, 'id': id, 'cycle': cycle}
         return

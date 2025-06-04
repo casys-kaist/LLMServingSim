@@ -1,30 +1,30 @@
 import json
+import yaml
 import math
+
+class FlowStyleList(list): pass
+
+def represent_flowstyle_list(dumper, data):
+    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
+
+yaml.add_representer(FlowStyleList, represent_flowstyle_list)
+
 # generates topology according to the input arguments
-def createNetworkConfig(astra_sim, npu_nums, npu_group, local_bw, link_bw):
+def createNetworkConfig(astra_sim, npu_nums, npu_group, link_bw, link_latency):
 
     network_dim = int(math.log2(npu_group))+1
-    output_file = astra_sim+f'/inputs/network/analytical/fullyconnected_{network_dim}d_{npu_nums}.json'
+    output_file = astra_sim+f'/inputs/network/network.yml'
     npus_per_dim = npu_nums//network_dim 
 
     topology_data = {
-        "topology-name": "Hierarchical",                                # Just a name of the topology
-        "topologies-per-dim": ["FullyConnected" for _ in range(network_dim)], # Connection type of each dimension (refer to astra-sim paper)
-        "dimension-type": ["N" for _ in range(network_dim)],            # Name of each dimension
-        "dimensions-count": network_dim,
-        "units-count": [npus_per_dim if i == 0 else 2 for i in range(network_dim)],
-        "links-count": [(npus_per_dim - 1 if npus_per_dim != 1 else 1) if i == 0 else 1 for i in range(network_dim)],
-        "link-latency": [0 for _ in range(network_dim)],                # Modify if needed 
-        "link-bandwidth": [link_bw for _ in range(network_dim)],        # Modify if needed 
-        "nic-latency": [0 for _ in range(network_dim)],                 # Modify if needed 
-        "router-latency": [0 for _ in range(network_dim)],              # Modify if needed 
-        "hbm-latency": [0 for _ in range(network_dim)],                 # Modify if needed 
-        "hbm-bandwidth": [local_bw for _ in range(network_dim)],        # Modify if needed 
-        "hbm-scale": [0 for _ in range(network_dim)]                    # Modify if needed 
+        "topology": FlowStyleList(["FullyConnected"] * network_dim),
+        "npus_count": FlowStyleList([npus_per_dim if i == 0 else 2 for i in range(network_dim)]),
+        "bandwidth": FlowStyleList([float(link_bw)] * network_dim),
+        "latency": FlowStyleList([float(link_latency)] * network_dim)
     }
 
-    with open(output_file, 'w') as json_file:
-        json.dump(topology_data, json_file, indent=2)
+    with open(output_file, 'w') as yaml_file:
+        yaml.dump(topology_data, yaml_file, default_flow_style=False, sort_keys=False)
 
     return output_file
 

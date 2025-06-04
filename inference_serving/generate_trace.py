@@ -31,7 +31,7 @@ def generateTrace(batch, hardware, npu_num, npu_group, fp=16):
 
     print(f"Trace: batch #{batch.batch_id}: model: {model}, num requests: {len(attn)}, total length: {input_len}, prompt/kv_cache length: {sum(attn)}")
 
-    output_path = f"inputs/custom_workload/{hardware}_{batch.model}_batch{batch.batch_id}.txt"
+    output_path = f"inputs/trace/{hardware}_{batch.model}_batch{batch.batch_id}.txt"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # make trace
@@ -165,7 +165,7 @@ def generateEvent(alarm):
     result.append([layer_name, comp_time, input_loc, input_size, weight_loc, weight_size, output_loc, output_size, comm_type, comm_size, misc])
 
     # write to the text file
-    output_path = f"inputs/custom_workload/event_handler.txt"
+    output_path = f"inputs/trace/event_handler.txt"
     with open(output_path, 'w') as f:
         f.write(f"EVENT\n")
         f.write(f'{len(result)}'+'\n') # length of the text is 1
