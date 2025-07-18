@@ -9,14 +9,14 @@ class Controller():
             self.end_dict[i] = -1
 
 
-    def readWait(self, p):
+    def read_wait(self, p):
         out = [""]
         while "Waiting" not in out[-1] and out[-1] != "Checking Non-Exited Systems ...\n":
             out.append(p.stdout.readline())
             p.stdout.flush()
         return out
 
-    def checkEnd(self, p):
+    def check_end(self, p):
         out = ["",""]
         while out[-2] != "All Request Has Been Exited\n" and out[-2] != "ERROR: Some Requests Remain\n":
             out.append(p.stdout.readline())
@@ -25,12 +25,12 @@ class Controller():
             print(i, end='')
         return out
 
-    def writeFlush(self, p, input):
+    def write_flush(self, p, input):
         p.stdin.write(input+'\n')
         p.stdin.flush()
         return
 
-    def parseOutput(self, output):
+    def parse_output(self, output):
         pattern = r"sys\[(\d+)\] iteration (\d+) finished, (\d+) cycles"
         match = re.search(pattern, output)
         if match:

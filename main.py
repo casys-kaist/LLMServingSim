@@ -54,7 +54,7 @@ def main():
     fp=args.fp
     dataset=args.dataset
     output_file=args.output
-    isInit=args.gen
+    is_init=args.gen
     local_bw=args.local_bw
     link_bw=args.link_bw
     link_latency = args.link_latency
@@ -65,8 +65,8 @@ def main():
 
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config_generator.py and each json file
-    network=createNetworkConfig(astra_sim, npu_num, npu_group, link_bw, link_latency)
-    memory=setRemoteBandwidth(astra_sim+"/inputs/remote_memory/per_npu_memory_expansion.json", remote_bw)
+    network=create_network_config(astra_sim, npu_num, npu_group, link_bw, link_latency)
+    memory=set_remote_bandwidth(astra_sim+"/inputs/remote_memory/per_npu_memory_expansion.json", remote_bw)
     binary=astra_sim+"/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra"
     system=astra_sim+"/inputs/system/system.json"
     ################################################################################################
@@ -76,7 +76,7 @@ def main():
 
     if dataset != None:
         # generate possion
-        scheduler.generate(dataset, isInit=isInit)
+        scheduler.generate(dataset, is_init=is_init)
     else:
         # Manually adding request
         for i in range(16):      # model, seq_len, end_len, arrival_time
@@ -102,11 +102,11 @@ def main():
 
     # set Event Handler that waits until first request arrive
     # Make Event trace
-    generateEvent(scheduler.getFirstArrivalTime())
+    generate_event(scheduler.get_first_arrival_time())
     # Make Chakra Grapth
-    generateGraph(None, hardware, npu_num, event=True)
+    generate_graph(None, hardware, npu_num, event=True)
     # set first workload file
-    workload = getWorkload(None, hardware, event=True)
+    workload = get_workload(None, hardware, event=True)
     # run subprocess
     args = [binary, "--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--remote-memory-configuration="+memory]
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
@@ -114,8 +114,8 @@ def main():
 
     # Starting simulation, one while loop processes one iteration
     while True:
-        out = controller.readWait(p)
-        out_dict = controller.parseOutput(out[-2])
+        out = controller.read_wait(p)
+        out_dict = controller.parse_output(out[-2])
 
         if out_dict != None:
             sys = out_dict['sys']
@@ -124,7 +124,7 @@ def main():
 
 
         # check request is done
-        prompt_t, gen_t, req_cnt = scheduler.addDone(id, sys, current)
+        prompt_t, gen_t, req_cnt = scheduler.add_done(id, sys, current)
         # add tokens in throughput
         prompt_th += prompt_t
         total_prompt += prompt_t
@@ -136,13 +136,13 @@ def main():
         new_req = scheduler.schedule(current, sys, id)
         # no runnable batch
         if new_req == None:
-            controller.writeFlush(p, "pass")
+            controller.write_flush(p, "pass")
         else:
             if sys == 0:
-                generateTrace(new_req, hardware, npu_num, npu_group, fp)
-                generateGraph(new_req, hardware, npu_num)
-            workload = getWorkload(new_req, hardware)
-            controller.writeFlush(p, workload)
+                generate_trace(new_req, hardware, npu_num, npu_group, fp)
+                generate_graph(new_req, hardware, npu_num)
+            workload = get_workload(new_req, hardware)
+            controller.write_flush(p, workload)
 
         # check time to store throughput
         if current > last_log + INTERVAL:
@@ -154,7 +154,7 @@ def main():
             gen_th = 0
 
         
-        if scheduler.isRequestEmpty():
+        if scheduler.is_request_empty():
             throughput.append((prompt_th*RATIO, gen_th*RATIO))
             last_log += INTERVAL
             print(f"[{last_log/FREQ}s] Avg Throughput: propmt: {prompt_th*RATIO}, generation: {gen_th*RATIO}")
@@ -164,14 +164,14 @@ def main():
                 print("Memory Is All Freed")
             else:
                 print("Unfreed Memory Exists")
-            controller.writeFlush(p, "exit")
+            controller.write_flush(p, "exit")
             break
 
     # check all requests are well done
-    controller.checkEnd(p)
+    controller.check_end(p)
 
     # print throughput results
-    scheduler.printResult()
+    scheduler.print_result()
     total_latency = current/FREQ
     print('---------------------------')
     print('Throughput Results')
@@ -189,7 +189,7 @@ def main():
     if output_file != None:
         if verbose:
             print(f"Saving each request's information to output file: {output_file}")
-        scheduler.saveOutput(output_file)
+        scheduler.save_output(output_file)
     
 
 if __name__ == "__main__":

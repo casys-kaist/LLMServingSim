@@ -1,11 +1,9 @@
 import os
-import subprocess
-import re
-import json
 from time import time
-from .request import *
+import json
+# from .request import *
 
-def getWorkload(batch, hardware, event=False):
+def get_workload(batch, hardware, event=False):
     if event:
         file_name = 'event_handler'
     else:
@@ -44,126 +42,26 @@ def formatter(Layername,comp_time,input_loc,input_size,weight_loc,weight_size,ou
     output += '\n'
     return output
 
-def getConfig(model):
-    if model == 'gpt2':
-        n_embd = 768
-        n_layer = 12
-        n_head = 12
-        vocab_size = 50257
-    elif model == 'gpt3-125m':
-        n_embd = 768
-        n_layer = 12
-        n_head = 12
-        vocab_size = 50257
-    elif model == 'gpt3-350m':
-        n_embd = 1024
-        n_layer = 24
-        n_head = 16
-        vocab_size = 50257
-    elif model == 'gpt3-760m':
-        n_embd = 1536
-        n_layer = 24
-        n_head = 16
-        vocab_size = 50257
-    elif model == 'gpt3-1.3b':
-        n_embd = 2048
-        n_layer = 24
-        n_head = 24
-        vocab_size = 50257
-    elif model == 'gpt3-2.7b':
-        n_embd = 2560
-        n_layer = 32
-        n_head = 32
-        vocab_size = 50257
-    elif model == 'gpt3-6.7b':
-        n_embd = 4096
-        n_layer = 32
-        n_head = 32
-        vocab_size = 50257
-    elif model == 'gpt3-13b':
-        n_embd = 5120
-        n_layer = 40
-        n_head = 40
-        vocab_size = 50257
-    elif model == 'gpt3-30b':
-        n_embd = 7168
-        n_layer = 48
-        n_head = 56
-        vocab_size = 50257
-    elif model == 'gpt3-175b':
-        n_embd = 12288
-        n_layer = 96
-        n_head = 96
-        vocab_size = 50257
 
-    elif model == 'opt-125m':
-        n_embd = 768
-        n_layer = 12
-        n_head = 12
-        vocab_size = 50265
-    elif model == 'opt-350m':
-        n_embd = 1024
-        n_layer = 24
-        n_head = 15
-        vocab_size = 50265
-    elif model == 'opt-1.3b':
-        n_embd = 2048
-        n_layer = 24
-        n_head = 32
-        vocab_size = 50265
-    elif model == 'opt-2.7b':
-        n_embd = 2560
-        n_layer = 32
-        n_head = 32
-        vocab_size = 50265
-    elif model == 'opt-6.7b':
-        n_embd = 4096
-        n_layer = 32
-        n_head = 32
-        vocab_size = 50265
-    elif model == 'opt-13b':
-        n_embd = 5120
-        n_layer = 40
-        n_head = 40
-        vocab_size = 50265
-    elif model == 'opt-30b':
-        n_embd = 7168
-        n_layer = 48
-        n_head = 56
-        vocab_size = 50265
-    elif model == 'opt-66b':
-        n_embd = 9216
-        n_layer = 64
-        n_head = 72
-        vocab_size = 50265
-    elif model == 'opt-175b':
-        n_embd = 12288
-        n_layer = 96
-        n_head = 96
-        vocab_size = 50265
+def get_config(model_name):
 
-    elif model == 'llama-7b':
-        n_embd = 4096
-        n_layer = 32
-        n_head = 32
-        vocab_size = 32000
-    elif model == 'llama-13b':
-        n_embd = 5120
-        n_layer = 40
-        n_head = 40
-        vocab_size = 32000
-    elif model == 'llama-30b':
-        n_embd = 6656
-        n_layer = 60
-        n_head = 52
-        vocab_size = 32000
-    elif model == 'llama-70b':
-        n_embd = 8192
-        n_layer = 80
-        n_head = 64
-        vocab_size = 32000
-    else:
-        print(f"ERROR: Utils: no model named {model} configured")
-        return 0, 0, 0, 0
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(base_dir)    
+    config_path = os.path.join(parent_dir, "model_configs", model_name + ".json")
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        return config
+    except FileNotFoundError:
+        print(f"File not found: {config_path}")
+        return None
 
-    return n_embd, n_layer, n_head, vocab_size
+
+if __name__ == "__main__":
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    config = get_config(model_name)
+
+    if config:
+        print(f"Loaded config for {model_name}: {list(config.keys())[:5]}")
+        print(config['model_type'])

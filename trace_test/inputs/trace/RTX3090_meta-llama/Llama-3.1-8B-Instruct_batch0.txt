@@ -1,0 +1,936 @@
+ORCA		model_parallel_NPU_group: 2
+933
+Layername                        comp_time     input_loc   input_size  weight_loc  weight_size output_loc  output_size comm_type   comm_size   misc        
+vllm_load_kv_0                   0             LOCAL       0           REMOTE      125         REMOTE      0           NONE        0           NONE        
+vllm_evict_kv_1                  0             LOCAL       0           REMOTE      130         REMOTE      0           NONE        0           NONE        
+embedding_2                      46445         REMOTE      190         LOCAL       1050673152  REMOTE      778240      NONE        0           NONE        
+input_layernorm_3                115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_4                         49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_5                         46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_6                         43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_8                           155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_9                           59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_11                          160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_12                          61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_14                          167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_15                          57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_17                          161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_18                          68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_20                          153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_21                          56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_23                          152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_24                          56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_26                        45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_27                115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_28                     46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_29                       38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_30                        25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_31                     37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_32               115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_33                        49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_34                        46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_35                        43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_37                          155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_38                          59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_40                          160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_41                          61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_43                          167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_44                          57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_46                          161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_47                          68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_49                          153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_50                          56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_52                          152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_53                          56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_55                        45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_56                115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_57                     46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_58                       38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_59                        25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_60                     37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_61               115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_62                        49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_63                        46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_64                        43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_66                          155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_67                          59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_69                          160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_70                          61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_72                          167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_73                          57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_75                          161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_76                          68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_78                          153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_79                          56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_81                          152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_82                          56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_84                        45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_85                115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_86                     46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_87                       38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_88                        25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_89                     37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_90               115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_91                        49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_92                        46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_93                        43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_95                          155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_96                          59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_98                          160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_99                          61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_101                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_102                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_104                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_105                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_107                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_108                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_110                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_111                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_113                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_114               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_115                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_116                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_117                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_118                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_119              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_120                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_121                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_122                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_124                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_125                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_127                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_128                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_130                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_131                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_133                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_134                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_136                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_137                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_139                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_140                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_142                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_143               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_144                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_145                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_146                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_147                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_148              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_149                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_150                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_151                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_153                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_154                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_156                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_157                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_159                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_160                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_162                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_163                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_165                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_166                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_168                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_169                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_171                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_172               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_173                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_174                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_175                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_176                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_177              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_178                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_179                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_180                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_182                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_183                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_185                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_186                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_188                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_189                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_191                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_192                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_194                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_195                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_197                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_198                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_200                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_201               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_202                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_203                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_204                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_205                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_206              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_207                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_208                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_209                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_211                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_212                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_214                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_215                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_217                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_218                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_220                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_221                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_223                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_224                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_226                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_227                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_229                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_230               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_231                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_232                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_233                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_234                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_235              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_236                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_237                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_238                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_240                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_241                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_243                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_244                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_246                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_247                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_249                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_250                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_252                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_253                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_255                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_256                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_258                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_259               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_260                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_261                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_262                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_263                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_264              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_265                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_266                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_267                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_269                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_270                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_272                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_273                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_275                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_276                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_278                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_279                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_281                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_282                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_284                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_285                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_287                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_288               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_289                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_290                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_291                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_292                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_293              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_294                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_295                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_296                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_298                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_299                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_301                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_302                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_304                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_305                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_307                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_308                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_310                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_311                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_313                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_314                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_316                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_317               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_318                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_319                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_320                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_321                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_322              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_323                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_324                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_325                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_327                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_328                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_330                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_331                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_333                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_334                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_336                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_337                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_339                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_340                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_342                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_343                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_345                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_346               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_347                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_348                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_349                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_350                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_351              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_352                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_353                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_354                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_356                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_357                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_359                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_360                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_362                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_363                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_365                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_366                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_368                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_369                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_371                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_372                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_374                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_375               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_376                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_377                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_378                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_379                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_380              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_381                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_382                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_383                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_385                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_386                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_388                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_389                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_391                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_392                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_394                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_395                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_397                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_398                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_400                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_401                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_403                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_404               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_405                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_406                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_407                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_408                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_409              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_410                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_411                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_412                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_414                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_415                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_417                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_418                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_420                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_421                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_423                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_424                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_426                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_427                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_429                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_430                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_432                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_433               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_434                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_435                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_436                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_437                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_438              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_439                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_440                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_441                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_443                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_444                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_446                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_447                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_449                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_450                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_452                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_453                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_455                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_456                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_458                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_459                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_461                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_462               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_463                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_464                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_465                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_466                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_467              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_468                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_469                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_470                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_472                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_473                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_475                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_476                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_478                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_479                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_481                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_482                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_484                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_485                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_487                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_488                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_490                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_491               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_492                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_493                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_494                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_495                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_496              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_497                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_498                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_499                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_501                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_502                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_504                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_505                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_507                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_508                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_510                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_511                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_513                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_514                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_516                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_517                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_519                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_520               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_521                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_522                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_523                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_524                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_525              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_526                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_527                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_528                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_530                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_531                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_533                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_534                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_536                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_537                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_539                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_540                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_542                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_543                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_545                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_546                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_548                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_549               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_550                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_551                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_552                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_553                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_554              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_555                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_556                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_557                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_559                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_560                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_562                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_563                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_565                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_566                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_568                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_569                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_571                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_572                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_574                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_575                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_577                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_578               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_579                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_580                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_581                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_582                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_583              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_584                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_585                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_586                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_588                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_589                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_591                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_592                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_594                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_595                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_597                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_598                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_600                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_601                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_603                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_604                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_606                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_607               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_608                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_609                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_610                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_611                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_612              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_613                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_614                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_615                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_617                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_618                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_620                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_621                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_623                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_624                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_626                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_627                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_629                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_630                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_632                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_633                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_635                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_636               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_637                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_638                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_639                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_640                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_641              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_642                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_643                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_644                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_646                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_647                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_649                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_650                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_652                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_653                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_655                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_656                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_658                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_659                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_661                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_662                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_664                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_665               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_666                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_667                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_668                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_669                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_670              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_671                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_672                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_673                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_675                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_676                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_678                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_679                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_681                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_682                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_684                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_685                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_687                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_688                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_690                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_691                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_693                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_694               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_695                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_696                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_697                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_698                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_699              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_700                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_701                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_702                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_704                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_705                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_707                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_708                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_710                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_711                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_713                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_714                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_716                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_717                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_719                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_720                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_722                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_723               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_724                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_725                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_726                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_727                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_728              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_729                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_730                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_731                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_733                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_734                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_736                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_737                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_739                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_740                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_742                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_743                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_745                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_746                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_748                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_749                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_751                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_752               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_753                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_754                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_755                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_756                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_757              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_758                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_759                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_760                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_762                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_763                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_765                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_766                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_768                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_769                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_771                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_772                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_774                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_775                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_777                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_778                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_780                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_781               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_782                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_783                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_784                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_785                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_786              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_787                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_788                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_789                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_791                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_792                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_794                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_795                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_797                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_798                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_800                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_801                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_803                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_804                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_806                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_807                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_809                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_810               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_811                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_812                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_813                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_814                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_815              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_816                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_817                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_818                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_820                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_821                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_823                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_824                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_826                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_827                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_829                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_830                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_832                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_833                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_835                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_836                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_838                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_839               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_840                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_841                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_842                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_843                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_844              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_845                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_846                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_847                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_849                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_850                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_852                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_853                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_855                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_856                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_858                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_859                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_861                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_862                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_864                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_865                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_867                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_868               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_869                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_870                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_871                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_872                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_873              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_874                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_875                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_876                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_878                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_879                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_881                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_882                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_884                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_885                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_887                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_888                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_890                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_891                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_893                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_894                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_896                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_897               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_898                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_899                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_900                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_901                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+input_layernorm_902              115268        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+q_proj_903                       49517         REMOTE      778240      LOCAL       33554432    REMOTE      778240      NONE        0           NONE        
+k_proj_904                       46432         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+v_proj_905                       43131         REMOTE      778240      LOCAL       8388608     REMOTE      778240      NONE        0           NONE        
+ATTENTION 0                                                                                                                                                
+rope_907                         155660        REMOTE      3235840     LOCAL       0           REMOTE      3235840     NONE        0           NONE        
+attn_908                         59296         REMOTE      7766016     LOCAL       0           REMOTE      2588672     NONE        0           NONE        
+ATTENTION 1                                                                                                                                                
+rope_910                         160692        REMOTE      3799040     LOCAL       0           REMOTE      3799040     NONE        0           NONE        
+attn_911                         61588         REMOTE      9117696     LOCAL       0           REMOTE      3039232     NONE        0           NONE        
+ATTENTION 2                                                                                                                                                
+rope_913                         167231        REMOTE      4311040     LOCAL       0           REMOTE      4311040     NONE        0           NONE        
+attn_914                         57324         REMOTE      10346496    LOCAL       0           REMOTE      3448832     NONE        0           NONE        
+ATTENTION 3                                                                                                                                                
+rope_916                         161522        REMOTE      3809280     LOCAL       0           REMOTE      3809280     NONE        0           NONE        
+attn_917                         68597         REMOTE      9142272     LOCAL       0           REMOTE      3047424     NONE        0           NONE        
+ATTENTION 4                                                                                                                                                
+rope_919                         153481        REMOTE      1484800     LOCAL       0           REMOTE      1484800     NONE        0           NONE        
+attn_920                         56745         REMOTE      3563520     LOCAL       0           REMOTE      1187840     NONE        0           NONE        
+ATTENTION 5                                                                                                                                                
+rope_922                         152731        REMOTE      1495040     LOCAL       0           REMOTE      1495040     NONE        0           NONE        
+attn_923                         56512         REMOTE      3588096     LOCAL       0           REMOTE      1196032     NONE        0           NONE        
+ATTENTION END                                                                                                                                              
+o_proj_925                       45800         REMOTE      778240      LOCAL       33554432    REMOTE      778240      ALLREDUCE   778240      NONE        
+post_layernorm_926               115238        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+gate_proj_927                    46165         REMOTE      778240      LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+up_proj_928                      38169         REMOTE      2723840     LOCAL       117440512   REMOTE      2723840     NONE        0           NONE        
+act_fn_929                       25222         REMOTE      2723840     LOCAL       0           REMOTE      2723840     NONE        0           NONE        
+down_proj_930                    37201         REMOTE      2723840     LOCAL       117440512   REMOTE      778240      ALLREDUCE   778240      NONE        
+final_layernorm_931              112246        REMOTE      778240      LOCAL       8192        REMOTE      778240      NONE        0           NONE        
+lm_head_932                      51936         REMOTE      778240      LOCAL       1050673152  REMOTE      24368640    NONE        0           NONE        

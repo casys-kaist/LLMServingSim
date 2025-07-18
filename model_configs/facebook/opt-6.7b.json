@@ -1,0 +1,9 @@
+{
+  "model_type": "opt",
+  "ffn_dim": 16384,
+  "hidden_size": 4096,
+  "max_position_embeddings": 2048,
+  "num_attention_heads": 32,
+  "num_hidden_layers": 32,
+  "vocab_size": 50272
+}

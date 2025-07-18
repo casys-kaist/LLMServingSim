@@ -10,7 +10,7 @@ def represent_flowstyle_list(dumper, data):
 yaml.add_representer(FlowStyleList, represent_flowstyle_list)
 
 # generates topology according to the input arguments
-def createNetworkConfig(astra_sim, npu_nums, npu_group, link_bw, link_latency):
+def create_network_config(astra_sim, npu_nums, npu_group, link_bw, link_latency):
     
     network_dim = int(math.log2(npu_group))+1
     if npu_nums == npu_group:
@@ -32,7 +32,7 @@ def createNetworkConfig(astra_sim, npu_nums, npu_group, link_bw, link_latency):
     return output_file
 
 # modify the remote (host) memory bandwidth
-def setRemoteBandwidth(remote, remote_bw):
+def set_remote_bandwidth(remote, remote_bw):
     with open(remote, 'r') as json_file:
         data = json.load(json_file)
 

@@ -24,8 +24,8 @@ class Scheduler:
         self.request = [] # list of requests
         self.inflight = [] # list of batches
         self.done = [] # list of requests
-        self.reqIDs = -1
-        self.batchIDs = -1
+        self.req_ids = -1
+        self.batch_ids = -1
 
         # memory model
         self.memory = MemoryModel(model, npu_num, npu_mem, block_size, fp, verbose)
@@ -34,7 +34,7 @@ class Scheduler:
         self.verbose = verbose
 
     # generate request in poisson dist
-    def generate(self, path, isInit=True):
+    def generate(self, path, is_init=True):
         path = f'../{path}' # move out from astra-sim folder
         data = pd.read_csv(path, sep='\t')
         cnt = 0
@@ -45,7 +45,7 @@ class Scheduler:
             output_length = int(row['input_toks'] + row['output_toks'])
             arrival_time_ns = int(row['arrival_time_ns'])
             
-            self.addRequest([self.model, input_length, output_length, arrival_time_ns], isInit=isInit)
+            self.add_request([self.model, input_length, output_length, arrival_time_ns], is_init=is_init)
             cnt+=1
         if self.verbose:
             print(f"Scheduler: added {cnt} requests to LLMServingSim")
@@ -76,12 +76,12 @@ class Scheduler:
 
             kv_size = 0
             evict_size = 0
-            gen_req = [req for req in batch_req if not req.isInit]
+            gen_req = [req for req in batch_req if not req.is_init]
             # check if there is request that need to enlarge the block
             temp_len = batch_len
             for i in range(batch_len, -1, -1):
-                kv_size = self.memory.getBlockKV(batch_req, i) # includes evicted input, and initiation input
-                if self.memory.memAvail(kv_size):
+                kv_size = self.memory.get_block_kv(batch_req, i) # includes evicted input, and initiation input
+                if self.memory.mem_avail(kv_size):
                     temp_len = i
                     break
             
@@ -97,20 +97,20 @@ class Scheduler:
                     continue
 
                 # else
-                evict_size = self.memory.getEvictKV(gen_req[-1])
+                evict_size = self.memory.get_evict_kv(gen_req[-1])
                 gen_req[-1].evict = True
                 if self.verbose:
                     print(f"Sceduler: eviction of the request #{gen_req[-1].id}")
                 gen_req = gen_req[:-1]
-                self.memory.memStore(evict_size)
+                self.memory.mem_store(evict_size)
 
                 if len(gen_req) < batch_len:
                     batch_len = len(gen_req)
 
                 # check if can batch
                 for i in range(batch_len, -1, -1):
-                    kv_size = self.memory.getBlockKV(batch_req, i)
-                    if self.memory.memAvail(kv_size):
+                    kv_size = self.memory.get_block_kv(batch_req, i)
+                    if self.memory.mem_avail(kv_size):
                         temp_len = i
                         break
 
@@ -127,28 +127,28 @@ class Scheduler:
 
                 if req.evict:
                     # load evicted kv cache
-                    load_size += self.memory.getEvictKV(req)
+                    load_size += self.memory.get_evict_kv(req)
                     req.evict = False
                     if self.verbose:
                         print(f"Scheduler: loading the request #{req.id}")
 
             # load memory
             if kv_size > 0:
-                self.memory.memLoad(kv_size)
+                self.memory.mem_load(kv_size)
             
             total_len = 0
             init_cnt = 0
             for req in batch_req:
-                if req.isInit:
+                if req.is_init:
                     total_len += req.input
                     init_cnt += 1
-                    req.setQueDelay(current)
+                    req.set_que_delay(current)
                 else:
                     total_len += 1
 
             # make batch, output doesn't matter here!! always one iteration
             # batch is also 1
-            batch = Batch(self.getBatchID(), batch_req[0].model, total_len, init_cnt, '1', current, kv_size, evict_size, load_size, True)
+            batch = Batch(self.get_batch_id(), batch_req[0].model, total_len, init_cnt, '1', current, kv_size, evict_size, load_size, True)
             # add alredy fired system
             batch.fired.append(sys)
             batch.requests.extend(batch_req)
@@ -183,7 +183,7 @@ class Scheduler:
                     return batch
 
     # pop inflight, add to done
-    def addDone(self, id, sys, finish):
+    def add_done(self, id, sys, finish):
         prompt_t = 0
         gen_t = 0
         req_cnt = 0
@@ -217,11 +217,11 @@ class Scheduler:
         pool = []
         for req in batch.requests:
             # change phase
-            if req.isInit:
-                req.isInit = False
+            if req.is_init:
+                req.is_init = False
                 prompt_t += req.input
                 gen_t += 1 # generated one token
-                req.setTTFT(finish)
+                req.set_ttft(finish)
 
             else:
                 gen_t += 1
@@ -232,9 +232,9 @@ class Scheduler:
                 if self.verbose:
                     print(f"Scheduler: request #{req.id} is done")
                 # remove kv cache here
-                kv_size = self.memory.getEvictKV(req)
-                self.memory.memStore(kv_size)
-                req.addLatency(finish)
+                kv_size = self.memory.get_evict_kv(req)
+                self.memory.mem_store(kv_size)
+                req.add_latency(finish)
                 self.done.append(req)
                 req_cnt += 1
 
@@ -251,28 +251,28 @@ class Scheduler:
 
     ##### Helper Functions ######
     # get new request id
-    def getReqID(self):
-        self.reqIDs += 1
-        return self.reqIDs
+    def get_req_id(self):
+        self.req_ids += 1
+        return self.req_ids
 
     # get new batch id
-    def getBatchID(self):
-        self.batchIDs += 1
-        return self.batchIDs
+    def get_batch_id(self):
+        self.batch_ids += 1
+        return self.batch_ids
 
     # add a request
-    def addRequest(self, req, isInit=True):
-        new = [self.getReqID()]
-        new_req = Request(*(new+req), isInit=isInit)
+    def add_request(self, req, is_init=True):
+        new = [self.get_req_id()]
+        new_req = Request(*(new+req), is_init=is_init)
         self.request.append(new_req)
         return
     
     # get first request's arrival time
-    def getFirstArrivalTime(self):
+    def get_first_arrival_time(self):
         return self.request[0].arrival if self.request[0].arrival != 0 else 1 # need to add event handler at first
 
     # print results in done
-    def printResult(self):
+    def print_result(self):
         # sort in id order
         self.done.sort(key=lambda x : x.id)
         for i in self.done:
@@ -280,14 +280,14 @@ class Scheduler:
         return
 
     # check all the request is done
-    def isRequestEmpty(self):
+    def is_request_empty(self):
         if len(self.request) == 0 and len(self.inflight) == 0:
             return True
         else:
             return False
         
     # save requests information to an output file
-    def saveOutput(self, output_file):
+    def save_output(self, output_file):
         output_file = f'../{output_file}'
         with open(output_file, mode='w', newline='') as file:
             # Initialize the CSV writer
@@ -309,6 +309,6 @@ class Scheduler:
                     req.end_time,
                     req.latency,
                     req.queuing_delay,
-                    req.TTFT,
-                    req.TPOT
+                    req.ttft,
+                    req.tpot
                 ])

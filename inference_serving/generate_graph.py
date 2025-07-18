@@ -3,7 +3,7 @@ import subprocess
 from time import time
 from .request import *
 
-def generateGraph(batch, hardware, total_num, event=False):
+def generate_graph(batch, hardware, total_num, event=False):
 
     cwd = os.getcwd()
     chakra = os.path.join(cwd, "extern/graph_frontend/chakra")

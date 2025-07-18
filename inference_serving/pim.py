@@ -22,7 +22,10 @@ _dk = E/_nh
 
 
 def estimate_mha_latency(batch):
-    E, _, _nh, _ = getConfig(batch.model)
+    config = get_config(batch.model)
+    E = config['hidden_size']
+    _nh = config['num_attention_heads']
+
     _dk = E/_nh
     pim_times = []
     for req in batch.requests:
@@ -78,7 +81,7 @@ def distribute_requests(new_seq_lens, channels_seqlen, k):
 # print([sum_load(seqlens) for seqlens in channels_seqlen])
 
 
-def addPIMtime(batch, npu_group, pim_times, pim_type):
+def add_pim_time(batch, npu_group, pim_times, pim_type):
     model = batch.model
     batch_size = batch.batch_size
     npu_group = str(npu_group)
@@ -124,7 +127,7 @@ def addPIMtime(batch, npu_group, pim_times, pim_type):
                 if "END" in result[i][1]:
                     mm_cnt = 0
 
-def subbatchInt(batch):
+def sub_batch_int(batch):
     if len(batch.requests) == 1:
         return [batch]
     if int(batch.output) == len(batch.requests):
@@ -166,7 +169,7 @@ def subbatchInt(batch):
     batch2.requests.extend(req2)
     return [batch1, batch2]
 
-def mergeText(batch, subbatches, num_npus, npu_group):
+def merge_text(batch, subbatches, num_npus, npu_group):
     # if there is only init phase (no need of subbatching)
     if len(subbatches) == 1:
         return
@@ -213,8 +216,8 @@ def mergeText(batch, subbatches, num_npus, npu_group):
         i+=1
     b1 = b1[i:]
     # extract each layer
-    embd1, ln1, qkv1, attn1, proj1, res1, ffn11, gelu1, ffn21 = extractLayer(b1)
-    embd2, ln2, qkv2, attn2, proj2, res2, ffn12, gelu2, ffn22 = extractLayer(b1)
+    embd1, ln1, qkv1, attn1, proj1, res1, ffn11, gelu1, ffn21 = extract_layer(b1)
+    embd2, ln2, qkv2, attn2, proj2, res2, ffn12, gelu2, ffn22 = extract_layer(b1)
 
     # schedule the layer
     b.extend(embd1)
@@ -281,7 +284,8 @@ def mergeText(batch, subbatches, num_npus, npu_group):
             block1.append(['attn_overlap_1',f'{attn_npu2[i]-block1_gemm//npus_per_group}','LOCAL','0','REMOTE','0','REMOTE','0','NONE','0','NONE'])
     block1.append([f'ATTENTION END','','','','','','','','','',''])
     block2.append([f'ATTENTION END','','','','','','','','','',''])
-    _, n_layer, _, _ = getConfig(model)
+    config = get_config(model)
+    n_layer = config['num_hidden_layers']
 
     # repeat N-1 times
     for _ in range(n_layer-1):
@@ -331,7 +335,7 @@ def mergeText(batch, subbatches, num_npus, npu_group):
                 f.write(formatter(*b[i], parallel))
 
 
-def extractLayer(b1):
+def extract_layer(b1):
     # check embd
     embd = b1[:2]
     # check layer norm
