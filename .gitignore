@@ -4,3 +4,7 @@ env/
 # Ignore python cache
 *.pyc
 __pycache__/
+*.joblib
+
+# Ignore pkl files
+*.pkl

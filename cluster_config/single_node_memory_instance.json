@@ -1,0 +1,53 @@
+{
+    "num_nodes": 1,
+    "link_bw": 112,
+    "link_latency": 0,
+    "nodes": [   
+        {
+            "num_instances": 1,
+            "cpu_mem": 
+                {
+                    "mem_size": 128,
+                    "mem_bw": 256,
+                    "mem_latency": 0
+                },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "A6000",
+                    "npu_mem":
+                        {
+                            "mem_size": 40,
+                            "mem_bw": 768,
+                            "mem_latency": 0
+                        },
+                    "npu_num": 1,
+                    "npu_group": 1,
+                    "pd_type": null,
+                    "placement": 
+                        {
+                            "default": 
+                                {
+                                    "weights": "npu",
+                                    "kv_loc": "npu",
+                                    "kv_evict_loc": "cpu"
+                                },
+                            "blocks": [
+                                    { "blocks": "0-3",    "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    { "blocks": "4-7",    "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    { "blocks": "8,9,10", "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    { "blocks": "11-23",  "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    { "blocks": "24-31",  "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" }
+                                ],
+                            "layers": 
+                                {
+                                    "embedding":        { "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    "final_layernorm":  { "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" },
+                                    "lm_head":          { "weights": "npu", "kv_loc": "npu", "kv_evict_loc": "cpu" }
+                                }
+                        }
+                }
+            ]
+        }
+    ]
+}

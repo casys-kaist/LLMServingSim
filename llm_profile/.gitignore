@@ -1,3 +1,5 @@
 # Ignore python cache
 *.pyc
 __pycache__/
+# Ignore profiler output trace
+perf_models/**/profiler_traces/

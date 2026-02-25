@@ -1,0 +1,65 @@
+{
+    "num_nodes": 1,
+    "link_bw": 112,
+    "link_latency": 0,
+    "nodes": [   
+        {
+            "num_instances": 1,
+            "cpu_mem": 
+                {
+                    "mem_size": 128,
+                    "mem_bw": 128,
+                    "mem_latency": 0
+                },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "A6000",
+                    "npu_mem":
+                        {
+                            "mem_size": 40,
+                            "mem_bw": 768,
+                            "mem_latency": 0
+                        },
+                    "npu_num": 2,
+                    "npu_group": 1,
+                    "pd_type": null
+                }
+            ],
+            "power": {
+                "base_node_power": 164,
+                "npu": {
+                    "A6000": {
+                        "idle_power": 33,
+                        "standby_power": 89,
+                        "active_power": 300,
+                        "standby_duration": 18
+                    }
+                },
+                "cpu": {
+                    "idle_power": 10,
+                    "active_power": 185,
+                    "util": 0.7
+                },
+                "dram": {
+                    "dimm_size": 32,
+                    "idle_power": 4.0,
+                    "energy_per_bit": 6.0
+                },
+                "link": {
+                    "num_links": 1,
+                    "idle_power": 5.0,
+                    "energy_per_bit": 4.0
+                },
+                "nic": {
+                    "num_nics": 1,
+                    "idle_power": 11.2
+                },
+                "storage": {
+                    "num_devices": 1,
+                    "idle_power": 5.9
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,147 @@
+INFO 12-11 13:12:16 [scheduler.py:216] Chunked prefill is enabled with max_num_batched_tokens=2048.
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:16 [api_server.py:1977] vLLM API server version 0.11.1
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:16 [utils.py:253] non-default args: {'model_tag': 'meta-llama/Llama-3.1-8B-Instruct', 'port': 8200, 'disable_uvicorn_access_log': True, 'model': 'meta-llama/Llama-3.1-8B-Instruct', 'enforce_eager': True, 'tensor_parallel_size': 2, 'block_size': 16, 'enable_prefix_caching': False}
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:17 [model.py:631] Resolved architecture: LlamaForCausalLM
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:17 [model.py:1745] Using max model len 131072
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:18 [scheduler.py:216] Chunked prefill is enabled with max_num_batched_tokens=2048.
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:18 [vllm.py:500] Cudagraph is disabled under eager mode
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:24 [core.py:93] Initializing a V1 LLM engine (v0.11.1) with config: model='meta-llama/Llama-3.1-8B-Instruct', speculative_config=None, tokenizer='meta-llama/Llama-3.1-8B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=131072, download_dir=None, load_format=auto, tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None), seed=0, served_model_name=meta-llama/Llama-3.1-8B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'splitting_ops': None, 'compile_mm_encoder': False, 'use_inductor': None, 'compile_sizes': [], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {}, 'max_cudagraph_capture_size': 0, 'local_cache_dir': None}
+[1;36m(EngineCore_DP0 pid=33455)[0;0m WARNING 12-11 13:12:24 [multiproc_executor.py:869] Reducing Torch parallelism from 32 threads to 1 to avoid unnecessary CPU contention. Set OMP_NUM_THREADS in the external environment to tune this value as needed.
+INFO 12-11 13:12:31 [parallel_state.py:1208] world_size=2 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:49367 backend=nccl
+INFO 12-11 13:12:31 [parallel_state.py:1208] world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:49367 backend=nccl
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+INFO 12-11 13:12:32 [pynccl.py:111] vLLM is using nccl==2.27.5
+WARNING 12-11 13:12:32 [symm_mem.py:67] SymmMemCommunicator: Device capability 8.6 not supported, communicator is not available.
+WARNING 12-11 13:12:32 [symm_mem.py:67] SymmMemCommunicator: Device capability 8.6 not supported, communicator is not available.
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+INFO 12-11 13:12:32 [parallel_state.py:1394] rank 1 in world size 2 is assigned as DP rank 0, PP rank 0, TP rank 1, EP rank 1
+INFO 12-11 13:12:32 [parallel_state.py:1394] rank 0 in world size 2 is assigned as DP rank 0, PP rank 0, TP rank 0, EP rank 0
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:32 [gpu_model_runner.py:3255] Starting to load model meta-llama/Llama-3.1-8B-Instruct...
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:34 [cuda.py:418] Valid backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION']
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:34 [cuda.py:427] Using FLASH_ATTN backend.
+[1;36m(Worker_TP1 pid=33591)[0;0m INFO 12-11 13:12:34 [cuda.py:418] Valid backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION']
+[1;36m(Worker_TP1 pid=33591)[0;0m INFO 12-11 13:12:34 [cuda.py:427] Using FLASH_ATTN backend.
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:02,  1.08it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.09it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:02<00:00,  1.68it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.51it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.42it/s]
+[1;36m(Worker_TP0 pid=33590)[0;0m 
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:37 [default_loader.py:314] Loading weights took 2.89 seconds
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:38 [gpu_model_runner.py:3334] Model loading took 7.5123 GiB memory and 4.848553 seconds
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:12:50 [gpu_worker.py:359] Available KV cache memory: 33.86 GiB
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:50 [kv_cache_utils.py:1229] GPU KV cache size: 554,704 tokens
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:50 [kv_cache_utils.py:1234] Maximum concurrency for 131,072 tokens per request: 4.23x
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:50 [kv_cache_utils.py:1234] Maximum concurrency for 131,072 tokens per request: 4.23x
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:50 [core.py:250] init engine (profile, create kv cache, warmup model) took 11.69 seconds
+[1;36m(EngineCore_DP0 pid=33455)[0;0m INFO 12-11 13:12:51 [vllm.py:500] Cudagraph is disabled under eager mode
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - decorators.py:76: [PING] Framework handler registered: ping
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.transforms.base_factory - base_factory.py:90: [INJECT_ADAPTER_ID] Transform decorator applied to: invocations
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.transforms.base_factory - base_factory.py:115: [INJECT_ADAPTER_ID] Registered transform handler for invocations
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.transforms.base_factory - base_factory.py:90: [STATEFUL_SESSION_MANAGER] Transform decorator applied to: decorated_func
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.transforms.base_factory - base_factory.py:115: [STATEFUL_SESSION_MANAGER] Registered transform handler for decorated_func
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - decorators.py:76: [INVOKE] Framework handler registered: decorated_func
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - __init__.py:156: Starting SageMaker bootstrap process
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - registry.py:109: [REGISTRY] Middleware resolution and registration complete
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - core.py:100: [MIDDLEWARE_LOADER] Middleware stack rebuilt successfully
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - core.py:102: [MIDDLEWARE_LOADER] Processed 3 middlewares
+[1;36m(APIServer pid=33317)[0;0m [WARNING] model_hosting_container_standards.common.custom_code_ref_resolver.function_loader - function_loader.py:73: Failed to load function from spec 'model:custom_sagemaker_invocation_handler': HandlerFileNotFoundError: File '/opt/ml/model/model.py' not found in search paths: ['/opt/ml/model/']
+[1;36m(APIServer pid=33317)[0;0m [WARNING] model_hosting_container_standards.common.custom_code_ref_resolver.function_loader - function_loader.py:73: Failed to load function from spec 'model:custom_sagemaker_ping_handler': HandlerFileNotFoundError: File '/opt/ml/model/model.py' not found in search paths: ['/opt/ml/model/']
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.sagemaker.sagemaker_router - sagemaker_router.py:93: Creating SageMaker router with unified route resolver
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.fastapi.routing - routing.py:172: Creating router with prefix='', tags=['sagemaker']
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.fastapi.routing - routing.py:110: Mounting 2 handlers to router
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.fastapi.routing - routing.py:184: Router created with 0 routes
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.sagemaker.sagemaker_router - sagemaker_router.py:101: SageMaker router created successfully with 0 routes
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.fastapi.routing - routing.py:287: Including router with conflict detection
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards.common.fastapi.routing - routing.py:305: Successfully included router with 0 routes
+[1;36m(APIServer pid=33317)[0;0m [INFO] model_hosting_container_standards - __init__.py:168: SageMaker bootstrap completed successfully
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:52 [api_server.py:1725] Supported tasks: ['generate']
+[1;36m(APIServer pid=33317)[0;0m WARNING 12-11 13:12:52 [model.py:1568] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:52 [serving_responses.py:154] Using default chat sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:52 [serving_chat.py:131] Using default chat sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:52 [serving_completion.py:73] Using default completion sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [serving_chat.py:131] Using default chat sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [api_server.py:2052] Starting vLLM API server 0 on http://0.0.0.0:8200
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:38] Available routes are:
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /openapi.json, Methods: GET, HEAD
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /docs, Methods: GET, HEAD
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /docs/oauth2-redirect, Methods: GET, HEAD
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /redoc, Methods: GET, HEAD
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /health, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /load, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /tokenize, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /detokenize, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/models, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /version, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/responses, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/responses/{response_id}, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/responses/{response_id}/cancel, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/messages, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/chat/completions, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/completions, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/embeddings, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /pooling, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /classify, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /score, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/score, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/audio/transcriptions, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/audio/translations, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /rerank, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v1/rerank, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /v2/rerank, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /scale_elastic_ep, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /is_scaling_elastic_ep, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /inference/v1/generate, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /ping, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /ping, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /invocations, Methods: POST
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:12:53 [launcher.py:46] Route: /metrics, Methods: GET
+[1;36m(APIServer pid=33317)[0;0m INFO:     Started server process [33317]
+[1;36m(APIServer pid=33317)[0;0m INFO:     Waiting for application startup.
+[1;36m(APIServer pid=33317)[0;0m INFO:     Application startup complete.
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:51 [loggers.py:236] Engine 000: Avg prompt throughput: 2101.2 tokens/s, Avg generation throughput: 467.9 tokens/s, Running: 10 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.5%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:52 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 668.9 tokens/s, Running: 10 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:53 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 668.3 tokens/s, Running: 10 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.7%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:54 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 596.0 tokens/s, Running: 7 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.7%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:55 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 418.6 tokens/s, Running: 5 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.5%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:56 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 288.6 tokens/s, Running: 4 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.5%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:57 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 146.0 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.1%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:58 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 29.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:13:59 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:51 [loggers.py:236] Engine 000: Avg prompt throughput: 1889.1 tokens/s, Avg generation throughput: 474.3 tokens/s, Running: 9 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.4%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:52 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 602.2 tokens/s, Running: 9 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.5%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:53 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 592.3 tokens/s, Running: 8 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:54 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 506.2 tokens/s, Running: 7 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:55 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 385.7 tokens/s, Running: 4 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.2%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:56 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 200.8 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.1%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:57 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 136.0 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.2%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:58 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 68.9 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:14:59 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:51 [loggers.py:236] Engine 000: Avg prompt throughput: 2144.6 tokens/s, Avg generation throughput: 422.7 tokens/s, Running: 9 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.5%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:52 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 600.7 tokens/s, Running: 8 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:53 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 487.1 tokens/s, Running: 7 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:54 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 436.4 tokens/s, Running: 6 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.7%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:55 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 311.8 tokens/s, Running: 4 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.4%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:56 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 244.7 tokens/s, Running: 3 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.3%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:57 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 200.7 tokens/s, Running: 3 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.4%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:58 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 138.9 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.2%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:15:59 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 102.9 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.1%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:16:00 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 32.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:16:01 [loggers.py:236] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+[1;36m(Worker_TP0 pid=33590)[0;0m INFO 12-11 13:16:36 [multiproc_executor.py:702] Parent process exited, terminating worker
+[1;36m(Worker_TP1 pid=33591)[0;0m INFO 12-11 13:16:36 [multiproc_executor.py:702] Parent process exited, terminating worker
+[1;36m(APIServer pid=33317)[0;0m INFO 12-11 13:16:36 [launcher.py:110] Shutting down FastAPI HTTP server.
+[1;36m(APIServer pid=33317)[0;0m INFO:     Shutting down
+[1;36m(APIServer pid=33317)[0;0m INFO:     Waiting for application shutdown.
+[1;36m(APIServer pid=33317)[0;0m INFO:     Application shutdown complete.

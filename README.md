@@ -1,310 +1,223 @@
-# LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale
+# LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure
 
-## Publication
-Paper: [https://doi.org/10.1109/IISWC63097.2024.00012](https://doi.org/10.1109/IISWC63097.2024.00012)
 
-Authors: Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)
+## Publications
 
+**ISPASS 2026**  
+*LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure*  
+Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]]() (To Appear)                                                                                                                                                       
+<sup>\*</sup>Equal contribution                                                                                                                                                                                                                
+
+**CAL 2025**  
+*LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving Techniques in LLM Infrastructure*  
+Jaehong Cho, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/LCA.2025.3628325)
+
+**IISWC 2024**  
+*LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale*  
+Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/IISWC63097.2024.00012)  
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
 
-## Version Information
+## Current Release: **v1.0.0** (2026-02-25)
 
-Please ask for more features in the issue tab or via email.
+### Highlights
 
-### Current Version: `v0.2.1`
+- `llm_profile` extended to support MoE architectures (Mixtral-8x7B, Phi-mini-MoE) and
+  TPU-v6e-1; scikit-learn-based attention latency predictor replaces tabular lookup for improved
+  accuracy across varying batch sizes and sequence lengths
+- Multi-instance simulation with configurable request routing (Round Robin, Random, Custom)
+  and Prefill/Decode (P/D) disaggregation across separate prefill and decode instances
+- MoE simulation with expert parallelism across NPUs and expert offloading to CPU or CXL memory,
+  with configurable expert routing policies (Round Robin, Random, Fast, Custom)
+- Prefix caching via RadixAttention with optional second-tier prefix pool across CPU and CXL
+  memory (`--enable-prefix-caching`, `--enable-prefix-sharing`, `--prefix-storage`)
+- Sub-batch interleaving to overlap XPU and PIM computation
+  (`--enable-sub-batch-interleaving`)
+- Power and energy modeling per node covering NPU, CPU, DRAM, interconnect, NIC, and storage
+- CXL memory expansion support with configurable multi-tier memory bandwidth and latency
+- Per-request latency metrics: TTFT, TPOT, and ITL with p99 percentile reporting
 
-- Integrated PyTorch Profiler (`llm-profile`) for accurate and intuitive GPU performance analysis
-- Users can easily add models from Hugging Face
-- Customizable model configs
-- Unified naming convention for consistency and readability
-
-### Previous Versions: 
-### `v0.2.0`
-
-- Upgrade ASTRA-Sim and Chakra to the latest version
-
-### `v0.1.0`
-
-- Support GPU with a performance model (TensorRT-LLM)
-- Auto config generator (network and memory)
-- Verbose option for more detailed log
-- More metrics (queuing_delay, TTFT, TPOT)
-- Refactored code structure for readability
-
-### `artifact`
-
-- IISWC Artifact for "LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale"
-- For the NPU simulator version, please refer to this version
+See full changelog [here](CHANGELOG.md).
 
 ## Build LLMServingSim
 
 ### 1. Git clone
+
 ```bash
 git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
 cd LLMServingSim
 ```
 
-### 2. `Conda` install (optional)
-Conda can be downloaded from the following [link](https://repo.anaconda.com/archive/).
-```
-curl -O https://repo.anaconda.com/archive/Anaconda3-2024.06-1-Linux-x86_64.sh
-bash Anaconda3-2024.06-1-Linux-x86_64.sh
-```
+### 2. Run Docker
 
-### 3. Install dependency (tested in python 3.9, GCC, G++ 7.5.0)
-
-### Using `conda` environment.yml (Recommended)
-```bash
-conda env create -p ./env -f ./environment.yml
-conda activate ./env
-```
-
-### Clean `conda` install 
-```bash
-conda create -n env_name python=3.9
-conda activate env_name
-conda install -c conda-forge gcc_linux-64=7.5.0 gxx_linux-64=7.5.0 libprotobuf=3.6.1 cmake=3.22
-```
-
-### 4. Build ASTRA-Sim, Chakra
-
-Common issues while building ASTRA-Sim. If error regarding `version of protoc` happens see [here](#common-errors).
+This will configure and run the Docker environment. See `docker.sh` for details.
 
 ```bash
-cd astra-sim
-./build/astra_analytical/build.sh
-cd extern/graph_frontend/chakra
-pip install .
-cd ../../../..
+./docker.sh
+```
+
+### 3. Build ASTRA-Sim and Chakra
+
+This will compile ASTRA-Sim (analytical backend) and install Chakra. See `compile.sh` for details.
+
+```bash
+./compile.sh
 ```
 
 ## Run LLMServingSim
 
 ### 1. Set input configurations
 
-Now network and remote memory config are automatically set by `inference_serving/config_generator.py`.
+All configurations for LLMServingSim are generated automatically by
+`inference_serving/config_builder.py` from a `cluster_config` file.
 
-Simply passing arguments to `main.py` is enough.
-See `inference_serving/config_generator.py` for more details.
+The `cluster_config` file specifies node topology, instance layout, hardware type, memory
+hierarchy, and interconnect parameters. It also supports per-layer placement rules for weights,
+KV cache, and experts, as well as PIM-enabled device configuration.
 
-**Config & Dataset Path:**
+**Config paths:**
+- Cluster config: `cluster_config/{config_name}.json`
+- Logical topology config **(ns3 backend only)**: `astra-sim/inputs/logical_topology/{topology_name}.json`
 
-- Network config path: `astra-sim/inputs/network/network.yml`
-- System config path: `astra-sim/inputs/system/system.json`
-- Remote(Host) memory config path: `astra-sim/inputs/remote_memory/{config_name}.json`
-- Dataset path: `dataset/{dataset_name}.tsv`
-- Runtime generated traces are located at `astra-sim/inputs/trace`
+**Dataset path:**
+- Dataset: `dataset/{dataset_name}.jsonl`
+- Runtime-generated traces: `astra-sim/inputs/trace/`
+
+See `cluster_config/` for example configurations and `cluster_config/README.md` for the
+configuration format reference.
 
 ### 2. Run LLMServingSim
 
-Test Run
+Test run:
 
 ```bash
-python main.py --model_name 'meta-llama/Llama-3.1-8B-Instruct' --hardware 'RTX3090' --npu_num 1 --npu_group 1 --npu_mem 40 \
-    --remote_bw 512 --link_bw 256 --fp 16 --block_size 4 \
-    --dataset 'dataset/share-gpt-req100-rate10.tsv' --output 'output/example_run.csv' \
-    --verbose --req_num 10
+python main.py \
+    --cluster-config 'cluster_config/single_node_single_instance.json' \
+    --fp 16 --block-size 16 \
+    --dataset 'dataset/sharegpt_req100_rate10_llama.jsonl' \
+    --output 'output/example_single_run.csv' \
+    --num-req 100 --log-interval 1.0
 ```
-or simply use
+
+See `run.sh` for additional examples covering multi-instance, P/D disaggregation, MoE,
+prefix caching, CXL memory, PIM, power modeling, and sub-batch interleaving:
+
 ```bash
 ./run.sh
 ```
 
+For artifact evaluation configurations and scripts, see the `evaluation/` directory.
+
 ## Parameters of `main.py`
 
-The current version only supports `meta-llama/Llama-3.1-8B-Instruct` and `RTX3090`. 
+The current version supports the following models and hardware:
 
-You can easily add new models and hardware using the provided PyTorch Profiler.
+**Models:** `meta-llama/Llama-3.1-8B`, `meta-llama/Llama-3.1-70B`,
+`microsoft/Phi-mini-MoE-instruct`, `mistralai/Mixtral-8x7B-v0.1`
 
-**Instructions for adding a new model and hardware are located [here](#adding-a-new-model--hardware).**
+**Hardware:** `A6000`, `H100`, `TPU-v6e-1`
 
+New models and hardware can be added using the provided profiler. See
+[Adding a New Model & Hardware](#adding-a-new-model--hardware).
 
-| Parameters | Supporting Options | Default Value | Notes |
-| --- | --- | --- | --- |
-| model_name | 'meta-llama/Llama-3.1-8B-Instruct' | 'meta-llama/Llama-3.1-8B-Instruct' |  |
-| hardware | 'RTX3090' | 'RTX3090' |  |
-| npu_num  | Integer | 16 |  |
-| max_batch | Integer | 0 | 0: no limit |
-| npu_group | Integer | 1 |  |
-| npu_mem | Integer | 40 | GB |
-| local_bw | Integer | 1024 | GB/s |
-| remote_bw | Integer | 512 | GB/s |
-| link_bw | Integer | 256 | GB/s |
-| fp | Integer | 16 | bits |
-| block_size | Integer | 8 |  |
-| dataset | Dataset Path | None | None: manually add requests in main.py |
-| output | Output CSV Path | None | None: no csv output only stdout |
-| gen | Flag | False | Skip initiation phase On/Off |
-| req_num | Integer | 100 |  |
-| log_interval | Float | 0.5 | Throughput log interval (s) |
-| verbose | Flag | False |  |
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `--cluster-config` | `single_node_single_instance.json` | Node- and instance-level configuration |
+| `--max-batch` | `0` | Maximum batch size; `0` means no limit |
+| `--max-num-batched-tokens` | `2048` | Maximum tokens processed per iteration |
+| `--fp` | `16` | Floating-point precision in bits |
+| `--request-routing-policy` | `RR` | Request routing across instances (`RR`, `RAND`, `CUSTOM`) |
+| `--expert-routing-policy` | `FAST` | Expert token routing for MoE (`RR`, `RAND`, `FAST`, `CUSTOM`) |
+| `--enable-prefix-caching` | `False` | Enable prefix caching via RadixAttention |
+| `--enable-prefix-sharing` | `False` | Enable second-tier prefix cache pooling |
+| `--prefix-storage` | `None` | Storage tier for the second-tier prefix pool (`None`, `CPU`, `CXL`) |
+| `--enable-local-offloading` | `False` | Enable weight offloading to local memory |
+| `--enable-attn-offloading` | `False` | Enable attention computation offloading to PIM |
+| `--enable-sub-batch-interleaving` | `False` | Enable sub-batch interleaving for XPU/PIM overlap |
+| `--enable-attn-prediction` | `False` | Enable real-time attention latency prediction |
+| `--prioritize-prefill` | `False` | Prioritize prefill requests in scheduling |
+| `--block-size` | `16` | KV cache block size in tokens |
+| `--dataset` | `None` | Path to `.jsonl` dataset; if `None`, add requests manually in `main.py` |
+| `--output` | `None` | Path for per-request CSV output; if `None`, stdout only |
+| `--gen` | `True` | Set to `False` to skip the initiation (prefill) phase |
+| `--num-req` | `100` | Number of requests to simulate |
+| `--log-interval` | `0.5` | Throughput logging interval in seconds |
+| `--log-level` | `WARNING` | Logging verbosity (`WARNING`, `INFO`, `DEBUG`) |
+| `--network-backend` | `analytical` | Network simulation backend (`analytical`, `ns3`) |
 
 ## Outputs of `main.py`
 
 ### 1. Standard output
 
-The standard output shows which requests are being processed in each iteration of the simulator and displays the measured throughput at regular intervals. 
+The simulator reports runtime information through a configurable logger. It logs which requests
+are processed at each iteration and periodically reports throughput, memory usage, and power
+consumption.
 
-Additionally, it provides a summary of the simulation at the end.
-
-With `--verbose` option, the log includes more specific information including memory load and store.
+Adjusting `--log-level` to `INFO` or `DEBUG` enables more detailed output, including per-layer
+memory load and store activity.
 
 ### 2. Output file
 
-`{output_filename}.csv` contains the simulation result of each request.
-
-You can find an example in `output/example_run.csv`.
+`{output_path}.csv` contains per-request latency metrics. An example is provided at
+`output/example_run.csv`.
 
 ## Adding a New Model & Hardware
 
-### 1. Make a new performance model
+### 1. Build a performance model
 
-We use the PyTorch Profiler to generate performance models.
+LLMServingSim uses the PyTorch-based profiler in `llm_profile/` to generate per-layer latency,
+attention latency, and power models for a given hardware target. Once profiling is complete,
+create a cluster config referencing the new hardware name and run `main.py` as usual.
 
-To profile a new model, follow the instructions provided in the [llm-profile](https://github.com/casys-kaist/llm-profile) repository.
+See [`llm_profile/README.md`](llm_profile/README.md) for full profiling instructions.
 
-Once profiling is complete, you can easily run LLMServingSim with the following steps:
+### 2. Modify simulator functions (optional)
 
-1. Place the `<Hardware>.csv` file generated by `llm-profile` into the `perf_model` directory.
+The current version supports Llama-based model architectures. Models that deviate from this
+architecture may require modifications to the following:
 
-2. Add a corresponding model config file to the `model_configs` directory, named after your model.
-Refer to the existing OPT or Llama configurations for the required format.
+**`inference_serving/memory_model.py`** — functions `calculate_sizes` and `get_weight`
 
-3. Run `main.py` with the new model and hardware setup.
+`calculate_sizes` computes input, weight, and output tensor sizes for each layer type.
+`get_weight` aggregates total model size from `calculate_sizes`.
+Modify these according to the target model architecture.
 
-If you prefer not to use `llm-profile`, you can measure the latency of each layer using another tool.
-Make sure to follow the format of a performance model in `perf_model/RTX3090.csv`.
+**`inference_serving/trace_generator.py`** — function `synthesize_trace`
 
-### 2. Modify functions (optional)
+This function constructs the per-iteration execution trace by stacking layers according to the
+model architecture. When modifying it, ensure:
 
-The current version supports OPT and Llama model architectures. If the model architecture does not follow those two, some codes of LLMServingSim should be modified.
-
-1. `inference_serving/memory_model.py`: function `calculate_sizes` & `get_weight`
-
-`calculate_sizes` function calculates the input, weight, and output tensor size for each specific layer.
-Change this function according to the model architecture.
-
-`get_weight` function calculates the total model size by retrieving weights from `calculateSizes`.
-Also, change this function according to the model architecture.
-
-2. `inference_serving/generate_trace.py`: function `synthsize_trace`
-
-This is the main function that generates trace for each iteration. 
-It uses `calculated_sizes` to retrieve input, weight, and output tensor size for each layer.
-Then, it stacks layers in the trace according to the model architecture.
-
-While changing this function, there are three important things.
-
-- Make sure ATTENTION layer is well separated for each request
-
-- Make sure ith layer output and i+1th layer input size are matched
-
-- Make sure ALLREDUCE operation is well placed for synchronization
-
-We provide a function to test your trace generation. See `trace_test/` for more details.
-
+- The ATTENTION layer is correctly separated per request
+- The output size of layer *i* matches the input size of layer *i+1*
+- ALLREDUCE operations are correctly placed for tensor-parallel synchronization
 
 ## Citation
-If you use LLMServingSim for your research, please cite our paper:
 
-```
+If you use LLMServingSim in your research, please cite:
+
+```bibtex
+@ARTICLE{11224567,
+    author={Cho, Jaehong and Choi, Hyunmin and Park, Jongse},
+    journal={IEEE Computer Architecture Letters},
+    title={{LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving
+            Techniques in LLM Infrastructure}},
+    year={2025},
+    volume={24},
+    number={02},
+    pages={361-364},
+    doi={10.1109/LCA.2025.3628325},
+    ISSN={1556-6064},
+    publisher={IEEE Computer Society},
+    address={Los Alamitos, CA, USA},
+    month=jul
+}
+
 @INPROCEEDINGS{10763697,
-  author={Cho, Jaehong and Kim, Minsu and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
-  booktitle={2024 IEEE International Symposium on Workload Characterization (IISWC)}, 
-  title={LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale}, 
-  year={2024},
-  volume={},
-  number={},
-  pages={15-29},
-  keywords={Technological innovation;Program processors;Simulation;Large language models;Heuristic algorithms;Redundancy;Software algorithms;Inference algorithms;Software;System analysis and design;Large language model (LLM);Inference serving;Simulation infrastructure;Neural processing unit (NPU);Processing-in-memory (PIM);Heterogeneous system},
-  doi={10.1109/IISWC63097.2024.00012}}
+    author={Cho, Jaehong and Kim, Minsu and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
+    booktitle={2024 IEEE International Symposium on Workload Characterization (IISWC)},
+    title={{LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving
+            at Scale}},
+    year={2024},
+    pages={15-29},
+    doi={10.1109/IISWC63097.2024.00012}
+}
 ```
-
-## Common Errors
-
-### Error Example
-If your error is similar to this, you can use the below solution.
-```bash
-/home/<user>/LLMServingSim/astra-sim/extern/graph_frontend/chakra/et_def/et_def.pb.h:17:2: error: #error This file was generated by an older version of protoc which is
-   17 | #error This file was generated by an older version of protoc which is
-      |  ^~~~~
-/home/<user>/LLMServingSim/astra-sim/extern/graph_frontend/chakra/et_def/et_def.pb.h:18:2: error: #error incompatible with your Protocol Buffer headers. Please
-   18 | #error incompatible with your Protocol Buffer headers.  Please
-      |  ^~~~~
-/home/<user>/LLMServingSim/astra-sim/extern/graph_frontend/chakra/et_def/et_def.pb.h:19:2: error: #error regenerate this file with a newer version of protoc.
-   19 | #error regenerate this file with a newer version of protoc.
-      |  ^~~~~
-```
-
-### Method 1: Setting Environment Variables
-
-This method explicitly sets the conda environment for CMake to use.
-
-1. **Activate the Conda Environment**:
-First, activate the desired conda environment.
-    
-    ```bash
-    conda activate your_env_name
-    ```
-    
-2. **Set the CMAKE_PREFIX_PATH Environment Variable**:
-Add the path of the activated conda environment to the `CMAKE_PREFIX_PATH` environment variable.
-    
-    ```bash
-    export CMAKE_PREFIX_PATH=$CONDA_PREFIX:$CMAKE_PREFIX_PATH
-    ```
-    
-
-### Method 2: Setting the Activation Script
-
-1. **Activate the Conda Environment**:
-First, activate the conda environment you want to modify.
-    
-    ```bash
-    conda activate your_env_name
-    ```
-    
-2. **Navigate to the Environment's Activation Script Directory**:
-The activation scripts are located in the `etc/conda/activate.d` directory within your conda environment. If this directory does not exist, create it along with the deactivation directory.
-    
-    ```bash
-    mkdir -p $CONDA_PREFIX/etc/conda/activate.d
-    mkdir -p $CONDA_PREFIX/etc/conda/deactivate.d
-    ```
-    
-3. **Create and Edit the Activation Script**:
-Create a script named `set_cmake_prefix.sh` to set the `CMAKE_PREFIX_PATH` when the environment is activated.
-    
-    ```bash
-    nano $CONDA_PREFIX/etc/conda/activate.d/set_cmake_prefix.sh
-    ```
-    
-    Add the following content to this file:
-    
-    ```bash
-    #!/bin/bash
-    export OLD_CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH
-    export CMAKE_PREFIX_PATH=$CONDA_PREFIX:$CMAKE_PREFIX_PATH
-    ```
-    
-4. **Create and Edit the Deactivation Script**:
-Create a script named `unset_cmake_prefix.sh` to reset the `CMAKE_PREFIX_PATH` when the environment is deactivated.
-    
-    ```bash
-    nano $CONDA_PREFIX/etc/conda/deactivate.d/unset_cmake_prefix.sh
-    ```
-    
-    Add the following content to this file:
-    
-    ```bash
-    #!/bin/bash
-    export CMAKE_PREFIX_PATH=$OLD_CMAKE_PREFIX_PATH
-    unset OLD_CMAKE_PREFIX_PATH
-    ```
-    
-5. **Set Script Permissions**:
-Ensure the scripts are executable.
-    
-    ```bash
-    chmod +x $CONDA_PREFIX/etc/conda/activate.d/set_cmake_prefix.sh
-    chmod +x $CONDA_PREFIX/etc/conda/deactivate.d/unset_cmake_prefix.sh
