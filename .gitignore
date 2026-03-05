@@ -8,3 +8,7 @@ __pycache__/
 
 # Ignore pkl files
 *.pkl
+
+# Ignore local agent notes
+AGENT.md
+CLAUDE.md

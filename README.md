@@ -1,22 +1,5 @@
 # LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure
 
-
-## Publications
-
-**ISPASS 2026**  
-*LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure*  
-Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]]() (To Appear)                                                                                                                                                       
-<sup>\*</sup>Equal contribution                                                                                                                                                                                                                
-
-**CAL 2025**  
-*LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving Techniques in LLM Infrastructure*  
-Jaehong Cho, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/LCA.2025.3628325)
-
-**IISWC 2024**  
-*LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale*  
-Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/IISWC63097.2024.00012)  
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
-
 ## Current Release: **v1.0.0** (2026-02-25)
 
 ### Highlights
@@ -105,7 +88,6 @@ prefix caching, CXL memory, PIM, power modeling, and sub-batch interleaving:
 ./run.sh
 ```
 
-For artifact evaluation configurations and scripts, see the `evaluation/` directory.
 
 ## Parameters of `main.py`
 
@@ -189,6 +171,71 @@ model architecture. When modifying it, ensure:
 - The ATTENTION layer is correctly separated per request
 - The output size of layer *i* matches the input size of layer *i+1*
 - ALLREDUCE operations are correctly placed for tensor-parallel synchronization
+
+## Evaluation
+
+The [`evaluation/`](evaluation/) directory contains the artifact evaluation flow for Figures 5 to 10
+from the paper. It includes figure-specific shell scripts, plotting code, parsers, processed
+reference inputs, and preserved example outputs under `evaluation/artifacts/`.
+
+Before running artifact evaluation, complete the setup steps above (`./docker.sh` and
+`./compile.sh`) and run the evaluation commands inside that environment.
+
+Enter `evaluation/` first:
+
+```bash
+cd evaluation
+```
+Run an individual figure:
+
+```bash
+bash figure_5.sh
+bash figure_6.sh
+bash figure_7.sh
+bash figure_8.sh
+bash figure_9.sh
+bash figure_10.sh
+```
+
+To reproduce the full evaluation set in one pass:
+
+```bash
+bash run_all.sh
+```
+
+To compare generated parsed outputs against preserved artifact snapshots:
+
+```bash
+# Compare all figures (5-10)
+bash compare.sh
+# Compare one figure
+bash compare.sh 5
+# Compare multiple selected figures
+bash compare.sh 5 7 9
+# Equivalent single-figure form
+bash compare.sh figure_5
+```
+
+For visual validation, compare generated PDFs with the corresponding `*_ref.pdf` files in each
+figure folder.
+
+See [`evaluation/README.md`](evaluation/README.md) for detailed folder structure, reference-comparison guidance, and per-figure notes.
+
+## Publications
+
+**ISPASS 2026**  
+*LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure*  
+Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]]() (To Appear)                                                                                                                                                       
+<sup>\*</sup>Equal contribution                                                                                                                                                                                                                
+
+**CAL 2025**  
+*LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving Techniques in LLM Infrastructure*  
+Jaehong Cho, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/LCA.2025.3628325)
+
+**IISWC 2024**  
+*LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale*  
+Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/IISWC63097.2024.00012)  
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
 
 ## Citation
 

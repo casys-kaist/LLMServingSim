@@ -1,0 +1,44 @@
+{
+    "num_nodes": 1,
+    "link_bw": 112,
+    "link_latency": 0,
+    "nodes": [   
+        {
+            "num_instances": 2,
+            "cpu_mem": 
+                {
+                    "mem_size": 128,
+                    "mem_bw": 128,
+                    "mem_latency": 0
+                },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "A6000",
+                    "npu_mem":
+                        {
+                            "mem_size": 40,
+                            "mem_bw": 768,
+                            "mem_latency": 0
+                        },
+                    "npu_num": 1,
+                    "npu_group": 1,
+                    "pd_type": "prefill"
+                },
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "A6000",
+                    "npu_mem":
+                        {
+                            "mem_size": 40,
+                            "mem_bw": 768,
+                            "mem_latency": 0
+                        },
+                    "npu_num": 1,
+                    "npu_group": 1,
+                    "pd_type": "decode"
+                }
+            ]
+        }
+    ]
+}

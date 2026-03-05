@@ -1,0 +1,5 @@
+framework	throughput_tok_s	mean_ttft_ms	mean_tpot_ms
+TokenSim	1387.55	167.62	152.468
+Vidur	1765.55	59.1469	25.2357
+APEX	1899.38	37.454	22.42
+vLLM	1858.47	50.33	22.665

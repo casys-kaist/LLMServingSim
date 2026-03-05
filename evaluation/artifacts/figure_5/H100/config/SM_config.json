@@ -1,0 +1,31 @@
+{
+    "num_nodes": 1,
+    "link_bw": 900,
+    "link_latency": 0,
+    "nodes": [   
+        {
+            "num_instances": 1,
+            "cpu_mem": 
+                {
+                    "mem_size": 1024,
+                    "mem_bw": 512,
+                    "mem_latency": 0
+                },
+            "instances": [
+                {
+                    "model_name": "mistralai/Mixtral-8x7B-v0.1",
+                    "hardware": "H100",
+                    "npu_mem":                        
+                        {
+                            "mem_size": 80,
+                            "mem_bw": 3350,
+                            "mem_latency": 0
+                        },
+                    "npu_num": 4,
+                    "npu_group": 1,
+                    "pd_type": null
+                }
+            ]
+        }
+    ]
+}
