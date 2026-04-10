@@ -328,9 +328,9 @@ class MemoryModel():
             return 0
         
         if device == Device.NPU:
-            return self.npu_prefix_cache.avail_size() * self._bytes_per_token
+            return self.npu_prefix_cache.avail_size()
         elif device == Device.CPU or device == Device.CXL:
-            return self.second_tier_prefix_cache.avail_size() * self._bytes_per_token
+            return self.second_tier_prefix_cache.avail_size()
         else:
             raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to get available size of prefix cache in unsupported device {device}")
     
@@ -340,7 +340,7 @@ class MemoryModel():
         if self.enable_prefix_caching:
             new_last_node = self.second_tier_prefix_cache.cache_unfinished_req(req, update=False) # do not update hit counts
             # should lock evicted kv cache in cpu
-            self.npu_prefix_cache.inc_lock_ref(new_last_node)
+            self.second_tier_prefix_cache.inc_lock_ref(new_last_node)
             req.cpu_last_node = new_last_node
             self.apply_kv_cache_events()
 
