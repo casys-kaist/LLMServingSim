@@ -1,3 +1,6 @@
 [submodule "astra-sim"]
 	path = astra-sim
 	url = https://github.com/casys-kaist/astra-sim.git
+[submodule "specflow"]
+	path = specflow
+	url = https://github.com/PSAL-POSTECH/SpecFlow.git
