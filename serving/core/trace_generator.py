@@ -39,7 +39,11 @@ _DTYPE_SHORT = {
 
 # TP collective hooks keyed on canonical layer name. Applied after the
 # named layer when tp_size > 1. Names must match the profiler's catalog.
-_TP_ALLREDUCE_AFTER = frozenset({"o_proj", "down_proj"})
+#
+# GatedDeltaNet linear attention is profiled as one composite dense layer, but
+# vLLM still finishes it with an internal RowParallelLinear out_proj that
+# reduces results across TP ranks.
+_TP_ALLREDUCE_AFTER = frozenset({"o_proj", "down_proj", "linear_attention"})
 
 
 def _short_dtype(d):
