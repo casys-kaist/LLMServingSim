@@ -166,6 +166,10 @@ matching `sequence:` rather than editing this file.
 Parses the user-provided cluster config JSON from `configs/cluster/` and generates the
 ASTRA-Sim input files under `astra-sim/inputs/runs/<run_id>/`: `network/network.yml`,
 `memory/memory_expansion.json`, and `system/system.json`.
+Per-iteration text traces are removed after Chakra conversion by default, and the
+generated run directory is removed after a successful simulation by default. Use
+`--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for
+debugging.
 For DP groups, generates a 2D network topology `[tp_size, dp_group_size]` and sets
 `system.json` collective implementations to match the number of topology dimensions.
 Computes `tp_dim`/`ep_dim` per instance for `involved_dim` scoping.

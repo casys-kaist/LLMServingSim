@@ -10,6 +10,7 @@ import os
 import subprocess
 import argparse
 import json
+import shutil
 from time import time
 from collections import defaultdict
 
@@ -80,6 +81,22 @@ def _resolve_output_file(path, run_id):
     if path is None:
         return None
     return path.replace("{run_id}", run_id)
+
+
+def _cleanup_inputs_root(run_paths, logger):
+    """Remove generated ASTRA-Sim inputs after a completed simulation."""
+    runs_root = os.path.abspath(os.path.join("inputs", "runs"))
+    inputs_root = os.path.abspath(run_paths.inputs_root)
+    if inputs_root in (os.path.abspath("inputs"), runs_root):
+        raise RuntimeError(f"Refusing to remove broad inputs root: {inputs_root}")
+    if not inputs_root.startswith(runs_root + os.sep):
+        logger.warning(
+            "Skipping ASTRA-Sim inputs cleanup because inputs_root is outside %s: %s",
+            runs_root, inputs_root,
+        )
+        return
+    shutil.rmtree(inputs_root, ignore_errors=True)
+    logger.info("Removed ASTRA-Sim inputs root: %s", inputs_root)
 
 
 def _prepare_ns3_config(astra_sim, run_paths):
@@ -256,6 +273,10 @@ def main():
     parser.add_argument('--inputs-root', type=str, default=None,
                         help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
                         'astra-sim/inputs/runs/<run-id>')
+    parser.add_argument('--cleanup-inputs', action=argparse.BooleanOptionalAction, default=True,
+                        help='remove generated ASTRA-Sim inputs under astra-sim/inputs/runs/<run-id> '
+                        'after a successful simulation (default: enabled). Use --no-cleanup-inputs '
+                        'to preserve generated trace files, Chakra workloads, and input configs for debugging')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
                         help='skip the prefill phase, running decode only')
     parser.add_argument('--num-reqs', type=int, default=0,
@@ -493,7 +514,8 @@ def main():
         event_time = INTERVAL
     generate_event(int(event_time), inputs_root=run_paths.inputs_root)
     # Make Chakra Grapth
-    generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root)
+    generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root,
+                   cleanup_trace=args.cleanup_inputs)
     # set first workload file
     workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
@@ -640,7 +662,8 @@ def main():
                                        inst_id, inst2npu_mapping[inst_id],
                                        inst_cfg["enable_local_offloading"],
                                        workload_name=dp_workload_name,
-                                       inputs_root=run_paths.inputs_root)
+                                       inputs_root=run_paths.inputs_root,
+                                       cleanup_trace=args.cleanup_inputs)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                     workload_name=dp_workload_name,
@@ -706,7 +729,8 @@ def main():
                                            inst_id, inst2npu_mapping[inst_id],
                                            inst_cfg["enable_local_offloading"],
                                            workload_name=dp_workload_name,
-                                           inputs_root=run_paths.inputs_root)
+                                           inputs_root=run_paths.inputs_root,
+                                           cleanup_trace=args.cleanup_inputs)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                         workload_name=dp_workload_name,
@@ -740,7 +764,8 @@ def main():
                     generate_graph(new_req, instance["hardware"], instance["num_npus"], node_id,
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],
-                                   inputs_root=run_paths.inputs_root)
+                                   inputs_root=run_paths.inputs_root,
+                                   cleanup_trace=args.cleanup_inputs)
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
@@ -1005,6 +1030,9 @@ def main():
         print(f"Saving each request's information to output file: {output_file}")
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
+
+    if args.cleanup_inputs:
+        _cleanup_inputs_root(run_paths, logger)
     
 
 if __name__ == "__main__": 

@@ -162,6 +162,9 @@ profile DB:
 
 The output is a tab-separated text trace at
 `astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
+The text trace is an intermediate input to the Chakra converter and is
+removed after the `.et` graph is generated unless `--no-cleanup-inputs`
+is set.
 Full mechanics on **[Trace generation](./trace-generation)**.
 
 ## Stage 7, Converted to Chakra graph
@@ -169,6 +172,9 @@ Full mechanics on **[Trace generation](./trace-generation)**.
 `graph_generator.generate_graph` shells out to Chakra's text→protobuf
 converter, producing
 `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
+Chakra workloads remain available while ASTRA-Sim consumes them; the
+run directory is removed after a successful simulation unless
+`--no-cleanup-inputs` is set.
 
 The Chakra converter creates:
 

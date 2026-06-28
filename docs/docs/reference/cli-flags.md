@@ -70,12 +70,15 @@ matching runtime knobs per `instances[i]`; see
 
 Each invocation writes ASTRA-Sim intermediates under a run-specific input
 root so parallel simulations do not overwrite each other's generated
-configs, traces, or Chakra workloads.
+configs, traces, or Chakra workloads. Generated text traces are removed
+after Chakra conversion by default, and the run-specific input root is
+removed after a successful simulation by default.
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--run-id` | string | auto-generated | Path-safe id for this simulation run. Used in `astra-sim/inputs/runs/<run-id>` and the `{run_id}` output placeholder |
 | `--inputs-root` | path | `astra-sim/inputs/runs/<run-id>` | Override the generated ASTRA-Sim input root, for example to place intermediates on local SSD or tmpfs |
+| `--cleanup-inputs` / `--no-cleanup-inputs` | bool | `true` | Remove generated trace files after Chakra conversion and remove the generated run directory after a successful simulation. Use `--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for debugging |
 
 ## Logging
 

@@ -20,7 +20,8 @@ astra-sim/inputs/runs/<run_id>/trace/<hardware>/<model>/instance_<i>_batch_<b>.t
 ```
 
 One file per (instance × batch), under the run-specific ASTRA-Sim input
-root. Regenerated every iteration.
+root. Regenerated every iteration and removed after Chakra conversion by
+default. Use `--no-cleanup-inputs` to preserve generated traces.
 
 ## File structure
 
