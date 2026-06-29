@@ -7,7 +7,7 @@ from .run_paths import input_path
 
 logger = get_logger("GraphGenerator")
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True):
 
     cwd = os.getcwd()
     chakra = os.path.join(cwd, "extern/graph_frontend/chakra")
@@ -40,5 +40,10 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
 
     logger.debug("Generating graph with command: %s", " ".join(cmd), extra={"node_id": node_id, "instance_id": instance_id})
 
-    subprocess.run(cmd, cwd=chakra, text=True)
+    subprocess.run(cmd, cwd=chakra, text=True, check=True)
+    if cleanup_trace:
+        try:
+            os.remove(trace_path)
+        except FileNotFoundError:
+            pass
     return
