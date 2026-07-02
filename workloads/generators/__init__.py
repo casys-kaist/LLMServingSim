@@ -13,4 +13,5 @@ Produces JSONL workloads in the format the simulator expects:
 Each generator is invoked via ``python -m workloads.generators <name> ...``.
 Currently shipped:
     sharegpt   ShareGPT conversations -> sim workload, configurable rate/limit/seed
+    burstgpt   BurstGPT weekly minute trace -> sim workload with ShareGPT token sizes
 """

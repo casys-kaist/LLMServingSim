@@ -19,10 +19,21 @@ def main() -> int:
     from workloads.generators.sharegpt import register_args as sg_register
     sg_register(sg)
 
+    bg = sub.add_parser(
+        "burstgpt",
+        help="BurstGPT weekly_minute_trace.csv -> LLMServingSim JSONL",
+    )
+    from workloads.generators.burstgpt import register_args as bg_register
+    bg_register(bg)
+
     args = parser.parse_args()
 
     if args.generator == "sharegpt":
         from workloads.generators.sharegpt import run
+        return run(args)
+
+    if args.generator == "burstgpt":
+        from workloads.generators.burstgpt import run
         return run(args)
 
     parser.error(f"Unknown generator: {args.generator}")

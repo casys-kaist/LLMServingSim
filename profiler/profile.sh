@@ -28,7 +28,7 @@ MODEL="Qwen/Qwen3-32B"
 
 # GPU identifier used as an output folder name under ``perf/``.
 # Free-form — pick something meaningful for your hardware.
-HARDWARE="RTXPRO6000"
+HARDWARE="RTX4090"
 
 # =============================================================================
 # EDIT THESE (OPTIONAL — uncomment and adjust as needed)
