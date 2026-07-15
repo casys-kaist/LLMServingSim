@@ -71,7 +71,6 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Simulator',
-      link: {type: 'doc', id: 'simulator/architecture'},
       items: [
         'simulator/architecture',
         'simulator/request-lifecycle',
