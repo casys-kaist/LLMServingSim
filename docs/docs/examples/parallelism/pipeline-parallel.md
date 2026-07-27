@@ -66,7 +66,7 @@ The two fields that matter:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_pp_instance.json' \
-  --dtype float16 --block-size 16 \
+  --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/pp2_run.csv' \
   --log-interval 1.0

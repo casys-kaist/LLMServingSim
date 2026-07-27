@@ -74,7 +74,7 @@ The PIM hookup:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_pim_instance.json' \
-  --dtype float16 --block-size 16 \
+  --dtype bfloat16 --block-size 16 \
   --enable-attn-offloading \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/pim_offload_run.csv' \
