@@ -113,7 +113,7 @@ devices in roughly equal chunks, while keeping KV cache on NPU.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_cxl_instance.json' \
-  --dtype float16 --block-size 16 \
+  --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/cxl_run.csv' \
   --log-interval 1.0

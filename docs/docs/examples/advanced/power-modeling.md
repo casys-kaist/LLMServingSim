@@ -76,7 +76,7 @@ For the field-by-field schema (`base_node_power`, `idle_power`,
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_power_instance.json' \
-  --dtype float16 --block-size 16 \
+  --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/power_run.csv' \
   --log-interval 1.0

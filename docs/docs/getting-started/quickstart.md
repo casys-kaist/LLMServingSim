@@ -16,7 +16,7 @@ inside the simulator container at `/app/LLMServingSim`.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
-  --dtype float16 --block-size 16 \
+  --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/example_single_run.csv' \
   --log-interval 1.0
