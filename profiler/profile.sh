@@ -23,7 +23,6 @@ set -euo pipefail
 # ``configs/model/<MODEL>.json`` relative to the LLMServingSim root.
 # The profiler reads model_type from that config to pick an
 # architecture yaml under profiler/models/.
-# MODEL="meta-llama/Llama-3.1-8B"
 MODEL="meta-llama/Llama-3.1-8B"
 
 # GPU identifier used as an output folder name under ``perf/``.
