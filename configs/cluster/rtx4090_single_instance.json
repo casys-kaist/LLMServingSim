@@ -1,0 +1,29 @@
+{
+    "num_nodes": 1,
+    "link_bw": 16,
+    "link_latency": 1000,
+    "nodes": [
+        {
+            "num_instances": 1,
+            "cpu_mem": {
+                "mem_size": 64,
+                "mem_bw": 50,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "RTX4090",
+                    "npu_mem": {
+                        "mem_size": 24,
+                        "mem_bw": 1008,
+                        "mem_latency": 0
+                    },
+                    "num_npus": 1,
+                    "tp_size": 1,
+                    "pd_type": null
+                }
+            ]
+        }
+    ]
+}
