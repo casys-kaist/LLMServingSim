@@ -8,7 +8,7 @@ REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 # Intall Chakra (Use Chakra fork in ASTRA-Sim repo).
 (
 cd ${REPO_ROOT}/astra-sim/extern/graph_frontend/chakra
-pip3 install .
+uv pip install .
 )
 
 # Compile ASTRA-sim with analytical backend model
