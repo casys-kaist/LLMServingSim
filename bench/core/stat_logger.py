@@ -56,10 +56,13 @@ class BenchStatLogger(StatLoggerBase):
     ) -> None:
         if scheduler_stats is None:
             return
-        # SchedulerStats fields: num_running_reqs, num_waiting_reqs, gpu_cache_usage
+        # SchedulerStats fields: num_running_reqs, num_waiting_reqs, kv_cache_usage.
+        # Read kv_cache_usage directly, without a getattr default: a getattr with a
+        # fallback silently reports 0.0 forever if vLLM renames the field, which is
+        # exactly how this column stayed empty in every run up to now.
         running = getattr(scheduler_stats, "num_running_reqs", 0)
         waiting = getattr(scheduler_stats, "num_waiting_reqs", 0)
-        cache_pct = getattr(scheduler_stats, "gpu_cache_usage", 0.0) * 100.0
+        cache_pct = scheduler_stats.kv_cache_usage * 100.0
 
         prompt_toks = 0
         gen_toks = 0
