@@ -241,7 +241,7 @@ Mitigations:
 - `--enable-chunked-prefill` (default) splits long prefills.
 - `--long-prefill-token-threshold N` caps prefill tokens per
   step.
-- `--gpu-memory-utilization` sets how much NPU memory the KV cache
+- `--npu-memory-utilization` sets how much NPU memory the KV cache
   gets; lowering it raises memory pressure and therefore preemptions.
 
 ### Prefix hit rate near 0%

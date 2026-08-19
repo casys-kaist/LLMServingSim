@@ -9,6 +9,41 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- Per-tier KV cache block pools (`serving/core/block_pool.py`) and a tiered
+  manager over them (`serving/core/kv_cache_manager.py`), ported from vLLM
+  v0.19.0's `block_pool.py` / `kv_cache_manager.py` and the block/queue
+  primitives in `kv_cache_utils.py`. Each pool owns one tier's free list,
+  prefix-cache index and refcounts, so `num_free_blocks` is exact and an
+  allocation either succeeds or reports failure in the same call. Both modules
+  carry a self-test that runs without Docker
+  (`python3 -m serving.core.block_pool`,
+  `python3 -m serving.core.kv_cache_manager`).
+- Chained block hashes (`hash(parent_hash, block_tokens)`) shared across every
+  tier: a lower tier whose blocks are N times larger keys on every Nth hash of
+  the same chain, which is vLLM's
+  `offloading/scheduler.py::_get_block_hashes`. One walk over a request's
+  hashes now yields both the NPU hit and the lower-tier hit.
+- `--npu-memory-utilization` (default `0.9`) with a per-instance
+  `npu_mem.mem_util` cluster-config override, named to match its `mem_*`
+  siblings and placed beside the `mem_size` it scales. Corresponds to vLLM's
+  `--gpu-memory-utilization`, renamed because every other memory surface here
+  uses NPU terminology. KV capacity is
+  `npu_mem * utilization - model weight`, mirroring vLLM's
+  `requested_memory - non_kv_cache_memory`. vLLM also subtracts the activation
+  peak and CUDA context, which are not modelled, so the simulator's capacity is
+  an upper bound at the same utilization.
+- `--reserve-full-isl` (on by default) with a per-instance `reserve_full_isl`
+  cluster-config override: admit a request only if its whole sequence fits, not
+  merely its first chunk. Port of vLLM's `scheduler_reserve_full_isl`, which is
+  also `True` there and is documented as preventing "over-admission and KV cache
+  thrashing with chunked prefill".
+- A `KV Cache Initialization` section in the startup output, listing each
+  instance's derived block/token capacity and the utilization it came from. The
+  fraction alone does not tell you where memory pressure will land; the block
+  count does.
+- `Request.num_tokens_reached` (prompt + generated), the independent sequence
+  length that mirrors vLLM's `len(_all_token_ids)`. It cannot be derived from
+  `num_computed_tokens`, which preemption resets to 0.
 - Public Docusaurus 3 documentation site at
   [llmservingsim.ai](https://llmservingsim.ai), built from `docs/` and
   deployed via GitHub Actions Pages. Replaces the old `docs/index.html`
@@ -32,6 +67,62 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `MemoryModel` exists.
 
 ### Changed
+- `Scheduler` now follows vLLM V1's `schedule()`: a persistent `self.running`
+  set is served first, preempting only from its own tail, then `self.waiting` is
+  admitted while budget and sequence slots remain. Admission never preempts, and
+  it is skipped entirely on any step that preempted. `schedule_base` and
+  `schedule_with_prefix` collapse into one `schedule()` — the pool handles
+  `enable_caching=False` the way vLLM does, so two paths had no reason to exist.
+  `scheduler.py` drops from ~1300 to ~510 lines, `memory_model.py` from 885 to
+  ~545.
+- Preemption is vLLM verbatim, including `num_computed_tokens = 0`. That is not
+  re-prefill: `free_blocks` keeps the blocks' hashes, so on re-admission the
+  still-resident prefix is found, a lower tier returns what was written down,
+  and only the remainder is recomputed. Recovery comes from the tier hierarchy
+  rather than from a special "preserve the decode state" path.
+- The three prefix-cache modes now map onto three real vLLM configurations:
+  `--no-enable-prefix-caching` behaves like vLLM with prefix caching off, where
+  a resumed request recomputes its whole sequence; `--enable-prefix-caching` is
+  default vLLM; adding `--prefix-storage CPU/CXL` is vLLM with LMCache or
+  `OffloadingConnector` attached. The previous middle case billed a KV transfer
+  against a tier that held nothing.
+- `num_computed_tokens` is advanced when the batch is formed, as in vLLM's
+  `_update_after_schedule`, with `Batch.scheduled_tokens` as the snapshot
+  `add_done` works from. Advancing at completion let `pp_size > 1` schedule the
+  same tokens twice.
+- Prefill and decode are no longer distinct scheduler states. A request catches
+  up to `num_tokens_reached`, and the trace classifies by scheduled token count
+  (>1 = prefill chunk, ==1 = decode) — the classification the attention profile
+  axes expect, and the only one that survives a resumed request.
+- A host offload tier now uses 256-token chunks (LMCache's default) uniformly.
+  The non-shared second tier and the shared CXL pool previously used page size
+  1, which matched at token granularity and over-reported hits relative to any
+  real offload tier.
+
+### Removed
+- `serving/core/radix_tree.py` (675 lines), the SGLang-derived prefix-cache
+  radix tree, **replaced by `block_pool.py` + `kv_cache_manager.py`** (see
+  Added). It had served as both the prefix index and the allocator, and as an
+  allocator it was inexact: `evictable_size_` counted every unlocked token while
+  `evict()` could only drop unlocked *leaves*, and charging happened later via
+  tree events rather than in the call that could fail. Prefix caching keeps all
+  of its user-visible behaviour -- `--enable-prefix-caching`,
+  `--enable-prefix-sharing`, `--prefix-storage` are unchanged. The SGLang
+  attribution stays in `CONTRIBUTORS.md` as history.
+- `--prioritize-prefill` and the per-instance `prioritize_prefill` key, along
+  with `Scheduler._merge_by_arrival_id` (its only caller). vLLM v0.19.0 has no
+  equivalent: `vllm/core/` — the V0 scheduler whose `_schedule_default` served
+  prefills first — no longer exists, and `SchedulerPolicy` is `fcfs` or
+  `priority`, which is request priority rather than prefill-vs-decode.
+- `Request.is_prefill()`, `evict`, `npu_last_node`, `cpu_last_node`,
+  `storage_last_node`, `_prefix_locked`; and from `MemoryModel`:
+  `avail_size`, `evictable_size`, `get_block_kv`, `get_evict_kv`,
+  `lock_prefix`, `unlock_prefix`, `cache_unfinished_req`, `cache_finished_req`,
+  `evict_prefix_cache`, `prefix_match`, `apply_kv_cache_events` and the two
+  `_*_cache_hashtolen` maps.
+- `Scheduler.get_first_arrival_time`, which read an attribute that was never
+  assigned and had no callers (`Router.get_first_arrival_time` is the live one).
+
 - Trace-level PP modeling write-up overhauled in
   `docs/docs/simulator/parallelism-mechanics.md` — explicitly describes
   the Chakra layer split + `COMM_SEND` / `COMM_RECV` between stages,
@@ -64,6 +155,32 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   lifetime.
 
 ### Fixed
+- P/D disaggregation shipped 3x too much KV. `convert_prefill` took the
+  per-layer SEND/RECV size from the `*v_proj` layer's `output_size`, i.e. the
+  whole QKV activation, so it transferred Q as well — a factor of
+  `(q_dim + 2*kv_dim) / (2*kv_dim)`: 3x for Llama-3.1-8B, 1.5x for MHA, more at
+  wider GQA ratios — and it ignored `kv_cache_dtype`, making
+  `--kv-cache-dtype fp8` 6x high. The frontend now puts the per-layer, per-rank
+  K+V bytes in the trace's `comm_size` column and the converter reads that. The
+  count also includes a request's prefix-cache hit on its first step: the decode
+  side needs that KV even though the prefill side read it from cache.
+- Preemption freed nothing. The loop guarded on `gen_req[-1].is_prefill()` over a
+  list built from non-prefill requests, so the condition never fired: requests
+  were marked evicted and the batch shrank, but not a byte was released. This is
+  why a 24 GiB configuration could crash in `apply_kv_cache_events -> allocate`.
+- `kv_cache_pct` was 0.0 in every bench `timeseries.csv`. `SchedulerStats` has no
+  `gpu_cache_usage` field; it is `kv_cache_usage`, and a `getattr` default hid
+  the mismatch. The attribute is now read directly so a future rename fails
+  loudly.
+- Block hashes were unhashed at the prefix level: `hash(tuple(page_tokens))`
+  meant two different prefixes ending in the same 16 tokens collided (53
+  duplicates observed on a 300-request ShareGPT replay). Hashes are now chained
+  through the parent, as in vLLM.
+- `TTFT` could be overwritten when a request resumed after preemption, because
+  `set_ttft` ran again on the recomputed prefill. It is now recorded exactly
+  once, gated on `is_init`.
+- `Scheduler` defined `schedule_with_prefix` twice; the first definition (228
+  lines) was shadowed and never ran.
 - Chunked prefill double-counted prefix-cache hits. In
   `schedule_with_prefix`, `chunk_size = original_input - num_computed_tokens`
   already excludes prefix-cached tokens (because `num_computed_tokens`

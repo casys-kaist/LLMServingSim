@@ -115,7 +115,7 @@ Static sizing math plus a byte-level view over the block pools. Contains
 `calculate_sizes(parallel=)` and `get_weight` for per-layer tensor size computation — the
 `parallel` parameter is TP degree for dense layers and EP degree for MoE experts, and MoE
 expert weights are sharded by `ep_size`. Modify these when adding a new model architecture.
-Sizes the NPU KV cache the way vLLM does: `npu_mem * gpu_memory_utilization - weight`, then
+Sizes the NPU KV cache the way vLLM does: `npu_mem.mem_size * npu_mem.mem_util - weight`, then
 divided into blocks. `npu_used` / `cpu_used` are properties derived from the pools, so there
 is exactly one ledger per tier.
 

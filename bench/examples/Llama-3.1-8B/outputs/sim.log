@@ -10,8 +10,8 @@
                               Input configuration                               
 
   • Cluster config             : bench/examples/configs/Llama-3.1-8B.json
-  • Run ID                     : run_1787126891695623_262
-  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1787126891695623_262
+  • Run ID                     : run_1787136676348687_262
+  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1787136676348687_262
   • Dataset                    : workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
   • Max num seqs               : 128
   • Max batched tokens         : 2048
@@ -24,12 +24,13 @@
   • Centralized prefix caching : DISABLED
   • Offload attention to PIM   : DISABLED
   • Sub-batch interleaving     : DISABLED
-  • GPU memory utilization     : 0.9
   • Network backend            : analytical
   • Log interval (s)           : 1.0
   • Log level                  : WARNING
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Starting simulation...
+
+  • Instance [0] KV cache        : 36578 blocks / 585248 tokens (71.44 GiB per rank) at utilization 0.90
 
 [1.0s] Avg prompt throughput: 9069.0 tokens/s, Avg generation throughput: 224.0 tokens/s
         ├─Running Instance[0]: 9 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 16486.51 MB (16.771 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 9069)
@@ -234,7 +235,7 @@ All Request Has Been Exited
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Simulation results...
 
-Total simulation time: 0h 2m 36.950s
+Total simulation time: 0h 2m 8.878s
 ────────────────────────────── Throughput Results ──────────────────────────────
 Total requests:                                                     300
 Total clocks (ns):                                                  65705603364

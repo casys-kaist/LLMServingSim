@@ -26,7 +26,7 @@ class MemoryModel():
     an allocation that cannot be satisfied says so in the call that asks.
     """
 
-    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', gpu_memory_utilization=1.0):
+    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', npu_memory_utilization=1.0):
         self.model = model
         self.node_id = node_id
         self.instance_id = instance_id
@@ -43,7 +43,7 @@ class MemoryModel():
         self.enable_prefix_caching = enable_prefix_caching
         self.enable_prefix_sharing = enable_prefix_sharing
         self.prefix_storage = prefix_storage
-        self.gpu_memory_utilization = gpu_memory_utilization
+        self.npu_memory_utilization = npu_memory_utilization
 
         self.config = get_config(model)
         self.n_embd = self.config['hidden_size']
@@ -78,12 +78,12 @@ class MemoryModel():
         # subtract the non-KV memory (weights, and the activation peak plus CUDA
         # context, which the simulator cannot profile and does not model -- so
         # this capacity is an upper bound on vLLM's at the same utilization).
-        requested = int(self.npu_mem * self.gpu_memory_utilization)
+        requested = int(self.npu_mem * self.npu_memory_utilization)
         kv_bytes = requested - self.weight
         if kv_bytes < self._npu_bytes_per_block:
             raise RuntimeError(
                 f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: "
-                f"gpu_memory_utilization={self.gpu_memory_utilization} leaves "
+                f"npu_memory_utilization={self.npu_memory_utilization} leaves "
                 f"{kv_bytes / MB_TO_BYTE:.2f}MB for the KV cache "
                 f"({requested / MB_TO_BYTE:.2f}MB requested of "
                 f"{self.npu_mem / MB_TO_BYTE:.2f}MB, minus "
@@ -103,7 +103,7 @@ class MemoryModel():
             self.npu_pool.num_blocks,
             self.npu_pool.num_blocks * block_size,
             self.npu_pool.num_blocks * self._npu_bytes_per_block / MB_TO_BYTE,
-            self.gpu_memory_utilization,
+            self.npu_memory_utilization,
         )
 
         # Victim tiers, in lookup order. Present only with --prefix-storage:

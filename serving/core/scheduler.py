@@ -36,7 +36,7 @@ class Scheduler:
                  enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage,
                  enable_chunked_prefill=False,
                  long_prefill_token_threshold=0, cxl_mem=0, ep_size=1, kv_cache_dtype='auto',
-                 gpu_memory_utilization=1.0):
+                 npu_memory_utilization=1.0, reserve_full_isl=True):
         self.model = model
         self.config = get_config(model)
         self.node_id = node_id
@@ -54,6 +54,9 @@ class Scheduler:
         self.enable_prefix_sharing = enable_prefix_sharing
         self.enable_chunked_prefill = enable_chunked_prefill
         self.prefix_storage = prefix_storage
+        # vLLM's scheduler_reserve_full_isl, True by default there: admit a
+        # request only if its whole sequence fits, not merely its first chunk.
+        self.reserve_full_isl = reserve_full_isl
 
         # Requests admitted and still generating. Persistent across steps: this
         # is what gives the scheduler a notion of "already running", which the
@@ -77,7 +80,7 @@ class Scheduler:
                                   block_size, fp, enable_prefix_caching, enable_prefix_sharing,
                                   prefix_pool, prefix_storage, cxl_mem, ep_size=ep_size,
                                   pp_size=pp_size, kv_cache_dtype=kv_cache_dtype,
-                                  gpu_memory_utilization=gpu_memory_utilization)
+                                  npu_memory_utilization=npu_memory_utilization)
         self.kv = self.memory.kv
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
@@ -183,6 +186,12 @@ class Scheduler:
                 break
             num_new = min(num_new, token_budget)
             if num_new <= 0:
+                break
+
+            if self.reserve_full_isl and not self.kv.can_fit_full_sequence(
+                    req, hit_blocks, num_npu_hit, num_lower_hit):
+                # Its first chunk would fit but the whole sequence would not, so
+                # admitting it now only defers a preemption. vLLM breaks here.
                 break
 
             blocks = self.kv.allocate_slots(req, num_new, hit_blocks,

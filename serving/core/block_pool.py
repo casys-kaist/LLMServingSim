@@ -213,7 +213,7 @@ class BlockPool:
     Args:
         tier: which :class:`Device` these blocks live on.
         num_blocks: pool size. For the NPU this comes from
-            ``npu_mem * gpu_memory_utilization - weight``, mirroring vLLM's
+            ``npu_mem.mem_size * npu_mem.mem_util - weight``, mirroring vLLM's
             ``requested_memory - non_kv_cache_memory``.
         block_size: tokens per block. The NPU uses ``--block-size``; a lower
             tier uses a multiple of it.

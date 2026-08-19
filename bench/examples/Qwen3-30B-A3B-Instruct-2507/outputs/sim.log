@@ -10,8 +10,8 @@
                               Input configuration                               
 
   • Cluster config             : bench/examples/configs/Qwen3-30B-A3B-Instruct-2507.json
-  • Run ID                     : run_1787127243268073_5102
-  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1787127243268073_5102
+  • Run ID                     : run_1787136971470584_5102
+  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1787136971470584_5102
   • Dataset                    : workloads/sharegpt-qwen3-30b-a3b-300-sps10.jsonl
   • Max num seqs               : 128
   • Max batched tokens         : 2048
@@ -24,12 +24,14 @@
   • Centralized prefix caching : DISABLED
   • Offload attention to PIM   : DISABLED
   • Sub-batch interleaving     : DISABLED
-  • GPU memory utilization     : 0.9
   • Network backend            : analytical
   • Log interval (s)           : 1.0
   • Log level                  : WARNING
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Starting simulation...
+
+  • Instance [0] KV cache        : 38590 blocks / 617440 tokens (56.53 GiB per rank) at utilization 0.90
+  • Instance [1] KV cache        : 38590 blocks / 617440 tokens (56.53 GiB per rank) at utilization 0.90
 
 [1.0s] Avg prompt throughput: 9372.0 tokens/s, Avg generation throughput: 218.0 tokens/s
         ├─Running Instance[0]: 5 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 31137.88 MB (31.675 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 5704)
@@ -287,7 +289,7 @@ All Request Has Been Exited
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Simulation results...
 
-Total simulation time: 0h 4m 19.401s
+Total simulation time: 0h 3m 34.639s
 ────────────────────────────── Throughput Results ──────────────────────────────
 Total requests:                                                     300
 Total clocks (ns):                                                  62942560948

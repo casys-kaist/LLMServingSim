@@ -103,21 +103,42 @@ Where `kv_fp_size` is:
 - 2 bytes for `--kv-cache-dtype auto` (inherits from `--dtype`).
 - **1 byte for `--kv-cache-dtype fp8`**: halves KV memory.
 
-The scheduler reserves `ceil(tokens / block_size)` blocks per active
-request and frees them when the request completes (or when chunked
-prefill / prefix caching has different lifecycle, see below).
+How many blocks exist is fixed at startup, the way vLLM sizes its cache:
+
+```
+requested   = npu_mem.mem_size * npu_mem.mem_util      # per rank
+kv_bytes    = requested - model weight
+num_blocks  = kv_bytes / bytes_per_block
+```
+
+`npu_mem.mem_util` defaults to `--npu-memory-utilization` (`0.9`), the
+analogue of vLLM's `--gpu-memory-utilization`. vLLM additionally subtracts
+its activation peak and CUDA context, which the simulator does not model,
+so this capacity is an **upper bound** on vLLM's at the same fraction. The
+run prints the resulting figure per instance under **KV Cache
+Initialization** at startup:
+
+```
+  • Instance [0]                  : 3400 blocks / 54400 tokens (6.64 GiB per rank) at NPU memory utilization 0.90
+```
+
+The scheduler takes `ceil(tokens / block_size)` blocks per active request
+from the pool's free list, and returns them when the request finishes or is
+preempted.
 
 ### 3. NPU prefix cache
 
-A subset of the active KV blocks that the prefix cache keeps around
-even after their original requests finish. When a new request walks
-into the cache and matches a stored prefix, those blocks are
-"reactivated", added back to active KV without recomputation.
+Not a separate allocation. A block that becomes full is indexed under a
+**chained hash** of its tokens, and it keeps that index entry after its
+request returns it to the free list — so it is simultaneously reusable and
+still findable. A later request whose prefix hashes the same way claims it
+back instead of recomputing.
 
-Eviction happens when NPU memory pressure forces it: the prefix
-cache is the first thing to release blocks. If the CPU or CXL
-second-tier pool exists, evicted blocks **spill** there rather than
-disappearing.
+Eviction is therefore a **side effect of allocation**: when the pool hands
+out a block from the head of its free list and that block still carries a
+hash, the hash is dropped. There is no separate eviction pass and no
+"evictable size" to estimate. With `--prefix-storage`, the block also has a
+copy on the CPU or CXL tier, so a later request can still find it there.
 
 Full mechanics: **[Prefix caching](./prefix-caching)**.
 
@@ -141,33 +162,41 @@ instance. Multiple instances on the same node share the same
 
 ## How the scheduler uses this
 
-Every iteration, before adding a request to the batch, the scheduler
-estimates the memory it would consume:
+The scheduler does not estimate. It asks the pool, and the pool either
+hands over the blocks or reports failure in the same call:
 
 ```python
-new_kv_blocks_needed = (request.num_computed_tokens
-                       + tokens_to_run_this_step
-                       - already_reserved_blocks * block_size) / block_size
-new_kv_bytes = new_kv_blocks_needed * bytes_per_block
-if memory.npu_used + new_kv_bytes > npu_mem_total:
-    # try eviction; if still doesn't fit, skip this request
+blocks = kv.allocate_slots(request, tokens_to_run_this_step)
+if blocks is None:
+    ...   # nothing was mutated; the caller decides what to do
 ```
 
-If the prefix cache can free enough blocks via eviction, the request
-runs and the cache loses some entries. Otherwise, the scheduler
-**skips** this request and tries the next one in the queue. The
-deferred request stays in the queue and is retried on the next
-iteration.
+`num_free_blocks` is exact, so a queued block *is* allocatable. That
+all-or-nothing property is what makes the two callers behave differently
+and correctly:
 
-This is what produces the bursty memory-usage pattern you see in
-long-context workloads: the cache fills, evicts, refills, and the
-scheduler's effective batch size oscillates with available memory.
+- **A running request** that cannot get a block causes a preemption: the
+  scheduler drops the tail of its running set, returning that request's
+  blocks, and retries.
+- **A waiting request** that cannot get a block is simply not admitted this
+  step. Admission never preempts, and it stops at the first failure.
+
+Admission also refuses a request whose *whole* sequence would not fit, not
+merely its first chunk (`--reserve-full-isl`, on by default, mirroring
+vLLM's `scheduler_reserve_full_isl`). Checking only the first chunk lets
+chunked prefill admit a request that then grows past capacity, which turns
+into a preemption later.
+
+Memory therefore sits at the pool ceiling once a workload has filled it,
+rather than oscillating. A block in the free list that still carries a hash
+is reusable data, not waste.
 
 ## Per-instance vs per-node accounting (gotcha)
 
-The `npu_used` and the NPU prefix cache are **per-instance**. Two
-instances on the same node have completely separate NPU accounting,
-even though they're on the same physical GPU.
+The NPU block pool is **per-instance**. Two instances on the same node
+have completely separate NPU accounting, even though they're on the same
+physical GPU. `npu_used` is derived from the pool rather than tracked
+alongside it, so there is exactly one ledger per tier.
 
 `cpu_used` is **per-node**. Two instances on the same node share one
 CPU memory budget. If both have spilled prefix blocks to CPU, they

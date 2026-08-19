@@ -121,8 +121,8 @@ run_example() {
         --network-backend "$NETWORK_BACKEND"
     )
 
-    if [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]]; then
-        cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
+    if [[ -n "${NPU_MEMORY_UTILIZATION:-}" ]]; then
+        cmd+=(--npu-memory-utilization "$NPU_MEMORY_UTILIZATION")
     fi
 
     echo "============================================================"

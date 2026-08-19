@@ -151,6 +151,29 @@ def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
     return dtype
 
 
+def _resolve_mem_util(instance, cli_default):
+    """Per-instance NPU memory utilization, from ``npu_mem.mem_util``.
+
+    Lives inside ``npu_mem`` because its only job is to scale ``mem_size``, and
+    it follows that block's ``mem_*`` naming. Falls back to the CLI default.
+    """
+    util = instance.get("npu_mem", {}).get("mem_util", cli_default)
+    try:
+        util = float(util)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"npu_mem.mem_util for instance {instance.get('instance_id')} must be a "
+            f"number in (0, 1]; got {util!r}"
+        ) from None
+    if not 0 < util <= 1:
+        raise ValueError(
+            f"npu_mem.mem_util for instance {instance.get('instance_id')} must be in "
+            f"(0, 1]; got {util}. It is a fraction of npu_mem.mem_size, so 0.9 rather "
+            f"than 90"
+        )
+    return util
+
+
 def _build_instance_runtime_configs(instances, args, dtype_to_bits):
     runtime_configs = []
     for instance_id, instance in enumerate(instances):
@@ -180,8 +203,9 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
                 "enable_chunked_prefill", args.enable_chunked_prefill),
             "enable_prefix_caching": instance.get(
                 "enable_prefix_caching", args.enable_prefix_caching),
-            "gpu_memory_utilization": instance.get(
-                "gpu_memory_utilization", args.gpu_memory_utilization),
+            "npu_memory_utilization": _resolve_mem_util(
+                instance, args.npu_memory_utilization),
+            "reserve_full_isl": instance.get("reserve_full_isl", args.reserve_full_isl),
             "enable_local_offloading": instance.get(
                 "enable_local_offloading", args.enable_local_offloading),
             "enable_attn_offloading": enable_attn_offloading,
@@ -258,9 +282,16 @@ def main():
     parser.add_argument('--enable-sub-batch-interleaving', action='store_true', default=False,
                         help='enable sub-batch interleaving to overlap XPU and PIM computation. '
                         'Requires --enable-attn-offloading')
-    parser.add_argument('--gpu-memory-utilization', type=float, default=0.9,
-                        help='fraction of NPU memory the instance may use for weights plus '
-                        'KV cache, as in vLLM. KV capacity is '
+    parser.add_argument('--reserve-full-isl', action=argparse.BooleanOptionalAction, default=True,
+                        help='admit a request only if its whole sequence fits in the KV cache, '
+                        'not merely its first chunk. Mirrors vLLM\'s scheduler_reserve_full_isl '
+                        '(True there too); without it chunked prefill over-admits and thrashes '
+                        'the KV cache. Override per instance with "reserve_full_isl"')
+    parser.add_argument('--npu-memory-utilization', type=float, default=0.9,
+                        help='fraction of NPU memory an instance may use for weights plus '
+                        "KV cache. Corresponds to vLLM's --gpu-memory-utilization, renamed "
+                        'because every other memory surface here is NPU-terminology; '
+                        'override per instance with "npu_mem": {"mem_util": ...}. KV capacity is '
                         '(npu_mem * this - model weight); the activation peak and CUDA '
                         'context that vLLM also subtracts are not modelled, so the '
                         'resulting capacity is an upper bound on vLLM\'s at the same value')
@@ -308,7 +339,6 @@ def main():
     logger = get_logger("Main")
     print_banner()
     print_input_config(args=args)
-    print_markup("[sim.heading]▶ Starting simulation...[/]\n")
     flush.stdout.flush()
     
     _dtype_to_bits = {'float16': 16, 'bfloat16': 16, 'float32': 32, 'fp8': 8, 'int8': 8}
@@ -464,8 +494,28 @@ def main():
             cxl_mem,
             ep_size=instance.get("ep_total", 1),
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
-            gpu_memory_utilization=inst_cfg["gpu_memory_utilization"],
+            npu_memory_utilization=inst_cfg["npu_memory_utilization"],
+            reserve_full_isl=inst_cfg["reserve_full_isl"],
         ))
+
+    # The derived KV capacity, not the utilization fraction, is what decides
+    # memory pressure. It is per instance and only known once the schedulers
+    # exist, so it gets its own section rather than a row in the input-config
+    # block, which is printed before any of this is resolved.
+    print_heading("KV Cache Initialization")
+    print_markup("")
+    # Pad only as far as the widest label, so the line stays inside the rule.
+    pad = max(len(f"Instance [{i}]") for i in range(len(schedulers)))
+    for inst_id, sched in enumerate(schedulers):
+        pool = sched.memory.npu_pool
+        label = f"Instance \\[{inst_id}]"
+        print_markup(
+            f"  \u2022 [cyan]{label:<{pad + 1}}[/cyan] : "
+            f"{pool.num_blocks * pool.block_size} tokens / {pool.num_blocks} blocks "
+            f"({pool.num_blocks * pool.bytes_per_block / GB_TO_BYTE:.2f} GiB/rank "
+            f"at util {sched.memory.npu_memory_utilization:.2f})"
+        )
+    print_rule()
 
     # Controller for astra-sim process communication
     controller = Controller(total_npu)
@@ -550,6 +600,9 @@ def main():
     dp_ready_workloads = {}  # instance_id -> workload_path
 
     # ----------------------------------- Start simulation loop ------------------------------------
+    print_markup("[sim.heading]▶ Starting simulation...[/]\n")
+    flush.stdout.flush()
+
     # Starting simulation, one while loop processes one iteration
     while True:
         

@@ -353,6 +353,10 @@ arrival time to avoid busy-looping.
 - There is **one** `schedule()` for prefix caching on and off. The pool handles
   `enable_caching=False` the way vLLM does (allocate through the same free list, never
   index), so do not reintroduce a second scheduler
+- Admission also refuses a request whose *whole* sequence would not fit, not just
+  its first chunk (`--reserve-full-isl`, on by default, per-instance
+  `reserve_full_isl`). Mirrors vLLM's `scheduler_reserve_full_isl`, `True` there
+  too; checking only the first chunk lets chunked prefill over-admit
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
 - **There is no prefill phase or decode phase.** A request just catches up to
@@ -375,7 +379,7 @@ arrival time to avoid busy-looping.
   vLLM with prefix caching off (a resume recomputes the whole sequence);
   `--enable-prefix-caching` = default vLLM; plus `--prefix-storage CPU/CXL` = vLLM with
   LMCache / `OffloadingConnector` attached
-- KV capacity is `npu_mem * gpu_memory_utilization - weight`, divided into `--block-size`
+- KV capacity is `npu_mem.mem_size * npu_mem.mem_util - weight`, divided into `--block-size`
   blocks. vLLM also subtracts the activation peak and CUDA context, which are not modelled,
   so the simulator's capacity is an upper bound at the same utilization
 - `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
@@ -428,6 +432,10 @@ Cluster configs in `configs/cluster/` define hardware topology. Key instance fie
 - `ep_size`: expert parallel degree (optional, default `tp_size` for MoE, 1 for dense)
 - `dp_group`: DP group ID string (optional, instances with same string share experts)
 - `npu_mem.mem_bw`: NPU memory bandwidth (also set as `local-mem-bw` in system.json)
+- `npu_mem.mem_util`: fraction of `mem_size` usable for weights plus KV cache (optional,
+  default from `--npu-memory-utilization`, itself `0.9`). KV capacity is
+  `mem_size * mem_util - weight`. Sits inside `npu_mem` because its only job is to
+  scale `mem_size`, and it follows that block's `mem_*` naming
 - `cpu_mem.mem_bw`: CPU memory bandwidth (set as remote memory in memory_expansion.json)
 - `link_bw`: inter-node bandwidth in GB/s (set in network.yml)
 - `link_latency`: inter-node link latency in ns

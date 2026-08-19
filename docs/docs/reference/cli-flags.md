@@ -28,7 +28,8 @@ matching runtime knobs per `instances[i]`; see
 | `--max-num-batched-tokens` | int | `2048` | Max tokens per iteration across all requests (token budget) |
 | `--long-prefill-token-threshold` | int | `0` | Per-request token cap per step for chunked prefill. `0` = disabled |
 | `--enable-chunked-prefill` | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
-| `--gpu-memory-utilization` | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache, as in vLLM. KV capacity is `npu_mem * this - model weight` |
+| `--npu-memory-utilization` | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
+| `--reserve-full-isl` / `--no-reserve-full-isl` | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
 | `--block-size` | int | `16` | KV cache block size in tokens |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 

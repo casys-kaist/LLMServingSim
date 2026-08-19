@@ -196,6 +196,49 @@ class TieredKVCacheManager:
 
     # -------------------- allocation --------------------
 
+    def _num_blocks_to_allocate(self, req, num_tokens, new_computed_blocks):
+        """NPU blocks the pool would have to hand over to give ``req`` slots for
+        ``num_tokens`` in total. Port of
+        ``single_type_kv_cache_manager.get_num_blocks_to_allocate``.
+        """
+        req_blocks = self.req_to_blocks.get(req.id, ())
+        num_required_blocks = cdiv(num_tokens, self.block_size)
+        if req.id in self.num_cached_block:
+            # Fast path: a running request has no new prefix hits to account for.
+            return max(num_required_blocks - len(req_blocks), 0)
+        num_known_blocks = len(new_computed_blocks) + len(req_blocks)
+        num_new_blocks = max(num_required_blocks - num_known_blocks, 0)
+        # A hit block sitting in the free list leaves it when touched, so it
+        # consumes free capacity too and must be counted here.
+        num_evictable = sum(1 for b in new_computed_blocks if b.ref_cnt == 0)
+        return num_new_blocks + num_evictable
+
+    def can_fit_full_sequence(self, req, new_computed_blocks=None,
+                              num_new_computed_tokens=0, num_lower_tier_tokens=0):
+        """Would ``req``'s whole sequence fit, not just this step's chunk?
+
+        vLLM's admission gate (``kv_cache_manager.can_fit_full_sequence``, called
+        from ``schedule()`` under ``scheduler_reserve_full_isl``, which defaults
+        to True). Without it, chunked prefill admits a request on the strength of
+        its first chunk, the request then grows past what the pool can hold, and
+        something has to be preempted -- the "over-admission and KV cache
+        thrashing" the vLLM config docstring names.
+
+        Measured on the RTX 4090 replay, the absence of this gate was worth
+        ~230 preemptions and ~145k recomputed tokens at *every* utilization from
+        0.8 to 1.0, i.e. it is not a capacity effect.
+        """
+        new_computed_blocks = new_computed_blocks or []
+        total_computed = (req.num_computed_tokens + num_new_computed_tokens
+                          + num_lower_tier_tokens)
+        # The length reached so far, which for a request being admitted for the
+        # first time is its whole prompt. num_tokens_reached rather than
+        # num_computed_tokens: preemption resets the latter to 0.
+        full_num_tokens = max(req.num_tokens_reached, total_computed)
+        return self._num_blocks_to_allocate(
+            req, full_num_tokens, new_computed_blocks
+        ) <= self.npu_pool.get_num_free_blocks()
+
     def allocate_slots(self, req, num_new_tokens, new_computed_blocks=None,
                        num_new_computed_tokens=0, num_lower_tier_tokens=0):
         """Give ``req`` slots for ``num_new_tokens`` more tokens.
@@ -212,25 +255,17 @@ class TieredKVCacheManager:
         num_local_computed = req.num_computed_tokens + num_new_computed_tokens
         total_computed = num_local_computed + num_lower_tier_tokens
         num_tokens_need_slot = total_computed + num_new_tokens
-        num_required_blocks = cdiv(num_tokens_need_slot, self.block_size)
 
-        if req.id in self.num_cached_block:
+        if req.id in self.num_cached_block and (new_computed_blocks or num_lower_tier_tokens):
             # Running request: it cannot pick up new prefix hits mid-flight.
-            if new_computed_blocks or num_lower_tier_tokens:
-                raise RuntimeError(
-                    f"[TieredKVCacheManager] request {req.id} is running but was "
-                    f"given new computed blocks"
-                )
-            num_blocks_to_allocate = max(num_required_blocks - len(req_blocks), 0)
-        else:
-            num_known_blocks = len(new_computed_blocks) + len(req_blocks)
-            num_new_blocks = max(num_required_blocks - num_known_blocks, 0)
-            # A hit block sitting in the free list leaves it when touched, so
-            # it consumes free capacity too and must be counted here.
-            num_evictable = sum(1 for b in new_computed_blocks if b.ref_cnt == 0)
-            num_blocks_to_allocate = num_new_blocks + num_evictable
+            raise RuntimeError(
+                f"[TieredKVCacheManager] request {req.id} is running but was "
+                f"given new computed blocks"
+            )
 
-        if num_blocks_to_allocate > self.npu_pool.get_num_free_blocks():
+        if self._num_blocks_to_allocate(
+                req, num_tokens_need_slot, new_computed_blocks
+        ) > self.npu_pool.get_num_free_blocks():
             return None
 
         # ---- past this point the allocation is guaranteed to succeed ----
@@ -494,6 +529,25 @@ def _selftest():
     r.num_computed_tokens = 0
     assert m.get_computed_blocks(r) == ([], 0, 0)
     assert m.npu_pool.is_free()
+
+    # can_fit_full_sequence: the gate refuses a request whose first chunk fits
+    # but whose whole prompt does not
+    m = new_mgr(npu_blocks=8)                       # 8 blocks = 128 tokens
+    r = Req(list(range(2048)))                      # 128 full blocks wanted
+    _, npu_hit, low_hit = m.get_computed_blocks(r)
+    assert m.can_fit_full_sequence(r, [], npu_hit, low_hit) is False
+    assert m.allocate_slots(r, 64) is not None, "a single chunk still fits"
+    m.free(r)
+    r2 = Req(list(range(100)))                      # 6 full blocks + tail
+    assert m.can_fit_full_sequence(r2, [], 0, 0) is True
+    # a hit already on the NPU does not have to be re-reserved
+    m = new_mgr(npu_blocks=8)
+    a = Req(list(range(64)))
+    m.allocate_slots(a, 64); a.num_computed_tokens = 64
+    b = Req(list(range(64)))
+    blocks, npu_hit, low_hit = m.get_computed_blocks(b)
+    assert npu_hit == 48
+    assert m.can_fit_full_sequence(b, blocks, npu_hit, low_hit) is True
 
     # no leaks after a normal finish
     m = new_mgr()

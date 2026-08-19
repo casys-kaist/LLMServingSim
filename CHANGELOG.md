@@ -20,12 +20,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   the same chain, which is vLLM's
   `offloading/scheduler.py::_get_block_hashes`. One walk over a request's
   hashes now yields both the NPU hit and the lower-tier hit.
-- `--gpu-memory-utilization` (default `0.9`) with a per-instance
-  `gpu_memory_utilization` cluster-config override. KV capacity is
+- `--npu-memory-utilization` (default `0.9`) with a per-instance
+  `npu_mem.mem_util` cluster-config override, named to match its `mem_*`
+  siblings and placed beside the `mem_size` it scales. Corresponds to vLLM's
+  `--gpu-memory-utilization`, renamed because every other memory surface here
+  uses NPU terminology. KV capacity is
   `npu_mem * utilization - model weight`, mirroring vLLM's
   `requested_memory - non_kv_cache_memory`. vLLM also subtracts the activation
   peak and CUDA context, which are not modelled, so the simulator's capacity is
   an upper bound at the same utilization.
+- `--reserve-full-isl` (on by default) with a per-instance `reserve_full_isl`
+  cluster-config override: admit a request only if its whole sequence fits, not
+  merely its first chunk. Port of vLLM's `scheduler_reserve_full_isl`, which is
+  also `True` there and is documented as preventing "over-admission and KV cache
+  thrashing with chunked prefill".
+- A `KV Cache Initialization` section in the startup output, listing each
+  instance's derived block/token capacity and the utilization it came from. The
+  fraction alone does not tell you where memory pressure will land; the block
+  count does.
 - `Request.num_tokens_reached` (prompt + generated), the independent sequence
   length that mirrors vLLM's `len(_all_token_ids)`. It cannot be derived from
   `num_computed_tokens`, which preemption resets to 0.
@@ -85,11 +97,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   real offload tier.
 
 ### Removed
-- `serving/core/radix_tree.py` (675 lines). Its allocator role was inexact:
-  `evictable_size_` counted every unlocked token while `evict()` could only drop
-  unlocked *leaves*, and charging happened later via tree events rather than in
-  the call that could fail. The SGLang attribution stays in `CONTRIBUTORS.md` as
-  history.
+- `serving/core/radix_tree.py` (675 lines), the SGLang-derived prefix-cache
+  radix tree, **replaced by `block_pool.py` + `kv_cache_manager.py`** (see
+  Added). It had served as both the prefix index and the allocator, and as an
+  allocator it was inexact: `evictable_size_` counted every unlocked token while
+  `evict()` could only drop unlocked *leaves*, and charging happened later via
+  tree events rather than in the call that could fail. Prefix caching keeps all
+  of its user-visible behaviour -- `--enable-prefix-caching`,
+  `--enable-prefix-sharing`, `--prefix-storage` are unchanged. The SGLang
+  attribution stays in `CONTRIBUTORS.md` as history.
 - `--prioritize-prefill` and the per-instance `prioritize_prefill` key, along
   with `Scheduler._merge_by_arrival_id` (its only caller). vLLM v0.19.0 has no
   equivalent: `vllm/core/` — the V0 scheduler whose `_schedule_default` served
