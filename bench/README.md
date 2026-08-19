@@ -74,7 +74,15 @@ summary into a subdirectory of the bench run.
 ```
 bench/results/<run_id>/
   meta.json            run metadata (model, vLLM version, engine kwargs,
-                       dataset hash, wall-clock start/end)
+                       dataset hash, wall-clock start/end) plus what vLLM
+                       *resolved*: kv_cache (num_gpu_blocks, block_size,
+                       num_kv_tokens, gpu_memory_utilization), hardware
+                       (device name, total memory, CUDA/torch), and
+                       resolved_config (the whole VllmConfig, one key per
+                       sub-config). num_gpu_blocks is the KV capacity a
+                       simulator has to match; the rest of that budget is
+                       known up front, so it is the only place vLLM's
+                       activation peak shows up.
   requests.jsonl       per-request timing — request_id, input_toks,
                        output_toks, arrival_time, queued_ts, scheduled_ts,
                        first_token_ts, last_token_ts

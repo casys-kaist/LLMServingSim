@@ -37,6 +37,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   merely its first chunk. Port of vLLM's `scheduler_reserve_full_isl`, which is
   also `True` there and is documented as preventing "over-admission and KV cache
   thrashing with chunked prefill".
+- `meta.json` from `python -m bench run` now records vLLM's **resolved**
+  configuration, not just the ten engine kwargs we asked for: `kv_cache`
+  (`num_gpu_blocks`, `block_size`, `num_kv_tokens`, `gpu_memory_utilization`),
+  `hardware` (accelerator name, total memory, compute capability, CUDA and torch
+  versions), and `resolved_config` (the whole `VllmConfig`, one key per
+  sub-config, ~296 leaf fields on v0.19.0). `num_gpu_blocks` is the number a
+  simulator has to match, and the only place the activation peak and CUDA
+  context vLLM subtracts from its budget become visible. Built by walking the
+  config's own field list, so a vLLM upgrade that adds a knob appears without a
+  code change; values JSON cannot hold become a short type tag, keeping the file
+  at ~12 KB. All three are optional -- read them with `meta.get(...)`, since
+  older runs lack them.
 - A `KV Cache Initialization` section in the startup output, listing each
   instance's derived block/token capacity and the utilization it came from. The
   fraction alone does not tell you where memory pressure will land; the block
