@@ -103,6 +103,7 @@ class TraceCtx:
     kv_head: int
     head_dim: int
     is_moe: bool
+    kv_fp: int    # bytes per KV element (1 for fp8, else fp) -- P/D transfer sizing
     pd_type: str  # 'prefill', 'decode', or None
     tp_size: int       # tensor parallel degree (for ALLREDUCE on attention/FFN)
     pp_size: int       # pipeline parallel degree
@@ -860,6 +861,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         enable_attn_offloading=enable_attn_offloading,
         power_model=power_model, pim_model=pim_model, pim_channels=pim_channels,
         n_head=n_head, kv_head=kv_head, head_dim=head_dim, is_moe=is_moe,
+        kv_fp=(1 if kv_cache_dtype == 'fp8' else fp),
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
@@ -964,9 +966,29 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             power_acc.dram_weight_bytes += wt
         if comm_size > 0:
             collective = comm_type.split(':', 1)[0].lower()
-            power_acc.link_data_bytes += total_ring_data(comm_size, ctx.tp_size, collective=collective)
+            if collective == 'none':
+                # Point-to-point (the P/D KV send): the bytes cross the link once,
+                # with no ring amplification.
+                power_acc.link_data_bytes += comm_size
+            else:
+                power_acc.link_data_bytes += total_ring_data(comm_size, ctx.tp_size, collective=collective)
 
     return latency_ns
+
+
+def _pd_kv_send_bytes(ctx, bctx):
+    """Per-layer, per-rank KV bytes a prefill instance ships to its decode peer.
+
+    ``batch.pd_kv_send_tokens`` counts this iteration's computed tokens plus, on a
+    request's first step, its prefix-cache hit: the decode side needs that KV even
+    though the prefill side read it from cache instead of computing it. Using the
+    trace's ``total_len`` instead would silently drop exactly the hit.
+    """
+    tokens = getattr(bctx.batch, 'pd_kv_send_tokens', 0) or 0
+    if tokens <= 0:
+        return 0
+    kv_dim = ctx.kv_head * ctx.head_dim
+    return 2 * kv_dim * tokens * ctx.kv_fp // max(ctx.tp_size, 1)
 
 
 def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
@@ -1173,6 +1195,21 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
             comm_size, comm_type = _tp_comm(ctx, layer_name, bctx.total_len)
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         comm_type=_with_dim(comm_type, ctx.tp_dim), comm_size=comm_size)
+        elif layer_name == 'qkv_proj' and ctx.pd_type == 'prefill':
+            # P/D disaggregation: this layer's KV has to reach the paired decode
+            # instance. The Chakra converter's PREFILL path emits a point-to-point
+            # send after every *v_proj layer and takes the byte count from the
+            # trace's comm_size column, so put the KV size there.
+            #
+            # Deliberately not the layer's output_size, which the converter used
+            # to read: that is the whole QKV activation, so it shipped Q as well
+            # and overstated the transfer by (q_dim + 2*kv_dim) / (2*kv_dim) --
+            # 3x for Llama-3.1-8B, 1.5x for MHA, more at wider GQA ratios -- and
+            # it ignored kv_cache_dtype. comm_type stays NONE: the converter
+            # builds a SEND/RECV pair, for which ASTRA-Sim reads comm_size,
+            # comm_src, comm_dst and comm_tag.
+            _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
+                        comm_size=_pd_kv_send_bytes(ctx, bctx))
         else:
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num)
 
@@ -1635,16 +1672,18 @@ def _make_sub_batch(batch):
     if len(batch.requests) == 1:
         return [batch]
 
-    # scheduler attaches per-request chunk sizes; honor them so chunked-prefill
-    # later chunks (is_init=False but still is_prefill()) and prefix-cached
-    # tokens are accounted for correctly (chunk_size already excludes hits via
-    # num_computed_tokens).
-    sched = getattr(batch, 'scheduled_tokens', {}) or {}
+    # Read the split off the parent batch rather than off the request objects.
+    # The scheduler advances num_computed_tokens when it forms the batch (as vLLM
+    # does), so a request's own counter already reflects the state *after* this
+    # iteration; q_list / k_list carry the values this iteration actually ran
+    # with, aligned with batch.requests.
+    per_req = {
+        req.id: (q, k)
+        for req, q, k in zip(batch.requests, batch.q_list, batch.k_list)
+    }
 
     def compute_tokens(req):
-        if req.is_prefill():
-            return sched.get(req.id, max(1, req.original_input - req.num_computed_tokens))
-        return 1
+        return per_req[req.id][0]
 
     # Greedy split: longest per-iteration compute first, assign to lighter side.
     reqs = sorted(batch.requests, key=compute_tokens, reverse=True)
@@ -1670,21 +1709,21 @@ def _make_sub_batch(batch):
         decode_k_list = []
 
         for req in sub_reqs:
-            if req.is_prefill():
-                chunk = compute_tokens(req)
-                total_len += chunk
-                q_list.append(chunk)
+            chunk, kv_before = per_req[req.id]
+            total_len += chunk
+            q_list.append(chunk)
+            k_list.append(kv_before)
+            # More than one token is a prefill chunk, exactly one is a decode --
+            # the same classification the parent batch used, and the one the
+            # attention profile axes expect.
+            if chunk > 1:
                 prefill_q_list.append(chunk)
-                # KV already in cache from prior chunks plus any prefix-cache hit.
-                prefill_k_list.append(req.num_computed_tokens)
+                prefill_k_list.append(kv_before)
                 num_prefill += 1
             else:
-                total_len += 1
-                q_list.append(1)
-                kv_len += req.num_computed_tokens
-                decode_k_list.append(req.num_computed_tokens)
+                kv_len += kv_before
+                decode_k_list.append(kv_before)
                 num_decode += 1
-            k_list.append(req.num_computed_tokens)
 
         # evict/load are counted once for the original batch; attach to sub-batch 0 only.
         evict, load = (batch.evict, batch.load) if i == 0 else (0, 0)

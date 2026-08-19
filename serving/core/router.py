@@ -80,8 +80,8 @@ class Router:
         for offset in range(num_instances):
             idx = (start + offset) % num_instances
             sched = schedulers[idx]
-            waiting = len(sched.request)
-            running = sum(len(b.requests) for b in sched.inflight)
+            waiting = len(sched.waiting)
+            running = len(sched.running)
             raw_score = waiting * 4 + running
             capacity = getattr(sched, "max_num_seqs", 0)
             score = raw_score
@@ -316,7 +316,7 @@ class Router:
         for scheduler in self.schedulers:
             self.logger.info(
                 "Added %d requests to scheduler[%d] (%s type)",
-                len(scheduler.request),
+                len(scheduler.waiting),
                 scheduler.instance_id,
                 scheduler.pd_type
             )

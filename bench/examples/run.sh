@@ -121,6 +121,10 @@ run_example() {
         --network-backend "$NETWORK_BACKEND"
     )
 
+    if [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]]; then
+        cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
+    fi
+
     echo "============================================================"
     echo "Example: $model_dir"
     echo "Dataset: $dataset_cli"

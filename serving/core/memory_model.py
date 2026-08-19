@@ -1,20 +1,32 @@
-import os, threading
+import os
 from .utils import get_config
-from .radix_tree import *
-import logging
-from enum import Enum
+from .block_pool import Device, BlockPool, PrefixCacheStats
+from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
+from .logger import get_logger
 
 GB_TO_BYTE = 1024 * 1024 * 1024
 MB_TO_BYTE = 1024 * 1024
 KB_TO_BYTE = 1024
 
-class Device(Enum):
-    NPU = 1
-    CPU = 2
-    CXL = 3
+# LMCache's default chunk size. A host offload tier stores whole chunks of this
+# many tokens, which must be a multiple of the NPU block size -- the tier keys on
+# every (chunk // block_size)-th hash of the same chain. vLLM's own
+# OffloadingConnector defaults to a factor of 1; 256 is kept because it matches
+# LMCache and preserves the shared pool's existing granularity.
+LOWER_TIER_CHUNK_TOKENS = 256
+
 
 class MemoryModel():
-    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto'):
+    """Per-instance memory accounting, over one block pool per tier.
+
+    Static sizing math (weights, per-layer tensor shapes, KV bytes per token)
+    stays here because ``trace_generator`` and ``__main__`` import it. Everything
+    about *which* blocks exist and *where* they live belongs to
+    :class:`TieredKVCacheManager`, so there is exactly one ledger per tier and
+    an allocation that cannot be satisfied says so in the call that asks.
+    """
+
+    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', gpu_memory_utilization=1.0):
         self.model = model
         self.node_id = node_id
         self.instance_id = instance_id
@@ -31,6 +43,7 @@ class MemoryModel():
         self.enable_prefix_caching = enable_prefix_caching
         self.enable_prefix_sharing = enable_prefix_sharing
         self.prefix_storage = prefix_storage
+        self.gpu_memory_utilization = gpu_memory_utilization
 
         self.config = get_config(model)
         self.n_embd = self.config['hidden_size']
@@ -48,51 +61,99 @@ class MemoryModel():
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
 
-        # Memory model
         self.weight = self.get_weight() # assume weight is loaded
-        self.npu_used = self.weight
-        self.cpu_used = 0
         if self.weight > self.npu_mem:
             raise RuntimeError(f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: Model size {self.weight*self.num_npus//GB_TO_BYTE}GB exceeds total NPU memory {self.npu_mem*self.num_npus//GB_TO_BYTE}GB")
 
-        if enable_prefix_caching:
-            one_token_kv_size = self.get_kv(1)
-            self.mem_for_kv = self.npu_mem - self.weight
-            self.npu_prefix_cache = RadixCache(device='NPU', 
-                                               node_id=self.node_id,
-                                               instance_id=self.instance_id,
-                                               page_size=self.block_size,
-                                               capacity=self.mem_for_kv,
-                                               kv_size=one_token_kv_size,
-                                               enable_kv_cache_events=True,
-                                                )
-            if prefix_storage is not None:
-                if enable_prefix_sharing and prefix_pool is not None:
-                    self.second_tier_prefix_cache = prefix_pool
-                else:
-                    prefix_cache_capacity = 0
-                    if prefix_storage == Device.CPU:
-                        device = "CPU"
-                        prefix_cache_capacity = self.cpu_mem
-                    elif prefix_storage == Device.CXL:
-                        device = "CXL"
-                        prefix_cache_capacity = self.cxl_mem
-                    else:
-                        raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}]: Device {prefix_storage} is currently not supported as a second tier prefix cache storage")
-                    # print("[instance {}] prefix_cache_capacity : {}".format(instance_id, prefix_cache_capacity // GB_TO_BYTE))
-                    self.second_tier_prefix_cache = RadixCache(device=device, 
-                                                    node_id=self.node_id,
-                                                    instance_id=self.instance_id,
-                                                    page_size=1,
-                                                    capacity=prefix_cache_capacity,
-                                                    kv_size=(one_token_kv_size * self.num_npus),
-                                                    enable_kv_cache_events=True,
-                                                    )
-                
-        # Hash id -> token length for corresponding prefix cache block
-        self._npu_cache_hashtolen = {}
-        self._cpu_cache_hashtolen = {}
-        self._bytes_per_token = self.get_kv(1)  # bytes per token for kv cache
+        # Non-KV bytes the instance holds outside the pools: model weights, plus
+        # anything --enable-local-offloading or the PIM model loads explicitly.
+        self._npu_reserved = self.weight
+        self._cpu_reserved = 0
+
+        self._bytes_per_token = self.get_kv(1)              # per rank
+        self._npu_bytes_per_block = self._bytes_per_token * block_size
+        self._cluster_bytes_per_token = self._bytes_per_token * self.num_npus
+
+        # vLLM: requested = total_gpu_memory * gpu_memory_utilization, then
+        # subtract the non-KV memory (weights, and the activation peak plus CUDA
+        # context, which the simulator cannot profile and does not model -- so
+        # this capacity is an upper bound on vLLM's at the same utilization).
+        requested = int(self.npu_mem * self.gpu_memory_utilization)
+        kv_bytes = requested - self.weight
+        if kv_bytes < self._npu_bytes_per_block:
+            raise RuntimeError(
+                f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: "
+                f"gpu_memory_utilization={self.gpu_memory_utilization} leaves "
+                f"{kv_bytes / MB_TO_BYTE:.2f}MB for the KV cache "
+                f"({requested / MB_TO_BYTE:.2f}MB requested of "
+                f"{self.npu_mem / MB_TO_BYTE:.2f}MB, minus "
+                f"{self.weight / MB_TO_BYTE:.2f}MB of weights), which is less "
+                f"than one {block_size}-token block "
+                f"({self._npu_bytes_per_block / MB_TO_BYTE:.2f}MB)"
+            )
+        npu_blocks = kv_bytes // self._npu_bytes_per_block
+
+        self.npu_pool = BlockPool(
+            Device.NPU, int(npu_blocks), block_size, self._npu_bytes_per_block,
+            enable_caching=enable_prefix_caching,
+            node_id=node_id, instance_id=instance_id,
+        )
+        self.logger.info(
+            "NPU: KV cache %d blocks (%d tokens, %.2fMB) at utilization %.2f",
+            self.npu_pool.num_blocks,
+            self.npu_pool.num_blocks * block_size,
+            self.npu_pool.num_blocks * self._npu_bytes_per_block / MB_TO_BYTE,
+            self.gpu_memory_utilization,
+        )
+
+        # Victim tiers, in lookup order. Present only with --prefix-storage:
+        # without it there is no host KV tier, exactly as in plain vLLM, so a
+        # preempted request recovers whatever is still resident on the NPU and
+        # recomputes the rest.
+        self.lower_pools = []
+        self.storage_pool = None
+        if enable_prefix_caching and prefix_storage is not None:
+            self.storage_pool = self._build_storage_pool(prefix_pool, prefix_storage)
+            self.lower_pools.append(self.storage_pool)
+
+        self.kv = TieredKVCacheManager(
+            block_size, self.npu_pool, self.lower_pools,
+            enable_caching=enable_prefix_caching,
+        )
+
+    def _build_storage_pool(self, prefix_pool, prefix_storage):
+        """The second-tier pool: shared across instances, or private.
+
+        Its blocks hold ``LOWER_TIER_CHUNK_TOKENS`` tokens and are sized in
+        full-cluster bytes, because a host copy holds every rank's shard.
+        """
+        if self.enable_prefix_sharing and prefix_pool is not None:
+            if prefix_pool.block_size % self.block_size != 0:
+                raise RuntimeError(
+                    f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: "
+                    f"shared prefix pool block_size {prefix_pool.block_size} is not "
+                    f"a multiple of this instance's block_size {self.block_size}"
+                )
+            expected = self._cluster_bytes_per_token * prefix_pool.block_size
+            if prefix_pool.bytes_per_block != expected:
+                raise RuntimeError(
+                    f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: "
+                    f"shared prefix pool bytes_per_block {prefix_pool.bytes_per_block} "
+                    f"disagrees with this instance's {expected} — instances sharing a "
+                    f"pool must share model, dtype and kv_cache_dtype"
+                )
+            return prefix_pool
+
+        if prefix_storage == Device.CPU:
+            capacity = self.cpu_mem
+        elif prefix_storage == Device.CXL:
+            capacity = self.cxl_mem
+        else:
+            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}]: Device {prefix_storage} is currently not supported as a second tier prefix cache storage")
+        return build_prefix_pool(prefix_storage, capacity, self.block_size,
+                                 self._cluster_bytes_per_token,
+                                 node_id=self.node_id, instance_id=self.instance_id)
+
     def get_weight(self):
         """Per-GPU model weight in bytes.
 
@@ -143,6 +204,8 @@ class MemoryModel():
             block_weight += ffn2_w
         return block_weight
 
+    # -------------------- KV sizing math --------------------
+
     def get_kv(self, seq):
         # shape of kv cache
         # (kv_head, batch_size, n_embd//n_head, seq_len) per layer
@@ -150,79 +213,32 @@ class MemoryModel():
 
         # K & V multiply 2
         return 2 * self.kv_dim * seq * self.n_layer * self.kv_fp // self.num_npus
-    
-    # get the total size of current kv cache for the request
-    # used when adding prefilled request to decode instance.
+
     def get_total_kv(self, req):
-        # ceil division: (n + block_size - 1) // block_size
+        """Bytes of KV a request's whole computed context occupies, per rank.
+
+        Only used when handing a prefilled request to a decode instance, where
+        the decode side allocates the full context in one go.
+        """
         num_blocks = (req.num_computed_tokens + self.block_size - 1) // self.block_size
         return self.get_kv(num_blocks * self.block_size)
 
-    # get size of kv block that should be 'added'. including new init requests
-    # also checks evicted request and include its kv cache
-    # scheduled_tokens: dict mapping request id to number of tokens scheduled this step
-    # 
-    # vLLM-style cumulative allocation:
-    #   blocks_after = ceil((computed + scheduled) / block_size)
-    #   blocks_before = ceil(computed / block_size) if computed > 0 else 0
-    #   new_blocks = blocks_after - blocks_before
-    def get_block_kv(self, batch_req, batch_len, scheduled_tokens=None):
-        # print("[get_block_kv] current batch_req length : {}".format(batch_len))
-        block_kv_size = 0
-        for i in range(batch_len):
-            req = batch_req[i]
-            if req.evict or req.is_prefill():
-                # Prefill and reloaded decode requests may allocate newly
-                # computed blocks. Existing evicted KV is reloaded separately
-                # by Scheduler.load_size.
-                hit = req.npu_cache_hit if self.enable_prefix_caching else 0
-                
-                if scheduled_tokens and req.id in scheduled_tokens:
-                    tokens_this_step = scheduled_tokens[req.id]
-                else:
-                    raise RuntimeError("[MemoryModel] [node_id={self.node_id},inst={self.instance_id}]: scheduled_tokens cannot be None")
-                
-                # vLLM-style cumulative block allocation
-                computed_before = req.num_computed_tokens
-                
-                total_after = computed_before + tokens_this_step
-                
-                # Calculate blocks needed (cumulative)
-                blocks_after = (total_after + self.block_size - 1) // self.block_size
-                blocks_before = (computed_before + self.block_size - 1) // self.block_size if computed_before > 0 else 0
-                
-                
-                new_blocks = max(0, blocks_after - blocks_before)
-                block_kv_size += self.get_kv(new_blocks * self.block_size)
-                # print("[DEBUG] hit : {} | tokens_this_step : {} | computed_before : {} | total_after : {} | new_blocks : {} | block_kv_size : {}".format(
-                #     hit, tokens_this_step, computed_before, total_after, new_blocks, block_kv_size
-                # ))
-            else:
-                # Decode: use num_computed_tokens (or input for backwards compat)
-                computed = req.num_computed_tokens
-                num_before = (computed + self.block_size - 1) // self.block_size if computed > 0 else 0
-                num_after = (computed + 1 + self.block_size - 1) // self.block_size
-                if num_after > num_before: # difference of the block is maximum one block
-                    block_kv_size += self.get_kv(self.block_size)
-        return block_kv_size
-    
-    # get size of kv cache that should be evicted
-    def get_evict_kv(self, req):
-        evict_size = 0
-        # Use num_computed_tokens if available, fallback to input for backwards compat
-        computed = req.num_computed_tokens
-        hit = req.npu_cache_hit if self.enable_prefix_caching else 0
-        needed = max(0, computed - hit)
-        # ceil division: (needed + block_size - 1) // block_size
-        num_blocks = (needed + self.block_size - 1) // self.block_size
-        evict_size += self.get_kv(num_blocks * self.block_size)
-        return evict_size
+    def pd_kv_bytes(self, num_tokens):
+        """KV bytes to ship to a paired decode instance for ``num_tokens``.
+
+        Per rank, and K+V only -- deliberately *not* the ``qkv_proj`` output,
+        which also carries Q and so overstated the P/D transfer by
+        (q_dim + 2*kv_dim) / (2*kv_dim): 3x for Llama-3.1-8B, 1.5x for MHA,
+        more at wider GQA ratios. It also honours ``kv_cache_dtype``, which the
+        activation size did not.
+        """
+        return 2 * self.kv_dim * num_tokens * self.n_layer * self.kv_fp // self.tp_size
 
     def free_weight(self):
-        if self.npu_used - self.weight < 0:
+        if self._npu_reserved - self.weight < 0:
             raise RuntimeError(
                 f"[MemoryModel] [node={self.node_id}, inst={self.instance_id}] NPU: tried to free model weight {self.weight / MB_TO_BYTE:.2f}MB "
-                f"but only {self.npu_used / MB_TO_BYTE:.2f}MB is used."
+                f"but only {self._npu_reserved / MB_TO_BYTE:.2f}MB is used."
             )
         self.logger.info(
             "NPU: used: %.2fMB remove: %.2fMB after: %.2fMB",
@@ -230,431 +246,163 @@ class MemoryModel():
             self.weight / MB_TO_BYTE,
             (self.npu_used - self.weight) / MB_TO_BYTE,
         )
-        self.npu_used -= self.weight
+        self._npu_reserved -= self.weight
 
-    def is_free(self):
-        is_free = self.npu_used == 0 and self.cpu_used == 0
-        if not is_free:
-            self.logger.error(
-                "Memory leak detected: NPU used: %.2fMB, CPU used: %.2fMB",
-                self.node_id,
-                self.instance_id,
-                self.npu_used / MB_TO_BYTE,
-                self.cpu_used / MB_TO_BYTE,
-            )
-        return
+    # -------------------- byte-level view over the pools --------------------
 
-    # -------------------- Memory Management --------------------
-    
+    @property
+    def npu_used(self):
+        """Bytes held on the NPU: weights and other reservations, plus KV.
+
+        A property, not a counter: there is nothing to keep in sync with the
+        pool, which is the whole point. The previous two-ledger arrangement
+        (npu_used alongside RadixCache.capacity/total_memory_usage) is what let
+        PR #59's mismatch through.
+        """
+        return self._npu_reserved + self.npu_pool.used_bytes()
+
+    @property
+    def cpu_used(self):
+        cpu = self._cpu_reserved
+        if self.storage_pool is not None and self.storage_pool.tier == Device.CPU:
+            cpu += self.storage_pool.used_bytes()
+        return cpu
+
     def allocate(self, size, device):
+        """Reserve non-KV bytes: weights, PIM buffers, local weight offloading.
+
+        KV never comes through here -- it is allocated in blocks by the pool,
+        which is the only thing that can report failure in the same call.
+        """
+        if size <= 0:
+            return
         if device == Device.NPU:
             if self.npu_used + size > self.npu_mem:
                 raise RuntimeError(
-                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] NPU: tried to load {size / MB_TO_BYTE:.2f}MB but only {(self.npu_mem - self.npu_used) / MB_TO_BYTE:.2f}MB is available."
+                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] NPU: "
+                    f"tried to load {size / MB_TO_BYTE:.2f}MB but only "
+                    f"{(self.npu_mem - self.npu_used) / MB_TO_BYTE:.2f}MB is available "
+                    f"(KV cache holds {self.npu_pool.used_blocks} of "
+                    f"{self.npu_pool.num_blocks} blocks)."
                 )
-            self.logger.info(
-                "NPU: used: %.2fMB load: %.2fMB after: %.2fMB",
-                self.npu_used / MB_TO_BYTE,
-                size / MB_TO_BYTE,
-                (self.npu_used + size) / MB_TO_BYTE,
-            )
-            self.npu_used += size
+            self._npu_reserved += size
         elif device == Device.CPU:
-            if self.prefix_storage == Device.CPU and self.enable_prefix_sharing:
-                self.second_tier_prefix_cache.allocate(size)
-            else:
-                if self.cpu_used + size > self.cpu_mem:
-                    raise RuntimeError(
-                        f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] CPU: tried to load {size / MB_TO_BYTE:.2f}MB "
-                        f"but only {(self.cpu_mem - self.cpu_used) / MB_TO_BYTE:.2f}MB is available."
-                    )
-                self.logger.info(
-                    "CPU: used: %.2fMB load: %.2fMB after: %.2fMB",
-                    self.cpu_used / MB_TO_BYTE,
-                    size / MB_TO_BYTE,
-                    (self.cpu_used + size) / MB_TO_BYTE,
-                )
-                self.cpu_used += size
-        elif device == Device.CXL:
-            self.second_tier_prefix_cache.allocate(size)
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to allocate KV cache in unsupported device {device}")
-    
-    def free(self, size, device):
-        if device == Device.NPU:
-            if self.npu_used - size < self.weight:
+            if self.cpu_used + size > self.cpu_mem:
                 raise RuntimeError(
-                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] NPU: tried to free {size / MB_TO_BYTE:.2f}MB but only {(self.npu_used - self.weight) / MB_TO_BYTE:.2f}MB is used."
+                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] CPU: "
+                    f"tried to load {size / MB_TO_BYTE:.2f}MB but only "
+                    f"{(self.cpu_mem - self.cpu_used) / MB_TO_BYTE:.2f}MB is available."
                 )
-            self.logger.info(
-                "NPU: used: %.2fMB remove: %.2fMB after: %.2fMB",
-                self.npu_used / MB_TO_BYTE,
-                size / MB_TO_BYTE,
-                (self.npu_used - size) / MB_TO_BYTE,
-            )
-            self.npu_used -= size
-
-        elif device == Device.CPU:
-            if self.prefix_storage == Device.CPU and self.enable_prefix_sharing:
-                self.second_tier_prefix_cache.free(size)
-            else:
-                if self.cpu_used - size < 0:
-                    raise RuntimeError(
-                        f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] CPU: tried to free {size / MB_TO_BYTE:.2f}MB "
-                        f"but only {self.cpu_used / MB_TO_BYTE:.2f}MB is used."
-                    )
-                self.logger.info(
-                    "CPU: used: %.2fMB remove: %.2fMB after: %.2fMB",
-                    self.cpu_used / MB_TO_BYTE,
-                    size / MB_TO_BYTE,
-                    (self.cpu_used - size) / MB_TO_BYTE,
-                )
-                self.cpu_used -= size
+            self._cpu_reserved += size
         elif device == Device.CXL:
-            self.second_tier_prefix_cache.free(size)
+            self._cpu_reserved += size
         else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to free KV cache in unsupported device {device}")
-    
+            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to allocate in unsupported device {device}")
+
+    def free(self, size, device):
+        if size <= 0:
+            return
+        if device == Device.NPU:
+            if self._npu_reserved - size < 0:
+                raise RuntimeError(
+                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] NPU: tried to free {size / MB_TO_BYTE:.2f}MB but only {self._npu_reserved / MB_TO_BYTE:.2f}MB is reserved."
+                )
+            self._npu_reserved -= size
+        elif device in (Device.CPU, Device.CXL):
+            if self._cpu_reserved - size < 0:
+                raise RuntimeError(
+                    f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] CPU: tried to free {size / MB_TO_BYTE:.2f}MB but only {self._cpu_reserved / MB_TO_BYTE:.2f}MB is reserved."
+                )
+            self._cpu_reserved -= size
+        else:
+            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to free in unsupported device {device}")
+
     def is_avail(self, size, device):
         if device == Device.NPU:
-            if self.npu_mem - self.npu_used >= size:
-                return True
-            else:
-                return False 
+            return self.npu_mem - self.npu_used >= size
         elif device == Device.CPU:
-            if self.enable_prefix_sharing:
-                return self.second_tier_prefix_cache.is_avail(size)
-            else:
-                if self.cpu_mem - self.cpu_used >= size:
-                    return True
-                else:
-                    return False 
+            return self.cpu_mem - self.cpu_used >= size
         elif device == Device.CXL:
-            return self.second_tier_prefix_cache.is_avail(size)
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to check available size of unsupported device {device}")
-    
-    def need_size(self, size, device):
-        if device == Device.NPU:
-            needed = (size - (self.npu_mem - self.npu_used))
-            if needed > 0:
-                return needed
-            else:
-                return 0
-        elif device == Device.CPU:
-            if self.enable_prefix_sharing:
-                return self.second_tier_prefix_cache.need_size(size)
-            else:
-                needed = (size - (self.cpu_mem - self.cpu_used))
-                if needed > 0:
-                    return needed
-                else:
-                    return 0
-        elif device == Device.CXL:
-            return self.second_tier_prefix_cache.need_size(size)
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to check available size of unsupported device {device}")
+            return self.cxl_mem - self.cpu_used >= size
+        raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to check available size of unsupported device {device}")
 
-    def avail_size(self, device):
-        if not self.enable_prefix_caching:
-            return 0
-        
-        if device == Device.NPU:
-            return self.npu_prefix_cache.avail_size()
-        elif device == Device.CPU or device == Device.CXL:
-            return self.second_tier_prefix_cache.avail_size()
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to get available size of prefix cache in unsupported device {device}")
-    
-    # -------------------- Prefix Cache Management --------------------
+    # -------------------- prefix cache statistics --------------------
 
-    def storage_cache_evicted_req(self, req):
-        if self.enable_prefix_caching:
-            new_last_node = self.second_tier_prefix_cache.cache_unfinished_req(req, update=False) # do not update hit counts
-            # should lock evicted kv cache in cpu
-            self.second_tier_prefix_cache.inc_lock_ref(new_last_node)
-            req.cpu_last_node = new_last_node
-            self.apply_kv_cache_events()
+    def record_prefix_stats(self, req):
+        """Count a request's prompt tokens and hits, once per tier.
 
-    def evictable_size(self, device):
-        if not self.enable_prefix_caching:
-            return 0
-        
-        if device == Device.NPU:
-            return self.npu_prefix_cache.evictable_size() * self._bytes_per_token
-        elif device == Device.CPU or device == Device.CXL:
-            return self.second_tier_prefix_cache.evictable_size() * self._bytes_per_token
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to get evictable size of prefix cache in unsupported device {device}")
-
-
-    def lock_prefix(self, req, device): 
-        # Increment lock ref count on req.npu_last_node (set by prefix_match)
+        Replaces the bookkeeping that used to ride along inside
+        ``RadixCache.cache_unfinished_req``.
+        """
         if not self.enable_prefix_caching:
             return
-        
-        if device == Device.NPU and req.npu_last_node is not None:
-            node = req.npu_last_node
-            # print(f"[LOCK] req={req.id} lock_prefix node_id={node.id} lock_ref_BEFORE={node.lock_ref}")
-            self.npu_prefix_cache.inc_lock_ref(req.npu_last_node)
-            # print(f"[LOCK] req={req.id} lock_prefix node_id={node.id} lock_ref_AFTER={node.lock_ref}")
-        elif (device == Device.CPU or device == Device.CXL) and req.cpu_last_node is not None:
-            self.second_tier_prefix_cache.inc_lock_ref(req.cpu_last_node)
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to lock prefix cache in unsupported device {device}")
-    
-    def unlock_prefix(self, req, device):
-        # Decrement lock ref count on req.npu_last_node (set by prefix_match)
-        if not self.enable_prefix_caching:
-            return
-        
-        if device == Device.NPU and req.npu_last_node is not None:
-            node = req.npu_last_node
-            # print(f"[UNLOCK] req={req.id} unlock_prefix node_id={node.id} lock_ref_BEFORE={node.lock_ref}")
-            self.npu_prefix_cache.dec_lock_ref(req.npu_last_node)
-            # print(f"[UNLOCK] req={req.id} unlock_prefix node_id={node.id} lock_ref_AFTER={node.lock_ref}")
-            req.npu_last_node = None
-            req._prefix_locked = False
-        elif device == Device.CPU and req.cpu_last_node is not None:
-            self.second_tier_prefix_cache.dec_lock_ref(req.cpu_last_node)
-            req.cpu_last_node = None
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to unlock prefix cache in unsupported device {device}")
-    
-    def cache_unfinished_req(self, req, device):
-        # Get new_last_node via cache_unfinished_req (replaces last node)
-        # Decrement old node's lock ref count, increment new node's lock ref count
-        if not self.enable_prefix_caching:
-            return
-        
-        if device == Device.NPU:
-            new_last_node = self.npu_prefix_cache.cache_unfinished_req(req)
-            
-            old_node = req.npu_last_node
-            # print(f"[CACHE_UNFINISHED] req={req.id} old_node_id={old_node.id if old_node else None}(lock_ref={old_node.lock_ref if old_node else 'N/A'}) -> new_node_id={new_last_node.id}(lock_ref={new_last_node.lock_ref})")
-            if old_node is not None and req._prefix_locked:
-                self.npu_prefix_cache.dec_lock_ref(old_node)
-            self.npu_prefix_cache.inc_lock_ref(new_last_node)
-            # print(f"[CACHE_UNFINISHED] req={req.id} AFTER: old_node_id={old_node.id}(lock_ref={old_node.lock_ref}) new_node_id={new_last_node.id}(lock_ref={new_last_node.lock_ref})")
-            req.npu_last_node = new_last_node
-            req._prefix_locked = True
-            if self.logger.isEnabledFor(logging.DEBUG):
-                # print(f"cache_unfinished_req of req {req.id}")
-                # print(f"===============NPU PREFIX CAHCE of Instance[{self.instance_id}]=================")
-                self.npu_prefix_cache.pretty_print()
-        elif device == Device.CPU or device == Device.CXL:
-            self.second_tier_prefix_cache.cache_unfinished_req(req)
-            if self.logger.isEnabledFor(logging.DEBUG):
-                # print(f"cache_unfinished_req of req {req.id}")
-                # print(f"===============AFTER INSERT: {self.second_tier_prefix_cache.device} PREFIX CAHCE at pid={os.getpid()} tid={threading.get_ident()} pool_id={id(self.second_tier_prefix_cache)}, size={self.second_tier_prefix_cache.total_size()}=================")
-                self.second_tier_prefix_cache.pretty_print()
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to cache prefix cache of unfinished request to unsupported device {device}")
-        
-        self.apply_kv_cache_events()
-
-    def cache_finished_req(self, req, device):
-        if not self.enable_prefix_caching:
-            return
-        
-        if device == Device.NPU:
-            self.npu_prefix_cache.cache_finished_req(req)
-            # Only dec_lock_ref if the request was locked
-            node = req.npu_last_node
-            if not req._prefix_locked:
-                # Never locked → skip dec
-                pass
-                # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref={node.lock_ref if node else 'N/A'} (SKIPPED dec - not locked)")
-            else:
-                # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref_BEFORE={node.lock_ref if node else 'N/A'}")
-                if node is not None:
-                    self.npu_prefix_cache.dec_lock_ref(node)
-                    req.npu_last_node = None
-                req._prefix_locked = False
-            # node = req.npu_last_node
-            # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref_BEFORE={node.lock_ref if node else 'N/A'}")
-            # self.npu_prefix_cache.dec_lock_ref(req.npu_last_node)
-                # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref_AFTER={node.lock_ref if node else 'N/A'}")
-            # print(f"[CACHE_FINISHED] req={req.id} evictable_size={self.npu_prefix_cache.evictable_size()} protected_size={self.npu_prefix_cache.protected_size()} total_size={self.npu_prefix_cache.total_size()}")
-            if self.logger.isEnabledFor(logging.DEBUG):
-                print(f"cache_finished_req of req {req.id}")
-                print(f"===============NPU PREFIX CACHE of Instance[{self.instance_id}]=================")
-                self.npu_prefix_cache.pretty_print()
-        elif device == Device.CPU or device == Device.CXL:
-            self.second_tier_prefix_cache.cache_finished_req(req)
-            if self.logger.isEnabledFor(logging.DEBUG):
-                # print(f"cache_finished_req of req {req.id}")
-                # print(f"===============AFTER INSERT: {self.second_tier_prefix_cache.device} PREFIX CAHCE at pid={os.getpid()} tid={threading.get_ident()} pool_id={id(self.second_tier_prefix_cache)}, size={self.second_tier_prefix_cache.total_size()}=================")
-                self.second_tier_prefix_cache.pretty_print()
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to cache prefix cache of finished request to unsupported device {device}")
-        
-        self.apply_kv_cache_events()
-
-    def evict_prefix_cache(self, bytes, device):
-        if not self.enable_prefix_caching or bytes <= 0:
-            return
-
-        if device == Device.NPU:
-            cache = self.npu_prefix_cache
-        elif device == Device.CPU:
-            cache = self.second_tier_prefix_cache
-        else:
-            raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to evict prefix cache to unsupported device {device}")
-
-        # Each cache instance carries its own bytes-per-token in kv_size:
-        # per-rank for NPU, full-cluster for the second-tier pool.
-        space_needed = (bytes + cache.kv_size - 1) // cache.kv_size
-        cache.evict(space_needed)
-
-        self.apply_kv_cache_events()
-
-    # -------------------- Prefix Cache Helpers --------------------
-
-    def prefix_match(self, req): # req.prefix_cache_hit initialization 
-        if not self.enable_prefix_caching:
-            return
-        
-        tokens = req.input_hash_ids
-        if tokens is None:
-            return
-        old_node = req.npu_last_node
-        res = self.npu_prefix_cache.match_prefix(tokens[:req.input])
-        req.npu_cache_hit = res.hit_length
-        req.npu_last_node = res.last_device_node
-        # print(f"[PREFIX_MATCH] req={req.id} old_node_id={old_node.id if old_node else None}(lock_ref={old_node.lock_ref if old_node else 'N/A'}) -> new_node_id={res.last_device_node.id}(lock_ref={res.last_device_node.lock_ref}) hit={res.hit_length} num_computed={req.num_computed_tokens}")
-
-        if self.prefix_storage is not None:
-            res_storage = self.second_tier_prefix_cache.match_prefix(tokens[:req.input])
-            req.storage_cache_hit = res_storage.hit_length
-            req.storage_last_node = res_storage.last_device_node
-        else:
-            req.storage_cache_hit = 0
-            req.storage_last_node = None
-        
-        req.prefix_cache_hit = max(req.npu_cache_hit, req.storage_cache_hit)
-        # if req.num_computed_tokens < req.prefix_cache_hit:
-        #     req.num_computed_tokens = req.prefix_cache_hit
-        if req.num_computed_tokens == 0:
-            req.num_computed_tokens = req.prefix_cache_hit
-            # print(f"Request[{req.id}] prefix cache hit: {req.prefix_cache_hit} tokens (NPU: {req.npu_cache_hit}, {self.prefix_storage}: {req.storage_cache_hit})")
-        # for debugging
-        
-        # print(f"===============NPU PREFIX CAHCE of Instance[{self.instance_id}]=================")
-        # self.npu_prefix_cache.pretty_print()
-        # print("===============CPU PREFIX CAHCE=================")
-        # self.second_tier_prefix_cache.pretty_print()
-    
-    def erase_prefix_info(self, req):
-        if not self.enable_prefix_caching:
-            return
-        
-        req.prefix_cache_hit = 0
-        req.npu_cache_hit = 0
-        req.storage_cache_hit = 0
-        req.npu_last_node = None
-        req.storage_last_node = None
-
-    def free_prefix_cache(self):
-        if not self.enable_prefix_caching:
-            return
-        # free evictable prefix cache, if evictable_size != total_size there is locked prefix cache
-        self.free(self.npu_prefix_cache.evictable_size() * self._bytes_per_token, Device.NPU)
-        if not self.enable_prefix_sharing and self.prefix_storage is not None:
-            self.free(self.second_tier_prefix_cache.evictable_size() * self._bytes_per_token * self.num_npus, self.prefix_storage)
-    
-    # Count load/unload events from prefix cache and update memory usage
-    def apply_kv_cache_events(self):
-        # if not self.enable_prefix_caching:
-        #     return
-        npu_byte_alloc = 0
-        npu_byte_free = 0
-        cpu_byte_alloc = 0
-        cpu_byte_free = 0
-        # self.npu_prefix_cache.take_events() -> [BlockStored, BlockStored, BlockRemoved, ...]
-        for ev in self.npu_prefix_cache.take_events():
-            # print(f" current event block: {ev}")
-            if isinstance(ev, BlockStored):
-                tlen = len(ev.token_ids)
-                for h in ev.block_hashes:
-                    # self._npu_cache_hashtolen[h] = tlen
-                    if h in self._npu_cache_hashtolen:
-                        self._npu_cache_hashtolen[h][1] += 1
-                        # if self._npu_cache_hashtolen[h][1] >= 2:
-                        #     print("duplicated hash occurs!! h : {}".format(h))
-                    else:
-                        self._npu_cache_hashtolen[h] = [tlen, 1]
-                npu_byte_alloc += self.get_kv(tlen)
-            elif isinstance(ev, BlockRemoved):
-                for h in ev.block_hashes:
-                    # tlen = self._npu_cache_hashtolen.pop(h, 0)
-                    # if tlen == 0:
-                    if h in self._npu_cache_hashtolen:
-                        tlen = self._npu_cache_hashtolen[h][0]
-                        self._npu_cache_hashtolen[h][1] -= 1
-                        if self._npu_cache_hashtolen[h][1] <= 0:
-                            del self._npu_cache_hashtolen[h]
-                        npu_byte_free += self.get_kv(tlen)
-                    else:
-                        print(f"[HASH_MISS] BlockRemoved hash={h} NOT FOUND in map (map_size={len(self._npu_cache_hashtolen)})")
-                        self.logger.warning(f"NPU prefix cache remove unknown block hash {h}")
-                    # else:
-                    #     print(f"[HASH_HIT] BlockRemoved hash={h} tlen={tlen}")
-                    # npu_byte_free += self.get_kv(tlen)
-        # free first, then allocate
-        if npu_byte_free > 0:
-            self.free(npu_byte_free, Device.NPU)
-        if npu_byte_alloc > 0:
-            self.allocate(npu_byte_alloc, Device.NPU)
-        # if npu_byte_free > 0:
-        #     self.free(npu_byte_free, Device.NPU)
-
-        # Second-tier (CPU/CXL) prefix cache events.
-        if self.prefix_storage is None:
-            return
-
-        if self.prefix_storage is Device.CPU and not self.enable_prefix_sharing:
-            # Non-shared CPU second_tier: bridge events into the instance's
-            # cpu_used counter so allocations are bounded by cpu_mem.
-            for ev in self.second_tier_prefix_cache.take_events():
-                if isinstance(ev, BlockStored):
-                    tlen = len(ev.token_ids)
-                    for h in ev.block_hashes:
-                        if h in self._cpu_cache_hashtolen:
-                            self._cpu_cache_hashtolen[h][1] += 1
-                        else:
-                            self._cpu_cache_hashtolen[h] = [tlen, 1]
-                    cpu_byte_alloc += self.get_kv(tlen) * self.num_npus
-                elif isinstance(ev, BlockRemoved):
-                    for h in ev.block_hashes:
-                        if h in self._cpu_cache_hashtolen:
-                            tlen = self._cpu_cache_hashtolen[h][0]
-                            self._cpu_cache_hashtolen[h][1] -= 1
-                            if self._cpu_cache_hashtolen[h][1] <= 0:
-                                del self._cpu_cache_hashtolen[h]
-                            cpu_byte_free += self.get_kv(tlen) * self.num_npus
-                        else:
-                            self.logger.warning(f"CPU prefix cache remove unknown block hash {h}")
-
-            if cpu_byte_free > 0:
-                self.free(cpu_byte_free, Device.CPU)
-            if cpu_byte_alloc > 0:
-                self.allocate(cpu_byte_alloc, Device.CPU)
-        else:
-            # Shared pool or CXL: the cache itself accounts via
-            # total_memory_usage (= kv_stored + total_size * kv_size),
-            # so no instance-side counter update is needed. Drain the
-            # queue to prevent it from growing unboundedly.
-            self.second_tier_prefix_cache.take_events()
+        if not req._prefix_npu_stats_counted:
+            self.npu_pool.stats.record(req.original_input, req.npu_cache_hit)
+            req._prefix_npu_stats_counted = True
+        if self.storage_pool is not None and not req._prefix_storage_stats_counted:
+            self.storage_pool.stats.record(
+                req.original_input, max(0, req.storage_cache_hit - req.npu_cache_hit))
+            req._prefix_storage_stats_counted = True
 
     def return_prefix_info(self):
         if not self.enable_prefix_caching:
             return (0, 0, 0, 0)
-        if self.prefix_storage is None:
-            return (self.npu_prefix_cache.return_prefix_info(), (0, 0))
-        return (self.npu_prefix_cache.return_prefix_info(), self.second_tier_prefix_cache.return_prefix_info())
+        npu = self.npu_pool.stats.return_prefix_info()
+        if self.storage_pool is None:
+            return (npu, (0, 0))
+        return (npu, self.storage_pool.stats.return_prefix_info())
 
-        
+    def format_prefix_info(self):
+        if not self.enable_prefix_caching:
+            return ""
+        return self.npu_pool.stats.format_prefix_info()
+
+    # -------------------- teardown --------------------
+
+    def free_prefix_cache(self):
+        """Drop every cached block at end of run, so is_free() can be exact."""
+        if not self.enable_prefix_caching:
+            return
+        self.npu_pool.reset()
+        if self.storage_pool is not None and not self.enable_prefix_sharing:
+            self.storage_pool.reset()
+
+    def is_free(self):
+        leaked = []
+        if self._npu_reserved != 0:
+            leaked.append(f"NPU reserved {self._npu_reserved / MB_TO_BYTE:.2f}MB")
+        if self._cpu_reserved != 0:
+            leaked.append(f"CPU reserved {self._cpu_reserved / MB_TO_BYTE:.2f}MB")
+        if not self.npu_pool.is_free():
+            leaked.append(f"NPU pool {self.npu_pool.used_blocks}/{self.npu_pool.num_blocks} blocks")
+        if leaked:
+            self.logger.error("Memory leak detected: %s", ", ".join(leaked))
+        return not leaked
+
+
+def build_prefix_pool(tier, capacity_bytes, npu_block_size, cluster_bytes_per_token,
+                      node_id=None, instance_id=None):
+    """A victim-tier :class:`BlockPool` sized from a byte capacity.
+
+    Also used by ``__main__`` to build pools shared across instances, before any
+    ``MemoryModel`` exists. Chunk size is ``LOWER_TIER_CHUNK_TOKENS`` rounded up
+    to a multiple of the NPU block size, so the tier can key on every Nth hash of
+    the same chain. Bytes are full-cluster: a host copy holds every rank's shard.
+    """
+    chunk = max(npu_block_size,
+                (LOWER_TIER_CHUNK_TOKENS // npu_block_size) * npu_block_size)
+    bytes_per_block = cluster_bytes_per_token * chunk
+    num_blocks = int(capacity_bytes // bytes_per_block)
+    if num_blocks < 1:
+        raise RuntimeError(
+            f"[build_prefix_pool] {tier}: {capacity_bytes / GB_TO_BYTE:.2f}GB is not "
+            f"enough for one {chunk}-token chunk "
+            f"({bytes_per_block / MB_TO_BYTE:.2f}MB)"
+        )
+    return BlockPool(tier, num_blocks, chunk, bytes_per_block,
+                     enable_caching=True, node_id=node_id, instance_id=instance_id)
+
+
 def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
     """Bytes of KV cache per token aggregated over the full TP cluster.
 

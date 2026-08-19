@@ -180,7 +180,8 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
                 "enable_chunked_prefill", args.enable_chunked_prefill),
             "enable_prefix_caching": instance.get(
                 "enable_prefix_caching", args.enable_prefix_caching),
-            "prioritize_prefill": instance.get("prioritize_prefill", args.prioritize_prefill),
+            "gpu_memory_utilization": instance.get(
+                "gpu_memory_utilization", args.gpu_memory_utilization),
             "enable_local_offloading": instance.get(
                 "enable_local_offloading", args.enable_local_offloading),
             "enable_attn_offloading": enable_attn_offloading,
@@ -240,7 +241,7 @@ def main():
                         'Disable only for CUSTOM policies that need faithful '
                         'per-layer variance.')
     parser.add_argument('--enable-prefix-caching', action=argparse.BooleanOptionalAction, default=True,
-                        help='enable prefix caching via RadixAttention to reuse KV cache across requests '
+                        help='enable prefix caching to reuse KV cache blocks across requests '
                         'with shared prefixes (default: enabled). Use --no-enable-prefix-caching to disable')
     parser.add_argument('--enable-chunked-prefill', action=argparse.BooleanOptionalAction, default=True,
                         help='enable chunked prefill to split long prefill requests across multiple iterations, '
@@ -257,8 +258,12 @@ def main():
     parser.add_argument('--enable-sub-batch-interleaving', action='store_true', default=False,
                         help='enable sub-batch interleaving to overlap XPU and PIM computation. '
                         'Requires --enable-attn-offloading')
-    parser.add_argument('--prioritize-prefill', action='store_true', default=False,
-                        help='prioritize prefill requests over decode requests in scheduling')
+    parser.add_argument('--gpu-memory-utilization', type=float, default=0.9,
+                        help='fraction of NPU memory the instance may use for weights plus '
+                        'KV cache, as in vLLM. KV capacity is '
+                        '(npu_mem * this - model weight); the activation peak and CUDA '
+                        'context that vLLM also subtracts are not modelled, so the '
+                        'resulting capacity is an upper bound on vLLM\'s at the same value')
     parser.add_argument('--block-size', type=int, default=16,
                         help='KV cache block size in tokens (number of tokens per block)')
     parser.add_argument('--dataset', type=str, default=None,
@@ -401,36 +406,34 @@ def main():
             cfg = instance_runtime_configs[inst_ids[0]]
             return full_cluster_kv_bytes_per_token(model, cfg["fp"], cfg["kv_cache_dtype"])
 
+        def _pool_block_size(inst_ids):
+            sizes = {instance_runtime_configs[i]["block_size"] for i in inst_ids}
+            if len(sizes) > 1:
+                raise RuntimeError(
+                    f"Shared prefix pool requires instances to share block_size; got {sizes}")
+            return sizes.pop()
+
         if prefix_storage == 'CPU':
             for i in range(num_prefix_pool):
-                if cpu_mem_size[i] > 0:
-                    new_prefix_pool = RadixCache(
-                                                node_id=0,
-                                                device=prefix_storage,
-                                                page_size=256,
-                                                capacity = cpu_mem_size[i] * GB_TO_BYTE,
-                                                kv_size=_pool_kv_bytes_per_token(node2inst_mapping[i]),
-                                                enable_kv_cache_events=True)
-                    prefix_pools.append(new_prefix_pool)
-                else:
+                if cpu_mem_size[i] <= 0:
                     raise RuntimeError(f"Memory size for prefix storage type {prefix_storage} is invalid")
+                inst_ids = node2inst_mapping[i]
+                prefix_pools.append(build_prefix_pool(
+                    pool_device, cpu_mem_size[i] * GB_TO_BYTE,
+                    _pool_block_size(inst_ids), _pool_kv_bytes_per_token(inst_ids),
+                    node_id=i))
             # This means one node shares one prefix pool
             prefix_pool_inst_mapping = inst2node_mapping
 
         elif prefix_storage == 'CXL':
-            if cluster["cxl_mem_size"] > 0:
-                new_prefix_pool = RadixCache(
-                                            node_id=None,
-                                            device=prefix_storage,
-                                            page_size=1,
-                                            capacity = cluster["cxl_mem_size"] * GB_TO_BYTE,
-                                            kv_size=_pool_kv_bytes_per_token(list(range(num_instances))),
-                                            enable_kv_cache_events=True)
-                prefix_pools.append(new_prefix_pool)
-                # This means every instance shares the same universal prefix pool (maybe fixed later)
-                prefix_pool_inst_mapping = [0 for _ in range(num_instances)]
-            else:
+            if cluster["cxl_mem_size"] <= 0:
                 raise RuntimeError(f"Memory size for prefix storage type {prefix_storage} is invalid")
+            inst_ids = list(range(num_instances))
+            prefix_pools.append(build_prefix_pool(
+                pool_device, cluster["cxl_mem_size"] * GB_TO_BYTE,
+                _pool_block_size(inst_ids), _pool_kv_bytes_per_token(inst_ids)))
+            # This means every instance shares the same universal prefix pool (maybe fixed later)
+            prefix_pool_inst_mapping = [0 for _ in range(num_instances)]
         else:
             raise NotImplementedError(f"Prefix storage type {prefix_storage} is not supported or memory size is invalid")
 
@@ -455,12 +458,13 @@ def main():
             instance["npu_mem"]["mem_size"], cpu_mem_size[instance["node_id"]],
             inst2npu_mapping[instance_id], instance["pd_type"],
             inst_cfg["fp"], inst_cfg["block_size"], num_req,
-            inst_cfg["prioritize_prefill"], inst_cfg["enable_prefix_caching"],
+            inst_cfg["enable_prefix_caching"],
             enable_prefix_sharing, prefix_pool, pool_device, inst_cfg["enable_chunked_prefill"],
             inst_cfg["long_prefill_token_threshold"],
             cxl_mem,
             ep_size=instance.get("ep_total", 1),
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
+            gpu_memory_utilization=inst_cfg["gpu_memory_utilization"],
         ))
 
     # Controller for astra-sim process communication
@@ -799,8 +803,12 @@ def main():
             ######### Per Instance Metrics #########
 
             for inst_id in range(num_instances):
-                running_reqs = sum(len(batch.requests) for batch in schedulers[inst_id].inflight)
-                waiting_reqs = len([req for req in schedulers[inst_id].request if req.arrival <= current])
+                # len(running), not the size of the in-flight batch: the persistent
+                # running set is the exact analogue of vLLM's num_running_reqs, which
+                # is what bench compares this column against. The batch is only the
+                # subset that fit in this step's token budget.
+                running_reqs = len(schedulers[inst_id].running)
+                waiting_reqs = len([req for req in schedulers[inst_id].waiting if req.arrival <= current])
 
                 mem = schedulers[inst_id].memory
                 npu_used_mb = mem.npu_used / MB_TO_BYTE
@@ -814,7 +822,7 @@ def main():
                     f"({npu_util:.3f} % Used)"
                 )
                 if schedulers[inst_id].enable_prefix_caching:
-                    line += schedulers[inst_id].memory.npu_prefix_cache.format_prefix_info()
+                    line += schedulers[inst_id].memory.format_prefix_info()
                 print_markup(line)
 
             ######### Per Node Metrics #########
@@ -824,7 +832,7 @@ def main():
                     node_cpu_usage = 0
                     inst_usage = []
                     if any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU":
-                        node_cpu_usage = prefix_pools[node_id].total_size() * prefix_pools[node_id].kv_size
+                        node_cpu_usage = prefix_pools[node_id].used_bytes()
                     else:
                         for inst_id in inst_ids:
                             inst_cpu_usage = schedulers[inst_id].memory.cpu_used
@@ -840,7 +848,7 @@ def main():
                         f"{cpu_util:.3f} % Used "
                     )
                     if any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU":
-                        line += prefix_pools[node_id].format_prefix_info()
+                        line += prefix_pools[node_id].stats.format_prefix_info()
 
                     if (any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU") or (len(inst_ids) == 1):
                         print_markup(line)
@@ -856,8 +864,8 @@ def main():
                 if enable_prefix_sharing:
                     num_prefix_pool = len(prefix_pools)
                     for cxl_id, cxl_pool in enumerate(prefix_pools):
-                        cxl_usage = cxl_pool.total_size() * cxl_pool.kv_size
-                        cxl_util = cxl_usage / cxl_pool.capacity
+                        cxl_usage = cxl_pool.used_bytes()
+                        cxl_util = cxl_pool.usage()
                         if not power_modeling and cxl_id == num_prefix_pool - 1:
                             tree_indent = '└─'
                         print_markup(
@@ -871,12 +879,11 @@ def main():
                         if sched.enable_prefix_caching
                     ]
                     for pos, inst_id in enumerate(enabled_inst_ids):
-                        second_tier = getattr(
-                            schedulers[inst_id].memory, "second_tier_prefix_cache", None)
+                        second_tier = schedulers[inst_id].memory.storage_pool
                         if second_tier is None:
                             continue
-                        cxl_usage = second_tier.total_size() * second_tier.kv_size
-                        cxl_util = cxl_usage / second_tier.capacity
+                        cxl_usage = second_tier.used_bytes()
+                        cxl_util = second_tier.usage()
                         if not power_modeling and pos == len(enabled_inst_ids) - 1:
                             tree_indent = '└─'
                         print_markup(
@@ -972,7 +979,7 @@ def main():
         
         if enable_prefix_sharing:
             for pool in prefix_pools:
-                _, temp_cpu_b = pool.return_prefix_info()
+                _, temp_cpu_b = pool.stats.return_prefix_info()
                 total_cpu_hit_tokens += temp_cpu_b
     
     # This is total system's throughput
@@ -984,7 +991,20 @@ def main():
     print_markup(f"Total requests:                                                     {req_cnt}")
     print_markup(f"Total clocks (ns):                                                  {current}")
     print_markup(f"Total latency (s):                                                  {total_latency:.3f}")
-    print_markup(f"Total input tokens:                                                 {total_prompt}")
+    # total_prompt is the vLLM prompt-throughput gauge: it counts every token
+    # pushed through prefill, including prefix-cache hits and anything recomputed
+    # after a preemption. Report the dataset input from the requests themselves
+    # rather than by subtracting the recompute counter -- a request preempted
+    # again mid-recompute is charged its full remaining work each time it is
+    # re-admitted, so the two are not each other's complement.
+    total_recompute = sum(s.recompute_tokens for s in schedulers)
+    total_preempt = sum(s.num_preemptions for s in schedulers)
+    total_input = sum(req.original_input for s in schedulers for req in s.done)
+    print_markup(f"Total input tokens:                                                 {total_input}")
+    if total_preempt:
+        print_markup(f"Preemptions:                                                        {total_preempt}")
+    if total_recompute:
+        print_markup(f"Recomputed prompt tokens (preemption):                               {total_recompute}")
     print_markup(f"Total generated tokens:                                             {total_gen}")
     print_markup(f"Request throughput (req/s):                                         {req_cnt/total_latency:.2f}")
     print_markup(f"Average prompt throughput (tok/s):                                  {total_prompt/total_latency:.2f}")

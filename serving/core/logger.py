@@ -452,7 +452,7 @@ def print_input_config(args: Any) -> None:
     add("enable_attn_offloading", "Offload attention to PIM", _yn)
     add("enable_sub_batch_interleaving", "Sub-batch interleaving", _yn)
     add("enable_attn_prediction", "Realtime attention prediction", _yn)
-    add("prioritize_prefill", "Prioritize prefill", _yn)
+    add("gpu_memory_utilization", "GPU memory utilization")
     add("link_bw", "Link bandwidth (GB/s)")
     add("link_latency", "Link latency (ns)")
     add("network_backend", "Network backend", _na)
