@@ -111,7 +111,7 @@ work end-to-end:
   can't recognize when two prompts share a prefix.
 - With it, the router computes a per-block hash of the token IDs at
   load time. The scheduler then matches requests against the
-  RadixCache at run time using those hashes.
+  prefix-cache index at run time using those hashes.
 
 For ShareGPT-style traces where many requests share a system prompt,
 having token IDs makes prefix-cache hit rates 5-10× higher than

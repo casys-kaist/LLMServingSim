@@ -28,7 +28,8 @@ LLMServingSim/
 │   │   ├── power_model.py      # Power/energy estimation
 │   │   ├── pim_model.py        # PIM device model
 │   │   ├── request.py          # Request/Batch data classes
-│   │   ├── radix_tree.py       # Prefix cache radix tree (from SGLang)
+│   │   ├── block_pool.py       # Per-tier KV block pool + prefix-cache index
+│   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
 │   └── run.sh                  # Example invocations across cluster configs
@@ -271,6 +272,12 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
 - `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, or with dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`
   (the `:dim0,dim1` suffix maps to ASTRA-Sim's `involved_dim` BoolList for multi-dimensional topologies)
+- `comm_size` on `qkv_proj` carries the **P/D KV transfer amount** (per layer, per rank,
+  K+V only, honouring `kv_cache_dtype`), and is 0 unless `pd_type == "prefill"`.
+  `convert_prefill` reads it for the per-layer SEND/RECV to the paired decode NPU. It used
+  to read the layer's `output_size`, i.e. the whole QKV activation, which shipped Q as well
+  and overstated the transfer by `(q_dim + 2*kv_dim) / (2*kv_dim)` — 3x for Llama-3.1-8B.
+  `comm_type` stays `NONE` there: a SEND/RECV pair only needs comm_size/src/dst/tag
 - `misc`: `NONE` or batch tag for sub-batch interleaving (`BATCH_1`, `BATCH_2`)
 - First layer (embedding) input comes from `REMOTE` (CPU → NPU), last layer (sampler) output goes to `REMOTE` (NPU → CPU)
 - MoE uses `EXPERT {i}` / `EXPERT END` markers (comm_type on EXPERT line can include dimension scoping)
@@ -339,18 +346,51 @@ arrival times (tool calls still running), `serving/__main__.py` advances `curren
 arrival time to avoid busy-looping.
 
 ### Scheduler and memory model
-- `scheduler.py` implements vLLM-style continuous batching with chunked prefill (default on)
+- `scheduler.py` follows vLLM V1's `schedule()` shape: a persistent `self.running` set is
+  served first (phase A), preempting only from its own tail, then `self.waiting` is admitted
+  (phase B) while budget and slots remain. Phase B **never** preempts, and it is skipped
+  entirely on any step that preempted — that anti-thrash rule is load-bearing
+- There is **one** `schedule()` for prefix caching on and off. The pool handles
+  `enable_caching=False` the way vLLM does (allocate through the same free list, never
+  index), so do not reintroduce a second scheduler
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
-- KV cache is managed in blocks of `--block-size` tokens (default 16)
-- Prefix caching via RadixAttention is enabled by default (`--enable-prefix-caching`)
-- Memory tracking in `memory_model.py` covers NPU, CPU, and CXL tiers
+- **There is no prefill phase or decode phase.** A request just catches up to
+  `num_tokens_reached`, so `num_new = num_tokens_reached - num_computed_tokens` — 1 in
+  steady-state decode, the whole sequence for a resumed request. `Request.is_prefill()` is
+  gone on purpose: it read `original_input` and would misread a resumed request's
+  recomputation as decoding. The trace classifies by **scheduled token count**
+  (>1 = prefill chunk, ==1 = decode)
+- `num_computed_tokens` is advanced at **schedule** time, as in vLLM's
+  `_update_after_schedule`. `Batch.scheduled_tokens` is the snapshot `add_done` works from.
+  Advancing at completion instead lets `pp_size > 1` schedule the same tokens twice
+- `num_tokens_reached` (prompt + generated) must never be derived from
+  `num_computed_tokens`: preemption resets the latter to 0
+- Preemption is vLLM verbatim, including `num_computed_tokens = 0`. That is **not**
+  re-prefill — `free_blocks` keeps the blocks' hashes, so on re-admission
+  `get_computed_blocks` finds whatever is still resident, a lower tier returns what was
+  written down, and only the remainder is recomputed. Do not add a "preserve the decode
+  state" special case; the tiers are what preserve it
+- The three modes map onto three real vLLM configurations: `--no-enable-prefix-caching` =
+  vLLM with prefix caching off (a resume recomputes the whole sequence);
+  `--enable-prefix-caching` = default vLLM; plus `--prefix-storage CPU/CXL` = vLLM with
+  LMCache / `OffloadingConnector` attached
+- KV capacity is `npu_mem * gpu_memory_utilization - weight`, divided into `--block-size`
+  blocks. vLLM also subtracts the activation peak and CUDA context, which are not modelled,
+  so the simulator's capacity is an upper bound at the same utilization
+- `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
+  `memory_model.py` keeps the static sizing math and a byte-level view; `npu_used` is a
+  property over the pool, so there is one ledger per tier
 - `calculate_sizes(parallel=)` computes per-layer tensor sizes — `parallel` is TP for dense
   layers and EP for MoE experts. Uses `head_dim`, `q_dim`, `kv_dim`
 - MoE expert weights are sharded by `ep_size` (not `tp_size`)
 - Prompt throughput (`prompt_t` in `add_done()`) includes prefix cache hit tokens,
   not just actually computed prefill tokens. This matches vLLM's reported prompt
   throughput which counts all input tokens including cached ones
+- `kv_load` / `kv_evict` trace layers fire **only** with `--prefix-storage`: without a lower
+  tier there is nothing to recall from, so both byte counts are 0. `batch.evict` is 0 in
+  every mode — eviction from the NPU costs nothing, because the data is either a finished
+  request's cache or already written down off the critical path
 
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
@@ -527,6 +567,15 @@ No dedicated unit-test suite. Validate by:
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes
   in `Request.__init__` and access directly
+- **Don't reintroduce `is_prefill()` or a prefill/decode branch in the scheduler.** vLLM has
+  neither; a request just catches up to `num_tokens_reached`. Classify for the trace by
+  scheduled token count instead
+- **Don't add a "preserve the decode state on preemption" special case.** `num_computed_tokens
+  = 0` is vLLM's own behaviour and is not re-prefill — recovery comes from the block hashes
+  surviving in the pool and from the lower tier. Two earlier attempts to special-case this
+  cost 375 preemptions / 293k recomputed tokens and 41,569 preemptions / 6 TB of swap
+- **Don't derive sequence length from `num_computed_tokens`** — preemption resets it.
+  `num_tokens_reached` is the independent counter, mirroring vLLM's `len(_all_token_ids)`
 - **Don't assume `hidden_size == num_heads * head_dim`** — use explicit `head_dim` from config
 - **Use canonical vLLM layer names** (`qkv_proj`, `o_proj`, `gate_up_proj`,
   `act_fn`, `down_proj`, `rotary_emb`, `qk_norm`, `attention`, `layernorm`,

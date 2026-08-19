@@ -46,7 +46,8 @@ serving/
     ├── power_model.py       Power / energy estimation
     ├── pim_model.py         PIM device model
     ├── request.py           Request / Batch dataclasses
-    ├── radix_tree.py        Prefix cache (RadixCache, from SGLang)
+    ├── block_pool.py        Per-tier KV block pool + prefix-cache index
+    ├── kv_cache_manager.py  Tiered KV cache manager (block hashing, allocation)
     ├── logger.py            Rich-based logging + stdio capture
     └── utils.py             Model config loading, formatters
 ```

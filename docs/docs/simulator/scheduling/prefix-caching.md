@@ -5,163 +5,184 @@ sidebar_position: 2
 
 # Prefix caching
 
-Prefix caching is the simulator's RadixAttention implementation
-(adapted from [SGLang](https://github.com/sgl-project/sglang)). When
-two requests share a common token prefix, the second one's prefill
-work for that prefix can be skipped entirely, the KV blocks computed
-for the first request are reused.
+Prefix caching lets a request skip prefill work for tokens whose KV is
+already resident. The mechanism is a port of vLLM v0.19.0's block pool:
+blocks are identified by a **chained hash**, and a request that shares a
+prefix with something already cached simply claims those blocks instead
+of recomputing them.
 
 > Looking for "how do I enable it" / "what flags should I set"?
 > See **[Examples → Prefix caching](/docs/examples/memory-tiers/prefix-caching)**.
-> This page explains the underlying RadixCache mechanics.
+> This page explains the underlying block-pool mechanics.
 
-## RadixCache in one paragraph
+## Chained block hashes
 
-```mermaid
-flowchart TD
-    ROOT["[ ] (root)"]
-    P1["[The cat sat]"]
-    P2["[The dog ran]"]
-    P3["[on the mat]"]
-    P4["[in the park]"]
-    P5["[under the chair]"]
-    ROOT --> P1
-    ROOT --> P2
-    P1 --> P3
-    P1 --> P5
-    P2 --> P4
+Each full block of `block_size` tokens gets a hash that folds in the
+hash of the block before it:
+
+```
+h(0) = hash(SEED,   tokens[0:16])
+h(1) = hash(h(0),   tokens[16:32])
+h(2) = hash(h(1),   tokens[32:48])
+...
 ```
 
-A **RadixCache** is a token-prefix tree. Each node represents one
-contiguous run of tokens; children diverge on the next token. On
-insert, you walk the tree until you can no longer extend, then split
-or extend nodes as needed. On lookup, `match(token_list)` walks the
-tree as far as it can and returns `(matched_node, hit_length)` -
-the longest prefix of `token_list` that's already in the tree.
+Because the chain is cumulative, `h(i)` identifies *the whole prefix up
+to block i*, not just that block's 16 tokens. So a lookup is a walk: try
+`h(0)`, then `h(1)`, and stop at the first miss. Everything after a miss
+is either uncomputed or gone, so there is nothing to check.
 
-The simulator stores **block IDs** (KV-cache blocks), not the actual
-KV tensors, block accounting is the simulator's currency. A block
-holds `block_size` tokens (default 16 on NPU; finer-grained on the
-CPU pool, see below).
+Two consequences worth knowing:
 
-## Two tiers
+- **The recovered prefix is contiguous by construction.** A hole in the
+  middle truncates the hit at the hole.
+- **Only full blocks are cached.** The tail past the last block boundary
+  is always recomputed — at most `block_size - 1` tokens, plus one more
+  because the hit is capped at `num_tokens - 1` (the last token has to
+  run to produce logits).
 
-The scheduler has up to two RadixCaches per instance:
+The hash covers `input_hash_ids + output_hash_ids`, so **generated**
+tokens are cacheable too, not just the prompt.
 
-| Tier | Object | Lives in | Page size | Required? |
+## Tiers
+
+Up to three `BlockPool`s per instance, looked up in order:
+
+| Tier | Object | Lives in | Block size | Required? |
 | --- | --- | --- | --- | --- |
-| **NPU cache** | `MemoryModel.npu_prefix_cache` | NPU memory | `--block-size` (default 16) | Always on if `--enable-prefix-caching` (default) |
-| **Second-tier pool** | `MemoryModel.second_tier_prefix_cache` | CPU or CXL | 1 | Optional, `--enable-prefix-sharing` |
+| **NPU pool** | `MemoryModel.npu_pool` | NPU memory | `--block-size` (default 16) | Always, and indexed when `--enable-prefix-caching` (default) |
+| **Storage pool** | `MemoryModel.storage_pool` | CPU or CXL | 256 tokens (LMCache's chunk) | Optional, `--prefix-storage` |
 
-The NPU cache is **per-instance**: a request that lands on instance B
+All tiers share **one key space**. A tier whose blocks are N times
+larger keys on every Nth hash of the same chain — the last fine hash
+each coarse block covers — so one walk over a request's hashes yields
+both the NPU hit and the storage hit. No second hash function, no
+separate index to keep consistent.
+
+The NPU pool is **per-instance**: a request that lands on instance B
 can't reuse a prefix cached on instance A.
 
-The second-tier pool is **shared across instances on the same node**
-when `--enable-prefix-sharing` is on. That's what makes prefix caching
-useful in multi-instance deployments, without it, each instance has
-its own private cache.
+The storage pool is **shared across instances on the same node** when
+`--enable-prefix-sharing` is on. That's what makes prefix caching
+useful in multi-instance deployments; without it, each instance has
+its own private pool.
 
-`--prefix-storage` selects where the second-tier pool lives:
-- `None` → no second tier (default; just NPU cache).
+`--prefix-storage` selects where the storage pool lives:
+- `None` → no storage tier (default; NPU pool only). This is plain vLLM.
 - `CPU` → CPU memory (uses the node's `cpu_mem` budget).
 - `CXL` → CXL memory (requires a `cxl_mem` block in the cluster
   config).
+
+With a storage tier the simulator behaves like vLLM with LMCache or its
+`OffloadingConnector` attached: the tier is **inclusive** (every block
+that completes on the NPU is written down) and it drops the least
+recently written chunk when it fills.
+
+Writing down costs no latency — vLLM's `OffloadingConnector` defers it
+to the next engine step on a dedicated stream precisely so it cannot
+delay token generation — but reading back does, and that read is what
+`kv_load` in the trace charges.
 
 ## Lookup flow
 
 ```mermaid
 flowchart LR
-    REQ[New request] --> NPU{NPU prefix<br/>cache match?}
-    NPU -->|Hit hit_npu| BOTH[Try second tier<br/>on remaining tokens]
-    NPU -->|Miss| BOTH
-    BOTH --> POOL{CPU/CXL pool<br/>match?}
-    POOL -->|Hit hit_storage| TOTAL[hit_len = hit_npu + hit_storage]
-    POOL -->|Miss| TOTAL
-    TOTAL --> RUN[Run prefill on<br/>input - hit_len tokens]
-    RUN --> INSERT[Insert new blocks<br/>into NPU cache]
-    INSERT --> EVICT{NPU memory<br/>full?}
-    EVICT -->|Yes| SPILL[Spill evicted<br/>to second tier]
-    EVICT -->|No| DONE([Done])
-    SPILL --> DONE
+    REQ[New request] --> WALK[Walk the request's<br/>chained block hashes]
+    WALK --> NPU{NPU pool<br/>has this hash?}
+    NPU -->|Yes| WALK
+    NPU -->|First miss| LOW{Storage tier has<br/>the coarse chunk?}
+    LOW -->|Yes, >= 1 chunk| RECALL[num_lower_hit<br/>charge kv_load bytes]
+    LOW -->|No| REST
+    RECALL --> REST[Run prefill on<br/>num_tokens - hit tokens]
+    REST --> ALLOC{allocate_slots<br/>fits in free blocks?}
+    ALLOC -->|No| STOP([Not admitted this step])
+    ALLOC -->|Yes| CACHE[Index the blocks that<br/>are now full, write down]
 ```
 
-When the scheduler picks up a request:
+When the scheduler considers a waiting request:
 
-1. Compute `input_hash_ids`: per-block hashes of the input tokens.
-   Done once at JSONL load time (in `router.load_requests`).
-2. **`npu_prefix_cache.match(token_list)`** → `(node, npu_hit)`.
-3. If a second-tier cache exists, **also** match against it:
-   `second_tier_prefix_cache.match(remaining_tokens)` →
-   `storage_hit`.
-4. Total `hit_len = npu_hit + storage_hit`.
-5. Subtract `hit_len` from the prefill tokens the scheduler needs to
-   run.
+1. `request_block_hashes(req, block_size)` builds the chained hashes,
+   once, and caches them on the request.
+2. Walk them against the NPU pool, stopping at the first miss →
+   `num_npu_hit`. Those blocks are `touch()`ed, which pulls them out of
+   the free list if they were eviction candidates.
+3. If a storage tier exists, continue from there at *its* granularity:
+   round the NPU hit down to a chunk boundary, count consecutive chunk
+   hits, and take it only if at least one whole chunk is gained →
+   `num_lower_hit`. Those bytes are charged as `kv_load`.
+4. `num_new = num_tokens_reached - (num_npu_hit + num_lower_hit)`.
+5. `allocate_slots` either reserves the blocks or returns `None`. On
+   `None` the request is simply not admitted this step — admission never
+   preempts anything.
 
 Each component is recorded on the `Request`:
 
 ```python
 request.prefix_cache_hit   # total hit
-request.npu_cache_hit      # tier-1 only
-request.storage_cache_hit  # tier-2 only (CPU or CXL)
+request.npu_cache_hit      # NPU pool only
+request.storage_cache_hit  # NPU + storage
 ```
 
 These show up in the throughput log line and the per-request CSV.
 
 ## What insertion looks like
 
-When the scheduler decides to run a request:
+`cache_blocks(req, num_tokens)` indexes every block of the request that
+is now full, under its chained hash, and is idempotent — it tracks how
+many are already indexed, so calling it after each chunk is free. Only
+then can the *next* request with the same prefix hit. The first request
+always pays the full prefill cost.
 
-1. The scheduler reserves the *non-cached* tokens' KV blocks in NPU
-   memory (the `hit_len` tokens are already there).
-2. After the iteration's prefill chunks finish, the freshly computed
-   KV blocks are inserted into the NPU cache via
-   `npu_prefix_cache.add_prefix(token_list, node_id)`.
+With a storage tier, the same call writes down any coarse chunk that has
+become fully covered.
 
-That insert is what makes the *next* request with the same prefix
-benefit. The first request always pays the full prefill cost; later
-ones reuse what it produced.
+## Eviction
 
-## Eviction and the second-tier flow
+Eviction is a **side effect of allocation**, not a separate pass. When
+`get_new_blocks` pops from the free list and the popped block still
+carries a hash, that hash is dropped. There is no `evict()` call, no
+"evictable size", and no reclaim step that can come up short.
 
-When NPU memory pressure forces an eviction:
+Dropping a hash costs nothing, in any mode:
 
-1. The NPU cache's LRU evicts a block.
-2. If a second-tier pool exists, the evicted block is **spilled** to
-   it (latency-modeled as a CPU/CXL write).
-3. Future requests can hit the spilled block from the second tier
-   instead of recomputing.
+- the block belonged to a finished request → it was only a cache
+- the block belonged to a preempted request and a storage tier exists →
+  the copy is already downstairs, written off the critical path
+- no storage tier → nothing was written down, so the request recomputes,
+  which is exactly what vLLM does
 
-The second-tier pool itself can also evict (it's bounded by
-`cpu_mem.mem_size` or the CXL capacity). When that happens, the block
-is gone, recomputed on the next hit.
+A freed block goes to the **tail** of the free list, so it is reused
+last. Requests free their blocks in reverse order, so under pressure the
+tail goes first and the head — the recoverable prefix — survives longest.
 
-## Block events stream
+## What preemption costs
 
-`RadixCache(enable_kv_cache_events=True)` emits an event stream
-recording every insert / remove / clear. The simulator uses these
-events for two things:
+A preempted request keeps nothing but its identity: `num_computed_tokens`
+goes to 0 and its blocks are released. That is vLLM's own behaviour and
+it is not a re-prefill, because the blocks keep their hashes. On
+re-admission the lookup above finds whatever survived, and only the
+remainder is recomputed:
 
-- **Block-aware throughput accounting**: `prompt_t` counts cache
-  hit tokens, matching vLLM.
-- **Optional debugging output** at `--log-level DEBUG`, which dumps
-  per-iteration `npu_prefix_cache.format_prefix_info()`.
+| Situation | Cost on resume |
+| --- | --- |
+| Blocks still resident on the NPU | Nothing but the block-aligned tail |
+| Blocks dropped, copy in the storage tier | `kv_load` transfer for the missing chunks |
+| Blocks dropped, no storage tier | Recompute — counted in `Recomputed prompt tokens` |
 
-If you're modifying the prefix cache or building a new visualization,
-the event stream is the API to consume.
+## Block size across tiers
 
-## Page size differences
+The NPU pool and the storage pool use **different block sizes**, and
+that is deliberate rather than a rounding artefact:
 
-The NPU cache and the CPU/CXL cache use **different page sizes**:
+- NPU pool: `--block-size` (default 16), matching vLLM's GPU block size.
+- Storage pool: 256 tokens, matching LMCache's default `chunk_size`.
+  A host tier wants fewer, larger transfers.
 
-- NPU cache: `block_size` (default 16). Matches the actual KV-block
-  granularity on the GPU side.
-- CPU/CXL cache: 1. Finer-grained because spilling already-computed
-  blocks shouldn't lose precision when the second-tier serves a
-  *partial* match.
-
-This means a single NPU block can correspond to up to 16 entries in
-the CPU pool. The match logic accounts for this; you don't need to
-reason about it unless you're modifying the cache itself.
+The storage size must be a multiple of the NPU size, because the tier
+keys on every Nth hash of the same chain (N = 256/16 = 16). One
+consequence to expect: a storage hit only ever extends the prefix in
+whole 256-token steps, so a request with a 200-token prompt can never
+hit the storage tier at all.
 
 ## What gets reported
 
@@ -183,13 +204,17 @@ Every iteration's `add_done` call updates these counters:
    text and the simulator tokenizes them differently from your
    inference engine, hits won't match. Pre-tokenize (provide
    `input_tok_ids` in the JSONL) for stable hashing.
-3. **NPU eviction triggers immediately when memory is full**, not
-   lazily. If you see surprising memory plateaus during a long run,
-   that's the eviction policy keeping NPU memory bounded.
-4. **The CPU/CXL pool doesn't free itself on instance shutdown.**
+3. **NPU eviction is a side effect of allocation**, so memory sits at
+   the pool ceiling once the workload has filled it. That plateau is
+   normal — a block in the free list that still carries a hash is
+   reusable data, not waste.
+4. **The storage pool doesn't free itself on instance shutdown.**
    This is intentional (so a long-running multi-stage workload can
    keep reusing the pool), but leftover entries are visible in the
    final summary.
+5. **Hits only ever come from complete blocks.** A resumed request
+   always recomputes at least one token, and up to `block_size` (or up
+   to a 256-token chunk when the recovery came from storage).
 
 ## What's next
 

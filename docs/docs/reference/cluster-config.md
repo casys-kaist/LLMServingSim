@@ -184,7 +184,7 @@ value still falls back to the model config's `torch_dtype`.
 | `kv_cache_dtype` | string | `--kv-cache-dtype` | KV-cache dtype for memory accounting and profile variant selection |
 | `enable_chunked_prefill` | bool | `--enable-chunked-prefill` | Enable chunked prefill in this instance's scheduler |
 | `enable_prefix_caching` | bool | `--enable-prefix-caching` | Enable this instance's local prefix cache |
-| `prioritize_prefill` | bool | `--prioritize-prefill` | Prefer prefill requests when forming batches |
+| `gpu_memory_utilization` | float | `--gpu-memory-utilization` | Fraction of `npu_mem.mem_size` usable for weights plus KV cache |
 | `enable_local_offloading` | bool | `--enable-local-offloading` | Emit graph conversion with local offloading for this instance |
 | `enable_attn_offloading` | bool | `--enable-attn-offloading` | Emit PIM attention offload for this instance |
 | `enable_sub_batch_interleaving` | bool | `--enable-sub-batch-interleaving` | Enable sub-batch interleaving for this instance |

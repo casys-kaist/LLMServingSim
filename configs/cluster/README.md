@@ -77,7 +77,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `kv_cache_dtype` | String | No | Per-instance override for `--kv-cache-dtype` |
 | `enable_chunked_prefill` | Boolean | No | Per-instance override for `--enable-chunked-prefill` |
 | `enable_prefix_caching` | Boolean | No | Per-instance override for `--enable-prefix-caching` |
-| `prioritize_prefill` | Boolean | No | Per-instance override for `--prioritize-prefill` |
+| `gpu_memory_utilization` | Float | No | Per-instance override for `--gpu-memory-utilization` |
 | `enable_local_offloading` | Boolean | No | Per-instance override for `--enable-local-offloading` |
 | `enable_attn_offloading` | Boolean | No | Per-instance override for `--enable-attn-offloading` |
 | `enable_sub_batch_interleaving` | Boolean | No | Per-instance override for `--enable-sub-batch-interleaving` |

@@ -28,7 +28,7 @@ matching runtime knobs per `instances[i]`; see
 | `--max-num-batched-tokens` | int | `2048` | Max tokens per iteration across all requests (token budget) |
 | `--long-prefill-token-threshold` | int | `0` | Per-request token cap per step for chunked prefill. `0` = disabled |
 | `--enable-chunked-prefill` | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
-| `--prioritize-prefill` | flag | off | Run prefill before decode in the same iteration |
+| `--gpu-memory-utilization` | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache, as in vLLM. KV capacity is `npu_mem * this - model weight` |
 | `--block-size` | int | `16` | KV cache block size in tokens |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 
@@ -51,7 +51,7 @@ matching runtime knobs per `instances[i]`; see
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--enable-prefix-caching` | `True` | RadixAttention prefix caching. Use `--no-enable-prefix-caching` to disable |
+| `--enable-prefix-caching` | `True` | Prefix caching over a per-tier block pool with chained block hashes. Use `--no-enable-prefix-caching` to disable |
 | `--enable-prefix-sharing` | off | Second-tier prefix pool shared across instances within a node |
 | `--prefix-storage` | `None` | Where the second-tier pool lives. `None` / `CPU` / `CXL` |
 | `--enable-local-offloading` | off | Weight offloading to NPU (counts weight reads in profiling) |
