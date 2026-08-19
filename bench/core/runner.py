@@ -182,6 +182,14 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
     # ------------------------------------------------------------------
     # Persist outputs.
     # ------------------------------------------------------------------
+    # Collecting metadata must never be the thing that loses a completed run.
+    try:
+        resolved_config = _resolved_config(engine)
+        kv_cache = _kv_cache_facts(engine)
+    except Exception as exc:
+        log.warning("could not snapshot the resolved vLLM config: %s", exc)
+        resolved_config, kv_cache = {}, {}
+
     recorder.write_meta(
         output_dir,
         model=args.model,
@@ -193,6 +201,13 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         started_at=started_at,
         finished_at=finished_at,
         tick_seconds=args.tick_seconds,
+        # What vLLM resolved, not what we asked for: defaults filled in,
+        # max_model_len inferred, num_gpu_blocks profiled. kv_cache is pulled
+        # out of it because num_gpu_blocks is the number a simulator has to
+        # match, and the only place vLLM's activation peak becomes visible.
+        kv_cache=kv_cache,
+        hardware=_hardware_facts(),
+        resolved_config=resolved_config,
     )
     recorder.write_requests(output_dir, records)
     header, rows = BenchStatLogger.downsample_to_csv_rows(args.tick_seconds)
@@ -280,6 +295,139 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
         "max_model_len", "dtype", "kv_cache_dtype", "seed",
     )
     return {k: getattr(engine_args, k, None) for k in fields}
+
+
+# Values longer than this are recorded as a type tag instead, so one HF config
+# object cannot bury the rest of meta.json.
+_MAX_REPR = 200
+
+
+def _normalize(value, depth: int = 0):
+    """Reduce a config value to something JSON can hold.
+
+    Scalars pass through. Enums become their value. Short flat containers are
+    kept element-wise. Anything else -- an HF config object, a torch dtype, a
+    callable -- becomes a ``"<type>"`` tag: the field is still recorded as
+    present and resolved, without dragging its whole object graph into the file.
+    """
+    import enum
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, enum.Enum):
+        return _normalize(value.value, depth + 1)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        seq = list(value)
+        if len(seq) > 64:
+            return f"<{type(value).__name__} len={len(seq)}>"
+        return [_normalize(v, depth + 1) for v in seq]
+    if isinstance(value, dict):
+        if len(value) > 64 or depth > 2:
+            return f"<dict len={len(value)}>"
+        return {str(k): _normalize(v, depth + 1) for k, v in value.items()}
+    text = repr(value)
+    if len(text) <= _MAX_REPR:
+        return text
+    return f"<{type(value).__name__}>"
+
+
+def _config_fields(obj) -> dict:
+    """Field name -> normalized value for one config object.
+
+    vLLM's config classes are pydantic-decorated dataclasses, so try the
+    dataclass field list first, then pydantic's, then fall back to __dict__.
+    Order does not matter: the dict is sorted on the way out.
+    """
+    import dataclasses
+
+    names: list[str] = []
+    if dataclasses.is_dataclass(obj):
+        names = [f.name for f in dataclasses.fields(obj)]
+    elif hasattr(type(obj), "model_fields"):
+        names = list(type(obj).model_fields)
+    elif hasattr(obj, "__dict__"):
+        names = list(vars(obj))
+    out = {}
+    for name in sorted(names):
+        if name.startswith("_"):
+            continue
+        try:
+            out[name] = _normalize(getattr(obj, name))
+        except Exception as exc:                     # a property may raise
+            out[name] = f"<unreadable: {type(exc).__name__}>"
+    return out
+
+
+def _resolved_config(engine) -> dict:
+    """Snapshot vLLM's *resolved* configuration, one section per sub-config.
+
+    Reads the engine's own ``VllmConfig`` after boot, so these are the values
+    vLLM actually ran with rather than the arguments we asked for -- defaults
+    filled in, ``max_model_len`` inferred, ``num_gpu_blocks`` profiled. Walks
+    ``VllmConfig``'s field list rather than a hand-kept list of interesting
+    knobs, so a vLLM upgrade that adds one shows up here on its own.
+    """
+    cfg = getattr(engine, "vllm_config", None)
+    if cfg is None:
+        return {}
+    out = {}
+    for name, sub in _config_fields(cfg).items():
+        try:
+            value = getattr(cfg, name)
+        except Exception:
+            continue
+        if value is None or isinstance(value, (bool, int, float, str)):
+            out[name] = sub                      # a scalar on VllmConfig itself
+        else:
+            fields = _config_fields(value)
+            out[name] = fields if fields else sub
+    return out
+
+
+def _kv_cache_facts(engine) -> dict:
+    """The KV cache vLLM actually allocated.
+
+    ``num_gpu_blocks`` is the number the simulator has to match, and it is the
+    only place the activation peak and CUDA context that vLLM subtracts become
+    visible: everything else in the budget is known up front.
+    """
+    cfg = getattr(engine, "vllm_config", None)
+    if cfg is None:
+        return {}
+    cache = getattr(cfg, "cache_config", None)
+    if cache is None:
+        return {}
+    blocks = getattr(cache, "num_gpu_blocks", None)
+    block_size = getattr(cache, "block_size", None)
+    facts = {
+        "num_gpu_blocks": blocks,
+        "num_cpu_blocks": getattr(cache, "num_cpu_blocks", None),
+        "block_size": block_size,
+        "gpu_memory_utilization": getattr(cache, "gpu_memory_utilization", None),
+        "enable_prefix_caching": getattr(cache, "enable_prefix_caching", None),
+        "kv_cache_memory_bytes": getattr(cache, "kv_cache_memory_bytes", None),
+    }
+    if isinstance(blocks, int) and isinstance(block_size, int):
+        facts["num_kv_tokens"] = blocks * block_size
+    return facts
+
+
+def _hardware_facts() -> dict:
+    """Which accelerator this ran on, for matching against profiler/perf/<hw>/."""
+    facts = {}
+    try:
+        import torch
+        facts["torch_version"] = torch.__version__
+        facts["cuda_version"] = getattr(torch.version, "cuda", None)
+        if torch.cuda.is_available():
+            facts["device_count"] = torch.cuda.device_count()
+            facts["device_name"] = torch.cuda.get_device_name(0)
+            props = torch.cuda.get_device_properties(0)
+            facts["device_total_memory_bytes"] = props.total_memory
+            facts["device_capability"] = f"{props.major}.{props.minor}"
+    except Exception as exc:
+        facts["error"] = f"{type(exc).__name__}: {exc}"
+    return facts
 
 
 def _vllm_version() -> str:
