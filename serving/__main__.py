@@ -560,7 +560,10 @@ def main():
     last_log = 0    # last logged time
     FREQ = 1000_000_000 # 1 GHz (1e9 Hz)
     INTERVAL = log_interval*FREQ
-    RATIO = FREQ//INTERVAL
+    # Per-interval token counts -> tokens/s, so 1/log_interval. Floor division
+    # collapsed to 0 for any --log-interval > 1, which zeroed every logged
+    # throughput and made the summary line divide by zero.
+    RATIO = FREQ/INTERVAL
     total_prompt = 0
     total_gen = 0
     total_latency = 0
@@ -1069,7 +1072,7 @@ def main():
     print_markup(f"Average prompt throughput (tok/s):                                  {total_prompt/total_latency:.2f}")
     print_markup(f"Average generation throughput (tok/s):                              {total_gen/total_latency:.2f}")
     print_markup(f"Total token throughput (tok/s):                                     {(total_prompt + total_gen)/total_latency:.2f}")
-    print_markup(f"Throughput per {1/RATIO} sec (\\[prompt_throughput], \\[gen_throughput]): {throughput}")
+    print_markup(f"Throughput per {log_interval:g} sec (\\[prompt_throughput], \\[gen_throughput]): {throughput}")
     print_rule()
     if any_prefix_caching:
         print_rule("[sim.tagline]Prefix Caching Results[/]")
@@ -1090,7 +1093,7 @@ def main():
         print_markup(f"Total energy consumption (kJ):                                      {total_energy/1000:.2f}")
         # Each node results
         power_model.print_power_summary()
-        print_markup(f"Power per {1/RATIO} sec (W): {power_model.power_time_series}")
+        print_markup(f"Power per {log_interval:g} sec (W): {power_model.power_time_series}")
         print_rule()
     # Each instacne results
     for i in range(num_instances):
