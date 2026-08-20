@@ -54,6 +54,30 @@ python -m bench run \
     --dtype bfloat16 --kv-cache-dtype auto
 ```
 
+All 15 flags:
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--model` | required | HF id, passed verbatim to `vllm.AsyncLLM` |
+| `--dataset` | required | LLMServingSim-format JSONL |
+| `--output-dir` | required | run output root |
+| `--tensor-parallel-size` | `1` | vLLM `tensor_parallel_size` |
+| `--data-parallel-size` | `1` | vLLM `data_parallel_size` |
+| `--enable-expert-parallel` | off | vLLM `enable_expert_parallel`, MoE only |
+| `--max-num-seqs` | `128` | vLLM `max_num_seqs` |
+| `--max-num-batched-tokens` | `2048` | vLLM `max_num_batched_tokens` |
+| `--max-model-len` | model max | vLLM `max_model_len` |
+| `--dtype` | `bfloat16` | note: not inferred from the model config, unlike `python -m serving` |
+| `--kv-cache-dtype` | `auto` | vLLM `kv_cache_dtype` |
+| `--seed` | `42` | sampling seed |
+| `--tick-seconds` | `1.0` | `timeseries.csv` row spacing; the simulator's `--log-interval` |
+| `--num-reqs` | `0` | cap on requests from the dataset, `0` = all |
+| `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+
+There is no `--block-size`: vLLM picks the KV block size itself and records
+what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
+the simulator as `--block-size` to line the two up.
+
 `bench validate` — compare a finished bench run against simulator output
 
 Loads the bench artifacts plus the simulator's `sim.csv` / `sim.log`
@@ -68,6 +92,20 @@ summary into a subdirectory of the bench run.
     outputs/<sim-run>/sim.log \
     [prefix]
 ```
+
+`validate.sh` sets `--output-subdir`, `--title` and `--log-level` from the
+`OUTPUT_SUBDIR` / `TITLE` / `LOG_LEVEL` environment variables. The module
+itself takes all seven directly:
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--bench-dir` | required | a finished `bench run` output directory |
+| `--sim-csv` | required | simulator `--output` CSV |
+| `--sim-log` | required | simulator stdout, parsed for per-tick running / waiting |
+| `--output-subdir` | `validation` | subdirectory under `--bench-dir` |
+| `--prefix` | `""` | filename prefix for plots and summary |
+| `--title` | `vLLM vs LLMServingSim` | plot title suffix |
+| `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ## Output schema (one bench run)
 

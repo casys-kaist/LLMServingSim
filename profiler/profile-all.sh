@@ -5,7 +5,7 @@
 #
 #     ./profiler/profile-all.sh
 #
-# Each run writes to perf/<HARDWARE>/<MODEL>/<variant>/tp{1,2}/ — see
+# Each run writes to profiler/perf/<HARDWARE>/<MODEL>/<variant>/tp{1,2}/ — see
 # ./profiler/profile.sh for the single-model equivalent.
 # -----------------------------------------------------------------------------
 
@@ -57,7 +57,7 @@ for MODEL in "${MODELS[@]}"; do
 done
 
 echo
-echo "All profiles done. Output under perf/$HARDWARE/:"
+echo "All profiles done. Output under profiler/perf/$HARDWARE/:"
 for MODEL in "${MODELS[@]}"; do
-    echo "  perf/$HARDWARE/$MODEL/"
+    echo "  profiler/perf/$HARDWARE/$MODEL/"
 done
