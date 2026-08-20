@@ -18,6 +18,8 @@ the project. This page is our way of saying **thank you**.
 We are especially grateful to contributors from outside CASYS who have
 volunteered their effort to make LLMServingSim better for everyone. 🙏
 
+### Code
+
 - **[@horser1](https://github.com/horser1)**
   - Per-dimension link settings + collective dimension sync ([#33](https://github.com/casys-kaist/LLMServingSim/pull/33))
   - Prefix-cache / radix-tree fixes ([#35](https://github.com/casys-kaist/LLMServingSim/pull/35))
@@ -40,13 +42,24 @@ volunteered their effort to make LLMServingSim better for everyone. 🙏
   - Fix stale `--dtype float16` in `run.sh` and the docs examples ([#57](https://github.com/casys-kaist/LLMServingSim/pull/57))
 - **[@gleb-kun](https://github.com/gleb-kun)**
   - Fix missing return value in the profiler's argument parser ([#22](https://github.com/casys-kaist/LLMServingSim/pull/22))
+- **[@Arifuzzamanjoy](https://github.com/Arifuzzamanjoy)**
+  - RTX 4090 profile bundle with an end-to-end vLLM validation run, which exposed
+    the attention-interpolation and skew-fallback errors
+    ([#58](https://github.com/casys-kaist/LLMServingSim/issues/58),
+    [#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
+
+### Reports and analysis
+
+Issues that pinned down a real problem, and the digging that made the fix
+possible. These shaped the project as much as the patches did.
+
 - **[@hu-op1](https://github.com/hu-op1)**
   - Accuracy boundary report against vLLM V1, which set the direction the KV cache
     and scheduler were rebuilt in ([#40](https://github.com/casys-kaist/LLMServingSim/issues/40))
-- **[@Arifuzzamanjoy](https://github.com/Arifuzzamanjoy)**
-  - Consumer-class GPU profile bundles with an end-to-end vLLM comparison on an
-    RTX 4090 ([#58](https://github.com/casys-kaist/LLMServingSim/issues/58),
-    [#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
+  - Pipeline parallelism silently hung at most `pp_size` values ([#55](https://github.com/casys-kaist/LLMServingSim/issues/55))
+- **[@hsule](https://github.com/hsule)**
+  - Narrowed the pipeline-parallelism hang to the stage-boundary send/recv size
+    mismatch ([#55](https://github.com/casys-kaist/LLMServingSim/issues/55))
 - **[@bui-thanh-lam](https://github.com/bui-thanh-lam)**
   - Model-architecture YAML documentation had drifted from the schema
     ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52))

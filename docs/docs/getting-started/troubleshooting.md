@@ -116,6 +116,28 @@ with a CMake or compiler message.
   simulator container, not on the host. Use `./scripts/docker-sim.sh`
   first.
 
+## `model_parallel_NPU_group <= 0` or a Chakra `VersionError`
+
+**Symptom:** the Chakra conversion step aborts the run with
+`ValueError: model_parallel_NPU_group <= 0`, or with
+`google.protobuf.runtime_version.VersionError: Detected incompatible
+Protobuf Gencode/Runtime versions`.
+
+**Cause:** Chakra is installed into the container's site-packages by
+`scripts/compile.sh`, so an existing container keeps whatever version
+was installed when it was first built. After pulling a change to the
+converter or to the trace format, that stale copy can no longer read
+the traces the simulator writes.
+
+**Fix:** reinstall Chakra inside the simulator container:
+
+```bash
+cd astra-sim/extern/graph_frontend/chakra && pip3 install .
+```
+
+Rerunning `./scripts/compile.sh` does the same thing along with the
+C++ rebuild.
+
 ## Container name already in use
 
 **Symptom:**

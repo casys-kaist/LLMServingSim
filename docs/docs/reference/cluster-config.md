@@ -165,6 +165,8 @@ schema. Top-level structure:
 **Constraints:**
 
 - `num_npus == tp_size * pp_size` (always)
+- `pp_size <= num_hidden_layers`: pipeline stages are cut on
+  transformer-block boundaries, so a stage cannot be empty
 - Without `dp_group`: `ep_size <= tp_size`
 - For MoE: `ep_size` must divide `num_local_experts`
 

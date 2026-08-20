@@ -199,9 +199,10 @@ decode instance picks them up.
    with 64 in-progress decodes and a 1500-token prefill chunk runs
    1564 tokens this step. Decode contributions count.
 
-4. **Pipeline parallelism caps `inflight` at `pp_size`.** Chakra splits
-   each iteration's layers across stages with send/recv between them,
-   so inter-stage P2P latency *is* modeled.
+4. **Pipeline parallelism caps `inflight` at `pp_size`.** Each
+   iteration's layers are split across stages on transformer-block
+   boundaries, with send/recv between them, so inter-stage P2P latency
+   *is* modeled.
 
 ## What's next
 

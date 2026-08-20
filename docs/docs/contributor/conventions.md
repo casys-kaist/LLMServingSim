@@ -133,8 +133,8 @@ If you touch `trace_generator.py` or `graph_generator.py`:
   emits a `MEM_LOAD` from the first and a `MEM_STORE` from the last;
   if either is `LOCAL` without local memory configured, ASTRA-Sim
   crashes.
-- The sampler's `output_loc` is what feeds the `MEM_STORE`. Don't
-  put it on `lm_head`.
+- The sampler's `output_loc` and `output_size` are what feed the
+  `MEM_STORE`. Don't put them on `lm_head`.
 
 ## Commit and PR style
 

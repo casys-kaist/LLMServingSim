@@ -26,7 +26,7 @@ default. Use `--no-cleanup-inputs` to preserve generated traces.
 ## File structure
 
 ```
-COLOCATED		model_parallel_NPU_group: {npu_group}
+COLOCATED		model_parallel_NPU_group: {pp_size}		pp_stage_boundaries: 73,145,217
 {num_layers}
 Layername    comp_time    input_loc    input_size    weight_loc    weight_size    output_loc    output_size    comm_type    comm_size    misc
 embedding_0    5621    REMOTE:0    40    LOCAL    1050673152    LOCAL    81920    NONE    0    NONE
@@ -40,7 +40,7 @@ sampler_291    25933    LOCAL    2565120    LOCAL    0    REMOTE:0    40    NONE
 
 | Line | Content | Meaning |
 | --- | --- | --- |
-| 1 | `COLOCATED\tmodel_parallel_NPU_group: {npu_group}` | Trace mode marker. `npu_group` is the comma-separated list of NPU IDs in this instance |
+| 1 | `COLOCATED\tmodel_parallel_NPU_group: {pp_size}` + optional `\tpp_stage_boundaries: {i1},{i2},…` | Trace mode marker followed by `key: value` pairs. `model_parallel_NPU_group` is the pipeline-parallel degree. `pp_stage_boundaries` is written only when `pp_size > 1`: the `pp_size - 1` layer-row indices at which each stage after the first begins, counted after any leading `kv_load`/`kv_evict` rows |
 | 2 | `{num_layers}` | Number of layer rows that follow |
 | 3 | column header (tab-separated) | Field names |
 
@@ -95,7 +95,10 @@ simulator models the request entering / leaving the NPU as a
 host-side transfer.
 
 This is why `embedding_0` has `input_loc=REMOTE:0` and `sampler_*`
-has `output_loc=REMOTE:0` in the example above.
+has `output_loc=REMOTE:0` in the example above. The `MEM_STORE_NODE`
+is sized from the last row's `output_size` — the sampled token ids,
+4 bytes per sequence — not from its `input_size`, which is the logits
+tensor the sampler consumed on the NPU.
 
 ## Communication types
 
@@ -174,20 +177,30 @@ compute on one half while PIM attention runs on the other.
 ## Sample full trace (single instance, TP=1, dense model)
 
 ```
-COLOCATED		model_parallel_NPU_group: 0
-228
+COLOCATED		model_parallel_NPU_group: 1
+292
 Layername	comp_time	input_loc	input_size	weight_loc	weight_size	output_loc	output_size	comm_type	comm_size	misc
-embedding_0	5621	REMOTE:0	40	LOCAL	1050673152	LOCAL	81920	NONE	0	NONE
-layernorm_0	1240	LOCAL	81920	LOCAL	8192	LOCAL	81920	NONE	0	NONE
-qkv_proj_0	8324	LOCAL	81920	LOCAL	25165824	LOCAL	245760	NONE	0	NONE
-rotary_emb_0	2104	LOCAL	245760	LOCAL	0	LOCAL	245760	NONE	0	NONE
-attention_0	18327	LOCAL	245760	LOCAL	0	LOCAL	81920	NONE	0	NONE
-o_proj_0	7452	LOCAL	81920	LOCAL	8388608	LOCAL	81920	NONE	0	NONE
+embedding_0	5386	REMOTE:0	40	LOCAL	1050673152	LOCAL	81920	NONE	0	NONE
+layernorm_1	2416	LOCAL	81920	LOCAL	8192	LOCAL	81920	NONE	0	NONE
+qkv_proj_2	36000	LOCAL	81920	LOCAL	50331648	LOCAL	122880	NONE	0	NONE
+rotary_emb_3	2795	LOCAL	102400	LOCAL	0	LOCAL	102400	NONE	0	NONE
+attention_4	7985	LOCAL	81920	LOCAL	0	LOCAL	81920	NONE	0	NONE
+o_proj_5	25611	LOCAL	81920	LOCAL	33554432	LOCAL	81920	NONE	0	NONE
+layernorm_6	2416	LOCAL	81920	LOCAL	8192	LOCAL	81920	NONE	0	NONE
+gate_up_proj_7	159157	LOCAL	81920	LOCAL	234881024	LOCAL	573440	NONE	0	NONE
+act_fn_8	2965	LOCAL	573440	LOCAL	0	LOCAL	286720	NONE	0	NONE
 ... (decoder blocks 1..31 elided) ...
-final_layernorm	1240	LOCAL	81920	LOCAL	8192	LOCAL	81920	NONE	0	NONE
-lm_head	28341	LOCAL	81920	LOCAL	1050673152	LOCAL	2565120	NONE	0	NONE
-sampler_291	25933	LOCAL	2565120	LOCAL	0	REMOTE:0	40	NONE	0	NONE
+down_proj_288	81014	LOCAL	286720	LOCAL	117440512	LOCAL	81920	NONE	0	NONE
+final_layernorm_289	2624	LOCAL	81920	LOCAL	8192	LOCAL	81920	NONE	0	NONE
+lm_head_290	714006	LOCAL	81920	LOCAL	1050673152	LOCAL	2565120	NONE	0	NONE
+sampler_291	24746	LOCAL	2565120	LOCAL	0	REMOTE:0	40	NONE	0	NONE
 ```
+
+A layer's `output_size` is **not** in general the next layer's `input_size`:
+`qkv_proj` emits Q+K+V while `rotary_emb` only declares Q+K, and `attention`
+reads K/V from the KV cache rather than from the activation. The two agree at
+transformer-block boundaries (`layernorm` in, `down_proj`/`moe` out — both the
+hidden state), which is why pipeline stages may only be cut there.
 
 ## How the Chakra converter consumes this
 
