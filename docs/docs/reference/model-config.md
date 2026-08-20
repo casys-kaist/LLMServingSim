@@ -46,6 +46,7 @@ profiler downloads and caches it on first run. The simulator
 | `intermediate_size` | int | both | MLP intermediate dim |
 | `vocab_size` | int | both | Embedding / `lm_head` output dim |
 | `head_dim` | int | both | **Important if not `hidden_size / num_attention_heads`** (Qwen3 has explicit `head_dim`) |
+| `max_position_embeddings` | int | simulator | **Required.** The model's context limit. The simulator clamps its per-step token budget to it: `max_num_batched_tokens = min(max_num_batched_tokens, max_position_embeddings)` |
 
 When `head_dim` is absent from the config, the simulator falls back
 to `hidden_size // num_attention_heads`. This is wrong for Qwen3
@@ -71,15 +72,27 @@ or `num_experts` and treats them equivalently.
 | --- | --- | --- |
 | `torch_dtype` | string | Default weight dtype. Used when `--dtype` isn't passed. e.g. `bfloat16`, `float16`, `float32` |
 | `architectures` | array | First entry's class name is informational; the simulator dispatches via `model_type` |
-| `mlp_only_layers` | array | Indices of layers using dense MLP (vs MoE). Hybrid MoE/dense models like Qwen3-MoE-Instruct use this |
 
 ## Fields the simulator ignores
 
 The HF config has many more fields the simulator doesn't use -
 things like `bos_token_id`, `eos_token_id`, `attention_dropout`,
-`max_position_embeddings`, `rope_*`, `rms_norm_eps`,
-`initializer_range`, `tie_word_embeddings`. Leave them as the HF
-config has them; ignored fields don't affect simulation.
+`rope_*`, `rms_norm_eps`, `initializer_range`,
+`tie_word_embeddings`. Leave them as the HF config has them; ignored
+fields don't affect simulation.
+
+`max_position_embeddings` is **not** in that group, despite looking
+like a pure-HF field: see the required table above.
+
+`mlp_only_layers` **is** ignored, and that one has a consequence worth
+knowing. Qwen3-MoE ships it to mark which decoder layers use a dense
+MLP instead of the MoE block, and
+`configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json` carries it. The
+simulator decides MoE-ness once per *model* (`is_moe` is true when the
+config has `num_local_experts` or `num_experts`) and applies the MoE
+path to every layer, so a hybrid model's dense layers are modelled as
+MoE layers. On Qwen3-30B-A3B that list is empty, so nothing is lost
+today — but a genuinely hybrid config would be mis-modelled silently.
 
 ## Examples
 
@@ -95,6 +108,7 @@ config has them; ignored fields don't affect simulation.
   "num_hidden_layers": 32,
   "num_key_value_heads": 8,
   "vocab_size": 128256,
+  "max_position_embeddings": 131072,
   "torch_dtype": "bfloat16"
 }
 ```
@@ -115,6 +129,7 @@ Llama 3.1.)
   "num_key_value_heads": 8,
   "head_dim": 128,
   "vocab_size": 151936,
+  "max_position_embeddings": 40960,
   "torch_dtype": "bfloat16"
 }
 ```
@@ -138,6 +153,7 @@ Llama 3.1.)
   "num_experts_per_tok": 8,
   "moe_intermediate_size": 768,
   "vocab_size": 151936,
+  "max_position_embeddings": 262144,
   "torch_dtype": "bfloat16"
 }
 ```
@@ -164,6 +180,19 @@ Llama 3.1.)
    the model's HF config uses; the simulator handles both.
 3. **`model_type` is case-sensitive** and must match a YAML at
    `profiler/models/<model_type>.yaml` exactly.
+4. **`max_position_embeddings` silently caps the token budget.** The
+   scheduler and trace generator both read it as
+   `min(max_num_batched_tokens, max_position_embeddings)`. On a
+   short-context model this bites without warning: bundled
+   `microsoft/Phi-mini-MoE-instruct` has
+   `max_position_embeddings: 4096`, so
+   `--max-num-batched-tokens 8192` actually runs at 4096. It also
+   sets the ceiling for `max_num_batched_tokens: 0`
+   ("unlimited"), which resolves to `max_position_embeddings`
+   rather than to infinity.
+5. **It is read with a direct index, not a `.get()`.** A config
+   without `max_position_embeddings` raises `KeyError` at scheduler
+   construction rather than falling back to a default.
 
 ## What's next
 
