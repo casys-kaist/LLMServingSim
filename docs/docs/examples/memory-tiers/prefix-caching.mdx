@@ -106,9 +106,16 @@ With the shared CPU pool enabled, the throughput log gains prefix
 hit-rate counters:
 
 ```text
-[INFO] step=20 inst0_batch=6 inst1_batch=4 prompt_t=2.4k tok/s decode_t=820 tok/s
-       prefix_hit=78% (npu=42%, cpu=36%)
+[20.0s] Avg prompt throughput: 2412.0 tokens/s, Avg generation throughput: 820.0 tokens/s
+        ├─Running Instance[0]: 6 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63218.51 MB (64.301 % Used), Prefix Cache Hit ratio 41.82 %, (31024 / 74208)
+        ├─Running Instance[1]: 4 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63204.51 MB (64.287 % Used), Prefix Cache Hit ratio 42.11 %, (30298 / 71950)
+        └─Node[0]: Total CPU Memory Usage 8192.00 MB, 1.600 % Used, Prefix Cache Hit ratio 36.04 %, (52664 / 146158)
 ```
+
+The per-instance ratios are NPU-tier hits; the ratio on the `Node`
+line is the shared CPU pool's, and it replaces the per-instance CPU
+split because `--enable-prefix-sharing --prefix-storage CPU` makes the
+pool node-wide.
 
 The `prompt_t` (prompt throughput) counts **all** input tokens,
 including those served from cache, matching vLLM's reporting

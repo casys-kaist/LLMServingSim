@@ -79,7 +79,7 @@ python -m serving \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' \
   --output 'outputs/dp_ep_moe_run.csv' \
-  --num-req 1
+  --num-reqs 1
 ```
 
 Notes on the flags:
@@ -87,17 +87,28 @@ Notes on the flags:
 - The bundled SWE-bench-style agentic dataset is a good fit because
   each session has multiple chained sub-requests, which keeps both
   instances active.
-- `--num-req 1` means one *session* (multiple sub-requests). Bump it
+- `--num-reqs 1` means one *session* (multiple sub-requests). Bump it
   up for a longer run.
 
 ## Expected output
 
 ```text
-[INFO] step=8 batch=4+4 prompt_t=1.4k tok/s decode_t=520 tok/s
-       npu_mem=[81.2 GB, 81.2 GB] alltoall=512 KB
-[INFO] step=9 batch=4+4 prompt_t=1.5k tok/s decode_t=540 tok/s
-       npu_mem=[81.2 GB, 81.2 GB] alltoall=512 KB
+[4.0s] Avg prompt throughput: 9063.0 tokens/s, Avg generation throughput: 1074.0 tokens/s
+        ├─Running Instance[0]: 23 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 32634.88 MB (33.198 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 20285)
+        ├─Running Instance[1]: 22 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 32981.38 MB (33.550 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 24147)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
+[5.0s] Avg prompt throughput: 5342.0 tokens/s, Avg generation throughput: 1504.0 tokens/s
+        ├─Running Instance[0]: 27 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 32987.38 MB (33.556 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 23234)
+        ├─Running Instance[1]: 26 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 33312.88 MB (33.888 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 26861)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
 ```
+
+Those two lines are copied from
+[`bench/examples/Qwen3-30B-A3B-Instruct-2507/outputs/sim.log`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples),
+the committed DP+EP validation run. Nothing in the heartbeat names the
+ALLTOALL or the DP group: wave synchronisation shows up only as the two
+instances advancing in lockstep, which is why their `Running` counts
+stay within one of each other.
 
 The `batch=4+4` notation reflects per-instance batch (instance 0 +
 instance 1). The `alltoall` field shows the wave-synchronized

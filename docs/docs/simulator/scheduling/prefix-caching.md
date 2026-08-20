@@ -188,12 +188,17 @@ hit the storage tier at all.
 
 Every iteration's `add_done` call updates these counters:
 
-| Counter | Where |
+| Counter | Where you can actually see it |
 | --- | --- |
-| Per-request `prefix_cache_hit` | per-request CSV `prefix_hit_len` |
-| Per-iteration prompt-throughput hits | throughput log `prefix_hit=...` |
-| Per-instance pool size | throughput log `prefix_pool=...` (when `--enable-prefix-sharing`) |
-| Hit-rate breakdown (NPU vs CPU) | throughput log `prefix_hit=78% (npu=42%, cpu=36%)` |
+| Per-request `prefix_cache_hit` / `npu_cache_hit` / `storage_cache_hit` | **Nowhere in the output.** Tracked on the `Request` object but not written to the per-request CSV. To get at it, read the objects directly or extend `Scheduler.save_output` |
+| Per-instance hit ratio | The heartbeat's instance branch: `Prefix Cache Hit ratio 7.59 %, (19520 / 257239)`. **Cumulative since the run started**, not per interval |
+| Shared lower-tier hit ratio | The same field on the heartbeat's `Node[i]` branch, but only with `--enable-prefix-sharing --prefix-storage CPU`, which makes the pool node-wide |
+| Lower-tier pool occupancy | `Node[i]: Total CPU Memory Usage ...` or the `CXL[...]` branch, in MB and percent |
+| Run totals, split by tier | The final **Prefix Caching Results** section: requested tokens, NPU hit tokens and ratio, the `<tier>` hit tokens and ratio when `--prefix-storage` is set, and the combined total |
+
+There is no per-iteration hit counter and no NPU-versus-CPU breakdown in
+the heartbeat: the per-tier split appears only in the final summary. See
+**[Reading the output](/docs/simulator/reading-output#heartbeat-block)**.
 
 ## Gotchas
 

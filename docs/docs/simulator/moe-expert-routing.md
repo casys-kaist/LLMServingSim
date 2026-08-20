@@ -109,11 +109,15 @@ also has to know "expert E lives on which rank". This uses **even
 partitioning**:
 
 ```
-rank_for_expert(e) = e * ep_size // num_experts
+GateFunction.expert_owner(e, ep_size, num_experts)
+    = min(e * ep_size // num_experts, ep_size - 1)
 ```
 
 So with 128 experts and `ep_size=2`, experts 0–63 live on rank 0 and
-64–127 on rank 1. With `ep_size=4`, each rank holds 32 experts.
+64–127 on rank 1. With `ep_size=4`, each rank holds 32 experts. The
+`min(..., ep_size - 1)` is defensive — for a valid expert id the
+division already lands below `ep_size` — but it keeps an out-of-range id
+from indexing past the last rank.
 
 The `GateRouter.route()` output collapses per-token assignments into
 per-rank token counts that ASTRA-Sim consumes through the trace's

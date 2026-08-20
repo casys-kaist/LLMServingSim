@@ -77,7 +77,7 @@ python -m serving \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/example_pp_run.csv' \
-  --num-req 10
+  --num-reqs 10
 ```
 
 No new CLI flag, the parallelism degree is fully driven by the
@@ -89,8 +89,12 @@ cluster config. Swap in `single_node_tp_pp_instance.json` or
 The throughput log looks like a standard single-instance run:
 
 ```text
-[INFO] step=20 batch=8 prompt_t=1.4k tok/s decode_t=540 tok/s npu_mem=44.0 GB
-[INFO] step=21 batch=8 prompt_t=1.5k tok/s decode_t=560 tok/s npu_mem=44.1 GB
+[20.0s] Avg prompt throughput: 1436.0 tokens/s, Avg generation throughput: 540.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 4 NPUs, Each NPU Memory Usage 44032.19 MB (44.774 % Used), Prefix Cache Hit ratio 1.02 %, (1424 / 139612)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+[21.0s] Avg prompt throughput: 1502.0 tokens/s, Avg generation throughput: 560.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 4 NPUs, Each NPU Memory Usage 44118.19 MB (44.861 % Used), Prefix Cache Hit ratio 1.01 %, (1424 / 141114)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
 Two things to notice vs. the TP=1 baseline:

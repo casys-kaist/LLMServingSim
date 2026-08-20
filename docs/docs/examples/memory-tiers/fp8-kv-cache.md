@@ -16,7 +16,7 @@ sidebar_position: 3
    `<dtype>` (e.g., `bf16`) to `<dtype>-kvfp8` (e.g., `bf16-kvfp8`),
    so attention latency comes from the FP8-KV profile bundle.
 2. **Memory model** halves the per-block KV cache byte count
-   (`bytes_per_block` uses `kv_fp_size = 1` instead of `2`), so the
+   (`bytes_per_block` uses `kv_fp = 1` instead of `2`), so the
    scheduler can fit roughly 2× as many active tokens at the same
    `npu_mem`.
 
@@ -98,8 +98,9 @@ The throughput log looks unchanged in shape, but the memory
 footprint at the same batch size is much smaller:
 
 ```text
-[INFO] step=42 batch=16 prompt_t=2.4k tok/s decode_t=860 tok/s
-       npu_mem=68.2 GB
+[42.0s] Avg prompt throughput: 2416.0 tokens/s, Avg generation throughput: 860.0 tokens/s
+        ├─Running Instance[0]: 16 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 68204.26 MB (69.362 % Used), Prefix Cache Hit ratio 3.18 %, (4096 / 128704)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
 For comparison, the same workload on the same machine with
@@ -136,7 +137,7 @@ half of the per-token memory cost is gone.
 ## Where to learn more
 
 - **[Simulator → KV cache & memory](/docs/simulator/scheduling/kv-cache-and-memory)**:
-  the `bytes_per_block` formula and how `kv_fp_size` flows into
+  the `bytes_per_block` formula and how `kv_fp` flows into
   the scheduler's memory check.
 - **[Profiler → Output bundle](/docs/profiler/output-bundle)**:
   variant naming (`bf16` vs. `bf16-kvfp8` vs. `fp8` vs.

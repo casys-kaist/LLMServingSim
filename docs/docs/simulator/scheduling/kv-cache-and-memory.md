@@ -69,10 +69,10 @@ count divided by `tp_size` (and for MoE: experts further divided by
 weight_bytes_per_gpu = (
     dense_params / tp_size
     + moe_params / ep_size  # if MoE
-) * fp_size_in_bytes
+) * fp
 ```
 
-`fp_size` is 2 bytes for `bfloat16` / `float16`, 4 for `float32`,
+`fp` is 2 bytes for `bfloat16` / `float16`, 4 for `float32`,
 1 for `int8` and `fp8`. Actually loading is done via `get_weight()`,
 which reads the model config and accounts for shared embeddings,
 tied weights, etc.
@@ -91,17 +91,29 @@ is `--block-size` tokens (default 16):
 bytes_per_block = (
     2                                         # K and V
     * num_layers
-    * num_key_value_heads / tp_size           # GQA shards by TP
+    * num_key_value_heads
     * head_dim
     * block_size
-    * kv_fp_size
-)
+    * kv_fp
+) / num_npus                                  # = tp_size * pp_size
 ```
 
-Where `kv_fp_size` is:
+The divisor is `num_npus`, i.e. **`tp_size * pp_size`**, not `tp_size`
+alone (`MemoryModel.get_kv()`). Both factors belong there: KV per layer
+shards across TP ranks, and the layers themselves are split across PP
+stages, so a rank in a `tp=2 x pp=2` instance holds a quarter of the
+model's KV, not a half.
 
-- 2 bytes for `--kv-cache-dtype auto` (inherits from `--dtype`).
-- **1 byte for `--kv-cache-dtype fp8`**: halves KV memory.
+Note also that `head_dim` is read explicitly from the model config, not
+derived — see **[Model config](/docs/reference/model-config)**. On Qwen3
+`hidden_size / num_attention_heads` gives the wrong answer.
+
+Where `kv_fp` is:
+
+- 2 bytes for `bfloat16` / `float16` — what `--kv-cache-dtype auto`
+  inherits from `--dtype`; 4 for `float32`.
+- **1 byte for `--kv-cache-dtype fp8`**, which halves KV memory against
+  a 16-bit weight dtype.
 
 How many blocks exist is fixed at startup, the way vLLM sizes its cache:
 
@@ -119,7 +131,7 @@ run prints the resulting figure per instance under **KV Cache
 Initialization** at startup:
 
 ```
-  • Instance [0]                  : 3400 blocks / 54400 tokens (6.64 GiB per rank) at NPU memory utilization 0.90
+  • Instance [0] : 585248 tokens / 36578 blocks (71.44 GiB/rank at util 0.90)
 ```
 
 The scheduler takes `ceil(tokens / block_size)` blocks per active request
@@ -209,28 +221,31 @@ GB of host memory.
 
 ## Reading memory in the throughput log
 
-The throughput log line emitted every `--log-interval` seconds shows
-running memory usage:
+The heartbeat block emitted every `--log-interval` simulated seconds
+carries one branch per instance and then one per node:
 
-```
-[INFO] step=42 batch=8 prompt_t=1.2k tok/s decode_t=420 tok/s
-       npu_mem=88.4 GB cpu_mem=12.4 GB
-```
-
-For multi-instance setups it lists per-instance NPU usage:
-
-```
-       npu_mem=[88.4 GB, 87.9 GB] cpu_mem=24.8 GB
+```text
+[1.0s] Avg prompt throughput: 9069.0 tokens/s, Avg generation throughput: 224.0 tokens/s
+        ├─Running Instance[0]: 9 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 16486.51 MB (16.771 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 9069)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
-If you're using CXL:
+Reading the memory fields specifically:
 
-```
-       npu_mem=12.4 GB cxl_mem=[3.2 GB, 3.1 GB, 3.1 GB, 3.2 GB]
-```
+- **`Each NPU Memory Usage`** is per rank, in **MB**, and covers weights
+  plus active KV plus indexed prefix blocks — the whole `npu_used`
+  ledger. The percentage is against `npu_mem.mem_size`, so it tops out
+  near `mem_util * 100`, not 100.
+- **`Node[i]: Total CPU Memory Usage`** is the node's lower-tier
+  total. On a multi-instance node it is followed by each instance's
+  share of that total, e.g.
+  `(Instance[0]: 61.20 %, Instance[1]: 38.80 %)`.
+- With `--prefix-storage CXL` a `CXL[...]` branch is added, one per
+  device under `--enable-prefix-sharing` and one per prefix-caching
+  instance otherwise.
 
-(`12.4 GB` is the surviving NPU active KV + cache, with weights now on
-CXL.)
+Full field-by-field reference, including the multi-instance and CXL
+variants: **[Reading the output](/docs/simulator/reading-output#heartbeat-block)**.
 
 ## Gotchas
 
@@ -238,8 +253,8 @@ CXL.)
    error message points at exact byte counts; bump `tp_size` or
    reduce model size.
 2. **OOM mid-run** is unusual but possible if CXL placement is
-   misconfigured. Check the per-device CXL counter in the throughput
-   log.
+   misconfigured. Check the `CXL[...]` branch of the heartbeat block,
+   which appears only with `--prefix-storage CXL`.
 3. **`block_size` matters for memory granularity, not throughput.**
    Smaller blocks = finer accounting but more overhead per request.
    Default 16 is what vLLM uses.

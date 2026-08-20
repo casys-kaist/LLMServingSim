@@ -84,8 +84,12 @@ python -m serving \
 ## Expected output
 
 ```text
-[INFO] step=10 batch=4 prompt_t=900 tok/s decode_t=320 tok/s npu_mem=72.1 GB
-[INFO] step=11 batch=4 prompt_t=920 tok/s decode_t=330 tok/s npu_mem=72.1 GB
+[10.0s] Avg prompt throughput: 903.0 tokens/s, Avg generation throughput: 320.0 tokens/s
+        ├─Running Instance[0]: 4 reqs, Waiting: 0 reqs, Total # 2 NPUs, Each NPU Memory Usage 72104.88 MB (73.298 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 9142)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+[11.0s] Avg prompt throughput: 921.0 tokens/s, Avg generation throughput: 330.0 tokens/s
+        ├─Running Instance[0]: 4 reqs, Waiting: 0 reqs, Total # 2 NPUs, Each NPU Memory Usage 72180.88 MB (73.375 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 10063)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
 Compared to a hypothetical TP=2 EP=1 run on the same model: each

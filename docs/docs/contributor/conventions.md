@@ -96,9 +96,11 @@ preference:
    profiler bundle CSVs that exceed the gitignore patterns should
    stay local. The gitignore is set up; just don't `git add -A`.
 
-7. **Don't use `--no-verify` to bypass pre-commit hooks.** If a
-   hook fails, fix the underlying issue.
-
+7. **Don't rely on automation to catch you.** There are no
+   pre-commit hooks and no test CI: the only GitHub workflow is
+   `deploy-docs.yml`, which builds the docs site on pushes to `main`
+   that touch `docs/**`. Every check in
+   **[Validating your changes](./validating-changes)** is manual.
 8. **Don't add error handling for cases that can't happen.** Trust
    internal invariants; only validate at the boundaries (CLI args,
    JSON config load, dataset parsing). Defensive programming inside
@@ -124,6 +126,40 @@ These two trip up new contributors most often:
   bytes.** ASTRA-Sim divides by ring size internally. If you pass
   per-NPU sizes, every collective will be N times too small.
 
+## Scheduler invariants
+
+These are the ones with a history. Each has been broken before, and
+each cost real debugging time.
+
+- **There is no prefill phase and no decode phase.** A request just
+  catches up to `num_tokens_reached`, so
+  `num_new = num_tokens_reached - num_computed_tokens` — 1 in
+  steady-state decode, the whole remainder for a resumed request.
+  `Request.is_prefill()` was removed on purpose: it read
+  `original_input` and so misread a resumed request's recomputation as
+  decoding. Classify for the trace by **scheduled token count** (`> 1`
+  is a prefill chunk, `== 1` is decode), never by a phase flag.
+- **Never derive sequence length from `num_computed_tokens`.**
+  Preemption resets it to 0. `num_tokens_reached` is the independent
+  counter, mirroring vLLM's `len(_all_token_ids)`.
+- **`num_computed_tokens` advances at *schedule* time**, as in vLLM's
+  `_update_after_schedule`, and `Batch.scheduled_tokens` is the
+  snapshot `add_done` works from. Advancing it at completion instead
+  lets `pp_size > 1` schedule the same tokens twice.
+- **Don't add a "preserve the decode state on preemption" special
+  case.** `num_computed_tokens = 0` is vLLM's own behaviour and is not
+  re-prefill: `free_blocks` keeps the blocks' hashes, so on re-admission
+  `get_computed_blocks` finds whatever is still resident and a lower
+  tier returns what was written down. Only the remainder is recomputed.
+  Two earlier attempts to special-case this cost 375 preemptions /
+  293k recomputed tokens, and 41,569 preemptions / 6 TB of swap.
+- **Phase B never preempts, and is skipped entirely on any step that
+  preempted.** That anti-thrash rule is load-bearing; without it the
+  running set oscillates preempt → refill → preempt.
+- **There is one `schedule()`, for prefix caching on and off.** The pool
+  handles `enable_caching=False` the way vLLM does — allocate through
+  the same free list, never index — so do not add a second scheduler.
+
 ## Trace-format invariants
 
 If you touch `trace_generator.py` or `graph_generator.py`:
@@ -134,7 +170,25 @@ If you touch `trace_generator.py` or `graph_generator.py`:
   if either is `LOCAL` without local memory configured, ASTRA-Sim
   crashes.
 - The sampler's `output_loc` and `output_size` are what feed the
-  `MEM_STORE`. Don't put them on `lm_head`.
+  `MEM_STORE`. Don't put them on `lm_head`: what goes back to the host
+  is the sampled token ids, not the logits.
+- **A layer's `output_size` is not the next layer's `input_size`**, and
+  is not meant to be. `qkv_proj` emits Q+K+V while `rotary_emb` declares
+  only Q+K, and `attention` reads K/V from the cache rather than the
+  activation. There is no chain to "restore".
+- **Never split pipeline stages by trace-line count.** A stage may only
+  be cut on a transformer-block boundary, the one place where the
+  upstream `output_size` and downstream `input_size` are the same tensor
+  (the hidden state). ASTRA-Sim's analytical backend keys its send/recv
+  tracker on `(tag, src, dst, chunk_size, chunk_id)`, so a size mismatch
+  **silently deadlocks** the receiving NPU instead of raising. That is
+  what `pp_stage_boundaries` in the trace header exists for.
+- **Don't "restore" log-space interpolation** in `_axis_bracket`
+  because the profiler's sweep grid is geometric. Grid spacing decides
+  where the kernel is sampled; the blend decides how two samples
+  combine; the kernel is linear in each axis. Log blending biased
+  estimates 11.6-14.4% high against 2.3-3.7% for linear, measured
+  leave-one-out across every bundle in `profiler/perf/`.
 
 ## Commit and PR style
 

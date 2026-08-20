@@ -53,7 +53,7 @@ hardware × model combinations. Drop them straight into
 | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | flat | `meta-llama/Llama-3.1-8B` | ShareGPT, 300 requests at 10 sessions/s |
 | `sharegpt-qwen3-32b-300-sps10.jsonl` | flat | `Qwen/Qwen3-32B` | ShareGPT, dense Qwen3 |
 | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | flat | `Qwen/Qwen3-30B-A3B-Instruct-2507` | ShareGPT, MoE Qwen3 |
-| `swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl` | agentic | `Qwen/Qwen3-30B-A3B-Instruct-2507` | 50 SWE-bench sessions, low arrival rate |
+| `swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl` | agentic | `Qwen/Qwen3-30B-A3B-Instruct-2507` | 50 SWE-bench sessions, low arrival rate. **No generator ships for this one** — `workloads.generators` has only the `sharegpt` subcommand, so an agentic workload of your own means emitting the JSONL directly (see [Agentic sessions](./agentic-sessions)) |
 
 Token IDs in these files are pre-tokenized with the matching model's
 tokenizer, so prefix caching works correctly out of the box. Using a

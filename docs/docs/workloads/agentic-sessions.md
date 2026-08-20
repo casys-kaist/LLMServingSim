@@ -94,10 +94,10 @@ python -m serving \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' \
   --output 'outputs/swebench_run.csv' \
-  --num-req 1
+  --num-reqs 1
 ```
 
-`--num-req 1` means one *session* (which expands to 8-15
+`--num-reqs 1` means one *session* (which expands to 8-15
 sub-requests). Bump it for longer runs.
 
 ## Building your own agentic workload
@@ -182,17 +182,25 @@ with agentic sessions.
 
 ## Gotchas
 
-1. **Last sub-request's `tool_duration_ns` should be 0** (or just
-   omitted in your generator if you treat 0 as default). Non-zero
-   keeps the session "alive" past its real end and the simulator
-   waits unnecessarily.
+1. **The last sub-request's `tool_duration_ns` is ignored.** It is
+   read, but `notify_request_completed` only uses the release time when
+   there is a next sub-request; on the last one it deletes the session
+   and discards the value. A non-zero tail does **not** keep the
+   session alive or make the simulator wait. Setting it to `0` is
+   convention, not a requirement — and the field is optional anywhere
+   in the chain, defaulting to `0`.
 2. **Session arrival_time_ns is for the *first* sub-request.**
    Subsequent sub-requests have their arrival times computed at run
    time as `previous_completion + tool_duration_ns`.
-3. **Pre-tokenize for prefix caching.** Agentic sessions usually have
-   *very* high prefix overlap between sub-requests (each call shares
-   the system prompt + previous turns). Without
-   `input_tok_ids`, you lose the bulk of the savings.
+3. **Pre-tokenize for prefix caching, and include the outputs.**
+   Agentic sessions have *very* high prefix overlap between
+   sub-requests, since each call carries the system prompt plus every
+   previous turn. Without `input_tok_ids` a request gets an empty hash
+   chain, which disables prefix caching for it outright — not a coarser
+   match, zero hits. And because turn N+1's prompt contains turn N's
+   *output*, `output_tok_ids` are what make the cross-turn reuse
+   visible; the chain is built over `input_hash_ids + output_hash_ids`.
+   See **[JSONL format → Why token IDs matter](./jsonl-format#why-token-ids-matter)**.
 4. **Sessions are scheduled to whichever instance is least loaded
    at the time of *each* sub-request's release.** A long agent run
    could hop between instances in a multi-instance config. If you

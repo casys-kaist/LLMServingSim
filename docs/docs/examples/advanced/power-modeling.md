@@ -88,17 +88,28 @@ run that doesn't track power.
 
 ## Expected output
 
-The throughput log gains a `power=` field (in watts):
+The heartbeat block gains a final `Avg power consumption` branch:
 
 ```text
-[INFO] step=42 batch=8 prompt_t=1.2k tok/s decode_t=420 tok/s
-       npu_mem=88.4 GB power=712 W
-[INFO] step=43 batch=8 prompt_t=1.1k tok/s decode_t=440 tok/s
-       npu_mem=88.4 GB power=698 W
+[42.0s] Avg prompt throughput: 1204.0 tokens/s, Avg generation throughput: 420.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 88412.34 MB (89.912 % Used), Prefix Cache Hit ratio 4.21 %, (5312 / 126188)
+        ├─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+        └─Avg power consumption: 712.4 W
+[43.0s] Avg prompt throughput: 1138.0 tokens/s, Avg generation throughput: 440.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 88412.34 MB (89.912 % Used), Prefix Cache Hit ratio 4.19 %, (5312 / 126780)
+        ├─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+        └─Avg power consumption: 698.1 W
 ```
 
-`power` is the **instantaneous** total node power summed across
-NPU / CPU / DRAM / link / NIC / storage / base.
+Two things the label does not say. It is an **interval average**, not an
+instantaneous reading: `get_current_power()` divides the energy accrued
+since the previous heartbeat by the elapsed time. And it is a single
+**cluster-wide** figure summed over every node, not per node — so on a
+multi-node run you cannot attribute it from this line. The per-node
+split arrives only in the final summary.
+
+The figure covers NPU, CPU, DRAM, link, NIC, storage, and each node's
+always-on base power.
 
 When the run ends, the simulator prints a per-component energy
 breakdown:
@@ -144,9 +155,9 @@ ALLREDUCE-bound (worth checking when `tp_size > 1`).
   cleanly with the power model. Overlapping PIM attention with GPU
   compute changes both throughput and the energy breakdown.
 - **[CXL memory](../memory-tiers/cxl-memory)** — adding a `cxl_mem`
-  device and per-device placement rules adds a `cxl_mem=...` field
-  to the throughput log; the energy summary then includes CXL
-  transfer energy.
+  device and per-device placement rules adds a `CXL[...]` branch to the
+  heartbeat block (only with `--prefix-storage CXL`); the energy
+  summary then includes CXL transfer energy.
 
 ## Where to learn more
 

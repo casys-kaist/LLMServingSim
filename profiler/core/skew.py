@@ -10,7 +10,7 @@ skew case measures three latencies at the same operating point:
 
 From these we can compute the normalized interpolation factor
 
-    alpha = (t_skew - t_mean) / (t_max - t_mean)    ∈ [0, 1]
+    alpha = (t_skew - t_mean) / (t_max - t_mean)
 
 which the simulator uses at query time:
 

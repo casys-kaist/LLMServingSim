@@ -9,6 +9,14 @@ Complete reference for every command-line flag accepted by
 `python -m serving`. For the conceptual side of each flag (what it
 *does* internally), see **[Simulator](/docs/simulator/architecture)**.
 
+:::tip 14 of these can be set per instance
+Flags marked **(per-instance)** below can also be written into an
+individual `instances[i]` object in the cluster config, which wins over
+the CLI value for that instance only. That is how one run serves
+heterogeneous instances. The other 15 flags are cluster-wide. See
+**[Cluster config → Runtime overrides](./cluster-config#runtime-overrides-optional)**.
+:::
+
 ## Cluster topology
 
 | Flag | Type | Default | Description |
@@ -24,13 +32,13 @@ matching runtime knobs per `instances[i]`; see
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--max-num-seqs` | int | `128` | Max sequences in a batch. `0` = unlimited |
-| `--max-num-batched-tokens` | int | `2048` | Max tokens per iteration across all requests (token budget) |
-| `--long-prefill-token-threshold` | int | `0` | Per-request token cap per step for chunked prefill. `0` = disabled |
-| `--enable-chunked-prefill` | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
-| `--npu-memory-utilization` | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
-| `--reserve-full-isl` / `--no-reserve-full-isl` | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
-| `--block-size` | int | `16` | KV cache block size in tokens |
+| `--max-num-seqs` **(per-instance)** | int | `128` | Max sequences in a batch. `0` = unlimited |
+| `--max-num-batched-tokens` **(per-instance)** | int | `2048` | Max tokens per iteration across all requests (token budget). Clamped to the model config's `max_position_embeddings`, so `0` ("unlimited") resolves to the context length, not infinity |
+| `--long-prefill-token-threshold` **(per-instance)** | int | `0` | Per-request token cap per step for chunked prefill. `0` = disabled |
+| `--enable-chunked-prefill` **(per-instance)** | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
+| `--npu-memory-utilization` **(per-instance,** as `npu_mem.mem_util`**)** | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
+| `--reserve-full-isl` / `--no-reserve-full-isl` **(per-instance)** | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
+| `--block-size` **(per-instance)** | int | `16` | KV cache block size in tokens |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 
 ## Routing
@@ -39,25 +47,25 @@ matching runtime knobs per `instances[i]`; see
 | --- | --- | --- | --- |
 | `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing |
 | `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing |
-| `--enable-block-copy` | bool | `True` | Replay one block's trace across layers (set False for per-layer EP variance) |
+| `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers (set False for per-layer EP variance) |
 
 ## Precision
 
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--dtype` | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | model's `torch_dtype`, fallback `bfloat16` | Model weight dtype |
-| `--kv-cache-dtype` | `auto` / `fp8` | `auto` (inherits dtype) | KV cache dtype. `fp8` halves KV memory and selects a `*-kvfp8` profile variant |
+| `--dtype` **(per-instance)** | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | model's `torch_dtype`, fallback `bfloat16` | Model weight dtype |
+| `--kv-cache-dtype` **(per-instance)** | `auto` / `fp8` | `auto` (inherits dtype) | KV cache dtype. `fp8` halves KV memory and selects a `*-kvfp8` profile variant |
 
 ## Prefix caching and offloading
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--enable-prefix-caching` | `True` | Prefix caching over a per-tier block pool with chained block hashes. Use `--no-enable-prefix-caching` to disable |
+| `--enable-prefix-caching` **(per-instance)** | `True` | Prefix caching over a per-tier block pool with chained block hashes. Use `--no-enable-prefix-caching` to disable |
 | `--enable-prefix-sharing` | off | Second-tier prefix pool shared across instances within a node |
 | `--prefix-storage` | `None` | Where the second-tier pool lives. `None` / `CPU` / `CXL` |
-| `--enable-local-offloading` | off | Weight offloading to NPU (counts weight reads in profiling) |
-| `--enable-attn-offloading` | off | Attention computation offloading to PIM |
-| `--enable-sub-batch-interleaving` | off | Overlap GPU compute with PIM attention. Requires `--enable-attn-offloading` |
+| `--enable-local-offloading` **(per-instance)** | off | Weight offloading to NPU (counts weight reads in profiling) |
+| `--enable-attn-offloading` **(per-instance)** | off | Attention computation offloading to PIM |
+| `--enable-sub-batch-interleaving` **(per-instance)** | off | Overlap GPU compute with PIM attention. Requires `--enable-attn-offloading` |
 
 ## Dataset and output
 
@@ -101,6 +109,7 @@ removed after a successful simulation by default.
 | PIM attention offload | `--enable-attn-offloading` (cluster config sets `pim_config`) |
 | FP8 KV cache | `--kv-cache-dtype fp8` |
 | ns3 backend | `--network-backend ns3` |
+| Heterogeneous instances in one run | (cluster config per-instance overrides; see the tip above) |
 
 For the full conceptual treatment of each feature, browse the
 **[Simulator](/docs/simulator/architecture)** section. For runnable

@@ -27,8 +27,29 @@ What to check:
 
 - Exit code is 0.
 - `outputs/smoke.csv` has 10 rows plus a header.
-- The throughput log line at the end shows non-zero `prompt_t` and
-  `decode_t`.
+- The final **Throughput Results** block shows non-zero
+  `Average prompt throughput (tok/s)` and
+  `Average generation throughput (tok/s)`.
+
+:::tip Use `Total clocks (ns)` as the actual regression test
+The simulator is deterministic: the same cluster config, workload and
+flags reproduce the same makespan **exactly**. So the useful check is
+not "does it look sensible" but equality against the value on `main`:
+
+```bash
+python -m serving ... 2>&1 | grep 'Total clocks'
+```
+
+Any diff in that number means your change altered simulated behaviour.
+That is fine when it is the point of the change — say so in the PR, with
+the before and after — and a bug when it is not. A refactor that claims
+to be behaviour-preserving and moves this number is not
+behaviour-preserving.
+
+Capture it for every scenario you touch before you start editing;
+recovering the baseline afterwards means stashing your work and
+re-running.
+:::
 
 If your change is in `serving/`, this is the floor. Don't push a
 commit that breaks the smoke run.
@@ -81,11 +102,18 @@ Output lands in `bench/examples/Llama-3.1-8B/validation/`:
 - A handful of PDFs: per-request latency CDF, throughput timeline,
   running-waiting curves.
 
-The committed reference baselines target sub-3% error on TTFT, TPOT,
-and throughput. **A regression beyond ~5% is a blocker.** Smaller
-movements need an explanation in the PR description (e.g., "this
-fixes an under-counting bug; the new error is closer to ground
+The committed reference baselines land within 1.5% on TPOT and
+end-to-end latency means and within 5.8% on TTFT means — see
+**[Validation](/docs/validation)** for the per-configuration table.
+**A regression beyond ~5% against those baselines is a blocker.**
+Smaller movements need an explanation in the PR description (e.g.,
+"this fixes an under-counting bug; the new error is closer to ground
 truth than the old").
+
+Compare against the numbers in
+`bench/examples/<model>/validation/summary.txt`, not against the ~5%
+figure in the abstract: TTFT already sits at -5.8% on the MoE
+configuration, so "within 5%" is not a bar it currently clears.
 
 For deeper detail on the validation methodology, see
 [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).

@@ -132,6 +132,7 @@ const sidebars: SidebarsConfig = {
         'reference/model-config',
         'reference/pim-config',
         'reference/trace-format',
+        'reference/bench-cli',
       ],
     },
     'artifact-evaluation',

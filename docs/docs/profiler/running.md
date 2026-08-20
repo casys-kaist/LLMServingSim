@@ -37,7 +37,7 @@ doesn't.
 2. Picks the matching architecture YAML by `model_type`.
 3. Writes the model config to a tmpdir; spins vLLM up against that.
 4. Sweeps **dense / per_sequence / attention / moe** shot grids,
-   writing CSVs under `perf/<HW>/<MODEL>/<variant>/tp<N>/`.
+   writing CSVs under `profiler/perf/<HW>/<MODEL>/<variant>/tp<N>/`.
 5. (If `SKIP_SKEW=0`, the default) Runs the heterogeneous-decode
    skew sweep and fits per-bucket alphas to `skew_fit.csv`.
 6. Writes `meta.yaml` summarizing the run.
@@ -51,13 +51,13 @@ on a single GPU by dividing the model's per-rank shapes via
 | Variable | Meaning |
 | --- | --- |
 | `MODEL` | HF-style `<org>/<name>`. Must have a config at `configs/model/<MODEL>.json` (auto-downloaded on first run) |
-| `HARDWARE` | Free-form label that becomes the folder name under `perf/`. Pick something meaningful (e.g., `RTXPRO6000`, `H100`, `MI300X`) |
+| `HARDWARE` | Free-form label that becomes the folder name under `profiler/perf/`. Pick something meaningful (e.g., `RTXPRO6000`, `H100`, `MI300X`) |
 
 ## Sweep shape
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TP_DEGREES` | `1,2,4` | Comma-separated TP degrees. **Must include `1`** (TP-stable layers are profiled once at TP=1 and replicated to other TP folders) |
+| `TP_DEGREES` | `1,2` in `profile.sh` (`--tp` defaults to `1`) | Comma-separated TP degrees. **Must include `1`** (TP-stable layers are profiled once at TP=1 and replicated to other TP folders) |
 | `MAX_NUM_BATCHED_TOKENS` | `2048` | Profiler internally bumps this by `+MSQ` for shot-bypass headroom; subtracted back when recording meta |
 | `MAX_NUM_SEQS` | `256` | Profile with `MSQ > runtime MSQ` so mixed-regime cases at `n = runtime_MSQ` stay feasible |
 
@@ -147,6 +147,89 @@ VERBOSITY="--silent"        # warnings only
 VERBOSITY="--verbose"       # DEBUG + vLLM stdout
 VERBOSITY=""                # default (INFO)
 ```
+
+## Calling `python -m profiler` directly
+
+`profile.sh` is a convenience wrapper; every variable in it maps to a
+flag. Call the module yourself when you want to script a sweep, or for
+the `slice` subcommand, which `profile.sh` does not expose at all.
+
+```bash
+python -m profiler profile <model> --hardware <hw> [options]
+python -m profiler slice   <model> --hardware <hw> --tp-refresh N --group G [options]
+```
+
+`<model>` is an HF-style `<org>/<name>` resolving to
+`configs/model/<org>/<name>.json`, or an explicit path ending in
+`.json`. HF-style ids are auto-downloaded from the Hub on first use
+(honouring `HF_TOKEN`); explicit paths are never fetched, so a missing
+file is an error.
+
+### Flags shared by both subcommands
+
+| Flag | Default | `profile.sh` variable |
+| --- | --- | --- |
+| `--hardware` | **required** | `HARDWARE` |
+| `--tp` | `1` | `TP_DEGREES` |
+| `--variant` | auto-derived from dtypes | `VARIANT` |
+| `--dtype` | vLLM default (model's `torch_dtype`) | `DTYPE` |
+| `--kv-cache-dtype` | `auto` | `KV_CACHE_DTYPE` |
+| `--max-num-batched-tokens` | `2048` | `MAX_NUM_BATCHED_TOKENS` |
+| `--max-num-seqs` | `256` | `MAX_NUM_SEQS` |
+| `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
+| `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
+| `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |
+| `--measurement-iterations` | `3` | `MEASUREMENT_ITERATIONS` |
+| `--skip-skew` | off | `SKIP_SKEW=1` |
+| `--only-skew` | off | `ONLY_SKEW=1` |
+| `--skew-n-factor` | `2.0` | `SKEW_N_FACTOR` |
+| `--skew-pc-factor` | `2.0` | `SKEW_PC_FACTOR` |
+| `--skew-kp-factor` | `2.0` | `SKEW_KP_FACTOR` |
+| `--skew-kvs-factor` | `2.0` | `SKEW_KVS_FACTOR` |
+| `--force` | off (resume) | `FORCE=1` |
+| `--out-root` | `profiler/perf` | — |
+| `--model-config-root` | `configs/model` | — |
+| `--log-level` | `INFO` | `VERBOSITY` |
+| `--silent` | — | `VERBOSITY="--silent"` |
+| `--verbose` | — | `VERBOSITY="--verbose"` |
+
+`--out-root` and `--model-config-root` have no `profile.sh` equivalent.
+Use `--out-root` to write a bundle somewhere other than
+`profiler/perf/`, and `--model-config-root` to point at a different
+tree of HF configs — useful for profiling hypothetical shapes without
+adding them to the repo.
+
+`--log-level`, `--silent`, and `--verbose` are mutually exclusive.
+`--silent` is `WARNING`, `--verbose` is `DEBUG` **plus** vLLM's own
+stdout, and `--log-level` overrides either explicitly.
+
+`--tp` must include `1`: TP-stable layers (layernorms, sampler) are
+profiled once at TP=1 and replicated into the other `tp<N>/` folders by
+the writer, so a sweep without TP=1 has nothing to replicate from.
+
+### `slice`: refresh one (tp, category) pair
+
+After a full sweep, iterate on a single category without redoing the
+rest:
+
+```bash
+python -m profiler slice meta-llama/Llama-3.1-8B \
+    --hardware RTXPRO6000 --tp-refresh 1 --group attention
+```
+
+| Flag | Required | Description |
+| --- | --- | --- |
+| `--tp-refresh` | ✓ | The single TP degree to refresh. Must be a member of `--tp` |
+| `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `moe` |
+
+It boots one engine at that TP, fires only that category's grid, and
+rewrites `tp<N>/<group>.csv` plus `meta.yaml`. Errors out if the
+architecture YAML has no entries in `catalog.<group>` — asking for
+`moe` on a dense model, for instance.
+
+Note `slice` handles only the four uniform categories. The skew sweep
+is not a `--group` value; refresh it with
+`python -m profiler profile ... --only-skew` instead.
 
 ## Multi-model batch sweep: `profile-all.sh`
 

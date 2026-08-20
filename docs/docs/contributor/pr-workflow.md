@@ -35,7 +35,9 @@ git checkout -b add-deepseek-v3
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.
-- **No `--no-verify`** to bypass pre-commit hooks. Fix what failed.
+- **There are no pre-commit hooks** in this repo, so nothing runs
+  automatically on commit and `--no-verify` has nothing to bypass. The
+  checks below are yours to run.
 - **No `Co-authored-by`** unless someone really did pair-program
   with you on this commit.
 
@@ -163,11 +165,12 @@ PR. The maintainer adds it on merge.
 - **Delete the merged branch** locally and on the remote
   (GitHub offers a button after merge; `git branch -d add-deepseek-v3`
   locally).
-- **Watch CI on `main` for a day or two**. If something broke that
-  the PR didn't catch, you're best positioned to fix it quickly.
-
-## When things go wrong
-
+- **Re-run your scenarios against `main` after the merge.** There is
+  no test CI to watch: the only workflow is `deploy-docs.yml`, which
+  builds the docs site and says nothing about the simulator. If
+  something broke that the review missed, the way you find out is by
+  running `serving/run.sh`'s relevant scenarios on `main` and comparing
+  `Total clocks (ns)` against what you recorded before.
 - **My PR sat for a week with no reviews.** Ping the PR with a
   one-liner. Maintainers do miss notifications.
 - **A reviewer requested changes I disagree with.** Explain your

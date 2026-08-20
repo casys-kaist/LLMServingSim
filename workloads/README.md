@@ -94,6 +94,12 @@ executions.
 | --- | --- | --- | --- | --- | --- |
 | `swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl` | 50 | 765 | 15.3 | 0.2 | Qwen3-30B-A3B |
 
+**There is no SWE-bench generator.** `workloads.generators` has exactly one
+subcommand, `sharegpt`; this file was produced out of band and committed. To
+build your own agentic workload, emit the JSONL directly — the schema is above,
+and the format reference is
+[Workloads → JSONL format](https://llmservingsim.ai/docs/workloads/jsonl-format).
+
 ### Other
 | File | Description |
 | --- | --- |
@@ -131,6 +137,27 @@ python -m workloads.generators sharegpt \
 fill `output_tok_ids` with the model's natural responses (free
 generation). Without it, `output_tok_ids` come straight from the
 ShareGPT assistant turn.
+
+Eight flags gate that mode:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--use-vllm` | off | enable free generation |
+| `--vllm-tp` | `1` | `tensor_parallel_size` for the offline engine |
+| `--vllm-dtype` | `bfloat16` | weight dtype |
+| `--vllm-max-num-seqs` | `1024` | `max_num_seqs`, high on purpose — this is a throughput job |
+| `--vllm-max-num-batched-tokens` | `16384` | `max_num_batched_tokens`, likewise |
+| `--vllm-max-model-len` | model's max | override `max_model_len` |
+| `--vllm-temperature` | `0.0` | `0` = greedy, so generation is reproducible for a seed |
+| `--vllm-repetition-penalty` | `1.1` | `1.0` disables. Above 1.0 keeps free generation from rambling past natural EOS, so output lengths land at typical ShareGPT values (~500-1000 tokens) instead of every request hitting `--max-output-toks` |
+
+These are settings for the generation job, not for the simulated run:
+the generator records only token counts and ids, so a high
+`--vllm-max-num-seqs` here says nothing about what `--max-num-seqs` the
+workload should be simulated at.
+
+Full flag reference:
+[Workloads → ShareGPT generators](https://llmservingsim.ai/docs/workloads/sharegpt-generators).
 
 To create a workload manually, write JSON objects to a `.jsonl` file
 following the format above and pass the file path via `--dataset` to
