@@ -61,8 +61,8 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `model_name` | String | Yes | HuggingFace model identifier (must match `configs/model/`) |
-| `hardware` | String | Yes | Hardware name matching `profiler/perf_models/{hardware}/` |
-| `npu_mem` | Object | Yes | NPU memory config (`mem_size` in GB, `mem_bw` in GB/s, `mem_latency` in ns) |
+| `hardware` | String | Yes | Hardware name matching `profiler/perf/{hardware}/` |
+| `npu_mem` | Object | Yes | NPU memory config (`mem_size` in GB, `mem_bw` in GB/s, `mem_latency` in ns; optional `mem_util`, see below) |
 | `pd_type` | String/null | Yes | `"prefill"`, `"decode"`, or `null` for combined |
 | `num_npus` | Integer | * | Total GPUs for this instance (inferred from `tp_size * pp_size` if omitted) |
 | `tp_size` | Integer | * | Tensor parallel degree (inferred from `num_npus // pp_size` if omitted) |
@@ -70,7 +70,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `ep_size` | Integer | No | Expert parallel degree (default: `tp_size` for MoE, 1 for dense) |
 | `dp_group` | String/null | No | DP group ID. Instances with the same string share experts via cross-instance ALLTOALL |
 | `max_num_seqs` | Integer | No | Per-instance override for `--max-num-seqs` (`0` = unlimited) |
-| `max_num_batched_tokens` | Integer | No | Per-instance override for `--max-num-batched-tokens` (`0` = unlimited) |
+| `max_num_batched_tokens` | Integer | No | Per-instance override for `--max-num-batched-tokens` (`0` = capped at the model's `max_position_embeddings`, see below) |
 | `long_prefill_token_threshold` | Integer | No | Per-instance override for `--long-prefill-token-threshold` |
 | `block_size` | Integer | No | Per-instance override for `--block-size` |
 | `dtype` | String | No | Per-instance override for `--dtype` |
@@ -88,7 +88,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 
 ### Per-instance runtime overrides
 
-The 13 runtime fields listed above (`max_num_seqs`, `max_num_batched_tokens`, etc.) support **per-instance overrides** in the cluster config. This enables heterogeneous deployments where different instances in the same cluster use different scheduler limits.
+The 14 runtime fields listed above (`max_num_seqs`, `max_num_batched_tokens`, etc.) support **per-instance overrides** in the cluster config. This enables heterogeneous deployments where different instances in the same cluster use different scheduler limits.
 
 **Precedence rule:**
 ```
@@ -98,35 +98,74 @@ per-instance value (from cluster config) > global CLI value (from --flag)
 For each field, the runtime reads `instance.get("<field>", args.<field>)` — if the field is present in the cluster config, it takes precedence; otherwise the global CLI value is used.
 
 **Unlimited semantics:**
-Setting a numeric field to `0` means "unlimited" (via the `_runtime_limit` helper). For example:
+Setting either batching limit to `0` maps it to infinity via the `_runtime_limit` helper:
 - `max_num_seqs: 0` → no limit on concurrent sequences
-- `max_num_batched_tokens: 0` → no limit on batched tokens
+- `max_num_batched_tokens: 0` → **not** actually unbounded. The scheduler then takes
+  `min(max_num_batched_tokens, max_position_embeddings)`, so the effective budget is the
+  model's context length from its `configs/model/` entry (4096 on
+  `microsoft/Phi-mini-MoE-instruct`, not infinity).
+
+`long_prefill_token_threshold: 0` means *disabled* (no per-request cap), matching the CLI
+flag — it is not an "unlimited" sentinel.
+
+**`dtype` has a third fallback level:**
+```
+instances[i].dtype  >  --dtype  >  model config torch_dtype  >  bfloat16
+```
+The resolved value picks the profile variant folder, so
+`profiler/perf/{hardware}/{model}/{variant}/tp{N}/` must exist for it.
+
+**`npu_mem.mem_util` is the one nested override.** The other 13 are plain instance keys;
+`mem_util` lives inside `npu_mem` because its only job is to scale `mem_size`. It must be a
+number in `(0, 1]` — a fraction, so `0.9`, never `90`.
 
 **Validation gates:**
-- `enable_sub_batch_interleaving: true` requires `enable_attn_offloading: true` (enforced at config load time)
+- `enable_sub_batch_interleaving: true` requires `enable_attn_offloading: true`
+- `enable_sub_batch_interleaving: true` requires `pp_size == 1`: an interleaved trace leaves
+  both sub-batches mid-block at every stage edge, so a pipeline stage has no single hidden
+  state to pass on
+
+Both are enforced at config load time, against the *effective* values — so inheriting
+`--enable-sub-batch-interleaving` from the CLI onto an instance that locally sets
+`enable_attn_offloading: false` fails just the same.
 
 **Example: heterogeneous P/D instances**
 
-See `single_node_pd_per_instance_config.json` for a concrete example where the prefill instance uses `max_num_seqs: 32` (tight concurrency) and the decode instance uses `max_num_seqs: 256` (high throughput):
+`single_node_pd_per_instance_config.json` gives the prefill instance a tight
+concurrency and a large token budget, and the decode instance the reverse
+(hardware fields elided):
 
 ```json
 {
   "instances": [
     {
       "pd_type": "prefill",
+      "tp_size": 1,
       "max_num_seqs": 32,
       "max_num_batched_tokens": 8192,
-      "enable_chunked_prefill": true
+      "long_prefill_token_threshold": 2048,
+      "enable_chunked_prefill": true,
+      "block_size": 16,
+      "dtype": "bfloat16",
+      "kv_cache_dtype": "auto"
     },
     {
       "pd_type": "decode",
+      "tp_size": 1,
       "max_num_seqs": 256,
-      "max_num_batched_tokens": 0,
-      "enable_chunked_prefill": false
+      "max_num_batched_tokens": 256,
+      "enable_chunked_prefill": true,
+      "block_size": 16,
+      "dtype": "bfloat16",
+      "kv_cache_dtype": "auto"
     }
   ]
 }
 ```
+
+`single_node_heterogeneous.json` is the Qwen3-32B / TP=2 variant, and it does
+use `max_num_batched_tokens: 0` plus `enable_chunked_prefill: false` on the
+decode instance.
 
 ### Parallelism rules:
 - `num_npus = tp_size * pp_size`

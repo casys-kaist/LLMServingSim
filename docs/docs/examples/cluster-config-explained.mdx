@@ -171,6 +171,132 @@ gets inferred. So:
 | Field | Used for |
 | --- | --- |
 | `placement` | Per-layer / per-block weight + KV-cache placement (see [CXL memory](./memory-tiers/cxl-memory)) |
+| any of the 14 runtime overrides | Per-instance scheduler / memory / dtype settings (see below) |
+
+## Per-instance runtime overrides
+
+Everything so far describes *hardware*. An instance can also carry
+**runtime settings**, and that is what makes heterogeneous clusters
+possible: 14 of the `python -m serving` flags can be re-specified per
+instance, so a prefill instance and a decode instance in the same run
+can be scheduled completely differently.
+
+The precedence is one level deep:
+
+```
+instances[i].<field>   >   --<field> on the CLI   >   built-in default
+```
+
+A field written in the instance wins for that instance. Every other
+instance keeps whatever the CLI said. There is no merging and no
+inheritance between instances.
+
+### The 14 overridable fields
+
+| Field | Overrides | Typical reason to set it per instance |
+| --- | --- | --- |
+| `max_num_seqs` | `--max-num-seqs` | Narrow batches on a prefill instance, wide ones on decode |
+| `max_num_batched_tokens` | `--max-num-batched-tokens` | Big prefill chunks, small decode steps |
+| `long_prefill_token_threshold` | `--long-prefill-token-threshold` | Stop one long prompt monopolising a prefill instance |
+| `block_size` | `--block-size` | Coarser blocks where fragmentation matters less |
+| `dtype` | `--dtype` | Serve the same model at two precisions |
+| `kv_cache_dtype` | `--kv-cache-dtype` | FP8 KV on the decode instance only |
+| `enable_chunked_prefill` | `--enable-chunked-prefill` | Chunk on prefill, never on decode |
+| `enable_prefix_caching` | `--enable-prefix-caching` | Cache where prefixes repeat, skip where they don't |
+| `npu_mem.mem_util` | `--npu-memory-utilization` | Leave headroom on one instance only |
+| `reserve_full_isl` | `--reserve-full-isl` | Loosen admission on a decode-only instance |
+| `enable_local_offloading` | `--enable-local-offloading` | Weight offload on one instance |
+| `enable_attn_offloading` | `--enable-attn-offloading` | PIM attention on one instance |
+| `enable_sub_batch_interleaving` | `--enable-sub-batch-interleaving` | Overlap NPU and PIM on the offloading instance |
+| `enable_block_copy` | `--enable-block-copy` | Faithful per-layer expert variance on one instance |
+
+Note where `mem_util` sits: it is the **only** override nested inside
+another object, because it exists to scale `npu_mem.mem_size` and
+follows that block's `mem_*` naming.
+
+```json
+"npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0, "mem_util": 0.8}
+```
+
+### A heterogeneous example
+
+`configs/cluster/single_node_heterogeneous.json` runs one Qwen3-32B
+prefill instance and one decode instance, both TP=2, with opposite
+scheduler settings:
+
+```json title="configs/cluster/single_node_heterogeneous.json (instances only)"
+"instances": [
+  {
+    "model_name": "Qwen/Qwen3-32B",
+    "hardware": "RTXPRO6000",
+    "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+    "num_npus": 2,
+    "tp_size": 2,
+    "pd_type": "prefill",
+    "max_num_seqs": 32,
+    "max_num_batched_tokens": 8192,
+    "enable_chunked_prefill": true,
+    "enable_prefix_caching": true
+  },
+  {
+    "model_name": "Qwen/Qwen3-32B",
+    "hardware": "RTXPRO6000",
+    "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+    "num_npus": 2,
+    "tp_size": 2,
+    "pd_type": "decode",
+    "max_num_seqs": 256,
+    "max_num_batched_tokens": 0,
+    "enable_chunked_prefill": false,
+    "enable_prefix_caching": false
+  }
+]
+```
+
+Reading it: the prefill instance takes few sequences with a large
+token budget, because a prefill step wants long chunks. The decode
+instance takes many sequences and no token cap, because each decode
+step contributes one token per sequence.
+
+`configs/cluster/single_node_pd_per_instance_config.json` is the
+Llama-3.1-8B version of the same idea, and additionally overrides
+`long_prefill_token_threshold`, `block_size`, `dtype`, and
+`kv_cache_dtype`.
+
+:::caution `max_num_batched_tokens: 0` is not infinity
+`0` maps to "unlimited", but the scheduler then applies
+`min(max_num_batched_tokens, max_position_embeddings)`. On Qwen3-32B
+that is 40960, so the decode instance above runs at 40960, not
+unbounded. See **[Model config](/docs/reference/model-config)**.
+:::
+
+### What you cannot set per instance
+
+The other 15 flags are cluster-wide. Writing one inside an instance
+object does nothing at all: no key reads it, and no error is raised.
+
+| Scope | Flags |
+| --- | --- |
+| Cluster / backend | `--cluster-config`, `--network-backend` |
+| Router, cross-instance by definition | `--request-routing-policy`, `--expert-routing-policy` |
+| Shared lower KV tier | `--enable-prefix-sharing`, `--prefix-storage` |
+| Workload, one per run | `--dataset`, `--num-reqs`, `--skip-prefill` |
+| Run plumbing | `--output`, `--run-id`, `--inputs-root`, `--cleanup-inputs`, `--log-interval`, `--log-level` |
+
+### Two rejected combinations
+
+Both are checked per instance, against the *effective* values, at
+config-load time:
+
+- `enable_sub_batch_interleaving` without `enable_attn_offloading` -
+  there is nothing to overlap the NPU sub-batch against.
+- `enable_sub_batch_interleaving` with `pp_size > 1`: an interleaved
+  trace leaves both sub-batches mid-block at every stage edge, so a
+  pipeline stage has no single hidden state to hand on.
+
+Full semantics, including `dtype`'s three-level fallback and the
+`mem_util` range check, are in
+**[Reference → Cluster config](/docs/reference/cluster-config#runtime-overrides-optional)**.
 
 ## DP+EP, the topology that needs more explanation
 
@@ -208,23 +334,31 @@ the cluster config.
 
 ## Provided configs
 
-The repo ships 15 worked configs under `configs/cluster/`. Each
-example in this section uses one of them:
+The repo ships **20** worked configs under `configs/cluster/`. Those
+without a link are runnable as-is but have no dedicated example page:
 
-| Config | Used by |
-| --- | --- |
-| `single_node_single_instance.json` | [Tensor parallel](./parallelism/tensor-parallel) (with `tp_size=2`) |
-| `single_node_multi_instance.json` | [Multi-instance LOAD routing](./disaggregated/multi-instance) |
-| `single_node_pd_instance.json` | [Prefill/decode split](./disaggregated/prefill-decode-split) |
-| `single_node_pd_per_instance_config.json` | P/D split with per-instance runtime limits |
-| `single_node_moe_single_instance.json` | [Expert parallel](./parallelism/expert-parallel) |
-| `single_node_moe_dp_ep_instance.json` | [DP+EP MoE](./parallelism/dp-ep-moe) |
-| `single_node_cxl_instance.json` | [CXL memory tier](./memory-tiers/cxl-memory) |
-| `single_node_pim_instance.json` | [PIM attention offload](./disaggregated/pim-attention-offload) |
-| `single_node_power_instance.json` | [Power modeling](./advanced/power-modeling) |
-| `dual_node_multi_instance.json` | Multi-node setups |
-| `dual_node_moe_dp_ep_intra_inter_instance.json` | Two-node DP+EP MoE with per-dimension intra/inter `link_bw` / `link_latency` |
-| ... | ... |
+| Config | Shape | Used by |
+| --- | --- | --- |
+| `single_node_single_instance.json` | 1 node, 1 instance, Llama-3.1-8B, TP=1 | the default; [Tensor parallel](./parallelism/tensor-parallel) raises it to `tp_size=2` |
+| `single_node_single_instance_H100.json` | Llama-3.1-70B on H100, TP=4 | — |
+| `single_node_multi_instance.json` | 1 node, 2 instances | [Multi-instance LOAD routing](./disaggregated/multi-instance) |
+| `single_node_4_instance_2TP.json` | 1 node, 4 instances at TP=2 | — |
+| `single_node_heterogeneous.json` | P/D pair with opposite runtime settings | [Per-instance runtime overrides](#per-instance-runtime-overrides) |
+| `single_node_pd_instance.json` | prefill/decode disaggregation | [Prefill/decode split](./disaggregated/prefill-decode-split) |
+| `single_node_pd_per_instance_config.json` | P/D with per-instance runtime limits | [Per-instance runtime overrides](#per-instance-runtime-overrides) |
+| `single_node_pp_instance.json` | 4 GPUs as `pp=4` | [Pipeline parallel](./parallelism/pipeline-parallel) |
+| `single_node_tp_pp_instance.json` | 4 GPUs as `tp=2 x pp=2` | [Pipeline parallel](./parallelism/pipeline-parallel) |
+| `single_node_moe_single_instance.json` | Qwen3-MoE, TP=2 EP=2 | [Expert parallel](./parallelism/expert-parallel) |
+| `single_node_moe_dp_ep_instance.json` | 2 MoE instances in one DP group, EP=2 | [DP+EP MoE](./parallelism/dp-ep-moe) |
+| `single_node_moe_multi_instance.json` | 2 MoE instances, no DP group | — |
+| `single_node_moe_pd_instance.json` | MoE with P/D disaggregation | — |
+| `single_node_moe_pp_instance.json` | MoE on 4 GPUs, `tp=2 x pp=2`, `ep=2` | [Pipeline parallel](./parallelism/pipeline-parallel) |
+| `single_node_cxl_instance.json` | CXL memory expansion | [CXL memory tier](./memory-tiers/cxl-memory) |
+| `single_node_memory_instance.json` | weight / KV `placement` control | [CXL memory tier](./memory-tiers/cxl-memory) |
+| `single_node_pim_instance.json` | PIM-enabled memory + power model | [PIM attention offload](./disaggregated/pim-attention-offload) |
+| `single_node_power_instance.json` | power modeling enabled | [Power modeling](./advanced/power-modeling) |
+| `dual_node_multi_instance.json` | 2 nodes, 2 instances each | multi-node setups |
+| `dual_node_moe_dp_ep_intra_inter_instance.json` | 2-node DP+EP MoE, per-dimension `link_bw` / `link_latency` | [DP+EP MoE](./parallelism/dp-ep-moe) |
 
 ## What's next
 
