@@ -155,17 +155,23 @@ weights are sharded by `ep_size` (each instance holds `num_local_experts // ep_s
 
 | File | Description |
 | --- | --- |
-| `single_node_single_instance.json` | Single node, Qwen3-32B with TP=2 (default) |
-| `single_node_single_instance_H100.json` | Single node on H100 with TP=4 |
+| `single_node_single_instance.json` | Single node, Llama-3.1-8B on one GPU (the default config) |
+| `single_node_single_instance_H100.json` | Single node, Llama-3.1-70B on H100 with TP=4 |
 | `single_node_multi_instance.json` | Single node, two instances |
 | `single_node_pd_instance.json` | Single node with prefill/decode disaggregation |
 | `single_node_pd_per_instance_config.json` | P/D disaggregation with prefill/decode-specific runtime limits |
 | `single_node_moe_single_instance.json` | Single node, Qwen3-MoE with TP=2 EP=2 |
+| `single_node_moe_dp_ep_instance.json` | Single node, two MoE instances in one DP group sharing experts over EP=2 |
+| `single_node_4_instance_2TP.json` | Single node, four TP=2 instances |
+| `single_node_heterogeneous.json` | Single node, P/D pair with different per-instance runtime settings |
 | `single_node_moe_multi_instance.json` | Single node, two MoE instances |
 | `single_node_moe_pd_instance.json` | Single node, MoE with P/D disaggregation |
 | `single_node_cxl_instance.json` | Single node with CXL memory expansion |
 | `single_node_memory_instance.json` | Single node with weight/KV placement control |
 | `single_node_pim_instance.json` | Single node with PIM-enabled memory + power model |
 | `single_node_power_instance.json` | Single node with power modeling enabled |
+| `single_node_pp_instance.json` | Single node, 4 GPUs as `pp=4` (one pipeline stage each) |
+| `single_node_tp_pp_instance.json` | Single node, 4 GPUs as `tp=2 x pp=2` |
+| `single_node_moe_pp_instance.json` | Single node, MoE on 4 GPUs as `tp=2 x pp=2` with `ep=2` |
 | `dual_node_multi_instance.json` | Two nodes, two instances each |
 | `dual_node_moe_dp_ep_intra_inter_instance.json` | Two-node MoE DP+EP example with per-dimension intra/inter link settings |

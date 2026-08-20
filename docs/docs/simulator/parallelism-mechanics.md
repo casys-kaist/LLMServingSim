@@ -82,13 +82,32 @@ When `pp_size > 1`, the scheduler keeps an `inflight` list capped at
 `None` and waits for ASTRA-Sim to drain a stage, the same
 back-pressure pattern as Megatron-style 1F1B.
 
-The trace header is stamped with `model_parallel_NPU_group: {pp_size}`.
-Chakra's `llm_converter.py` partitions the per-iteration layer list
-into `pp_size` contiguous groups (`layers_per_group = num_layers //
-pp_size`) and emits one `.et` per NPU. At each stage boundary it pairs
-a `COMM_SEND_NODE` on the upstream NPU with a matching
-`COMM_RECV_NODE` on the downstream one, sized by the boundary
+The trace header is stamped with `model_parallel_NPU_group: {pp_size}`
+plus `pp_stage_boundaries`, the layer-row indices at which each stage
+after the first begins. `trace_generator.py` computes them from the
+transformer-block starts it just wrote, using the same partitioning
+rule as vLLM's `get_pp_indices`: blocks split evenly, with any
+remainder going to the stages *before* the last one, since the last
+stage also carries `final_layernorm` / `lm_head` / `sampler`. Chakra's
+`llm_converter.py` reads the boundaries and emits one `.et` per NPU. At
+each stage boundary it pairs a `COMM_SEND_NODE` on the upstream NPU with
+a matching `COMM_RECV_NODE` on the downstream one, sized by the boundary
 activation tensor.
+
+Stages are cut **only** on transformer-block boundaries. That is the
+one place where the upstream layer's `output_size` and the downstream
+layer's `input_size` are the same tensor — the hidden state, since a
+block runs `layernorm` → … → `down_proj`/`moe`. Inside a block they
+differ (`qkv_proj` emits Q+K+V, `rotary_emb` declares only Q+K), and
+ASTRA-Sim's analytical backend keys its send/recv callback tracker on
+`(tag, src, dst, chunk_size, chunk_id)` — so a size disagreement never
+matches and the downstream NPU waits forever instead of raising. Cutting
+the raw line count evenly used to land boundaries mid-block, which is
+what made only some `pp_size` values hang.
+
+`--enable-sub-batch-interleaving` is rejected with `pp_size > 1`: an
+interleaved trace leaves both sub-batches mid-block at every group edge,
+so a stage has no single hidden state to hand on.
 
 Inter-stage P2P latency (link bandwidth, hop count, contention) is
 therefore part of the reported iteration time, and pipeline overlap

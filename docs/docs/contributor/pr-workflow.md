@@ -146,12 +146,12 @@ External contributors get credit in two places:
 
 1. **GitHub commit history**: your authorship is preserved on
    merge.
-2. **README contributors list**: when your contribution is
-   user-visible (a new feature, a non-trivial fix, a new model or
-   hardware target), the maintainer adds a line to the
-   "Highlights" section of the README crediting you with a GitHub
-   handle link, following the existing `[@waneon]`,
-   `[@HyunsuYEE]`, `[@junwha]`, `[@gleb-kun]` pattern.
+2. **`CONTRIBUTORS.md`**: the maintainer adds a line with your
+   GitHub handle and a link to the PR or issue — under
+   "Code" for a merged patch, under "Reports and analysis" for an
+   issue that pinned down a real problem. Reports get their own
+   section rather than a footnote, and the changelog entry for the
+   fix names you too.
 
 You don't need to add yourself to the contributors list in your
 PR. The maintainer adds it on merge.

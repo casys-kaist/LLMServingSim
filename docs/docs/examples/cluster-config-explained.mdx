@@ -159,6 +159,8 @@ gets inferred. So:
 **Parallelism rules to remember:**
 
 - `num_npus == tp_size * pp_size` (always)
+- `pp_size <= num_hidden_layers`: stages are cut on transformer-block
+  boundaries, so a stage cannot be empty
 - TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do EP-ALLTOALL
 - Without `dp_group`: `ep_size <= tp_size`
 - With `dp_group`: EP can scale beyond a single instance's GPUs (see DP+EP example)

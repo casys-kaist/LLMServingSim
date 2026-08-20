@@ -109,6 +109,12 @@ def _resolve_parallelism(instance, model_config):
         raise ValueError(f"Parallelism degrees must be >= 1: tp_size={tp_size}, pp_size={pp_size}, ep_size={ep_size}")
     if dp_group is None and ep_size > tp_size:
         raise ValueError(f"ep_size ({ep_size}) > tp_size ({tp_size}) requires dp_group to be set")
+    num_hidden_layers = model_config.get("num_hidden_layers")
+    if num_hidden_layers is not None and pp_size > num_hidden_layers:
+        raise ValueError(
+            f"pp_size ({pp_size}) exceeds the model's transformer block count "
+            f"({num_hidden_layers}); a pipeline stage cannot be empty"
+        )
     if is_moe:
         num_experts = model_config.get(
             "num_local_experts", model_config.get("num_experts", 1)

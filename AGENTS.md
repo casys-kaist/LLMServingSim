@@ -267,7 +267,7 @@ Each trace is a whitespace-aligned text file consumed by the Chakra converter
 whitespace):
 
 ```
-COLOCATED		model_parallel_NPU_group: {npu_group}
+COLOCATED		model_parallel_NPU_group: {pp_size}		pp_stage_boundaries: 73,145,217
 {num_layers}
 Layername    comp_time    input_loc    input_size    weight_loc    weight_size    output_loc    output_size    comm_type    comm_size    misc
 embedding_0  5621         REMOTE:0     40            LOCAL         1050673152     LOCAL         81920          NONE         0            NONE
@@ -275,6 +275,14 @@ embedding_0  5621         REMOTE:0     40            LOCAL         1050673152   
 sampler_291  25933        LOCAL        2565120       LOCAL         0              REMOTE:0      40             NONE         0            NONE
 ```
 
+- Line 1 carries `key: value` pairs after the mode marker.
+  `model_parallel_NPU_group` is `pp_size`. `pp_stage_boundaries` appears only when
+  `pp_size > 1` and lists the `pp_size - 1` line indices at which each stage after
+  the first begins, counted **after** any leading `kv_load`/`kv_evict` rows (the
+  converter strips those before partitioning). The frontend places them on
+  transformer-block starts using vLLM's `get_pp_indices` rule — blocks split
+  evenly, remainder to the stages *before* the last, which also carries
+  `lm_head`
 - `comp_time`: latency in nanoseconds (from profile.csv, converted at load time)
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
 - `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, or with dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`
@@ -466,7 +474,9 @@ Cluster configs in `configs/cluster/` define hardware topology. Key instance fie
 
 Parallelism inference: users may provide partial info (e.g., `num_npus=4, tp_size=2`)
 and `config_builder.py` infers the rest (`pp_size=2`). Validation ensures
-`num_npus = tp_size * pp_size` and `ep_size` divides `num_local_experts`.
+`num_npus = tp_size * pp_size`, `pp_size <= num_hidden_layers` (stages are cut on
+transformer-block boundaries, so a stage cannot be empty), and `ep_size` divides
+`num_local_experts`.
 
 TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP
 (ALLTOALL). DP is achieved via multiple instances with the same `dp_group`.
@@ -534,8 +544,10 @@ transforms text traces into protobuf `.et` files. It creates:
 The converter parses `comm_type` strings like `ALLTOALL:0,1` via `_parse_comm_type()`,
 splitting into `comm_type="ALLTOALL"` and `involved_dim=[False, True]`.
 
-The MEM_STORE node uses the **last layer's** `output_memory_loc`. This is why the sampler
-(not lm_head) must have `output_loc=REMOTE:{node_id}`.
+The MEM_STORE node uses the **last layer's** `output_memory_loc` and
+`output_memory_size`. This is why the sampler (not lm_head) must have
+`output_loc=REMOTE:{node_id}`: what goes back to the host is the sampled token ids
+(4 bytes per sequence), not the logits the sampler read.
 
 Memory location types: `LOCAL` (NPU) = 1, `REMOTE` (CPU) = 2, `CXL` = 3, `STORAGE` = 4.
 These must match the C++ enum in `astra-sim/astra-sim/system/AstraMemoryAPI.hh`.
@@ -593,7 +605,10 @@ No dedicated unit-test suite. Validate by:
 ## Common Pitfalls
 
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
-  (e.g., `llm_converter.py`, `Workload.cc`, input configs)
+  (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
+  into the container's site-packages by `scripts/compile.sh`, so editing
+  `llm_converter.py` changes nothing until you reinstall it
+  (`cd astra-sim/extern/graph_frontend/chakra && pip3 install .`)
 - **Don't commit large files**: generated traces, `.et` files and scratch run
   output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
   `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
@@ -611,6 +626,15 @@ No dedicated unit-test suite. Validate by:
   cost 375 preemptions / 293k recomputed tokens and 41,569 preemptions / 6 TB of swap
 - **Don't derive sequence length from `num_computed_tokens`** — preemption resets it.
   `num_tokens_reached` is the independent counter, mirroring vLLM's `len(_all_token_ids)`
+- **Don't split pipeline stages by trace-line count.** `pp_stage_boundaries` in the
+  trace header exists because a stage may only be cut on a transformer-block
+  boundary: that is the one place where the upstream `output_size` and the
+  downstream `input_size` are the same tensor (the hidden state). Inside a block
+  they differ — `qkv_proj` emits Q+K+V while `rotary_emb` declares only Q+K — and
+  ASTRA-Sim's analytical backend keys its send/recv tracker on
+  `(tag, src, dst, chunk_size, chunk_id)`, so a mismatch silently deadlocks the
+  receiving NPU instead of raising. That was issue #55: only the `pp_size` values
+  whose line-count cuts happened to land between two size-agreeing layers ran
 - **Don't assume `hidden_size == num_heads * head_dim`** — use explicit `head_dim` from config
 - **Use canonical vLLM layer names** (`qkv_proj`, `o_proj`, `gate_up_proj`,
   `act_fn`, `down_proj`, `rotary_emb`, `qk_norm`, `attention`, `layernorm`,

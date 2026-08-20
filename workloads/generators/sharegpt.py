@@ -216,7 +216,13 @@ def run(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def _load_tokenizer(model: str):
-    from transformers import AutoTokenizer
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as e:
+        raise ImportError(
+            "huggingface 'transformers' is required to tokenize the source "
+            "dataset. Run inside the vLLM container or `pip install transformers`."
+        ) from e
     return AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
 
 

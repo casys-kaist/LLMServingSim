@@ -39,8 +39,8 @@ git submodule update --init --recursive
 This:
 
 - Mounts the repo root into the container at `/app/LLMServingSim`
-- Installs the Python deps the simulator needs
-  (`pyyaml`, `transformers`, `pandas`, `xgboost`, `matplotlib`, …)
+- Installs the Python deps the simulator needs (`pyyaml`,
+  `pyinstrument`, `rich`, `pandas`, `numpy`, `matplotlib`)
 - Drops you into a `bash` shell at `/app/LLMServingSim`
 
 The container is named `servingsim_docker`. To re-attach later (e.g.,

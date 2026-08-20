@@ -196,6 +196,61 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   lifetime.
 
 ### Fixed
+- **Pipeline parallelism no longer deadlocks at most `pp_size` values**
+  ([#55](https://github.com/casys-kaist/LLMServingSim/issues/55)). The Chakra
+  converter split stages by *trace-line* count
+  (`layers_per_group = num_layers // num_npu_group`), so a boundary could land
+  inside a transformer block. There the sending layer's `output_size` and the
+  receiving layer's `input_size` are different tensors — `qkv_proj` emits Q+K+V
+  while `rotary_emb` declares only Q+K, and `attention` reads K/V from the KV
+  cache rather than the activation — and ASTRA-Sim's analytical backend keys its
+  send/recv callback tracker on `(tag, src, dst, chunk_size, chunk_id)`. A size
+  disagreement therefore never matches and the receiving NPU waits forever, with
+  no error: `running` stays flat while the log spins. Whether a given `pp_size`
+  hung came down to where its line-count cuts happened to fall (Llama-3.1-8B:
+  `pp` 2 and 5 ran, 4 and 8 hung; Qwen3-8B: 2 and 8 ran, 4, 9 and 18 hung).
+  `trace_generator.py` now records where each transformer block starts and
+  stamps the stage boundaries into the trace header as `pp_stage_boundaries`,
+  partitioning blocks the way vLLM's `get_pp_indices` does — evenly, with any
+  remainder going to the stages *before* the last, which also carries
+  `final_layernorm`/`lm_head`/`sampler`. The converter consumes those
+  boundaries instead of inventing its own split, and raises if a trace declares
+  `pp_size > 1` without them. Cutting on block boundaries is what makes the
+  crossing tensor the hidden state, so the two sizes agree by construction: a
+  block runs `layernorm` (input = hidden) through `down_proj`/`moe`
+  (output = hidden). Reported by [@hu-op1](https://github.com/hu-op1), root
+  cause narrowed down by [@hsule](https://github.com/hsule)
+- `--enable-sub-batch-interleaving` is now rejected with `pp_size > 1` instead
+  of emitting a wrong graph: an interleaved trace leaves both sub-batches
+  mid-block at every group edge, so a stage has no single hidden state to hand
+  on. `pp_size` greater than the model's `num_hidden_layers` is rejected too,
+  rather than producing an empty stage
+- The `MEM_STORE` node at the end of an iteration was sized from the sampler's
+  `input_size` — the full logits tensor (`num_seqs × vocab_size × dtype`) —
+  billing a multi-megabyte write-back to CPU memory every iteration. vLLM V1
+  samples on the GPU and ships only the token ids, which is the sampler's
+  `output_size` (4 bytes per sequence). Affects every simulation, not just PP
+- `--log-interval` greater than 1 second reported every windowed throughput as
+  `0.0` and then crashed the summary with `ZeroDivisionError`: the per-window
+  scale factor was computed with floor division (`FREQ // (log_interval * FREQ)`)
+- Chakra's `pyproject.toml` pinned `protobuf==6.*` while its checked-in
+  `et_def_pb2.py` is generated for the 7.35.1 runtime, so a fresh
+  `scripts/compile.sh` downgraded protobuf and left the converter raising
+  `VersionError` on import. The `astrasim/tutorial-micro2024` image ships
+  5.28.3, so this hit any first-time setup
+- `scripts/docker-sim.sh` never installed `rich`, which
+  `serving/core/logger.py` and `bench/core/logger.py` both import. It was
+  present only as a transitive dependency of `transformers` (via `typer`),
+  so trimming the install list would have broken the simulator. `rich` is
+  now declared, and the five packages nothing in this container imports —
+  `transformers`, `datasets`, `msgspec`, `scikit-learn`, `xgboost` — are
+  gone. `xgboost` and `msgspec` had no reference anywhere in the
+  repository; `scikit-learn` and `transformers` are only used by the
+  legacy `profiler/v0/` tree (which has its own container,
+  `profiler/v0/docker.sh`), and `datasets` only by the workload
+  generators. `workloads/generators` now asks for `transformers` by name
+  the way it already asked for `datasets`, rather than surfacing a bare
+  `ModuleNotFoundError`
 - **Model-architecture YAML docs matched the code again**
   ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52)). The
   `adding-model-architecture` page documented `cls:`, `category:`,

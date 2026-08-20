@@ -56,6 +56,12 @@ The two flags work together:
   half's GPU dense layers overlap with the other half's PIM
   attention.
 
+Interleaving requires `pp_size == 1`. The interleaved trace leaves
+both sub-batches part-way through a transformer block at every group
+edge, so a pipeline stage would have no single activation to hand to
+the next one; the simulator rejects the combination at startup rather
+than emitting a graph that cannot be scheduled.
+
 ## Expected output
 
 The throughput log shows both devices loaded:

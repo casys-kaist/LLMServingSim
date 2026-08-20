@@ -1338,7 +1338,7 @@ def _emit_prologue(ctx, bctx, f, batch_tag='NONE'):
     """
     prologue_layers = _sequence(ctx.perf_db, "prologue")
     if not prologue_layers:
-        return
+        return 0
     lines = []
     for i, layer_name in enumerate(prologue_layers):
         input_loc = f'REMOTE:{ctx.node_id}' if i == 0 else 'LOCAL'
@@ -1352,6 +1352,7 @@ def _emit_prologue(ctx, bctx, f, batch_tag='NONE'):
             if get_device(ctx.placement, None, layer_name, "weights") != 'LOCAL':
                 _, wt, _ = calculate_sizes(ctx.model, layer_name, bctx.total_len, fp=ctx.fp)
                 ctx.power_model.add_dram_energy_consumption(ctx.node_id, wt)
+    return len(lines)
 
 
 def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_total, pd_type, node_id, instance_id,
@@ -1375,8 +1376,12 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
         extra={"node_id": node_id, "instance_id": instance_id},
     )
 
+    # Line index at which each transformer block starts, used to cut
+    # pipeline stages on block boundaries (see _pp_stage_boundaries).
+    block_starts = []
+
     with open(output_path, 'w') as f:
-        _emit_prologue(ctx, bctx, f)
+        written = _emit_prologue(ctx, bctx, f)
 
         # Transformer blocks
         num_layers = config['num_hidden_layers']
@@ -1392,15 +1397,21 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
             can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
             if can_copy:
                 for _ in range(copy_count):
+                    block_starts.append(written)
                     f.writelines(block_lines)
+                    written += len(block_lines)
                     block_power.flush(ctx, enable_attn_offloading)
             else:
+                block_starts.append(written)
                 f.writelines(block_lines)
+                written += len(block_lines)
                 block_power.flush(ctx, enable_attn_offloading)
 
         # Final layers
         _emit_final_layers(ctx, bctx, f)
         _emit_pp_pd_power(ctx, bctx)
+
+    return block_starts
 
 
 # ======================================================================
@@ -1502,6 +1513,55 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 
         _emit_pp_pd_power(ctx, bctx1)
 
+    # Sub-batch interleaving leaves both sub-batches mid-block at every
+    # group edge, so there is no single tensor to hand to the next stage.
+    # generate_trace refuses the combination before we get here.
+    return []
+
+
+# ======================================================================
+# Pipeline-stage partitioning
+# ======================================================================
+
+def _pp_stage_boundaries(block_starts, pp_size):
+    """Trace-line indices at which each pipeline stage after the first begins.
+
+    Mirrors vLLM's ``get_pp_indices``: the transformer blocks are split
+    evenly and any remainder goes to the stages *before* the last one,
+    which also carries ``final_layernorm`` / ``lm_head`` / ``sampler``.
+
+    Cutting only on block boundaries is load-bearing, not cosmetic. The
+    Chakra converter sizes the stage-to-stage SEND from the last layer's
+    ``output_size`` and the RECV from the first layer's ``input_size``,
+    and ASTRA-Sim's callback tracker keys on chunk size — so the two must
+    agree or the receiving NPU waits forever. A block boundary is the only
+    place where they do: a block starts at ``layernorm`` and ends at
+    ``down_proj`` / ``moe``, both of which carry the hidden state
+    (``total_len * hidden_size * fp``). Inside a block they diverge, e.g.
+    ``qkv_proj`` emits Q+K+V while ``rotary_emb`` declares only Q+K.
+
+    Indices are relative to the list the converter partitions, i.e. after
+    any leading ``kv_load`` / ``kv_evict`` lines have been stripped.
+    """
+    if pp_size <= 1:
+        return []
+    n_blocks = len(block_starts)
+    if pp_size > n_blocks:
+        raise ValueError(
+            f"pp_size ({pp_size}) exceeds the model's transformer block count "
+            f"({n_blocks}); a pipeline stage cannot be empty"
+        )
+    per_stage = n_blocks // pp_size
+    partitions = [per_stage] * pp_size
+    for i in range(2, n_blocks % pp_size + 2):
+        partitions[-i] += 1
+    boundaries = []
+    acc = 0
+    for count in partitions[:-1]:
+        acc += count
+        boundaries.append(block_starts[acc])
+    return boundaries
+
 
 # ======================================================================
 # generate_trace() — public entry point
@@ -1569,13 +1629,21 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         runtime_max_num_seqs=max_num_seqs,
                         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len)
     if not enable_sub_batch_interleaving:
-        _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
+        block_starts = _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
     else:
         batches = _make_sub_batch(batch)
         if len(batches) < 2 or len(batches[0].requests) == 0 or len(batches[1].requests) == 0:
-            _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
+            block_starts = _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
         else:
-            _synthesize_interleaved_trace(*synth_args, batches, max_len, output_path, **synth_kwargs)
+            if pp_size > 1:
+                raise ValueError(
+                    "--enable-sub-batch-interleaving is not supported with pp_size > 1: "
+                    "an interleaved trace leaves both sub-batches mid-block at every "
+                    "group edge, so a pipeline stage has no single hidden state to pass on"
+                )
+            block_starts = _synthesize_interleaved_trace(*synth_args, batches, max_len, output_path, **synth_kwargs)
+
+    stage_boundaries = _pp_stage_boundaries(block_starts, pp_size)
 
     with open(output_path, 'r') as f:
         dic = []
@@ -1612,7 +1680,10 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
         else:
             raise ValueError(f"Unknown instance type {pd_type}.")
 
-        f.write(f"{instance_type}\t\tmodel_parallel_NPU_group: {pp_size}\n")
+        header_line = f"{instance_type}\t\tmodel_parallel_NPU_group: {pp_size}"
+        if stage_boundaries:
+            header_line += "\t\tpp_stage_boundaries: " + ",".join(str(b) for b in stage_boundaries)
+        f.write(header_line + "\n")
         f.write(str(len(result))+'\n')
         f.write(header())
 

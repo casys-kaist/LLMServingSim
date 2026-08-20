@@ -13,8 +13,10 @@ PP is the orthogonal axis to TP: TP shards weights *within* a
 layer, PP shards layers *across* devices. Each GPU runs a
 contiguous stretch of the decoder block stack and hands the
 intermediate activations to the next stage. The scheduler caps
-in-flight batches at `pp_size`, and Chakra splits each iteration's
-layer list across stage NPUs with send/recv at the boundaries.
+in-flight batches at `pp_size`, the trace generator picks the stage
+boundaries (always on a transformer-block edge, the same split rule
+vLLM's `get_pp_indices` uses), and Chakra emits one `.et` per stage
+NPU with send/recv at those boundaries.
 
 ## Prerequisites
 
@@ -23,9 +25,12 @@ layer list across stage NPUs with send/recv at the boundaries.
 
 ## Cluster config
 
-There's no PP-specific bundled config; pipeline-parallel runs by
-flipping `pp_size` on a multi-GPU instance. Drop a
-`single_node_pp_instance.json` next to the others:
+Pipeline parallelism is driven entirely by `pp_size` on a multi-GPU
+instance. Three bundled configs cover it:
+`single_node_pp_instance.json` (4 GPUs as `pp=4`),
+`single_node_tp_pp_instance.json` (`tp=2 x pp=2`) and
+`single_node_moe_pp_instance.json` (MoE, `tp=2 x pp=2` with `ep=2`).
+The first one:
 
 ```json title="configs/cluster/single_node_pp_instance.json"
 {
@@ -41,9 +46,9 @@ flipping `pp_size` on a multi-GPU instance. Drop a
           "model_name": "meta-llama/Llama-3.1-8B",
           "hardware": "RTXPRO6000",
           "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
-          "num_npus": 2,
+          "num_npus": 4,
           "tp_size": 1,
-          "pp_size": 2,
+          "pp_size": 4,
           "pd_type": null
         }
       ]
@@ -52,14 +57,17 @@ flipping `pp_size` on a multi-GPU instance. Drop a
 }
 ```
 
-The two fields that matter:
+The fields that matter:
 
-- `num_npus: 2`, `tp_size: 1`, `pp_size: 2`: invariant is
-  `num_npus = tp_size * pp_size`, so the simulator splits the model
-  into two pipeline stages (each on its own GPU) with no TP within a
-  stage.
-- For combined TP × PP (e.g., 4 GPUs as `tp=2, pp=2`), set
-  `num_npus: 4, tp_size: 2, pp_size: 2`.
+- `num_npus: 4`, `tp_size: 1`, `pp_size: 4`: the invariant is
+  `num_npus = tp_size * pp_size`, so the simulator splits
+  Llama-3.1-8B's 32 decoder blocks into four stages of eight, one
+  per GPU, with no TP within a stage.
+- For combined TP × PP set `num_npus: 4, tp_size: 2, pp_size: 2`
+  (that is `single_node_tp_pp_instance.json`): two stages of 16
+  blocks, each stage sharded across two GPUs.
+- `pp_size` may not exceed the model's `num_hidden_layers` — a
+  pipeline stage with no decoder block is rejected up front.
 
 ## Run
 
@@ -68,12 +76,13 @@ python -m serving \
   --cluster-config 'configs/cluster/single_node_pp_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
-  --output 'outputs/pp2_run.csv' \
-  --log-interval 1.0
+  --output 'outputs/example_pp_run.csv' \
+  --num-req 10
 ```
 
 No new CLI flag, the parallelism degree is fully driven by the
-cluster config.
+cluster config. Swap in `single_node_tp_pp_instance.json` or
+`single_node_moe_pp_instance.json` to combine PP with TP and EP.
 
 ## Expected output
 
@@ -119,6 +128,9 @@ Two things to notice vs. the TP=1 baseline:
   bubbles you'd see in those schedules therefore don't appear; the
   pipelining benefit comes entirely from overlapping consecutive
   iterations up to `pp_size`.
+- **`--enable-sub-batch-interleaving` is refused with `pp_size > 1`.**
+  An interleaved trace leaves both sub-batches mid-block at every
+  group edge, so a stage has no single activation to hand on.
 
 ## Related examples
 
@@ -135,6 +147,8 @@ Two things to notice vs. the TP=1 baseline:
   how `num_npus`, `tp_size`, and `pp_size` are validated and
   threaded through the scheduler / trace generator.
 - The PP `inflight` list lives in `serving/core/scheduler.py`; the
-  per-stage layer split and send/recv insertion live in
+  stage boundaries are chosen in `serving/core/trace_generator.py`
+  (`_pp_stage_boundaries`) and consumed, along with the send/recv
+  insertion, in
   `astra-sim/extern/graph_frontend/chakra/src/converter/llm_converter.py`
-  (`convert_common` / `convert_prefill`).
+  (`get_stage_edges`, `convert_common` / `convert_prefill`).

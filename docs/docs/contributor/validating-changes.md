@@ -50,6 +50,7 @@ cluster configs cover the major features:
 | CXL placement | `single_node_cxl_instance.json` |
 | PIM offload | `single_node_pim_instance.json` |
 | Power model | `single_node_power_instance.json` |
+| Pipeline parallelism, stage boundaries | `single_node_pp_instance.json`, `single_node_tp_pp_instance.json`, `single_node_moe_pp_instance.json` |
 | Trace generator, graph generator | any of the above |
 
 `serving/run.sh` contains ready-to-run commands for all of these.

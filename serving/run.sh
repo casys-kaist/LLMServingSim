@@ -56,6 +56,24 @@ python -m serving --cluster-config 'configs/cluster/single_node_single_instance.
 #     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_pim_sub_batch_run.csv' \
 #     --num-req 10 --log-level WARNING
 
+# # Pipeline parallelism example (4 GPUs as pp=4, one stage each)
+# python -m serving --cluster-config 'configs/cluster/single_node_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_pp_run.csv' \
+#     --num-req 10
+
+# # Tensor + pipeline parallelism example (4 GPUs as tp=2 x pp=2)
+# python -m serving --cluster-config 'configs/cluster/single_node_tp_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_tp_pp_run.csv' \
+#     --num-req 10
+
+# # MoE with tensor + pipeline + expert parallelism (4 GPUs as tp=2 x pp=2, ep=2)
+# python -m serving --cluster-config 'configs/cluster/single_node_moe_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_pp_run.csv' \
+#     --num-req 10
+
 
 
 # MoE example
