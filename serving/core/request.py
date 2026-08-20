@@ -1,3 +1,20 @@
+from enum import Enum
+
+
+class RequestStatus(Enum):
+    """Where the scheduler is holding this request.
+
+    Mirrors the subset of vLLM's ``RequestStatus`` the simulator needs. A
+    preempted request goes back to WAITING-with-PREEMPTED so the run summary can
+    tell a first admission from a resume; the scheduler itself treats both
+    through the same admission path.
+    """
+    WAITING = 1
+    RUNNING = 2
+    PREEMPTED = 3
+    FINISHED = 4
+
+
 # class that manages request of astra-sim
 class Request:
     def __init__(self, id, model, input, output, arrival, instance_id, input_hash_ids=None, output_hash_ids=None, is_init=True):
@@ -10,7 +27,13 @@ class Request:
         self.is_init = is_init
         self.original_input = input
         self.num_computed_tokens = 0  # Tracks actual computed tokens (vLLM style)
-        self.evict = False
+        # Sequence length reached so far: prompt + generated. This is vLLM's
+        # len(_all_token_ids), and like it, it must NOT be derived from
+        # num_computed_tokens -- preemption resets that to 0 (the request then
+        # re-derives its progress from the caches), so anything reading the
+        # length off it would make a resumed request prefill to the wrong point.
+        self.num_tokens_reached = input
+        self.status = RequestStatus.WAITING
         self.end_time = -1
         self.latency = -1
         self.queuing_delay = -1
@@ -25,15 +48,21 @@ class Request:
         # For prefix caching modeling
         self.input_hash_ids = input_hash_ids
         self.output_hash_ids = output_hash_ids
+        # Chained block hashes over input_hash_ids + output_hash_ids, filled
+        # lazily by kv_cache_manager.request_block_hashes() and never
+        # invalidated (the token ids do not change).
+        self.block_hashes = None
         self.prefix_cache_hit = 0
         self.npu_cache_hit = 0
         self.storage_cache_hit = 0
-        self.npu_last_node = None
-        self.cpu_last_node = None
-        self.storage_last_node = None
+        # Set by the tier lookup so allocate_slots can charge the recall once
+        # the allocation is known to succeed.
+        self.storage_hit_pool = None
+        self.storage_hit_blocks = 0
 
-        # For prefix cache lock tracking
-        self._prefix_locked = False
+        # How many times this request has been preempted.
+        self.num_preemptions = 0
+        # Prefix-cache stats are recorded once per request per tier.
         self._prefix_npu_stats_counted = False
         self._prefix_storage_stats_counted = False
 
@@ -68,13 +97,26 @@ class Request:
     def log(self):
         print("         scheduled request : {}".format(self.__dict__))
     
-    def is_prefill(self):
-        """Check if request is still in prefill phase (has tokens left to compute)"""
-        return self.num_computed_tokens < self.original_input
+    @property
+    def num_tokens(self):
+        """Tokens this request needs a slot for, vLLM's ``num_tokens``.
+
+        In steady-state decode ``num_tokens_reached == num_computed_tokens + 1``,
+        so ``num_tokens - num_computed_tokens`` comes out as 1 without a
+        prefill/decode branch. That uniformity is the point: there is no
+        "prefill phase" or "decode phase" in the scheduler, only a request
+        catching up to its reached length. A resumed request has
+        ``num_computed_tokens == 0`` and the full reached length here, so it is
+        scheduled as one chunk -- which is why ``is_prefill()`` is gone: it read
+        ``original_input`` and would have mistaken a resumed request's
+        recomputation for decoding.
+        """
+        return self.num_tokens_reached
+
 
 # class that manages batch of astra-sim
 class Batch:
-    def __init__(self, batch_id, model, total_len, kv_len, q_list, k_list, num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list, batch_time, kv_size, evict=0, load=0):
+    def __init__(self, batch_id, model, total_len, kv_len, q_list, k_list, num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list, batch_time, kv_size, evict=0, load=0, pd_kv_send_tokens=0):
         self.batch_id = batch_id
         self.model = model
         self.total_len = total_len
@@ -87,6 +129,11 @@ class Batch:
         self.kv_size = kv_size
         self.evict = evict
         self.load = load
+        # P/D disaggregation: tokens whose KV this batch must ship to the paired
+        # decode instance. Counts prefix-cache hits on a request's first step,
+        # because the decode side needs that KV even though the prefill side did
+        # not compute it. 0 unless pd_type == "prefill".
+        self.pd_kv_send_tokens = pd_kv_send_tokens
         # for attn prediction
         self.q_list = q_list
         self.k_list = k_list

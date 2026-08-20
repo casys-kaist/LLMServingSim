@@ -113,12 +113,11 @@ requests to include in the next `Batch`. The constraints:
 - per-request `tokens_this_step <= --long-prefill-token-threshold`
   *(if set, gates chunked prefill)*
 
-There are two scheduling paths:
-
-- **Without prefix caching** (`schedule_base`): pure FIFO + token
-  budget.
-- **With prefix caching** (`schedule_with_prefix`): same plus
-  RadixCache lookup that returns `hit_len` for each request.
+One `schedule()` handles both, in two phases: running requests first
+(preempting from the tail of `running` when one cannot get a block), then
+admission from `waiting` while budget and slots remain. `--enable-prefix-caching`
+does not change the path — it only decides whether blocks get indexed for
+reuse, so a request may start from a `hit_len` above zero.
 
 The full mechanics are on
 **[Continuous batching](./scheduling/continuous-batching)**.
@@ -154,9 +153,10 @@ profile DB:
 - Dense layers (qkv, mlp, etc.) → 1D linear lookup over `total_len`.
 - Per-sequence layers (`lm_head`, `sampler`) → 1D over
   `num_requests`.
-- Attention → 4D nearest-neighbour + bilinear over
+- Attention → 4D linear over
   `(prefill_chunk, kv_prefill, n_decode, kv_decode)`. Skew correction
-  blends two lookups using a per-bucket `alpha`.
+  blends toward a second lookup using a per-bucket `alpha`, when one
+  applies.
 - MoE → 2D over `(local_tokens, activated_experts)`, profiled at
   TP=1.
 

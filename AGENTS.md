@@ -28,7 +28,8 @@ LLMServingSim/
 │   │   ├── power_model.py      # Power/energy estimation
 │   │   ├── pim_model.py        # PIM device model
 │   │   ├── request.py          # Request/Batch data classes
-│   │   ├── radix_tree.py       # Prefix cache radix tree (from SGLang)
+│   │   ├── block_pool.py       # Per-tier KV block pool + prefix-cache index
+│   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
 │   └── run.sh                  # Example invocations across cluster configs
@@ -200,9 +201,14 @@ along the mean→max line a skewed batch lands.
   `rel_err_p50/p90/p99`, `signed_mean`, `bucket_table` pointer). This
   turns meta.yaml from ~3100 lines into ~100 lines per variant. The
   simulator hydrates the CSV back into memory on `_load_perf_db()`.
-- **Disable**: `SKIP_SKEW=1` skips the sweep entirely (simulator falls
-  back to a pooled constant alpha). `ONLY_SKEW=1` skips every other
-  category and refreshes just `skew.csv` + `skew_fit.csv`.
+- **Disable**: `SKIP_SKEW=1` skips the sweep entirely, and the simulator
+  then applies **no** skew correction (`_ATTN_SKEW_ALPHA_FALLBACK = 0`,
+  i.e. `t_mean`). Deliberately not a borrowed constant: the endpoint gap
+  `(t_max - t_mean)` is a large fraction of an iteration, so alpha has to
+  be known to ~±0.02 to be worth applying. Buckets with no samples
+  *inside* a real fit still fall back to that fit's own pooled
+  `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
+  other category and refreshes just `skew.csv` + `skew_fit.csv`.
 
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
@@ -242,9 +248,9 @@ each iteration. Composable helpers:
   the variant folder, load meta.yaml, load per-category CSVs, and attach the
   architecture catalog + sequence.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
-  `_lookup_moe()` — category-specific lookups. Attention uses 4D lookup
-  (nearest-neighbour on `prefill_chunk, n_decode`, bilinear on
-  `kv_prefill, kv_decode`).
+  `_lookup_moe()` — category-specific lookups. Attention is a 4D lookup:
+  each axis is bracketed by its two neighbouring profiled values and
+  blended **linearly** (`_axis_bracket`).
 - `_emit_sequence()` — walks a list of canonical names from the yaml, attaches
   TP ALLREDUCE to `o_proj`/`down_proj`, swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
@@ -256,7 +262,9 @@ each iteration. Composable helpers:
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
 
 ### Trace file format
-Each trace is a tab-separated text file consumed by the Chakra converter:
+Each trace is a whitespace-aligned text file consumed by the Chakra converter
+(fixed-width columns from `utils.py::_FMT`; the converter splits on any
+whitespace):
 
 ```
 COLOCATED		model_parallel_NPU_group: {npu_group}
@@ -271,6 +279,12 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
 - `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, or with dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`
   (the `:dim0,dim1` suffix maps to ASTRA-Sim's `involved_dim` BoolList for multi-dimensional topologies)
+- `comm_size` on `qkv_proj` carries the **P/D KV transfer amount** (per layer, per rank,
+  K+V only, honouring `kv_cache_dtype`), and is 0 unless `pd_type == "prefill"`.
+  `convert_prefill` reads it for the per-layer SEND/RECV to the paired decode NPU. It used
+  to read the layer's `output_size`, i.e. the whole QKV activation, which shipped Q as well
+  and overstated the transfer by `(q_dim + 2*kv_dim) / (2*kv_dim)` — 3x for Llama-3.1-8B.
+  `comm_type` stays `NONE` there: a SEND/RECV pair only needs comm_size/src/dst/tag
 - `misc`: `NONE` or batch tag for sub-batch interleaving (`BATCH_1`, `BATCH_2`)
 - First layer (embedding) input comes from `REMOTE` (CPU → NPU), last layer (sampler) output goes to `REMOTE` (NPU → CPU)
 - MoE uses `EXPERT {i}` / `EXPERT END` markers (comm_type on EXPERT line can include dimension scoping)
@@ -279,17 +293,34 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
 ### Performance DB and latency lookup
 The simulator loads per-category CSVs via `_load_perf_db()` and dispatches
 lookups by catalog category: `_lookup_dense` (1D linear over tokens),
-`_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D:
-nearest-neighbour on `(prefill_chunk, n_decode)` + bilinear on `(kv_prefill,
-kv_decode)`), and `_lookup_moe` (2D over `(tokens, activated_experts)`,
-profiled at tp=1). All lookups extrapolate (time_us is linearly
-extended) rather than clamping. Latencies are stored as microseconds in the
+`_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D
+linear over `(prefill_chunk, kv_prefill, n_decode, kv_decode)`), and
+`_lookup_moe` (2D over `(tokens, activated_experts)`, profiled at tp=1).
+All lookups extrapolate (time_us is linearly extended) rather than
+clamping.
+
+`_axis_bracket` blends on a **linear** scale, not in log space, even
+though the profiler sweeps every axis geometrically. Grid spacing decides
+where the kernel is sampled; the blend decides how two samples are
+combined; the kernel is linear in each axis. Profiled decode attention
+fits `time_us = a + b * (n_decode * kv_decode)` with R^2 = 1.0000 (RTX
+4090 / Llama-3.1-8B, implied 953 GB/s = 95% of spec — a pure
+KV-bandwidth read). Log blending of a per-axis-linear function is
+convex-biased upward by up to +6.0% per axis on a doubling grid, and
+leave-one-out over the measured grid puts it at +11.6% to +14.4% mean
+error against +2.3% to +3.7% for linear, across every bundle in
+`profiler/perf/`. Don't "restore" log space because the sweep is
+geometric. Latencies are stored as microseconds in the
 CSVs and converted to nanoseconds at load time. No calibration scaling —
 profiled latencies are used directly.
 
-Attention with skew correction: `_lookup_attention_with_skew` does two 4D
-lookups (at `kv_decode_mean` and `kv_decode_max`) and blends them using
-`alpha` resolved from `meta.yaml::skew_fit` by `_skew_alpha`. The bucket key
+Attention with skew correction: `_lookup_attention_with_skew` looks up at
+`kv_decode_mean` and, only when a non-zero `alpha` applies, blends toward a
+second lookup at `kv_decode_max`. `alpha` is resolved from
+`meta.yaml::skew_fit` by `_skew_alpha`, and the function returns `t_mean`
+after a single lookup for `n_decode <= 1`, for a batch whose decode kv
+lengths are all equal, or for `alpha == 0` (the default with no skew
+profile). The bucket key
 is `pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, built against
 `skew_fit.bucket_axes` from the meta (falling back to module defaults for
 older profiles). `_hydrate_skew_fit_tables()` reads each TP's `skew_fit.csv`
@@ -339,18 +370,55 @@ arrival times (tool calls still running), `serving/__main__.py` advances `curren
 arrival time to avoid busy-looping.
 
 ### Scheduler and memory model
-- `scheduler.py` implements vLLM-style continuous batching with chunked prefill (default on)
+- `scheduler.py` follows vLLM V1's `schedule()` shape: a persistent `self.running` set is
+  served first (phase A), preempting only from its own tail, then `self.waiting` is admitted
+  (phase B) while budget and slots remain. Phase B **never** preempts, and it is skipped
+  entirely on any step that preempted — that anti-thrash rule is load-bearing
+- There is **one** `schedule()` for prefix caching on and off. The pool handles
+  `enable_caching=False` the way vLLM does (allocate through the same free list, never
+  index), so do not reintroduce a second scheduler
+- Admission also refuses a request whose *whole* sequence would not fit, not just
+  its first chunk (`--reserve-full-isl`, on by default, per-instance
+  `reserve_full_isl`). Mirrors vLLM's `scheduler_reserve_full_isl`, `True` there
+  too; checking only the first chunk lets chunked prefill over-admit
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
-- KV cache is managed in blocks of `--block-size` tokens (default 16)
-- Prefix caching via RadixAttention is enabled by default (`--enable-prefix-caching`)
-- Memory tracking in `memory_model.py` covers NPU, CPU, and CXL tiers
+- **There is no prefill phase or decode phase.** A request just catches up to
+  `num_tokens_reached`, so `num_new = num_tokens_reached - num_computed_tokens` — 1 in
+  steady-state decode, the whole sequence for a resumed request. `Request.is_prefill()` is
+  gone on purpose: it read `original_input` and would misread a resumed request's
+  recomputation as decoding. The trace classifies by **scheduled token count**
+  (>1 = prefill chunk, ==1 = decode)
+- `num_computed_tokens` is advanced at **schedule** time, as in vLLM's
+  `_update_after_schedule`. `Batch.scheduled_tokens` is the snapshot `add_done` works from.
+  Advancing at completion instead lets `pp_size > 1` schedule the same tokens twice
+- `num_tokens_reached` (prompt + generated) must never be derived from
+  `num_computed_tokens`: preemption resets the latter to 0
+- Preemption is vLLM verbatim, including `num_computed_tokens = 0`. That is **not**
+  re-prefill — `free_blocks` keeps the blocks' hashes, so on re-admission
+  `get_computed_blocks` finds whatever is still resident, a lower tier returns what was
+  written down, and only the remainder is recomputed. Do not add a "preserve the decode
+  state" special case; the tiers are what preserve it
+- The three modes map onto three real vLLM configurations: `--no-enable-prefix-caching` =
+  vLLM with prefix caching off (a resume recomputes the whole sequence);
+  `--enable-prefix-caching` = default vLLM; plus `--prefix-storage CPU/CXL` = vLLM with
+  LMCache / `OffloadingConnector` attached
+- KV capacity is `npu_mem.mem_size * npu_mem.mem_util - weight`, divided into `--block-size`
+  blocks. vLLM also subtracts the activation peak and CUDA context, which are not modelled,
+  so the simulator's capacity is an upper bound at the same utilization
+- `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
+  `memory_model.py` keeps the static sizing math and a byte-level view; `npu_used` is a
+  property over the pool, so there is one ledger per tier
 - `calculate_sizes(parallel=)` computes per-layer tensor sizes — `parallel` is TP for dense
   layers and EP for MoE experts. Uses `head_dim`, `q_dim`, `kv_dim`
 - MoE expert weights are sharded by `ep_size` (not `tp_size`)
 - Prompt throughput (`prompt_t` in `add_done()`) includes prefix cache hit tokens,
   not just actually computed prefill tokens. This matches vLLM's reported prompt
   throughput which counts all input tokens including cached ones
+- `kv_load` / `kv_evict` trace layers fire **only** with `--prefix-storage`: without a lower
+  tier there is nothing to recall from, so both byte counts are 0. `batch.evict` is 0 in
+  every mode — eviction from the NPU costs nothing, because the data is either a finished
+  request's cache or already written down off the critical path
 
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
@@ -388,6 +456,10 @@ Cluster configs in `configs/cluster/` define hardware topology. Key instance fie
 - `ep_size`: expert parallel degree (optional, default `tp_size` for MoE, 1 for dense)
 - `dp_group`: DP group ID string (optional, instances with same string share experts)
 - `npu_mem.mem_bw`: NPU memory bandwidth (also set as `local-mem-bw` in system.json)
+- `npu_mem.mem_util`: fraction of `mem_size` usable for weights plus KV cache (optional,
+  default from `--npu-memory-utilization`, itself `0.9`). KV capacity is
+  `mem_size * mem_util - weight`. Sits inside `npu_mem` because its only job is to
+  scale `mem_size`, and it follows that block's `mem_*` naming
 - `cpu_mem.mem_bw`: CPU memory bandwidth (set as remote memory in memory_expansion.json)
 - `link_bw`: inter-node bandwidth in GB/s (set in network.yml)
 - `link_latency`: inter-node link latency in ns
@@ -522,11 +594,23 @@ No dedicated unit-test suite. Validate by:
 
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs)
-- **Don't commit large files**: generated traces, output CSVs, `.et` files are gitignored
+- **Don't commit large files**: generated traces, `.et` files and scratch run
+  output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
+  `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
+  pass `--no-cleanup-inputs`, which can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes
   in `Request.__init__` and access directly
+- **Don't reintroduce `is_prefill()` or a prefill/decode branch in the scheduler.** vLLM has
+  neither; a request just catches up to `num_tokens_reached`. Classify for the trace by
+  scheduled token count instead
+- **Don't add a "preserve the decode state on preemption" special case.** `num_computed_tokens
+  = 0` is vLLM's own behaviour and is not re-prefill — recovery comes from the block hashes
+  surviving in the pool and from the lower tier. Two earlier attempts to special-case this
+  cost 375 preemptions / 293k recomputed tokens and 41,569 preemptions / 6 TB of swap
+- **Don't derive sequence length from `num_computed_tokens`** — preemption resets it.
+  `num_tokens_reached` is the independent counter, mirroring vLLM's `len(_all_token_ids)`
 - **Don't assume `hidden_size == num_heads * head_dim`** — use explicit `head_dim` from config
 - **Use canonical vLLM layer names** (`qkv_proj`, `o_proj`, `gate_up_proj`,
   `act_fn`, `down_proj`, `rotary_emb`, `qk_norm`, `attention`, `layernorm`,

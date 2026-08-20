@@ -353,6 +353,16 @@ def print_rule(label: str = "", style: str = "sim.rule") -> None:
     _console.rule(label, style=style)
 
 
+def print_heading(title: str) -> None:
+    """Centre a section title with no rule characters around it.
+
+    For a section that opens under a rule already drawn by whatever printed
+    before it -- ``print_rule`` would draw a second full-width line, leaving two
+    stacked rules with the title buried in the lower one.
+    """
+    _console.print(f"[sim.tagline]{title}[/]", justify="center")
+
+
 def print_markup(message: str) -> None:
     """Print a line of Rich markup without any logging decoration.
 
@@ -452,7 +462,6 @@ def print_input_config(args: Any) -> None:
     add("enable_attn_offloading", "Offload attention to PIM", _yn)
     add("enable_sub_batch_interleaving", "Sub-batch interleaving", _yn)
     add("enable_attn_prediction", "Realtime attention prediction", _yn)
-    add("prioritize_prefill", "Prioritize prefill", _yn)
     add("link_bw", "Link bandwidth (GB/s)")
     add("link_latency", "Link latency (ns)")
     add("network_backend", "Network backend", _na)
@@ -537,6 +546,7 @@ __all__ = [
     "ComponentLoggerAdapter",
     "console",
     "print_rule",
+    "print_heading",
     "print_markup",
     "print_banner",
     "print_input_config",

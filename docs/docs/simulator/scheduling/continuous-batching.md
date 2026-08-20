@@ -15,17 +15,24 @@ optionally chunked prefill. This page walks through the rules.
 > **[Reference → CLI flags](/docs/reference/cli-flags)** for the flag
 > list. This page explains *what each flag does internally*.
 
-## Two scheduling paths
+## Two phases, one scheduler
 
-Depending on whether `--enable-prefix-caching` is on (default), the
-scheduler takes one of two code paths inside `serving/core/scheduler.py`:
+`Scheduler.schedule()` in `serving/core/scheduler.py` follows vLLM V1's
+shape and runs in two phases per step:
 
-| Flag | Method | What changes |
+| Phase | Queue | Behaviour |
 | --- | --- | --- |
-| `--no-enable-prefix-caching` | `schedule_base` | Pure token-budget scheduler. Each request always runs from token 0. |
-| `--enable-prefix-caching` (default) | `schedule_with_prefix` | Same plus a RadixCache lookup that returns `hit_len` per request. |
+| A | `self.running` (persistent across steps) | Serve every running request. If one cannot get a block, preempt from the **tail** of `running` and retry. |
+| B | `self.waiting` (arrival-ordered) | Admit while budget and sequence slots remain. Stops at the first request that cannot be allocated — phase B **never** preempts. |
 
-In both paths, the constraints are the same:
+Phase B is skipped entirely on any step that preempted. That anti-thrash
+rule is what keeps the running set from oscillating
+preempt → refill → preempt.
+
+`--enable-prefix-caching` does not change the code path, only whether
+blocks get indexed for reuse. There is one scheduler for both.
+
+The constraints are:
 
 - **Sequence cap:** `len(batch) <= --max-num-seqs`. Default `128`.
   Set to `0` for unbounded.
@@ -35,9 +42,10 @@ In both paths, the constraints are the same:
   `tokens_for_this_request_this_step <= --long-prefill-token-threshold`.
   Default `0` = disabled.
 
-`schedule_with_prefix` additionally maintains the per-instance
-`MemoryModel.npu_prefix_cache` (RadixCache). Details on
-**[Prefix caching](./prefix-caching)**.
+Blocks come from the per-instance NPU `BlockPool`, whose
+`num_free_blocks` is exact — an allocation either succeeds or reports
+failure in the same call, which is what decides whether to preempt.
+Details on **[Prefix caching](./prefix-caching)**.
 
 ## What the scheduler picks each step
 
@@ -61,31 +69,45 @@ flowchart TD
 Conceptually, the loop is:
 
 ```
-remaining_token_budget = max_num_batched_tokens
-batch = []
-for request in queue (FIFO, prefill-first if prioritized):
-    if len(batch) >= max_num_seqs: break
+budget = max_num_batched_tokens
+scheduled, preempted = [], []
 
-    needs_to_run = how_many_tokens_this_request_needs(request)
-    cap = min(remaining_token_budget,
-              long_prefill_token_threshold or remaining_token_budget,
-              needs_to_run)
-    if cap <= 0:
-        continue       # try the next request
+# Phase A: requests already running
+for request in running:
+    if budget <= 0: break
+    cap = tokens_to_catch_up(request, budget)
+    while allocate_blocks(request, cap) failed:
+        victim = running.pop()          # tail = lowest FCFS priority
+        preempt(victim); preempted.append(victim)
+        if victim is request: break
+    if allocation still failed: break
+    scheduled.append((request, cap)); budget -= cap
 
-    schedule(request, tokens=cap)
-    remaining_token_budget -= cap
-    batch.append(request)
+# Phase B: admit from waiting -- skipped entirely if anything was preempted
+if not preempted:
+    while waiting and budget > 0 and len(running) < max_num_seqs:
+        request = waiting[0]
+        hit = look_up_prefix(request)   # NPU blocks, then lower tiers
+        cap = tokens_to_catch_up(request, budget, from=hit)
+        if allocate_blocks(request, cap) failed: break   # never preempts
+        waiting.pop(0); running.append(request)
+        scheduled.append((request, cap)); budget -= cap
 
-return Batch(batch) if batch else None
+return Batch(scheduled) if scheduled else None
 ```
 
-The "how many tokens this request needs" function differs by request
-state:
+`tokens_to_catch_up` is one expression for every request state:
 
-- **Prefill, no chunk yet:** input length minus any prefix cache hit.
+```
+min(req.num_tokens_reached - req.num_computed_tokens,
+    long_prefill_token_threshold or infinity,
+    budget)
+```
+
+- **Prefill, no chunk yet:** prompt length minus any prefix cache hit.
 - **Prefill, mid-chunk:** remaining prompt tokens.
-- **Decode:** always 1.
+- **Decode:** 1, because `num_tokens_reached == num_computed_tokens + 1`.
+- **Resuming after preemption:** whatever neither tier could return.
 
 ## Chunked prefill
 
@@ -105,15 +127,20 @@ processed.
 Decode steps continue to run *concurrently* in the same batch, the
 chunked prefill just keeps long prompts from monopolizing.
 
-## Prefill priority
+## No prefill phase, no decode phase
 
-By default, prefill and decode requests share the same FIFO queue.
-With `--prioritize-prefill`, the scheduler reorders the batch so all
-prefill requests land first, then decodes fill the remaining budget.
+There is no prefill-vs-decode branch in the scheduler, exactly as in
+vLLM. A request simply catches up to the length it has reached:
 
-This trades some TPOT for lower TTFT under bursty arrivals, useful
-in deployments where users care more about "first token latency"
-than steady-state generation rate.
+```
+num_new = req.num_tokens_reached - req.num_computed_tokens
+```
+
+which is 1 in steady-state decode, a chunk during prefill, and the whole
+sequence for a request that was preempted and is recovering. The trace
+classifies by the **scheduled token count** instead: more than one token
+is a prefill chunk, exactly one is a decode. That is also how the
+attention kernel sees the batch.
 
 ## Pipeline depth (PP)
 
@@ -178,7 +205,7 @@ decode instance picks them up.
 
 ## What's next
 
-- **[Prefix caching](./prefix-caching)**: what `hit_len` means and
-  how the RadixCache decides it.
+- **[Prefix caching](./prefix-caching)**: how block hashes are chained
+  and what a cache hit saves.
 - **[KV cache & memory](./kv-cache-and-memory)**: how the scheduler
   knows when memory is full.

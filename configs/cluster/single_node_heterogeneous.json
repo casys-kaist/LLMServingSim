@@ -25,8 +25,7 @@
           "max_num_seqs": 32,
           "max_num_batched_tokens": 8192,
           "enable_chunked_prefill": true,
-          "enable_prefix_caching": true,
-          "prioritize_prefill": true
+          "enable_prefix_caching": true
         },
         {
           "model_name": "Qwen/Qwen3-32B",
@@ -42,8 +41,7 @@
           "max_num_seqs": 256,
           "max_num_batched_tokens": 0,
           "enable_chunked_prefill": false,
-          "enable_prefix_caching": false,
-          "prioritize_prefill": false
+          "enable_prefix_caching": false
         }
       ]
     }

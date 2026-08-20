@@ -18,7 +18,8 @@ Module map:
         power_model.py          power / energy estimation
         pim_model.py            PIM device model
         request.py              Request / Batch data classes
-        radix_tree.py           prefix-cache radix tree (from SGLang)
+        block_pool.py           per-tier KV block pool + prefix-cache index
+        kv_cache_manager.py     tiered KV cache manager (block hashing, allocation)
         utils.py                model config loading, formatting
         logger.py               rich-based logger + stdio capture
     run.sh                      example invocations across cluster configs

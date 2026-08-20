@@ -24,7 +24,7 @@ hand-off.
 - Simulator container set up
 - Bundled RTXPRO6000 profile for `meta-llama/Llama-3.1-8B`
 - A PIM device config from `configs/pim/` (e.g.,
-  `DDR4_8GB_3200_pim`): these are DRAMSim3 INI files describing the
+  `DDR4_8GB_3200_pim`): each is a DRAMSim3 INI file describing the
   PIM substrate.
 
 ## Cluster config
@@ -64,7 +64,7 @@ hand-off.
 The PIM hookup:
 
 - `cpu_mem.pim_config: "DDR4_8GB_3200_pim"`: points at
-  `configs/pim/DDR4_8GB_3200_pim/` (DRAMSim3 INI files describing
+  `configs/pim/DDR4_8GB_3200_pim.ini` (a DRAMSim3 INI file describing
   PIM-side compute and memory).
 - The GPU instance is otherwise unchanged. PIM attention is selected
   at runtime via the CLI flag, not the config.

@@ -77,7 +77,8 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `kv_cache_dtype` | String | No | Per-instance override for `--kv-cache-dtype` |
 | `enable_chunked_prefill` | Boolean | No | Per-instance override for `--enable-chunked-prefill` |
 | `enable_prefix_caching` | Boolean | No | Per-instance override for `--enable-prefix-caching` |
-| `prioritize_prefill` | Boolean | No | Per-instance override for `--prioritize-prefill` |
+| `npu_mem.mem_util` | Float | No | Fraction of `npu_mem.mem_size` an instance may use for weights plus KV cache. Per-instance override for `--npu-memory-utilization` (default `0.9`) |
+| `reserve_full_isl` | Boolean | No | Admit only if the request's whole sequence fits, not just its first chunk. Per-instance override for `--reserve-full-isl` (default on) |
 | `enable_local_offloading` | Boolean | No | Per-instance override for `--enable-local-offloading` |
 | `enable_attn_offloading` | Boolean | No | Per-instance override for `--enable-attn-offloading` |
 | `enable_sub_batch_interleaving` | Boolean | No | Per-instance override for `--enable-sub-batch-interleaving` |

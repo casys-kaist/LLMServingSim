@@ -103,6 +103,7 @@ class TraceCtx:
     kv_head: int
     head_dim: int
     is_moe: bool
+    kv_fp: int    # bytes per KV element (1 for fp8, else fp) -- P/D transfer sizing
     pd_type: str  # 'prefill', 'decode', or None
     tp_size: int       # tensor parallel degree (for ALLREDUCE on attention/FFN)
     pp_size: int       # pipeline parallel degree
@@ -527,13 +528,30 @@ def _lookup_per_sequence(perf_db, name, tp, sequences):
 
 
 def _axis_bracket(values, query):
-    """Return (lo_idx, hi_idx, t) for log-space interpolation on
-    ``values`` (sorted, non-negative, may include 0). ``t`` is the
-    fractional position: 0 → use values[lo_idx], 1 → values[hi_idx].
+    """Return (lo_idx, hi_idx, t) for linear interpolation on ``values``
+    (sorted, non-negative, may include 0). ``t`` is the fractional
+    position: 0 → use values[lo_idx], 1 → values[hi_idx].
 
-    Below the min or above the max we clamp on the low side (value 0
-    is treated as an exact sample) and extrapolate log-linearly on the
-    high side using the top two samples.
+    Below the min we clamp (a 0-valued sample is pinned exact); above
+    the max we extrapolate linearly from the top two samples.
+
+    ``t`` is measured on a **linear** scale even though the profiler
+    sweeps every axis geometrically. Those are separate choices: the
+    grid spacing decides where the kernel is sampled, the blend decides
+    how two samples are combined, and the kernel is linear in each
+    axis. Profiled decode attention fits ``time_us = a + b * (n_decode
+    * kv_decode)`` with R^2 = 1.0000 on the RTX 4090 Llama-3.1-8B grid,
+    at an implied 953 GB/s — 95% of the card's spec, i.e. a pure
+    KV-bandwidth read.
+
+    Blending a per-axis-linear function in log space is convex-biased
+    upward: up to +6.0% per axis on a doubling grid (worst at
+    ``query/x0 = 1/ln2 = 1.443``), compounding across axes. Leave-one-out
+    over every profiled attention row — predict a grid point from its
+    two neighbours, compare against what the GPU actually reported —
+    puts log-space at +11.6% to +14.4% mean error across all seven
+    bundles in the repo, against +2.3% to +3.7% for linear, with linear
+    ahead on all four axes (``n_decode`` worst: +18.4% log vs +4.3%).
     """
     n = len(values)
     if n == 0:
@@ -548,18 +566,11 @@ def _axis_bracket(values, query):
     x0, x1 = values[lo], values[hi]
     if x1 == x0:
         return lo, hi, 0.0
-    # log-space when both ends are positive; fall back to linear when
-    # one end is 0 (0-valued sample is pinned exact).
-    if x0 > 0 and x1 > 0:
-        import math
-        t = (math.log(max(query, 1e-9)) - math.log(x0)) / (math.log(x1) - math.log(x0))
-    else:
-        t = (query - x0) / (x1 - x0)
-    return lo, hi, t
+    return lo, hi, (query - x0) / (x1 - x0)
 
 
 def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
-    """Bilinear (log on each axis) within a single (pc, nd) slice."""
+    """Bilinear (linear on each axis) within a single (pc, nd) slice."""
     slice_tbl = tbl["slices"].get((pc, nd))
     if slice_tbl is None:
         return None
@@ -592,22 +603,24 @@ def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
 # ---------------------------------------------------------------------------
 # When the runtime batch has heterogeneous decode kv lengths, the
 # profiled 4D grid (which carries one kv_decode value per shot) can
-# only tell us the uniform-mean latency. Empirically that's faster
-# than a truly skewed batch, because FlashAttention's varlen kernel
-# suffers tile padding + SM-imbalance costs that the uniform-mean
-# measurement misses.
+# only tell us the uniform-batch latency. ``kv_decode_mean`` is the
+# right coordinate to ask it for: decode attention cost tracks the
+# total KV read Sigma_k, and a uniform batch at the arithmetic mean has
+# ``n * mean(k) = Sigma_k`` exactly. The median would not — the runtime
+# kv distribution is right-skewed (measured ``kv_max/kv_mean`` p50 =
+# 2.61 on the ShareGPT replay), so a median anchor would understate the
+# read volume. The profiler uses the same definition (``skew.py``:
+# ``kv_mean = total_kv // n``).
 #
-# The skew profile (profiler/.../tp<N>/skew.csv + the fitted
-# ``skew_fit`` block in meta.yaml, with the bucket alpha table spilled
-# to ``tp<N>/skew_fit.csv``) captures this as a 5-axis lookup table of
+# A truly skewed batch is slightly *slower* than that uniform anchor,
+# because FlashAttention's varlen kernel pays tile padding and
+# SM-imbalance costs the uniform measurement misses. The skew profile
+# (profiler/.../tp<N>/skew.csv + the fitted ``skew_fit`` block in
+# meta.yaml, with the bucket alpha table spilled to
+# ``tp<N>/skew_fit.csv``) captures that as a 5-axis lookup table of
 # alpha values where
 #
 #     t_skew = t_mean + alpha * (t_max - t_mean)
-#
-# With alpha=0 (the pre-correction behaviour) the simulator
-# systematically under-predicts attention latency by 5-10%, which
-# compounds across every batch in a session into noticeable TTFT /
-# TPOT drift vs. vLLM.
 #
 # Lookup is resolved per-batch via ``_skew_alpha``. The bin edges and
 # labels come from ``meta.yaml::skew_fit.bucket_axes`` so the profiler
@@ -615,7 +628,19 @@ def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
 # coordinated code change here. The ``_DEFAULT_SKEW_AXES`` block below
 # is used as a fallback only when the meta predates that field (which
 # is why its shape still matches the original hard-coded scheme).
-_ATTN_SKEW_ALPHA_FALLBACK: float = 0.093
+#
+# The fallback, used when a bundle carries no skew profile at all, is
+# **0**: apply no correction you have not measured. It used to be
+# 0.093, a constant no bundle in the repo reproduces — the measured
+# pooled value for Llama-3.1-8B on RTXPRO6000 is 0.0543, and resolving
+# a saturated RTX 4090 run's own batches against that bucket table
+# gives alpha p50 0.059. A scalar cannot serve this parameter anyway:
+# the endpoint gap ``(t_max - t_mean) * num_layers`` is ~12.6 ms on a
+# ~29 ms iteration, so each 0.1 of alpha is ~4.3% of iteration time and
+# alpha would have to be known to +/-0.023 to keep attention within 1%.
+# Profile skew if you need the correction; guessing it is worse than
+# omitting it.
+_ATTN_SKEW_ALPHA_FALLBACK: float = 0.0
 
 _DEFAULT_SKEW_AXES: dict = {
     "n_bins": (0, 2, 4, 8, 16, 32, 64, 128, 1_000_000),
@@ -717,13 +742,15 @@ def _lookup_attention_with_skew(
 ):
     """Attention lookup with skew correction applied.
 
-    Two 4D interpolations — at kv_decode_mean (the canonical point
-    the profiler measured) and kv_decode_max (the per-batch longest
-    decode sequence) — combined by the bucket-specific alpha resolved
-    from ``meta.yaml::skew_fit``. Skipped entirely when there's no
-    skew to correct (single decode or all decodes at the same length).
+    Looks the batch up at kv_decode_mean (the canonical point the
+    profiler measured) and, when a non-zero alpha applies, blends
+    toward a second lookup at kv_decode_max (the per-batch longest
+    decode sequence) using the bucket-specific alpha resolved from
+    ``meta.yaml::skew_fit``. Returns t_mean directly -- one lookup --
+    for a single decode, for a batch whose decodes are all the same
+    length, or when alpha resolves to 0.
 
-    Returns an integer nanosecond count. The raw bilinear interp in
+    Returns an integer nanosecond count. The interpolation in
     ``_lookup_attention`` produces a float, and the skew formula
     compounds that; the Chakra trace converter requires integer
     ``comp_time`` so we round here.
@@ -860,6 +887,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         enable_attn_offloading=enable_attn_offloading,
         power_model=power_model, pim_model=pim_model, pim_channels=pim_channels,
         n_head=n_head, kv_head=kv_head, head_dim=head_dim, is_moe=is_moe,
+        kv_fp=(1 if kv_cache_dtype == 'fp8' else fp),
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
@@ -964,9 +992,29 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             power_acc.dram_weight_bytes += wt
         if comm_size > 0:
             collective = comm_type.split(':', 1)[0].lower()
-            power_acc.link_data_bytes += total_ring_data(comm_size, ctx.tp_size, collective=collective)
+            if collective == 'none':
+                # Point-to-point (the P/D KV send): the bytes cross the link once,
+                # with no ring amplification.
+                power_acc.link_data_bytes += comm_size
+            else:
+                power_acc.link_data_bytes += total_ring_data(comm_size, ctx.tp_size, collective=collective)
 
     return latency_ns
+
+
+def _pd_kv_send_bytes(ctx, bctx):
+    """Per-layer, per-rank KV bytes a prefill instance ships to its decode peer.
+
+    ``batch.pd_kv_send_tokens`` counts this iteration's computed tokens plus, on a
+    request's first step, its prefix-cache hit: the decode side needs that KV even
+    though the prefill side read it from cache instead of computing it. Using the
+    trace's ``total_len`` instead would silently drop exactly the hit.
+    """
+    tokens = getattr(bctx.batch, 'pd_kv_send_tokens', 0) or 0
+    if tokens <= 0:
+        return 0
+    kv_dim = ctx.kv_head * ctx.head_dim
+    return 2 * kv_dim * tokens * ctx.kv_fp // max(ctx.tp_size, 1)
 
 
 def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
@@ -1173,6 +1221,21 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
             comm_size, comm_type = _tp_comm(ctx, layer_name, bctx.total_len)
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         comm_type=_with_dim(comm_type, ctx.tp_dim), comm_size=comm_size)
+        elif layer_name == 'qkv_proj' and ctx.pd_type == 'prefill':
+            # P/D disaggregation: this layer's KV has to reach the paired decode
+            # instance. The Chakra converter's PREFILL path emits a point-to-point
+            # send after every *v_proj layer and takes the byte count from the
+            # trace's comm_size column, so put the KV size there.
+            #
+            # Deliberately not the layer's output_size, which the converter used
+            # to read: that is the whole QKV activation, so it shipped Q as well
+            # and overstated the transfer by (q_dim + 2*kv_dim) / (2*kv_dim) --
+            # 3x for Llama-3.1-8B, 1.5x for MHA, more at wider GQA ratios -- and
+            # it ignored kv_cache_dtype. comm_type stays NONE: the converter
+            # builds a SEND/RECV pair, for which ASTRA-Sim reads comm_size,
+            # comm_src, comm_dst and comm_tag.
+            _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
+                        comm_size=_pd_kv_send_bytes(ctx, bctx))
         else:
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num)
 
@@ -1445,6 +1508,9 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 # ======================================================================
 
 # Wrapper function that creates trace for an instance
+
+
+
 def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_type=None, node_id=0, instance_id=0,
                    max_num_batched_tokens=2048, max_num_seqs=None,
                    placement={}, block_mode_on=False, expert_routing_policy="BALANCED",
@@ -1635,16 +1701,18 @@ def _make_sub_batch(batch):
     if len(batch.requests) == 1:
         return [batch]
 
-    # scheduler attaches per-request chunk sizes; honor them so chunked-prefill
-    # later chunks (is_init=False but still is_prefill()) and prefix-cached
-    # tokens are accounted for correctly (chunk_size already excludes hits via
-    # num_computed_tokens).
-    sched = getattr(batch, 'scheduled_tokens', {}) or {}
+    # Read the split off the parent batch rather than off the request objects.
+    # The scheduler advances num_computed_tokens when it forms the batch (as vLLM
+    # does), so a request's own counter already reflects the state *after* this
+    # iteration; q_list / k_list carry the values this iteration actually ran
+    # with, aligned with batch.requests.
+    per_req = {
+        req.id: (q, k)
+        for req, q, k in zip(batch.requests, batch.q_list, batch.k_list)
+    }
 
     def compute_tokens(req):
-        if req.is_prefill():
-            return sched.get(req.id, max(1, req.original_input - req.num_computed_tokens))
-        return 1
+        return per_req[req.id][0]
 
     # Greedy split: longest per-iteration compute first, assign to lighter side.
     reqs = sorted(batch.requests, key=compute_tokens, reverse=True)
@@ -1670,21 +1738,21 @@ def _make_sub_batch(batch):
         decode_k_list = []
 
         for req in sub_reqs:
-            if req.is_prefill():
-                chunk = compute_tokens(req)
-                total_len += chunk
-                q_list.append(chunk)
+            chunk, kv_before = per_req[req.id]
+            total_len += chunk
+            q_list.append(chunk)
+            k_list.append(kv_before)
+            # More than one token is a prefill chunk, exactly one is a decode --
+            # the same classification the parent batch used, and the one the
+            # attention profile axes expect.
+            if chunk > 1:
                 prefill_q_list.append(chunk)
-                # KV already in cache from prior chunks plus any prefix-cache hit.
-                prefill_k_list.append(req.num_computed_tokens)
+                prefill_k_list.append(kv_before)
                 num_prefill += 1
             else:
-                total_len += 1
-                q_list.append(1)
-                kv_len += req.num_computed_tokens
-                decode_k_list.append(req.num_computed_tokens)
+                kv_len += kv_before
+                decode_k_list.append(kv_before)
                 num_decode += 1
-            k_list.append(req.num_computed_tokens)
 
         # evict/load are counted once for the original batch; attach to sub-batch 0 only.
         evict, load = (batch.evict, batch.load) if i == 0 else (0, 0)

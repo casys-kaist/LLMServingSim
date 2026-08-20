@@ -15,11 +15,12 @@ each request is wasted work. Prefix caching keeps prefix KV blocks
 around (in NPU memory by default; optionally also in CPU or CXL) and
 reuses them on hits.
 
-LLMServingSim ships RadixAttention-style prefix caching (adapted from
-SGLang) with three flavors:
+LLMServingSim ships block-hash prefix caching (ported from vLLM
+v0.19.0's block pool) with three flavors:
 
-1. **Per-instance NPU cache** (default, always on).
-2. **Cross-instance shared CPU pool**: second-tier prefix cache.
+1. **Per-instance NPU pool** (default, always on).
+2. **Cross-instance shared CPU pool**: second-tier prefix cache, which
+   models attaching LMCache or vLLM's `OffloadingConnector`.
 3. **CXL-backed pool**: same as above but in CXL memory.
 
 ## Prerequisites

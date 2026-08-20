@@ -112,8 +112,8 @@ sweep that drives the simulator's FlashAttention-varlen skew correction
 mode switches control it:
 
 ```bash
-SKIP_SKEW=1                         # skip the sweep entirely — simulator falls back
-                                    # to the pooled constant alpha.
+SKIP_SKEW=1                         # skip the sweep entirely — simulator then
+                                    # applies no skew correction (alpha = 0).
 ONLY_SKEW=1                         # run ONLY the skew step (dense / per_seq /
                                     # attention / moe untouched). Useful when the
                                     # uniform sweep is already done and you just want

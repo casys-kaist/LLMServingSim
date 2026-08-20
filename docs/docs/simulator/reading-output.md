@@ -101,7 +101,7 @@ stdout while a run is in progress:
 | --- | --- |
 | `WARNING` (default) | The throughput log line every `--log-interval` seconds, plus warnings (variant fallback, runtime exceeds profiler sweep, MoE config mismatch, etc.) |
 | `INFO` | Adds per-iteration scheduler decisions (which requests entered the batch, prefix-cache hits per request) and the request lifecycle (arrival / first token / completion). Useful for debugging routing and scheduling. |
-| `DEBUG` | Adds per-layer memory load / store activity, full `Batch` / `Request` dumps, and `npu_prefix_cache.format_prefix_info()` snapshots. Generates a lot of output; pipe to a file. |
+| `DEBUG` | Adds per-layer memory load / store activity, full `Batch` / `Request` dumps, and prefix-cache hit-ratio snapshots. Generates a lot of output; pipe to a file. |
 
 Independently of the level, the simulator always emits:
 
@@ -241,8 +241,8 @@ Mitigations:
 - `--enable-chunked-prefill` (default) splits long prefills.
 - `--long-prefill-token-threshold N` caps prefill tokens per
   step.
-- `--prioritize-prefill` runs prefill first within a budget, trades
-  TPOT for TTFT.
+- `--npu-memory-utilization` sets how much NPU memory the KV cache
+  gets; lowering it raises memory pressure and therefore preemptions.
 
 ### Prefix hit rate near 0%
 

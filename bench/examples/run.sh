@@ -121,6 +121,10 @@ run_example() {
         --network-backend "$NETWORK_BACKEND"
     )
 
+    if [[ -n "${NPU_MEMORY_UTILIZATION:-}" ]]; then
+        cmd+=(--npu-memory-utilization "$NPU_MEMORY_UTILIZATION")
+    fi
+
     echo "============================================================"
     echo "Example: $model_dir"
     echo "Dataset: $dataset_cli"

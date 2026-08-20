@@ -41,7 +41,7 @@ cluster configs cover the major features:
 | If you touched... | Run scenario |
 | --- | --- |
 | `scheduler.py` (any path) | `single_node_single_instance.json` |
-| Prefix caching, RadixCache | `single_node_multi_instance.json` with `--enable-prefix-sharing` |
+| Prefix caching, block pool | `single_node_multi_instance.json` with `--enable-prefix-sharing` |
 | KV cache, eviction, memory model | `single_node_memory_instance.json` |
 | Multi-instance routing | `single_node_multi_instance.json` |
 | Prefill / decode disaggregation | `single_node_pd_instance.json` |

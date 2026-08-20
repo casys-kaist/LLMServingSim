@@ -25,6 +25,8 @@ volunteered their effort to make LLMServingSim better for everyone. 🙏
   - Non-DP multi-instance collective scoping ([#39](https://github.com/casys-kaist/LLMServingSim/pull/39))
   - Run-isolated ASTRA-Sim input paths ([#43](https://github.com/casys-kaist/LLMServingSim/pull/43))
   - KV eviction/reload accounting ([#48](https://github.com/casys-kaist/LLMServingSim/pull/48))
+  - Clean up intermediate ASTRA-Sim inputs to save storage ([#51](https://github.com/casys-kaist/LLMServingSim/pull/51))
+  - Fix argument shadowing in `serving/__main__.py` ([#53](https://github.com/casys-kaist/LLMServingSim/pull/53))
 - **[@Veilwalker](https://github.com/Veilwalker)**
   - Avoid duplicate prefix-cache hit accounting under chunked prefill ([#49](https://github.com/casys-kaist/LLMServingSim/pull/49))
 - **[@zsxh1990](https://github.com/zsxh1990)**
@@ -32,8 +34,22 @@ volunteered their effort to make LLMServingSim better for everyone. 🙏
   - Generalized PIM latency model for arbitrary architectures ([#45](https://github.com/casys-kaist/LLMServingSim/pull/45))
 - **[@shermanjlim](https://github.com/shermanjlim)**
   - `avail_size()` overestimation and `storage_cache_evicted_req` fixes ([#29](https://github.com/casys-kaist/LLMServingSim/pull/29))
+- **[@Snowfall99](https://github.com/Snowfall99)**
+  - Fix simulator docs pagination ([#56](https://github.com/casys-kaist/LLMServingSim/pull/56))
+- **[@hsule](https://github.com/hsule)**
+  - Fix stale `--dtype float16` in `run.sh` and the docs examples ([#57](https://github.com/casys-kaist/LLMServingSim/pull/57))
 - **[@gleb-kun](https://github.com/gleb-kun)**
   - Fix missing return value in the profiler's argument parser ([#22](https://github.com/casys-kaist/LLMServingSim/pull/22))
+- **[@hu-op1](https://github.com/hu-op1)**
+  - Accuracy boundary report against vLLM V1, which set the direction the KV cache
+    and scheduler were rebuilt in ([#40](https://github.com/casys-kaist/LLMServingSim/issues/40))
+- **[@Arifuzzamanjoy](https://github.com/Arifuzzamanjoy)**
+  - Consumer-class GPU profile bundles with an end-to-end vLLM comparison on an
+    RTX 4090 ([#58](https://github.com/casys-kaist/LLMServingSim/issues/58),
+    [#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
+- **[@bui-thanh-lam](https://github.com/bui-thanh-lam)**
+  - Model-architecture YAML documentation had drifted from the schema
+    ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52))
 
 If you have contributed and are not listed here, or you'd like your entry
 updated, please open a pull request or
@@ -45,9 +61,14 @@ recognized.
 The base layerwise-profile methodology in `profiler/` is adapted from
 [@waneon](https://github.com/waneon). LLMServingSim builds on
 [ASTRA-Sim](https://github.com/astra-sim/astra-sim) and
-[Chakra](https://github.com/mlcommons/chakra), and was inspired in part by
-[vLLM](https://github.com/vllm-project/vllm) and
-[SGLang](https://github.com/sgl-project/sglang).
+[Chakra](https://github.com/mlcommons/chakra).
+
+The KV cache is a port of [vLLM](https://github.com/vllm-project/vllm)'s block
+pool — per-tier free-block queues, chained block hashes, eviction as a side
+effect of allocation — and the scheduler follows vLLM V1's two-phase
+`schedule()`. Before that, prefix caching was built on a radix tree adapted from
+[SGLang](https://github.com/sgl-project/sglang), which served the project through
+several releases.
 
 ---
 

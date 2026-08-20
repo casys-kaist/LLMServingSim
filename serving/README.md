@@ -20,7 +20,8 @@ serving/                        Python package
 │   ├── power_model.py          power / energy estimation
 │   ├── pim_model.py            PIM device model
 │   ├── request.py              Request / Batch data classes
-│   ├── radix_tree.py           prefix-cache radix tree (from SGLang)
+│   ├── block_pool.py           per-tier KV block pool + prefix-cache index
+│   ├── kv_cache_manager.py     tiered KV cache manager (block hashing, allocation)
 │   ├── logger.py               Rich-based logger + stdio capture
 │   └── utils.py                model config loading, formatting helpers
 └── run.sh                      example invocations across cluster configs
@@ -110,15 +111,30 @@ Custom). `COPY` (default) enables block copy optimization. Provides EP-aware rou
 `route_ep()` with even expert-to-rank partitioning for per-rank latency lookup.
 
 ### `memory_model.py`
-Tracks NPU, CPU, and CXL memory usage. Manages KV cache block allocation and the RadixCache
-for prefix caching. Contains `calculate_sizes(parallel=)` and `get_weight` for per-layer
-tensor size computation. The `parallel` parameter is TP degree for dense layers and EP degree
-for MoE experts. MoE expert weights are sharded by `ep_size`. Modify these when adding a new
-model architecture.
+Static sizing math plus a byte-level view over the block pools. Contains
+`calculate_sizes(parallel=)` and `get_weight` for per-layer tensor size computation — the
+`parallel` parameter is TP degree for dense layers and EP degree for MoE experts, and MoE
+expert weights are sharded by `ep_size`. Modify these when adding a new model architecture.
+Sizes the NPU KV cache the way vLLM does: `npu_mem.mem_size * npu_mem.mem_util - weight`, then
+divided into blocks. `npu_used` / `cpu_used` are properties derived from the pools, so there
+is exactly one ledger per tier.
 
-### `radix_tree.py`
-Radix tree data structure for token-level prefix matching, used by the prefix cache. Ported
-from SGLang.
+### `block_pool.py`
+One `BlockPool` per memory tier (NPU / CPU / CXL): a doubly linked free list in eviction
+order, a `block_hash -> block` index, and a refcount per block. Port of vLLM v0.19.0's
+`vllm/v1/core/block_pool.py`. `num_free_blocks` is exact, so an allocation either succeeds or
+reports failure in the same call. Eviction is a silent side effect of allocation, and a freed
+block goes to the queue *tail* so it is reused last — which is what lets a just-preempted
+request find its blocks again.
+
+### `kv_cache_manager.py`
+`TieredKVCacheManager`: per-request NPU block tables, the tier lookup, and the transfer
+accounting. Block hashes are chained once at the NPU block size
+(`hash(parent_hash, block_tokens)`); a lower tier whose blocks are N times larger keys on
+every Nth hash of the same chain, so all tiers share one key space and a single walk yields
+both the NPU hit and the lower-tier hit. Recall from a lower tier is charged; the
+write-through is reported for energy only, matching vLLM's `OffloadingConnector`, which
+defers it to the next engine step on a dedicated stream.
 
 ### `trace_generator.py`
 Core performance estimator. Loads the profiler's per-category CSVs under
@@ -131,12 +147,13 @@ yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's
   tables and sequence order.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation
-  (dense/per_sequence), 4D nearest-neighbour-on-(prefill_chunk,n_decode) plus
-  bilinear on (kv_prefill, kv_decode) for attention, and 2D for MoE.
+  (dense/per_sequence), 4D linear for attention (each of
+  prefill_chunk / kv_prefill / n_decode / kv_decode bracketed by its two
+  neighbouring profiled values and blended linearly), and 2D for MoE.
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
-  the attention kernel: two 4D lookups (at the batch's mean and max
-  decode kv) blended via a bucket-specific alpha resolved from
-  `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
+  the attention kernel: a lookup at the batch's mean decode kv, blended
+  toward a second lookup at its max only when a non-zero bucket-specific
+  alpha applies, resolved from `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
   `pc` used raw) are read from meta so the simulator automatically
   picks up whatever resolution the profiler ended up with. When meta
   predates the skew_fit block a pooled fallback constant is used —

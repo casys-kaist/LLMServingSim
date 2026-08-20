@@ -120,7 +120,8 @@ section:
 | `request.py` | `Request` and `Batch` data classes | [Request lifecycle](./request-lifecycle) |
 | `router.py` | Cross-instance routing, agentic dependency chains | [Request lifecycle](./request-lifecycle) |
 | `scheduler.py` | Per-instance vLLM-style continuous batching | [Continuous batching](./scheduling/continuous-batching) |
-| `radix_tree.py` | RadixCache for prefix caching | [Prefix caching](./scheduling/prefix-caching) |
+| `block_pool.py` | Per-tier KV block pool + prefix-cache index | [Prefix caching](./scheduling/prefix-caching) |
+| `kv_cache_manager.py` | Tiered KV cache manager (block hashing, allocation) | [Prefix caching](./scheduling/prefix-caching) |
 | `memory_model.py` | KV cache and weight memory accounting | [KV cache & memory](./scheduling/kv-cache-and-memory) |
 | `trace_generator.py` | Per-layer trace from profile CSVs | [Trace generation](./trace-generation) |
 | `graph_generator.py` | Chakra `.et` emitter | [Trace generation](./trace-generation) |
@@ -198,7 +199,7 @@ they show up in multiple pages:
   tool call to elapse before releasing the next sub-request.
 - **`Scheduler.memory: MemoryModel`**: per-instance NPU + CPU
   memory tracker, including the per-instance NPU prefix cache.
-- **Shared CPU/CXL `RadixCache`**: second-tier prefix pool. Optional
+- **Shared CPU/CXL `BlockPool`**: second-tier prefix pool. Optional
   (`--enable-prefix-sharing`); when enabled, all instances on a node
   share one tree.
 - **`dp_pending` (in `__main__.py`)**: per-DP-group barrier dict
