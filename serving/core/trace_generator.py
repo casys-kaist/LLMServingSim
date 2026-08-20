@@ -603,22 +603,24 @@ def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
 # ---------------------------------------------------------------------------
 # When the runtime batch has heterogeneous decode kv lengths, the
 # profiled 4D grid (which carries one kv_decode value per shot) can
-# only tell us the uniform-mean latency. Empirically that's faster
-# than a truly skewed batch, because FlashAttention's varlen kernel
-# suffers tile padding + SM-imbalance costs that the uniform-mean
-# measurement misses.
+# only tell us the uniform-batch latency. ``kv_decode_mean`` is the
+# right coordinate to ask it for: decode attention cost tracks the
+# total KV read Sigma_k, and a uniform batch at the arithmetic mean has
+# ``n * mean(k) = Sigma_k`` exactly. The median would not — the runtime
+# kv distribution is right-skewed (measured ``kv_max/kv_mean`` p50 =
+# 2.61 on the ShareGPT replay), so a median anchor would understate the
+# read volume. The profiler uses the same definition (``skew.py``:
+# ``kv_mean = total_kv // n``).
 #
-# The skew profile (profiler/.../tp<N>/skew.csv + the fitted
-# ``skew_fit`` block in meta.yaml, with the bucket alpha table spilled
-# to ``tp<N>/skew_fit.csv``) captures this as a 5-axis lookup table of
+# A truly skewed batch is slightly *slower* than that uniform anchor,
+# because FlashAttention's varlen kernel pays tile padding and
+# SM-imbalance costs the uniform measurement misses. The skew profile
+# (profiler/.../tp<N>/skew.csv + the fitted ``skew_fit`` block in
+# meta.yaml, with the bucket alpha table spilled to
+# ``tp<N>/skew_fit.csv``) captures that as a 5-axis lookup table of
 # alpha values where
 #
 #     t_skew = t_mean + alpha * (t_max - t_mean)
-#
-# With alpha=0 (the pre-correction behaviour) the simulator
-# systematically under-predicts attention latency by 5-10%, which
-# compounds across every batch in a session into noticeable TTFT /
-# TPOT drift vs. vLLM.
 #
 # Lookup is resolved per-batch via ``_skew_alpha``. The bin edges and
 # labels come from ``meta.yaml::skew_fit.bucket_axes`` so the profiler
@@ -626,7 +628,19 @@ def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
 # coordinated code change here. The ``_DEFAULT_SKEW_AXES`` block below
 # is used as a fallback only when the meta predates that field (which
 # is why its shape still matches the original hard-coded scheme).
-_ATTN_SKEW_ALPHA_FALLBACK: float = 0.093
+#
+# The fallback, used when a bundle carries no skew profile at all, is
+# **0**: apply no correction you have not measured. It used to be
+# 0.093, a constant no bundle in the repo reproduces — the measured
+# pooled value for Llama-3.1-8B on RTXPRO6000 is 0.0543, and resolving
+# a saturated RTX 4090 run's own batches against that bucket table
+# gives alpha p50 0.059. A scalar cannot serve this parameter anyway:
+# the endpoint gap ``(t_max - t_mean) * num_layers`` is ~12.6 ms on a
+# ~29 ms iteration, so each 0.1 of alpha is ~4.3% of iteration time and
+# alpha would have to be known to +/-0.023 to keep attention within 1%.
+# Profile skew if you need the correction; guessing it is worse than
+# omitting it.
+_ATTN_SKEW_ALPHA_FALLBACK: float = 0.0
 
 _DEFAULT_SKEW_AXES: dict = {
     "n_bins": (0, 2, 4, 8, 16, 32, 64, 128, 1_000_000),
@@ -1492,6 +1506,9 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 # ======================================================================
 
 # Wrapper function that creates trace for an instance
+
+
+
 def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_type=None, node_id=0, instance_id=0,
                    max_num_batched_tokens=2048, max_num_seqs=None,
                    placement={}, block_mode_on=False, expert_routing_policy="BALANCED",
