@@ -93,7 +93,7 @@ FlashAttention-varlen skew correction:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SKIP_SKEW` | unset | Set to `1` to skip the skew sweep entirely. Simulator falls back to a pooled constant alpha |
+| `SKIP_SKEW` | unset | Set to `1` to skip the skew sweep entirely. The simulator then applies no skew correction (`alpha = 0`) |
 | `ONLY_SKEW` | unset | Set to `1` to run **only** the skew step, leaving dense / per_seq / attention / moe untouched. Useful for refreshing `skew.csv` |
 | `SKEW_N_FACTOR` | `2.0` | `n` (total decodes) axis density. Higher = fewer shots |
 | `SKEW_PC_FACTOR` | `2.0` | `pc` (prefill chunk) axis |

@@ -92,8 +92,19 @@ has its own lookup function:
 | --- | --- | --- | --- |
 | `dense` | `_lookup_dense` | `total_len` (sum of tokens in batch) | 1D linear |
 | `per_sequence` | `_lookup_per_sequence` | `num_requests` | 1D linear |
-| `attention` | `_lookup_attention` | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` | nearest-neighbour on `(pc, n_dec)`, bilinear on `(kv_pre, kv_dec)` |
+| `attention` | `_lookup_attention` | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` | 4D linear (bracket + blend on each axis) |
 | `moe` | `_lookup_moe` | `(local_tokens, activated_experts)` (per rank, profiled at TP=1) | 2D linear |
+
+Every axis is bracketed by its two neighbouring profiled values and
+blended on a **linear** scale, even though the profiler sweeps each
+axis geometrically. Those are separate choices: the grid spacing
+decides where the kernel is sampled, the blend decides how two
+samples are combined, and the kernel is linear in each axis --
+profiled decode attention fits `time_us = a + b * (n_decode *
+kv_decode)` with R² = 1.0000, at an implied rate within a few percent
+of the card's memory bandwidth, i.e. a pure KV-cache read. Blending a
+per-axis-linear function in log space would bias every estimate
+upward by up to +6.0% per axis on a doubling grid.
 
 All lookups **extrapolate** outside the profiled grid (via linear
 extension), so a runtime value larger than the largest profiled
@@ -136,8 +147,8 @@ costs when a decode batch has non-uniform KV lengths. The plain
 attention grid can't see that, it's profiled with uniform
 `kv_decode` per shot. So the profiler runs a **second sweep** on
 bimodal batches (`skew.csv`) and fits a per-bucket
-**alpha** ∈ [0, 1] that says how far along the mean→max line a
-skewed batch lands:
+**alpha** that says how far along the mean→max line a skewed batch
+lands:
 
 ```
 alpha = (t_skew - t_mean) / (t_max - t_mean)
@@ -164,8 +175,24 @@ The bucket axis definitions live in
 `meta.yaml::skew_fit.bucket_axes`, so widening the profile sweep
 lights up finer resolution without any simulator code change.
 
+`alpha` is nominally the fraction of the way from `t_mean` to
+`t_max`, but nothing constrains the fit to `[0, 1]` and the measured
+values do leave it: across ~13k raw shots for Llama-3.1-8B, alpha runs
+well outside that interval and is negative in roughly one shot in six,
+because a skewed batch is sometimes genuinely faster than a uniform
+batch at the same mean.
+
+`t_mean` is looked up at `kv_decode_mean`, the **arithmetic** mean, not
+the median: attention cost tracks the total KV read `Σk`, and a uniform
+batch at the arithmetic mean has `n × mean(k) = Σk` exactly. The
+profiler uses the same definition.
+
 If the skew sweep wasn't run (`SKIP_SKEW=1` at profile time), the
-simulator falls back to a pooled constant alpha. The profile angle
+simulator applies **no** correction (`alpha = 0`, i.e. `t_mean`). That
+is deliberate: the gap between the two blend endpoints is a large
+fraction of an iteration, so alpha has to be known to a couple of
+hundredths to be worth applying, and a borrowed constant is worse than
+omitting the term. Profile skew if you need it. The profile angle
 of skew correction is documented on
 **[Profiler → Skew & alpha fit](/docs/profiler/skew-alpha-fit)**.
 

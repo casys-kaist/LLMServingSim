@@ -76,6 +76,35 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `MemoryModel` exists.
 
 ### Changed
+- The attention grid is interpolated on a **linear** scale instead of in log
+  space (`_axis_bracket`). The profiler sweeps every axis geometrically, which
+  made log space look like the matching choice, but grid spacing decides where
+  the kernel is sampled while the blend decides how two samples are combined —
+  and the kernel is linear in each axis. Profiled decode attention fits
+  `time_us = a + b * (n_decode * kv_decode)` with R^2 = 1.0000, at an implied
+  rate within a few percent of the card's memory bandwidth, i.e. a pure
+  KV-cache read. Blending a per-axis-linear function in log space is
+  convex-biased upward by up to +6.0% per axis on a doubling grid. Validated
+  model-free: predicting each profiled grid point from its two neighbours and
+  comparing against what the GPU reported puts log space at +11.6% to +14.4%
+  mean error against +2.3% to +3.7% for linear, with linear ahead on all four
+  axes, across every bundle in `profiler/perf/`. End-to-end against the three
+  recorded vLLM runs in `bench/examples/`, TPOT improves on all 15 of 15
+  metrics and end-to-end latency on 13 of 15.
+- With no skew profile at all, the simulator now applies **no** skew
+  correction (`_ATTN_SKEW_ALPHA_FALLBACK` 0.093 -> 0, i.e. `t_mean`) instead of
+  a borrowed constant. Bundles that carry a real `skew_fit` still resolve alpha
+  per bucket and are unaffected. The two blend endpoints are far apart
+  (`t_max / t_mean` median ~1.5, p90 ~3.7), so each 0.1 of alpha is several
+  percent of attention time and alpha has to be known to a couple of
+  hundredths to be worth applying. Alpha is also not bounded to `[0, 1]`: over
+  ~13k raw shots where `t_mean`, `t_max` and `t_skew` are each measured
+  directly on the GPU, it runs well outside that interval and is negative in
+  roughly one shot in six, because a skewed batch is sometimes genuinely
+  faster than a uniform batch at the same mean. `t_mean` is looked up at the
+  **arithmetic** mean `kv_decode_mean`, not a median: attention cost tracks the
+  total KV read, and a uniform batch at the arithmetic mean reproduces it
+  exactly.
 - `Scheduler` now follows vLLM V1's `schedule()`: a persistent `self.running`
   set is served first, preempting only from its own tail, then `self.waiting` is
   admitted while budget and sequence slots remain. Admission never preempts, and
@@ -164,6 +193,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   lifetime.
 
 ### Fixed
+- `outputs/*` (except the committed `outputs/example_*.csv`) and
+  `astra-sim/inputs/runs/` are now gitignored. `AGENTS.md` claimed output CSVs
+  and generated traces already were; they were not, so scratch from every run
+  accumulated in `git status`, and `--no-cleanup-inputs` could leave gigabytes
+  of ASTRA-Sim inputs behind.
+- Documentation corrections: the attention lookup was described as
+  "nearest-neighbour on `(prefill_chunk, n_decode)`" when it has always
+  bracketed and interpolated both axes; the trace file was described as
+  tab-separated when `utils.py::_FMT` emits fixed-width space-padded columns;
+  and the `SKIP_SKEW=1` fallback alpha was documented as "roughly 0.3 across
+  observed hardware", a figure no bundle in the repo reproduces.
 - P/D disaggregation shipped 3x too much KV. `convert_prefill` took the
   per-layer SEND/RECV size from the `*v_proj` layer's `output_size`, i.e. the
   whole QKV activation, so it transferred Q as well — a factor of

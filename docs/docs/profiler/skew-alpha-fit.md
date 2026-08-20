@@ -170,13 +170,22 @@ better at p90, because the 5-axis bucket scheme captures the
 
 | Variable | Effect |
 | --- | --- |
-| `SKIP_SKEW=1` | Skip the entire skew step. No `skew.csv` or `skew_fit.csv` produced. The simulator falls back to a **pooled constant alpha** at run time |
+| `SKIP_SKEW=1` | Skip the entire skew step. No `skew.csv` or `skew_fit.csv` produced. The simulator then applies **no skew correction** (`alpha = 0`) |
 | `ONLY_SKEW=1` | Run only the skew step, leaving `dense / per_seq / attention / moe` untouched. Useful for refreshing skew after axis-density changes |
 
-The pooled constant alpha fallback is roughly 0.3 across observed
-hardware. Without skew correction, predictions skew (heh) low by
-single-digit percent on heterogeneous-decode workloads, usually
-fine for first-pass sanity checks.
+With no fit at all the simulator uses `alpha = 0`, i.e. `t_mean`
+straight from the uniform grid. That under-predicts heterogeneous-decode
+attention by a few percent -- measured `t_skew / t_mean` is about 1.03 at
+saturated-decode batch shapes -- which is usually fine for a first-pass
+sanity check.
+
+It is deliberately not a borrowed constant. The two blend endpoints are
+far apart (`t_max / t_mean` has a median around 1.5 and a p90 near 3.7),
+so each 0.1 of alpha is several percent of attention time and alpha has
+to be known to a couple of hundredths to be worth applying. A constant
+carried over from other hardware is worse than omitting the term.
+Within a fit, buckets with no samples do fall back to that fit's own
+pooled `alpha_default`, which is measured on the same GPU.
 
 ## Gotchas
 

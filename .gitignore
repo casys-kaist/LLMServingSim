@@ -12,6 +12,14 @@ __pycache__/
 # Ignore bench results
 bench/results/
 
+# Ignore scratch simulation output. The committed example runs under
+# outputs/example_*.csv stay tracked; everything else in outputs/ is
+# per-run scratch. ASTRA-Sim regenerates its inputs on every run, and
+# --no-cleanup-inputs can leave gigabytes of them behind.
+outputs/*
+!outputs/example_*.csv
+astra-sim/inputs/runs/
+
 # AI agent cache files
 .claude/
 .codex/

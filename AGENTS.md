@@ -201,9 +201,14 @@ along the mean→max line a skewed batch lands.
   `rel_err_p50/p90/p99`, `signed_mean`, `bucket_table` pointer). This
   turns meta.yaml from ~3100 lines into ~100 lines per variant. The
   simulator hydrates the CSV back into memory on `_load_perf_db()`.
-- **Disable**: `SKIP_SKEW=1` skips the sweep entirely (simulator falls
-  back to a pooled constant alpha). `ONLY_SKEW=1` skips every other
-  category and refreshes just `skew.csv` + `skew_fit.csv`.
+- **Disable**: `SKIP_SKEW=1` skips the sweep entirely, and the simulator
+  then applies **no** skew correction (`_ATTN_SKEW_ALPHA_FALLBACK = 0`,
+  i.e. `t_mean`). Deliberately not a borrowed constant: the endpoint gap
+  `(t_max - t_mean)` is a large fraction of an iteration, so alpha has to
+  be known to ~±0.02 to be worth applying. Buckets with no samples
+  *inside* a real fit still fall back to that fit's own pooled
+  `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
+  other category and refreshes just `skew.csv` + `skew_fit.csv`.
 
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
@@ -243,9 +248,9 @@ each iteration. Composable helpers:
   the variant folder, load meta.yaml, load per-category CSVs, and attach the
   architecture catalog + sequence.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
-  `_lookup_moe()` — category-specific lookups. Attention uses 4D lookup
-  (nearest-neighbour on `prefill_chunk, n_decode`, bilinear on
-  `kv_prefill, kv_decode`).
+  `_lookup_moe()` — category-specific lookups. Attention is a 4D lookup:
+  each axis is bracketed by its two neighbouring profiled values and
+  blended **linearly** (`_axis_bracket`).
 - `_emit_sequence()` — walks a list of canonical names from the yaml, attaches
   TP ALLREDUCE to `o_proj`/`down_proj`, swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
@@ -257,7 +262,9 @@ each iteration. Composable helpers:
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
 
 ### Trace file format
-Each trace is a tab-separated text file consumed by the Chakra converter:
+Each trace is a whitespace-aligned text file consumed by the Chakra converter
+(fixed-width columns from `utils.py::_FMT`; the converter splits on any
+whitespace):
 
 ```
 COLOCATED		model_parallel_NPU_group: {npu_group}
@@ -286,11 +293,24 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
 ### Performance DB and latency lookup
 The simulator loads per-category CSVs via `_load_perf_db()` and dispatches
 lookups by catalog category: `_lookup_dense` (1D linear over tokens),
-`_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D:
-nearest-neighbour on `(prefill_chunk, n_decode)` + bilinear on `(kv_prefill,
-kv_decode)`), and `_lookup_moe` (2D over `(tokens, activated_experts)`,
-profiled at tp=1). All lookups extrapolate (time_us is linearly
-extended) rather than clamping. Latencies are stored as microseconds in the
+`_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D
+linear over `(prefill_chunk, kv_prefill, n_decode, kv_decode)`), and
+`_lookup_moe` (2D over `(tokens, activated_experts)`, profiled at tp=1).
+All lookups extrapolate (time_us is linearly extended) rather than
+clamping.
+
+`_axis_bracket` blends on a **linear** scale, not in log space, even
+though the profiler sweeps every axis geometrically. Grid spacing decides
+where the kernel is sampled; the blend decides how two samples are
+combined; the kernel is linear in each axis. Profiled decode attention
+fits `time_us = a + b * (n_decode * kv_decode)` with R^2 = 1.0000 (RTX
+4090 / Llama-3.1-8B, implied 953 GB/s = 95% of spec — a pure
+KV-bandwidth read). Log blending of a per-axis-linear function is
+convex-biased upward by up to +6.0% per axis on a doubling grid, and
+leave-one-out over the measured grid puts it at +11.6% to +14.4% mean
+error against +2.3% to +3.7% for linear, across every bundle in
+`profiler/perf/`. Don't "restore" log space because the sweep is
+geometric. Latencies are stored as microseconds in the
 CSVs and converted to nanoseconds at load time. No calibration scaling —
 profiled latencies are used directly.
 
@@ -570,7 +590,10 @@ No dedicated unit-test suite. Validate by:
 
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs)
-- **Don't commit large files**: generated traces, output CSVs, `.et` files are gitignored
+- **Don't commit large files**: generated traces, `.et` files and scratch run
+  output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
+  `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
+  pass `--no-cleanup-inputs`, which can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes
