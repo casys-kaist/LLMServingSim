@@ -41,18 +41,15 @@ volunteered their effort to make LLMServingSim better for everyone. 🙏
 - **[@gleb-kun](https://github.com/gleb-kun)**
   - Fix missing return value in the profiler's argument parser ([#22](https://github.com/casys-kaist/LLMServingSim/pull/22))
 - **[@hu-op1](https://github.com/hu-op1)**
-  - Accuracy boundary report: throughput and queue depth diverge under severe
-    overload ([#40](https://github.com/casys-kaist/LLMServingSim/issues/40)). It
-    traced the divergence to the scheduler's bulk-eviction loop and compared it
-    against vLLM V1 point by point — incremental admission,
-    preempt-one-and-retry, a hard break on the running cap. That analysis held
-    up, and it is the direction the KV cache and scheduler were rebuilt in.
+  - Accuracy boundary report against vLLM V1, which set the direction the KV cache
+    and scheduler were rebuilt in ([#40](https://github.com/casys-kaist/LLMServingSim/issues/40))
 - **[@Arifuzzamanjoy](https://github.com/Arifuzzamanjoy)**
-  - Consumer-class GPU profile bundles, with an end-to-end vLLM comparison on a
-    rented RTX 4090 ([#58](https://github.com/casys-kaist/LLMServingSim/issues/58),
-    [#59](https://github.com/casys-kaist/LLMServingSim/pull/59)). Profiling on a
-    24 GB card was the first time the simulator ran under real KV pressure, which
-    is what surfaced how far the eviction path had drifted.
+  - Consumer-class GPU profile bundles with an end-to-end vLLM comparison on an
+    RTX 4090 ([#58](https://github.com/casys-kaist/LLMServingSim/issues/58),
+    [#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
+- **[@bui-thanh-lam](https://github.com/bui-thanh-lam)**
+  - Model-architecture YAML documentation had drifted from the schema
+    ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52))
 
 If you have contributed and are not listed here, or you'd like your entry
 updated, please open a pull request or

@@ -24,7 +24,7 @@ without `--enable-attn-offloading`**.
 
 - Simulator container set up
 - Bundled RTXPRO6000 profile for `meta-llama/Llama-3.1-8B`
-- A PIM device config (`configs/pim/DDR4_8GB_3200_pim/`); the
+- A PIM device config (`configs/pim/DDR4_8GB_3200_pim.ini`); the
   bundled `single_node_pim_instance.json` already references it
 
 ## Cluster config

@@ -193,6 +193,30 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   lifetime.
 
 ### Fixed
+- **Model-architecture YAML docs matched the code again**
+  ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52)). The
+  `adding-model-architecture` page documented `cls:`, `category:`,
+  `tp_collective:` and `ep_collective:` — none of which exist. `LayerEntry`
+  is `extra="forbid"`, so the documented example was rejected with 13
+  validation errors; nobody could follow the page. The real schema is
+  `vllm:` for the class name, profile kind as the *catalog block* a layer
+  sits in, and `within:`/`tp_stable:` as the only other fields. `within:`
+  was missing entirely, which is what the report called out: it is the
+  ancestor-class filter that lets one `RMSNorm` entry serve the input,
+  post-attention and final norms. Also corrected: `attention` is listed
+  explicitly in `sequence.pre_attn` rather than implicit, `lm_head` maps to
+  `LogitsProcessor` not `ParallelLMHead`, Llama 3 uses
+  `Llama3RotaryEmbedding`, and the MoE catalog names the sparse block
+  (`Qwen3MoeSparseMoeBlock`) not `FusedMoE`. The page's example is now
+  checked against the pydantic models.
+- Doc/code alignment sweep: `_lookup_attention_with_skew` was described as
+  always doing "two 4D lookups" in five places (AGENTS.md, `serving/README.md`,
+  its own docstring, and two docs pages) when the second lookup is
+  conditional — it returns `t_mean` after one lookup for `n_decode <= 1`, for
+  a batch whose decode kv lengths are equal, or for `alpha == 0`, which is now
+  the default without a skew profile. Also fixed the `Workload.cc` path
+  (`system/` -> `workload/`) and the PIM config paths, which pointed at
+  directories where `configs/pim/*.ini` are files.
 - `outputs/*` (except the committed `outputs/example_*.csv`) and
   `astra-sim/inputs/runs/` are now gitignored. `AGENTS.md` claimed output CSVs
   and generated traces already were; they were not, so scratch from every run

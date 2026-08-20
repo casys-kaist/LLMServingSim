@@ -314,9 +314,13 @@ geometric. Latencies are stored as microseconds in the
 CSVs and converted to nanoseconds at load time. No calibration scaling —
 profiled latencies are used directly.
 
-Attention with skew correction: `_lookup_attention_with_skew` does two 4D
-lookups (at `kv_decode_mean` and `kv_decode_max`) and blends them using
-`alpha` resolved from `meta.yaml::skew_fit` by `_skew_alpha`. The bucket key
+Attention with skew correction: `_lookup_attention_with_skew` looks up at
+`kv_decode_mean` and, only when a non-zero `alpha` applies, blends toward a
+second lookup at `kv_decode_max`. `alpha` is resolved from
+`meta.yaml::skew_fit` by `_skew_alpha`, and the function returns `t_mean`
+after a single lookup for `n_decode <= 1`, for a batch whose decode kv
+lengths are all equal, or for `alpha == 0` (the default with no skew
+profile). The bucket key
 is `pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, built against
 `skew_fit.bucket_axes` from the meta (falling back to module defaults for
 older profiles). `_hydrate_skew_fit_tables()` reads each TP's `skew_fit.csv`

@@ -153,9 +153,10 @@ profile DB:
 - Dense layers (qkv, mlp, etc.) → 1D linear lookup over `total_len`.
 - Per-sequence layers (`lm_head`, `sampler`) → 1D over
   `num_requests`.
-- Attention → 4D nearest-neighbour + bilinear over
+- Attention → 4D linear over
   `(prefill_chunk, kv_prefill, n_decode, kv_decode)`. Skew correction
-  blends two lookups using a per-bucket `alpha`.
+  blends toward a second lookup using a per-bucket `alpha`, when one
+  applies.
 - MoE → 2D over `(local_tokens, activated_experts)`, profiled at
   TP=1.
 

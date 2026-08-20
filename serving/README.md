@@ -147,12 +147,13 @@ yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's
   tables and sequence order.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation
-  (dense/per_sequence), 4D nearest-neighbour-on-(prefill_chunk,n_decode) plus
-  bilinear on (kv_prefill, kv_decode) for attention, and 2D for MoE.
+  (dense/per_sequence), 4D linear for attention (each of
+  prefill_chunk / kv_prefill / n_decode / kv_decode bracketed by its two
+  neighbouring profiled values and blended linearly), and 2D for MoE.
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
-  the attention kernel: two 4D lookups (at the batch's mean and max
-  decode kv) blended via a bucket-specific alpha resolved from
-  `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
+  the attention kernel: a lookup at the batch's mean decode kv, blended
+  toward a second lookup at its max only when a non-zero bucket-specific
+  alpha applies, resolved from `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
   `pc` used raw) are read from meta so the simulator automatically
   picks up whatever resolution the profiler ended up with. When meta
   predates the skew_fit block a pooled fallback constant is used —

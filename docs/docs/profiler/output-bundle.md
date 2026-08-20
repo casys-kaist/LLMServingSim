@@ -109,10 +109,9 @@ prefill_chunk,kv_prefill,n_decode,kv_decode,time_us
 | `kv_decode` | KV cache history length the decode requests attend to |
 | `time_us` | Measured attention kernel latency |
 
-Simulator does:
-
-- **Nearest-neighbour** on `(prefill_chunk, n_decode)` (discrete axes)
-- **Bilinear interpolation** on `(kv_prefill, kv_decode)` (continuous)
+Simulator does **4D linear interpolation**: each of the four axes is
+bracketed by its two neighbouring profiled values and blended
+linearly, extrapolating from the top two samples above the grid.
 
 The grid is geometric (doubling by default, controlled by
 `ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR`). Smaller values

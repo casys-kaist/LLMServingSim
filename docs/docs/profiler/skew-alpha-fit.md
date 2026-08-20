@@ -34,7 +34,7 @@ The naive interpolation `t = t(mean_kv)` underestimates the skewed
 case (38 µs predicted vs. 47 µs actual). Using `t(max_kv)` would
 overestimate (52 µs vs. 47 µs).
 
-## The fix: blend two lookups using a per-bucket alpha
+## The fix: blend toward a second lookup using a per-bucket alpha
 
 For every shape of skewed batch, we measure the actual latency
 **plus** what the uniform-mean and uniform-max latencies would be at
@@ -66,8 +66,10 @@ t_predicted = t_mean_lookup(batch.kv_decode_mean)
                                     - t_mean_lookup(batch.kv_decode_mean))
 ```
 
-The simulator does **two** 4D attention lookups and blends them.
-That's `_lookup_attention_with_skew` in `serving/core/trace_generator.py`.
+That's `_lookup_attention_with_skew` in
+`serving/core/trace_generator.py`. It looks the batch up at its mean
+decode kv and blends toward a second lookup at the max only when a
+non-zero alpha applies -- otherwise the mean lookup is returned as is.
 
 ## Sweep structure (`skew.csv`)
 
@@ -175,17 +177,10 @@ better at p90, because the 5-axis bucket scheme captures the
 
 With no fit at all the simulator uses `alpha = 0`, i.e. `t_mean`
 straight from the uniform grid. That under-predicts heterogeneous-decode
-attention by a few percent -- measured `t_skew / t_mean` is about 1.03 at
-saturated-decode batch shapes -- which is usually fine for a first-pass
-sanity check.
-
-It is deliberately not a borrowed constant. The two blend endpoints are
-far apart (`t_max / t_mean` has a median around 1.5 and a p90 near 3.7),
-so each 0.1 of alpha is several percent of attention time and alpha has
-to be known to a couple of hundredths to be worth applying. A constant
-carried over from other hardware is worse than omitting the term.
-Within a fit, buckets with no samples do fall back to that fit's own
-pooled `alpha_default`, which is measured on the same GPU.
+attention by a few percent, which is usually fine for a first-pass
+sanity check. It is deliberately not a constant borrowed from other
+hardware. Within a fit, buckets with no samples do fall back to that
+fit's own pooled `alpha_default`, measured on the same GPU.
 
 ## Gotchas
 

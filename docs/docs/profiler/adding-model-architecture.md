@@ -49,132 +49,149 @@ page.
 
 ## YAML structure
 
-Each architecture YAML has two top-level sections:
+Each architecture YAML has two top-level sections, and nothing else
+(`extra="forbid"`, so a typo or a stray key fails validation at load
+time rather than silently doing nothing):
 
-- `catalog:`: maps canonical layer names to vLLM internal class
-  names. The profiler uses this to find the right module objects to
-  time.
 - `sequence:`: declares the order layers run in per iteration. The
   profiler emits one shot per sequence layer; the simulator's
   `trace_generator` walks the same list at trace time.
+- `catalog:`: binds canonical layer names to the vLLM class names the
+  CUDA profiler reports. Grouped into four blocks by profile kind.
 
 ### Minimal example: `llama.yaml`
 
 ```yaml
-catalog:
-  embedding:
-    cls: VocabParallelEmbedding
-    category: dense
-  layernorm:
-    cls: RMSNorm
-    category: dense
-    tp_stable: true
-  qkv_proj:
-    cls: QKVParallelLinear
-    category: dense
-  rotary_emb:
-    cls: RotaryEmbedding
-    category: dense
-  attention:
-    cls: Attention
-    category: attention
-  o_proj:
-    cls: RowParallelLinear
-    category: dense
-    tp_collective: ALLREDUCE
-  gate_up_proj:
-    cls: MergedColumnParallelLinear
-    category: dense
-  act_fn:
-    cls: SiluAndMul
-    category: dense
-  down_proj:
-    cls: RowParallelLinear
-    category: dense
-    tp_collective: ALLREDUCE
-  final_layernorm:
-    cls: RMSNorm
-    category: dense
-    tp_stable: true
-  lm_head:
-    cls: ParallelLMHead
-    category: per_sequence
-  sampler:
-    cls: Sampler
-    category: per_sequence
-    tp_stable: true
-
 sequence:
-  prologue:
-    - embedding
-    - layernorm                   # input rms_norm before block 0
-  pre_attn:
-    - layernorm
-    - qkv_proj
-    - rotary_emb
-  post_attn:
-    - o_proj
-    - layernorm                   # post_attention_layernorm
-  mlp_dense:
-    - gate_up_proj
-    - act_fn
-    - down_proj
-  head:
-    - final_layernorm
-    - lm_head
-    - sampler
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   []
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: LlamaDecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    rotary_emb:
+      vllm: Llama3RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: LlamaAttention
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+    act_fn:
+      vllm: SiluAndMul
+    down_proj:
+      vllm: RowParallelLinear
+      within: LlamaMLP
+    final_layernorm:
+      vllm: RMSNorm
+      within: LlamaForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention
 ```
 
-### `catalog` field reference
+### `catalog` structure
+
+The **profile kind is the block a layer sits in**, not a field on the
+layer. There are exactly four blocks, all optional:
+
+| Block | Sweep axis | CSV |
+| --- | --- | --- |
+| `dense` | `tokens` (batch total) | `dense.csv` |
+| `per_sequence` | `sequences` (request count) | `per_sequence.csv` |
+| `attention` | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` | `attention.csv` |
+| `moe` | `(tokens, activated_experts)` | `moe.csv` |
+
+### `catalog` entry fields
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `cls` | ✓ | vLLM class name (used to resolve the module object via attribute lookup) |
-| `category` | ✓ | One of `dense` / `per_sequence` / `attention` / `moe` |
-| `tp_stable` | optional | `true` if the layer's latency doesn't depend on TP degree (e.g., layernorms, sampler). The writer profiles once at TP=1 and replicates to other `tp<N>/` folders |
-| `tp_collective` | optional | If TP > 1, what collective fires after this layer: `ALLREDUCE` for `o_proj` and `down_proj`. Other layers don't need this |
+| `vllm` | ✓ | The vLLM **leaf class name** the CUDA profiler reports, e.g. `QKVParallelLinear`, `RMSNorm`, `Attention`. Not an attribute path |
+| `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` class appears more than once in the model. Matching rule: `node_class == vllm` **and** (`within` is unset **or** `within` appears among the node's ancestor classes) |
+| `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
+
+`within` is what makes `RMSNorm` usable three times over. Llama has an
+input layernorm and a post-attention layernorm inside
+`LlamaDecoderLayer`, plus a final norm on `LlamaForCausalLM` — all the
+same class. `within: LlamaDecoderLayer` catches the two block-level
+ones as `layernorm`, and `within: LlamaForCausalLM` catches the last as
+`final_layernorm`. The same trick separates `o_proj` (`RowParallelLinear`
+within `LlamaAttention`) from `down_proj` (the same class within
+`LlamaMLP`).
+
+The `(vllm, within)` pair has to be **globally unique** across the
+catalog; the loader rejects duplicates by design, because otherwise one
+profiled kernel would be credited to two canonical names.
+
+There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
+`o_proj` / `down_proj` and EP ALLTOALL around `moe` are attached by the
+simulator from the **cluster config**, not declared here.
 
 ### `sequence` section reference
 
 | Group | Runs | Notes |
 | --- | --- | --- |
-| `prologue` | Once at the start of each iteration | Embedding lookup + initial input layernorm |
-| `pre_attn` | Once per decoder block | qkv_proj + rotary_emb + (qk_norm if Qwen3) |
-| `post_attn` | Once per decoder block | o_proj + post_attention_layernorm |
+| `prologue` | Once at the start of each iteration | Embedding lookup |
+| `pre_attn` | Once per decoder block | Input layernorm, qkv_proj, rotary_emb, `attention` (and `qk_norm` on Qwen3) |
+| `post_attn` | Once per decoder block | o_proj + post-attention layernorm |
 | `mlp_dense` | Once per decoder block (dense models) | gate_up_proj + act_fn + down_proj |
-| `mlp_moe` | Once per decoder block (MoE models) | moe (with EP-ALLTOALL surround) |
+| `mlp_moe` | Once per decoder block (MoE models) | `moe`, with the EP ALLTOALL surround added by the simulator |
 | `head` | Once at the end of each iteration | final_layernorm + lm_head + sampler |
 
-The `attention` layer always runs between `pre_attn` and `post_attn`
-- it's not in `sequence`, it's implicit.
+`attention` is **listed explicitly** in `pre_attn`; it is not implicit.
+Every name a sequence group mentions has to exist in `catalog`, and
+every catalog entry the simulator emits has to appear in some sequence
+group.
+
+Dense and MoE models both declare all six groups; the unused one is an
+empty list (`mlp_moe: []` for a dense model). Layers may repeat inside
+a group or across groups — `layernorm` appears in both `pre_attn` and
+`post_attn`, which is how one catalog entry covers both norms.
 
 ## MoE-specific YAML
 
-MoE architectures add a `moe` entry in the catalog:
-
-```yaml
-catalog:
-  # ... dense entries ...
-  moe:
-    cls: FusedMoE
-    category: moe
-    ep_collective: ALLTOALL    # always ALLTOALL for EP
-```
-
-And in `sequence`:
+An MoE architecture adds a `moe` block to the catalog and swaps which
+MLP group is populated. From `qwen3_moe.yaml`:
 
 ```yaml
 sequence:
-  # ... same as dense ...
-  mlp_moe:
-    - moe
-  # don't include mlp_dense in MoE models
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: []
+  mlp_moe:   [moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+catalog:
+  # ... dense entries ...
+  moe:
+    moe:
+      vllm: Qwen3MoeSparseMoeBlock
 ```
 
-The simulator looks for `mlp_moe` in the YAML and, if present, runs
-the EP-ALLTOALL dispatch + combine surround automatically.
+The class named here is the **sparse block**, not `FusedMoE` — that is
+the class the CUDA profiler reports for the whole expert path.
 
-See `qwen3_moe.yaml` and `mixtral.yaml` for full MoE YAMLs.
+See `qwen3_moe.yaml`, `mixtral.yaml` and `phimoe.yaml` for full MoE
+YAMLs.
 
 ## Step-by-step: adding a new `model_type`
 
@@ -197,7 +214,8 @@ Look at `vllm/model_executor/models/<model>.py`. Identify:
 Start from the closest existing YAML (e.g., `llama.yaml` for a
 Gemma-style dense model) and adjust:
 
-- Update `cls` names to match the model's vLLM class names.
+- Update `vllm` class names to match the model's, and set `within`
+  wherever the same class shows up more than once.
 - Add any extra layers (e.g., Gemma 2's post-MLP layernorm) to the
   catalog and `sequence`.
 - Set `tp_stable: true` on layers whose latency doesn't depend on

@@ -570,7 +570,7 @@ def _axis_bracket(values, query):
 
 
 def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
-    """Bilinear (log on each axis) within a single (pc, nd) slice."""
+    """Bilinear (linear on each axis) within a single (pc, nd) slice."""
     slice_tbl = tbl["slices"].get((pc, nd))
     if slice_tbl is None:
         return None
@@ -742,13 +742,15 @@ def _lookup_attention_with_skew(
 ):
     """Attention lookup with skew correction applied.
 
-    Two 4D interpolations — at kv_decode_mean (the canonical point
-    the profiler measured) and kv_decode_max (the per-batch longest
-    decode sequence) — combined by the bucket-specific alpha resolved
-    from ``meta.yaml::skew_fit``. Skipped entirely when there's no
-    skew to correct (single decode or all decodes at the same length).
+    Looks the batch up at kv_decode_mean (the canonical point the
+    profiler measured) and, when a non-zero alpha applies, blends
+    toward a second lookup at kv_decode_max (the per-batch longest
+    decode sequence) using the bucket-specific alpha resolved from
+    ``meta.yaml::skew_fit``. Returns t_mean directly -- one lookup --
+    for a single decode, for a batch whose decodes are all the same
+    length, or when alpha resolves to 0.
 
-    Returns an integer nanosecond count. The raw bilinear interp in
+    Returns an integer nanosecond count. The interpolation in
     ``_lookup_attention`` produces a float, and the skew formula
     compounds that; the Chakra trace converter requires integer
     ``comp_time`` so we round here.
