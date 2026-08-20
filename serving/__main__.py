@@ -188,6 +188,12 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
         if enable_sub_batch_interleaving and not enable_attn_offloading:
             raise RuntimeError(
                 f"Instance {instance_id} enables sub-batch interleaving without attention offloading")
+        if enable_sub_batch_interleaving and instance.get("pp_size", 1) > 1:
+            raise RuntimeError(
+                f"Instance {instance_id} enables sub-batch interleaving with pp_size "
+                f"{instance['pp_size']}: an interleaved trace leaves both sub-batches "
+                f"mid-block at every group edge, so a pipeline stage has no single "
+                f"hidden state to pass on")
 
         runtime_configs.append({
             "max_num_seqs": _runtime_limit(instance.get("max_num_seqs", args.max_num_seqs)),
