@@ -82,10 +82,14 @@ python -m serving \
 ## Expected output
 
 ```text
-[INFO] step=15 P=8 D=12 prompt_t=3.1k tok/s decode_t=620 tok/s
-       npu_mem=[55.4 GB, 71.2 GB]
-[INFO] step=16 P=10 D=12 prompt_t=3.6k tok/s decode_t=640 tok/s
-       npu_mem=[55.4 GB, 71.4 GB]
+[15.0s] Avg prompt throughput: 3104.0 tokens/s, Avg generation throughput: 620.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 2 reqs, Total # 1 NPUs, Each NPU Memory Usage 55412.51 MB (56.360 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 46560)
+        ├─Running Instance[1]: 12 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 71238.51 MB (72.454 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 0)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
+[16.0s] Avg prompt throughput: 3612.0 tokens/s, Avg generation throughput: 640.0 tokens/s
+        ├─Running Instance[0]: 10 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 55486.51 MB (56.435 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 50172)
+        ├─Running Instance[1]: 12 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 71402.51 MB (72.621 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 0)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
 ```
 
 The `P=` and `D=` counts are per-role batch sizes. The decode

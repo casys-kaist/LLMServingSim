@@ -82,10 +82,14 @@ clarity. Options:
 ## Expected output
 
 ```text
-[INFO] step=20 inst0_batch=6 inst1_batch=4 prompt_t=2.4k tok/s decode_t=820 tok/s
-       npu_mem=[63.2 GB, 63.2 GB]
-[INFO] step=21 inst0_batch=6 inst1_batch=5 prompt_t=2.5k tok/s decode_t=860 tok/s
-       npu_mem=[63.2 GB, 63.2 GB]
+[20.0s] Avg prompt throughput: 2412.0 tokens/s, Avg generation throughput: 820.0 tokens/s
+        ├─Running Instance[0]: 6 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63218.51 MB (64.301 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 74208)
+        ├─Running Instance[1]: 4 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63204.51 MB (64.287 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 71950)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
+[21.0s] Avg prompt throughput: 2508.0 tokens/s, Avg generation throughput: 860.0 tokens/s
+        ├─Running Instance[0]: 6 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63290.51 MB (64.374 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 75462)
+        ├─Running Instance[1]: 5 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63276.51 MB (64.360 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 73204)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used (Instance[0]: 0.00 %, Instance[1]: 0.00 %)
 ```
 
 The router fills the lighter-loaded instance first. With LOAD policy,

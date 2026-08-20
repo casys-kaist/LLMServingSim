@@ -88,14 +88,20 @@ attention kernel from the NPU profile to the PIM profile. The rest
 ## Expected output
 
 ```text
-[INFO] step=10 batch=8 prompt_t=1.1k tok/s decode_t=520 tok/s
-       npu_mem=63.4 GB pim_busy=72%
-[INFO] step=11 batch=8 prompt_t=1.1k tok/s decode_t=540 tok/s
-       npu_mem=63.4 GB pim_busy=78%
+[10.0s] Avg prompt throughput: 1104.0 tokens/s, Avg generation throughput: 520.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63412.51 MB (64.499 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 11040)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+[11.0s] Avg prompt throughput: 1138.0 tokens/s, Avg generation throughput: 540.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63486.51 MB (64.574 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 12178)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
-`pim_busy` reports the PIM device's utilization, when this
-plateaus near 100% you've found the PIM bottleneck for the workload.
+**The heartbeat has no PIM field.** Offloading changes attention's
+`comp_time` inside the trace, so its effect shows up as generation
+throughput and TPOT, not as a utilization counter. To see whether PIM
+is the bottleneck, compare TPOT against the same workload without
+`--enable-attn-offloading`, or inspect a trace with
+`--no-cleanup-inputs` and look at the `PIM` marker blocks.
 
 ## What's interesting
 

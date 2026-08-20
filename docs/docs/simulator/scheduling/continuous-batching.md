@@ -51,20 +51,60 @@ Details on **[Prefix caching](./prefix-caching)**.
 
 ```mermaid
 flowchart TD
-    START([Iteration start]) --> INIT[remaining_budget = max_num_batched_tokens<br/>batch = []]
-    INIT --> NEXT{More requests<br/>in queue?}
-    NEXT -->|No| RETURN[Return Batch or None]
-    NEXT -->|Yes| CAP{batch size<br/>>= max_num_seqs?}
-    CAP -->|Yes| RETURN
-    CAP -->|No| NEED[Compute needs:<br/>prefill chunk OR decode 1 token]
-    NEED --> MIN[cap = min remaining_budget,<br/>long_prefill_threshold,<br/>tokens_needed]
-    MIN --> CHECKCAP{cap > 0?}
-    CHECKCAP -->|No| NEXT
-    CHECKCAP -->|Yes| MEM{Memory fits<br/>after eviction?}
-    MEM -->|No| NEXT
-    MEM -->|Yes| ADD[Add to batch<br/>budget -= cap]
-    ADD --> NEXT
+    START([Iteration start]) --> PP{pipeline slots<br/>all busy?}
+    PP -->|Yes| NONE([Return None])
+    PP -->|No| INIT["budget = max_num_batched_tokens<br/>scheduled, preempted = empty"]
+
+    INIT --> A1{Phase A: more running<br/>and budget left?}
+    A1 -->|No| GATE{anything<br/>preempted?}
+    A1 -->|Yes| A2["num_new = num_tokens_reached - num_computed_tokens,<br/>capped by budget"]
+    A2 --> A3{num_new<br/>above zero?}
+    A3 -->|"No — a batch is in flight for it"| A1
+    A3 -->|Yes| A4{KV blocks<br/>allocate?}
+    A4 -->|No| A5["Preempt the running tail<br/>(lowest FCFS priority)"]
+    A5 --> A6{victim was<br/>this request?}
+    A6 -->|No| A4
+    A6 -->|Yes| GATE
+    A4 -->|Yes| A7["scheduled += request<br/>budget -= num_new"]
+    A7 --> A1
+
+    GATE -->|"Yes — skip Phase B entirely"| DONE{anything<br/>scheduled?}
+    GATE -->|No| B1{Phase B: waiting non-empty<br/>and budget left?}
+
+    B1 -->|No| DONE
+    B1 -->|Yes| B2{running already at<br/>max_num_seqs?}
+    B2 -->|Yes| DONE
+    B2 -->|No| B3{head request<br/>has arrived?}
+    B3 -->|"No — the queue is arrival-sorted"| DONE
+    B3 -->|Yes| B4["Prefix lookup: NPU blocks,<br/>then lower tiers"]
+    B4 --> B5["num_new = num_tokens - hits, capped by<br/>long_prefill_token_threshold and by budget"]
+    B5 --> B6{chunking off and<br/>chunk over budget?}
+    B6 -->|Yes| DONE
+    B6 -->|No| B7{whole sequence fits?<br/>reserve_full_isl only}
+    B7 -->|No| DONE
+    B7 -->|Yes| B8{KV blocks<br/>allocate?}
+    B8 -->|"No — never preempts to admit"| DONE
+    B8 -->|Yes| B9["Admit: move to running<br/>budget -= num_new"]
+    B9 --> B1
+
+    DONE -->|No| NONE
+    DONE -->|Yes| BATCH([Build Batch])
 ```
+
+Three things about the shape are load-bearing. **Phase B never
+preempts** — every failure path there leaves the loop rather than
+freeing someone else's blocks. **Phase B is skipped entirely on any
+step that preempted**, which is what stops the running set oscillating
+preempt → refill → preempt. And the whole thing is gated on a free
+pipeline slot, so with `pp_size > 1` a step can return `None` purely
+because every stage already has a batch in flight. All three mirror
+vLLM V1's `schedule()`.
+
+Note also what is *not* in the diagram: there is no prefill branch and
+no decode branch. A request simply catches up to `num_tokens_reached`,
+so `num_new` is 1 in steady-state decode and the whole remainder for a
+resumed request. The trace classifies by scheduled token count after
+the fact.
 
 Conceptually, the loop is:
 
@@ -171,17 +211,23 @@ to the next pending arrival time and resumes.
 iteration when ASTRA-Sim reports completion. It returns:
 
 ```python
-(prompt_throughput, decode_throughput, finished_requests)
+(prompt_t, gen_t, end_reqs)
 ```
 
-- `prompt_throughput` counts **all input tokens including prefix
-  cache hits**, matching vLLM's reporting (which also counts cached
-  tokens). `decode_throughput` counts only newly generated tokens.
-- `finished_requests` is the list of requests that completed during
-  this iteration.
+- `prompt_t` counts **all input tokens including prefix cache hits**,
+  matching vLLM's reporting, which also counts cached tokens. The line
+  in `add_done` is literally
+  `prompt_t += num_new + req.prefix_cache_hit`, and it fires once per
+  request, on the step its prefill completes.
+- `gen_t` counts only newly generated tokens, incremented when a
+  request catches up to `num_tokens_reached`. A resumed request
+  recomputing its history contributes nothing here, so recomputation is
+  never counted as generation.
+- `end_reqs` is the list of requests that completed during this
+  iteration.
 
 For prefill instances under P/D disaggregation, the main loop hands
-`finished_requests` to `router.transfer_prefill_request` so the
+`end_reqs` to `router.transfer_prefill_request` so the
 decode instance picks them up.
 
 ## Gotchas

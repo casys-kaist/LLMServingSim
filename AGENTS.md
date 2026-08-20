@@ -99,8 +99,8 @@ are not part of the main branch's tree.
 ### Key data flow
 
 ```
-profile.csv (profiled latencies)
-    ↓ _load_perf_db() + _lookup_latency_ns()
+profiler/perf/<hw>/<model>/<variant>/tp<N>/*.csv (profiled latencies)
+    ↓ _load_perf_db() + _lookup_{dense,per_sequence,attention,moe}()
 trace_generator.py → text trace file
     ↓ Chakra converter
 graph_generator.py → .et protobuf file
@@ -173,9 +173,14 @@ decode batch has non-uniform kv lengths. The uniform attention grid can't see
 that (every shot uses a single kv_decode value), so `skew.py` runs a second
 sweep on bimodal batches and measures three latencies per case — `t_mean`
 (all decodes at the batch mean), `t_max` (all at the max), and `t_skew` (the
-actual bimodal mix). The normalised alpha ∈ [0, 1],
-`alpha = (t_skew − t_mean) / (t_max − t_mean)`, tells the simulator how far
-along the mean→max line a skewed batch lands.
+actual bimodal mix). The alpha
+`alpha = (t_skew − t_mean) / (t_max − t_mean)` tells the simulator how far
+along the mean→max line a skewed batch lands. It is **not** clamped to
+[0, 1], in the fit or in `_skew_alpha`: measured p50 is 0.07–0.13, but
+14–20% of rows are negative (endpoint gap inside measurement noise) and
+2–5% exceed 1 (a skewed mix genuinely costing more than uniform-max,
+which tile padding and SM imbalance do not bound). Rows with
+`t_max <= t_mean` are recorded `nan` and dropped.
 
 - **Sweep structure**: Tier 1 is a factorial over `(n, ratio, pc, kp, kvs)`
   at `_SKEW_REP = 4.0`; Tier 2 adds a skew-axis sweep at a handful of anchor
@@ -283,7 +288,7 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
   transformer-block starts using vLLM's `get_pp_indices` rule — blocks split
   evenly, remainder to the stages *before* the last, which also carries
   `lm_head`
-- `comp_time`: latency in nanoseconds (from profile.csv, converted at load time)
+- `comp_time`: latency in nanoseconds (from the per-category CSVs, whose `time_us` is converted at load time)
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
 - `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, or with dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`
   (the `:dim0,dim1` suffix maps to ASTRA-Sim's `involved_dim` BoolList for multi-dimensional topologies)

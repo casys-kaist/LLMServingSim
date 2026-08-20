@@ -207,11 +207,18 @@ wave-synchronizing them.
 
 - Updates per-request running totals (cycles spent in this iteration
   attributed to each request based on `q_list`).
-- For requests that finished decoding this step
-  (`request.num_computed_tokens >= request.input + request.output`):
-  records `last_token_time_ns`, computes `latency_ns`, marks done.
-- Returns `(prompt_throughput, decode_throughput, finished_requests)`
-  to the main loop.
+- A token counts as produced when the request has caught up to the
+  length it had already reached (`num_computed_tokens >=
+  num_tokens_reached`), at which point `num_tokens_reached` advances by
+  one. A resumed request recomputing its history stays silent until it
+  gets there, so recomputation is not double-counted as generation.
+- A request is finished when `num_tokens_reached >= request.output`,
+  where `output` is the **total** target length, prompt included. The
+  condition is deliberately *not* on `num_computed_tokens`, which
+  preemption resets to 0 — see
+  **[Continuous batching](./scheduling/continuous-batching)**.
+  `add_latency()` then stamps `end_time` and `latency`.
+- Returns `(prompt_t, gen_t, end_reqs)` to the main loop.
 
 For prefill instances (`pd_type="prefill"`), finished requests are
 **transferred** to a decode instance via

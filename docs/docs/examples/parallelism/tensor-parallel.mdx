@@ -24,7 +24,7 @@ attention `o_proj` and MLP `down_proj` ends with an ALLREDUCE.
 `configs/cluster/single_node_single_instance.json` (lightly edited
 from the bundled config to use `Qwen/Qwen3-32B` at `tp_size=2`):
 
-```json title="configs/cluster/single_node_single_instance.json"
+```json title="configs/cluster/single_node_single_instance.json (edited: Qwen3-32B at tp_size=2)"
 {
   "num_nodes": 1,
   "link_bw": 16,
@@ -74,8 +74,12 @@ python -m serving \
 Throughput logs land roughly once per second:
 
 ```text
-[INFO] step=42 batch=8 prompt_t=1.2k tok/s decode_t=420 tok/s npu_mem=88.4 GB
-[INFO] step=43 batch=8 prompt_t=1.1k tok/s decode_t=440 tok/s npu_mem=88.4 GB
+[42.0s] Avg prompt throughput: 1204.0 tokens/s, Avg generation throughput: 420.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 2 NPUs, Each NPU Memory Usage 88412.34 MB (89.912 % Used), Prefix Cache Hit ratio 4.21 %, (5312 / 126188)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+[43.0s] Avg prompt throughput: 1138.0 tokens/s, Avg generation throughput: 440.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 2 NPUs, Each NPU Memory Usage 88412.34 MB (89.912 % Used), Prefix Cache Hit ratio 4.19 %, (5312 / 126780)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
 `outputs/tp2_run.csv` has one row per finished request. The

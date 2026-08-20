@@ -121,9 +121,13 @@ When PIM offload is on, KV blocks live in PIM memory (per-channel)
 rather than NPU memory. The memory model accounts for this:
 
 - `npu_used` drops by the KV-cache footprint.
-- `pim_used` rises by the same amount.
-- KV evictions go from PIM → CPU (or wherever `kv_evict_loc` is
-  pointing) instead of NPU → CPU.
+- There is **no `pim_used` counter.** `MemoryModel` exposes exactly two
+  ledgers, `npu_used` and `cpu_used`, and PIM-resident KV lands in the
+  latter, since PIM sits in the host memory the node's `cpu_mem`
+  describes. The heartbeat's `Node[i]: Total CPU Memory Usage` line is
+  where it shows up.
+- KV evictions go from PIM → wherever `kv_evict_loc` points, instead of
+  NPU → CPU.
 
 This is what makes PIM offload memory-attractive for long-context
 workloads: the GPU's HBM is freed up to hold larger weights or more
@@ -144,20 +148,25 @@ The standard fix is **sub-batch interleaving**: overlap GPU compute
 on one half of the batch with PIM attention on the other half. See
 [Examples → Sub-batch interleaving](/docs/examples/advanced/sub-batch-interleaving).
 
-## Throughput log additions
+## What PIM offload does *not* add to the log
 
-When PIM is active, the throughput log gains a `pim_busy=` field per
-node:
+Nothing. The heartbeat block is identical with and without
+`--enable-attn-offloading` — there is no PIM utilization or busy-fraction
+counter anywhere in the simulator.
 
-```
-[INFO] step=10 batch=8 prompt_t=1.1k tok/s decode_t=520 tok/s
-       npu_mem=63.4 GB pim_busy=72%
-```
+Offloading works by substituting PIM attention for the NPU attention
+kernel inside the generated trace, so its effect is visible as changed
+generation throughput and TPOT rather than as a new field. To attribute
+a slowdown to PIM:
 
-`pim_busy` is the fraction of simulated time the PIM device was
-running attention work in the last log interval. When this saturates
-near 100%, PIM is your bottleneck, try multi-channel PIM, or revert
-to NPU attention for prefill-heavy phases.
+- Run the same workload with and without `--enable-attn-offloading` and
+  compare TPOT.
+- Pass `--no-cleanup-inputs` and read the emitted trace: PIM work sits
+  between `PIM <channel>` and `PIM END` markers, with its own
+  `comp_time`.
+- Widen the node's `cpu_mem.mem_size` to buy more PIM channels — channel
+  count is derived from it, not declared. See
+  **[PIM config](/docs/reference/pim-config#how-the-numbers-are-derived)**.
 
 ## Gotchas
 

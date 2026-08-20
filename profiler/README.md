@@ -297,8 +297,16 @@ t_skew   — the actual skewed batch [nb × kv_big, (n-nb) × kvs]
 From these three we get a normalised alpha per case:
 
 ```
-alpha = (t_skew - t_mean) / (t_max - t_mean) ∈ [0, 1]
+alpha = (t_skew - t_mean) / (t_max - t_mean)
 ```
+
+Nothing clamps this ratio, and the measured data does leave `[0, 1]`:
+across the bundles in `perf/`, 14-20% of rows are negative (the
+endpoint gap sitting inside measurement noise) and 2-5% exceed 1 (a
+skewed mix genuinely costing more than uniform-max, since tile padding
+and SM imbalance are not bounded by it). p50 is 0.07-0.13, p90 is
+0.46-0.96. Rows where `t_max <= t_mean` are recorded as `nan` and
+dropped by the fit.
 
 which the simulator then applies at query time:
 
@@ -369,7 +377,9 @@ them from there.
 ### Disabling / re-fitting
 
 - Set `SKIP_SKEW=1` to skip the sweep entirely (uniform attention
-  grid only; simulator will use the module-level fallback alpha).
+  grid only). The simulator's fallback constant is **0**, so it then
+  applies no skew correction at all and returns `t_mean` -- it does
+  not borrow an alpha from another GPU.
 - Set `ONLY_SKEW=1` to skip every other category and refresh just
   `skew.csv` + `skew_fit.csv` — useful after widening the grid or
   tweaking factors.

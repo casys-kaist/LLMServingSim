@@ -168,18 +168,46 @@ Same idea for `vllm_docker`.
 combination that doesn't have profile data:
 
 ```text
-FileNotFoundError: ../profiler/perf/<hardware>/<model>/<variant>/tp1/dense.csv
+FileNotFoundError: Profile variant folder not found:
+../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B/bf16-kvfp8. Run the
+profiler with matching --dtype / --kv-cache-dtype, or pick an existing
+variant under ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B
 ```
 
-**Cause:** The `(hardware, model, dtype, kv_cache_dtype)` tuple
-doesn't have a profiled CSV bundle.
+**Cause:** The `(hardware, model, dtype, kv_cache_dtype)` tuple has no
+profiled bundle. The check is on the **variant folder**, so the message
+names the directory rather than a specific CSV. `ls` the parent path it
+prints to see which variants you do have.
+
+Note that the variant is *derived*, not chosen: `--kv-cache-dtype fp8`
+appends `-kvfp8`, and `--dtype` (or the model config's `torch_dtype`
+when you omit it) supplies the prefix. So this fires when you flip a
+precision flag without a matching profile run, not only when the
+hardware is new.
+
+Two neighbouring errors with different fixes:
+
+```text
+FileNotFoundError: meta.yaml missing at <variant>/meta.yaml. Re-run the
+profiler to produce it.
+```
+
+The folder exists but the bundle is incomplete — usually a profile run
+that was interrupted.
+
+```text
+FileNotFoundError: Architecture yaml not found for model_type='gemma2'
+at profiler/models/gemma2.yaml. Add profiler/models/gemma2.yaml
+describing the architecture.
+```
+
+The model's family has no catalog yet. See
+**[Adding a model architecture](/docs/profiler/adding-model-architecture)**.
 
 **Fix:** either
 
-- pick a hardware / model combo that's already profiled
-  (see the
-  [Simulator → Reading the output](/docs/simulator/reading-output)
-  table), or
+- pick a hardware / model / precision combo that's already profiled
+  (`ls profiler/perf/`), or
 - run the **[Profiler](/docs/profiler/overview)** to generate the
   missing bundle yourself.
 
@@ -188,13 +216,28 @@ doesn't have a profiled CSV bundle.
 **Symptom:**
 
 ```text
-WARNING: runtime --max-num-batched-tokens (4096) exceeds profiled
-sweep bound (2048). Lookups will extrapolate.
+max-num-batched-tokens=4096 exceeds profiled 2048 for
+RTXPRO6000/meta-llama/Llama-3.1-8B/bf16; attention/dense lookups will
+extrapolate
 ```
 
-**Cause:** You're running the simulator with a token budget larger
-than the one the profiler swept. Latency lookups will linearly
-extrapolate past the measured range.
+There is a matching one for the sequence cap:
+
+```text
+max-num-seqs=256 exceeds profiled 128 for
+RTXPRO6000/meta-llama/Llama-3.1-8B/bf16; per-sequence lookups will
+extrapolate
+```
+
+**Cause:** You're running the simulator past the bounds the profiler
+swept, taken from `meta.yaml::engine_effective`. Latency lookups
+linearly extrapolate past the measured range.
+
+Both are emitted **once per `(hardware, model, variant)`**, not once per
+iteration, so seeing them a single time does not mean it happened only
+once. And they are silent when `meta.yaml` has no
+`engine_effective` entry for the field, so a hand-authored bundle gets
+no warning at all.
 
 **Fix:**
 

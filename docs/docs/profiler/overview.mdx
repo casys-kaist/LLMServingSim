@@ -65,12 +65,26 @@ container** (`astrasim/tutorial-micro2024`). They share the
 
 ## Bundled profile data
 
-| Hardware | Models profiled | Variants |
-| --- | --- | --- |
-| `RTXPRO6000` | `meta-llama/Llama-3.1-8B`, `Qwen/Qwen3-32B`, `Qwen/Qwen3-30B-A3B-Instruct-2507` | `bf16`, `bf16-kvfp8` |
+| Hardware | Model | Variant | TP degrees |
+| --- | --- | --- | --- |
+| `RTXPRO6000` | `meta-llama/Llama-3.1-8B` | `bf16` | 1, 2 |
+| `RTXPRO6000` | `Qwen/Qwen3-32B` | `bf16` | 1, 2 |
+| `RTXPRO6000` | `Qwen/Qwen3-30B-A3B-Instruct-2507` | `bf16` | 1, 2 |
 
-If your `(hardware, model, variant)` combo is in this table, you can
-skip the profiler entirely.
+That is the whole set: one hardware target, three models, **`bf16`
+only**, TP=1 and TP=2. If your `(hardware, model, variant, tp)` combo is
+in this table you can skip the profiler entirely; anything else needs a
+profile run.
+
+Two consequences that catch people out:
+
+- **No `-kvfp8` bundle ships.** `--kv-cache-dtype fp8` resolves to a
+  `bf16-kvfp8` variant folder that does not exist, so it fails at
+  startup until you profile it with `KV_CACHE_DTYPE=fp8`. See
+  **[Examples → FP8 KV cache](/docs/examples/memory-tiers/fp8-kv-cache)**.
+- **TP=4 and above need a profile run**, even on RTXPRO6000 with a
+  bundled model. `_load_perf_db` hard-errors on a missing `tp<N>/`
+  folder rather than extrapolating from TP=2.
 
 ## Prerequisites
 

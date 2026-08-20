@@ -49,14 +49,50 @@ the same shapes. Three numbers per shot:
 From these three:
 
 ```
-alpha = (t_skew - t_mean) / (t_max - t_mean)   ∈ [0, 1]
+alpha = (t_skew - t_mean) / (t_max - t_mean)
 ```
 
 Alpha is a **normalized position on the t_mean → t_max line**:
 
 - `alpha = 0` → no penalty; skewed batch behaves like uniform-mean.
 - `alpha = 1` → full penalty; skewed batch behaves like uniform-max.
-- typical values: 0.2–0.5.
+
+`t_max > t_mean` is required, else the row is recorded as `nan` and the
+fit skips it.
+
+:::info Alpha is not clamped to [0, 1]
+The name says "normalized", but nothing bounds the ratio, and the
+measured data lands outside `[0, 1]` regularly. Across the six bundles
+in `profiler/perf/`, per `skew.csv`:
+
+| | range |
+| --- | --- |
+| p50 | 0.07 – 0.13 |
+| p90 | 0.46 – 0.96 |
+| rows with `alpha < 0` | 14 – 20 % |
+| rows with `alpha > 1` | 2 – 5 % |
+
+The two tails have different causes, and only one is noise:
+
+- **`alpha < 0`** is mostly the endpoint gap sitting inside
+  measurement noise. A shot with `t_mean = 941.7 us` and
+  `t_max = 946.6 us` has a 4.9 us gap on a ~940 us baseline, so a
+  `t_skew` 10 us below `t_mean` reads as `alpha = -2.16`. The
+  magnitude is an artifact of dividing by a small number; the
+  underlying signal is "no measurable penalty".
+- **`alpha > 1` is real.** A skewed mix can genuinely cost more than
+  *either* uniform reference, because tile padding and SM imbalance
+  are not bounded by the uniform-max case. The largest row in the
+  Qwen3-32B TP=1 bundle is `n=32, pc=2048, kv_big=16384, kvs=4096`
+  at `t_mean = 19.1 ms`, `t_max = 19.3 ms`, `t_skew = 24.5 ms` -
+  5.2 ms above uniform-max, so `alpha = 19.4`.
+
+Neither the fit nor `_skew_alpha` clips the value, so a bucket
+resolving to a large alpha extrapolates past `t_max` by design. The
+per-bucket weighted-LS fit is what keeps the noise tail from
+dominating: it pools many shots per cell, so isolated `-2.16` rows are
+averaged against their neighbours rather than used directly.
+:::
 
 At simulation time, the lookup becomes:
 
@@ -131,10 +167,18 @@ runs a weighted least-squares fit per bucket.
 | Axis | Bucket scheme |
 | --- | --- |
 | `pc` | One bucket per unique `pc` value (raw) |
-| `n_label` | One bucket per unique `n` value (`n=0` sentinel + overflow) |
-| `skew_rate_label` | Fixed normalized [0, 1] scheme, `sr_low`, `sr_mid`, `sr_high` |
-| `kv_big_label` | log-4× bins extended to observed max, `kvb_1024`, `kvb_4096`, `kvb_16384`, `kvb_overflow` |
-| `kp_label` | One bucket per unique `kp` value + overflow |
+| `n_label` | One bucket per profiled `n` value, plus an overflow bucket: `n<=2`, `n<=4`, `n<=8`, `n<=16`, `n<=32`, `n<=64`, `n<=128`, `n<=256`, `n>256` |
+| `skew_rate_label` | Fixed bins on the normalized [0, 1] rate — the one axis that really is clipped to that range: `sr<=5%`, `sr<=15%`, `sr<=40%`, `sr<=70%`, `sr>70%` |
+| `kv_big_label` | log-4x bins extended to the observed max: `kvB<=1k`, `kvB<=4k`, `kvB<=16k`, `kvB>16k` |
+| `kp_label` | One bucket per profiled `kp` value, with a `kp=0` sentinel for pure-decode batches and an overflow bucket: `kp=0`, `kp<=512`, `kp<=1k`, `kp<=2k`, `kp<=4k`, `kp<=8k`, `kp>8k` |
+
+These are the **literal strings** the fitter writes and the simulator
+rebuilds, joined into `pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`,
+so they have to match character for character. The values above are from
+the Qwen3-32B bf16 bundle; a wider sweep produces more `n` and `kp`
+buckets and extends the `kv_big` bins, which is why the simulator reads
+them out of `meta.yaml::skew_fit.bucket_axes` rather than hardcoding
+them.
 
 The bucket axis definitions are written to
 `meta.yaml::skew_fit.bucket_axes` so the simulator builds the same
