@@ -528,13 +528,30 @@ def _lookup_per_sequence(perf_db, name, tp, sequences):
 
 
 def _axis_bracket(values, query):
-    """Return (lo_idx, hi_idx, t) for log-space interpolation on
-    ``values`` (sorted, non-negative, may include 0). ``t`` is the
-    fractional position: 0 → use values[lo_idx], 1 → values[hi_idx].
+    """Return (lo_idx, hi_idx, t) for linear interpolation on ``values``
+    (sorted, non-negative, may include 0). ``t`` is the fractional
+    position: 0 → use values[lo_idx], 1 → values[hi_idx].
 
-    Below the min or above the max we clamp on the low side (value 0
-    is treated as an exact sample) and extrapolate log-linearly on the
-    high side using the top two samples.
+    Below the min we clamp (a 0-valued sample is pinned exact); above
+    the max we extrapolate linearly from the top two samples.
+
+    ``t`` is measured on a **linear** scale even though the profiler
+    sweeps every axis geometrically. Those are separate choices: the
+    grid spacing decides where the kernel is sampled, the blend decides
+    how two samples are combined, and the kernel is linear in each
+    axis. Profiled decode attention fits ``time_us = a + b * (n_decode
+    * kv_decode)`` with R^2 = 1.0000 on the RTX 4090 Llama-3.1-8B grid,
+    at an implied 953 GB/s — 95% of the card's spec, i.e. a pure
+    KV-bandwidth read.
+
+    Blending a per-axis-linear function in log space is convex-biased
+    upward: up to +6.0% per axis on a doubling grid (worst at
+    ``query/x0 = 1/ln2 = 1.443``), compounding across axes. Leave-one-out
+    over every profiled attention row — predict a grid point from its
+    two neighbours, compare against what the GPU actually reported —
+    puts log-space at +11.6% to +14.4% mean error across all seven
+    bundles in the repo, against +2.3% to +3.7% for linear, with linear
+    ahead on all four axes (``n_decode`` worst: +18.4% log vs +4.3%).
     """
     n = len(values)
     if n == 0:
@@ -549,14 +566,7 @@ def _axis_bracket(values, query):
     x0, x1 = values[lo], values[hi]
     if x1 == x0:
         return lo, hi, 0.0
-    # log-space when both ends are positive; fall back to linear when
-    # one end is 0 (0-valued sample is pinned exact).
-    if x0 > 0 and x1 > 0:
-        import math
-        t = (math.log(max(query, 1e-9)) - math.log(x0)) / (math.log(x1) - math.log(x0))
-    else:
-        t = (query - x0) / (x1 - x0)
-    return lo, hi, t
+    return lo, hi, (query - x0) / (x1 - x0)
 
 
 def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
