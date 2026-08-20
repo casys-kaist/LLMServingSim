@@ -358,6 +358,22 @@ class Scheduler:
         self.logger.info("Batch #%d is done", batch.batch_id)
 
         for req in batch.requests:
+            if req.status == RequestStatus.FINISHED:
+                # With pp_size > 1 a request is legitimately in more than one
+                # in-flight batch, so it can finish on an earlier batch while a
+                # later one is still running. vLLM V1 skips exactly this in
+                # ``update_from_output`` -- "the request is already finished.
+                # This can happen if the request is aborted while the model is
+                # executing it (e.g., in pipeline parallelism)" -- and drops that
+                # batch's output whole, tokens included: they are past the
+                # request's target, so nothing wants them.
+                #
+                # Without this the completion path below runs once per in-flight
+                # batch: duplicate rows in the per-request CSV, req_cnt counted
+                # twice, end_time and latency overwritten with the later batch's
+                # clock, and a KeyError in cache_blocks, whose req_to_blocks
+                # entry the first pass already freed.
+                continue
             num_new = batch.scheduled_tokens[req.id]
             # num_computed_tokens was already advanced at schedule time.
             prefill_done_now = req.is_init and req.num_computed_tokens >= req.original_input
