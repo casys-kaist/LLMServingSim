@@ -160,41 +160,72 @@ runtime warnings work properly:
 ```yaml
 profiler_version: "synthetic-v1"
 vllm_version: "n/a"
-gpu: "<HARDWARE>"
+gpu: "<driver device name, or n/a>"
+hardware: "<HARDWARE>"          # must equal the folder name
+variant: "<VARIANT>"
+model: "<org>/<name>"
+tp_degrees: [1]
 profiled_at: "<date>"
 
 engine_effective:
   max_num_batched_tokens: <whatever your CSVs cover>
   max_num_seqs: <ditto>
-  dtype: bfloat16
-  kv_cache_dtype: auto
-
-attention_grid:
-  max_kv: <upper bound your attention.csv covers>
-  chunks: "<comma-separated chunk values>"
-  n_decode: "<comma-separated values>"
-  kv: "<comma-separated values>"
 
 skew_fit:
+  enabled: true                 # REQUIRED, see below
   per_tp:
     1:
       method: "synthetic-constant"
-      alpha_default: 0.3   # the pooled constant fallback
+      alpha_default: 0.3
 ```
 
-If you don't have skew measurements (most non-GPU paths won't),
-**omit** `skew.csv` and `skew_fit.csv` entirely. The simulator
-detects their absence and uses `alpha_default` from `meta.yaml` as a
-constant skew correction.
+`hardware` is the folder name a cluster config's `hardware` field must
+match; `gpu` is free-form provenance. They are separate fields — don't
+put the label in both.
+
+`engine_effective` takes only the two batching bounds; there is no
+`dtype` / `kv_cache_dtype` key there, since the dtypes are encoded in
+`variant`. Only those two are read, and only to emit the
+sweep-bound warning.
+
+`attention_grid` and `skew_profile` are provenance for humans and are
+**not read at run time**, so you can omit them from a synthetic bundle
+or fill them in however you like.
+
+:::danger `alpha_default` does nothing without `enabled: true`
+`_skew_alpha` returns the module fallback — which is **0**, i.e. no
+skew correction at all — unless `skew_fit.enabled` is truthy. So a
+bundle carrying `alpha_default: 0.3` but no `enabled` flag silently
+applies `alpha = 0`, not `0.3`. It also needs a `per_tp[<tp>]` entry
+for the TP being simulated; without one it falls back to a top-level
+`skew_fit.alpha_default` and then to 0.
+
+If you genuinely have no skew data, the honest choice is to leave
+`skew_fit` out entirely and accept `alpha = 0` (`t_mean`). A borrowed
+constant is not a safe default: the endpoint gap `(t_max - t_mean)` is
+a large fraction of an iteration, so alpha has to be known to about
+±0.02 to be worth applying at all.
+:::
+
+Omit `skew.csv` and `skew_fit.csv` when you have no
+heterogeneous-decode measurements.
 
 ### What you can skip
 
 - `skew.csv` and `skew_fit.csv` if you don't have heterogeneous-decode
-  data. Provide `alpha_default` in `meta.yaml::skew_fit.per_tp.<TP>`.
+  data — see the warning above about what that costs you.
 - `moe.csv` if you're not modeling MoE on this hardware (only needed
   when running MoE models).
-- TP=N folders for TP degrees you don't need to simulate. The
-  simulator only loads the TPs your cluster config asks for.
+- `tp<N>/` folders for TP degrees you don't need to simulate. Note the
+  mechanism: `_load_perf_db` loads **every** `tp*/` folder it finds and
+  then checks that the ones your cluster config needs are among them.
+  A missing one is a hard error, not a fallback:
+
+  ```text
+  FileNotFoundError: No profile data for tp=[4] under
+  perf/<hw>/<model>/<variant>/. Re-run the profiler with TP_DEGREES
+  including 4.
+  ```
 
 ### What you cannot skip
 

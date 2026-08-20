@@ -7,8 +7,11 @@ title: Simulator setup
 
 The simulator runs in a Docker container based on
 [`astrasim/tutorial-micro2024`](https://hub.docker.com/r/astrasim/tutorial-micro2024).
-The container ships with the C++ ASTRA-Sim backend pre-built and
-provides a Python environment for the simulator.
+The image supplies Python 3.10 and ASTRA-Sim's **build** dependencies —
+it does **not** ship a pre-built backend for this repo's submodule, so
+step 3 below is required, not optional. It also ships none of the
+Python packages the simulator imports; `docker-sim.sh` pip-installs
+those at launch.
 
 This is the install path **everyone needs**. If you also want to
 profile new hardware or run end-to-end vLLM validation, follow
@@ -39,8 +42,19 @@ git submodule update --init --recursive
 This:
 
 - Mounts the repo root into the container at `/app/LLMServingSim`
-- Installs the Python deps the simulator needs (`pyyaml`,
-  `pyinstrument`, `rich`, `pandas`, `numpy`, `matplotlib`)
+- Installs the Python deps the simulator needs, three of them
+  **version-pinned** for the image's Python 3.10:
+
+  ```
+  pyyaml pyinstrument rich pandas==1.5.3 numpy==1.23.5 matplotlib==3.5.3
+  ```
+
+  Each is imported by code that runs in this container: `pyyaml` for
+  the profiler's `meta.yaml` and architecture catalogs, `pyinstrument`
+  by `serving/__main__.py`, `rich` by the loggers, `pandas` by the
+  scheduler / trace generator / PIM model, `numpy` by the scheduler,
+  and `matplotlib` by `bench/core/plots.py`. If you install by hand,
+  keep the pins.
 - Drops you into a `bash` shell at `/app/LLMServingSim`
 
 The container is named `servingsim_docker`. To re-attach later (e.g.,
@@ -73,17 +87,24 @@ What this does:
 - Compile the **analytical backend** of ASTRA-Sim
   (`astra-sim/build/astra_analytical/build.sh`).
 
-The build takes 2–5 minutes on a typical machine. When it finishes
-you should see:
+It runs `protoc` on Chakra's `et_def.proto` (once), then `cmake` and
+`cmake --build` with up to 16 threads. The build takes 2–5 minutes on a
+typical machine and prints ordinary cmake / make output — there is no
+success banner to look for. Check the artifact instead:
 
-```text
-Compilation finished successfully.
+```bash
+ls -l astra-sim/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra
 ```
 
+That is the exact path `serving/__main__.py` launches as a subprocess,
+so if it exists and is executable, the build worked.
+
 :::tip ns3 backend
-The `compile.sh` script also has a commented-out block to build
-the ns3 backend (cycle-accurate network simulation). Most users
-don't need this. Uncomment it only if you set `--network-backend ns3`.
+`compile.sh` has a commented-out block for the ns3 backend
+(packet-level network simulation). Most users don't need it. Uncomment
+it only if you intend to pass `--network-backend ns3`, which launches a
+different binary:
+`astra-sim/extern/network_backend/ns-3/build/scratch/ns3.42-AstraSimNetwork-default`.
 :::
 
 ## 4. Verify the install
@@ -99,9 +120,10 @@ python -m serving \
   --log-interval 1.0
 ```
 
-You should see throughput logs scrolling once per second, and a
-final per-request CSV at `outputs/example_single_run.csv`. If you
-see a `[FileNotFoundError: profile_*.csv]` or similar, check
+You should see a startup banner, a **KV Cache Initialization** line, a
+heartbeat block once per simulated second, and a final per-request CSV
+at `outputs/example_single_run.csv`. If you instead get
+`FileNotFoundError: Profile variant folder not found: ...`, check
 [Troubleshooting → Missing profile data](../troubleshooting#missing-profile-data).
 
 

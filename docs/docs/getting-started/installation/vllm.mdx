@@ -28,6 +28,12 @@ hardware (RTXPRO6000), skip this page.
 The Docker path uses the official `vllm/vllm-openai:v0.19.0` image,
 which already contains vLLM, PyTorch, and all CUDA dependencies.
 
+That tag is built against **CUDA 12.x**. On a CUDA 13.x host, edit the
+image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.19.0-cu130`
+instead. The pin matters beyond the driver: the profiler's MoE hook
+patches `FusedMoE.forward_native`, whose name is version-specific, so a
+different vLLM release can break profiling silently.
+
 ### 1. (Optional) Set HF_TOKEN
 
 Some model configs (Llama 3.x, gated Qwen variants) need a Hugging
@@ -122,8 +128,10 @@ You should see vLLM `0.19.0` and your GPU.
 
 **Bare-metal caveats**
 
-**CUDA driver mismatch** is the most common failure mode. vLLM 0.19.0
-needs a CUDA 13.x-compatible driver. Verify with `nvidia-smi`.
+**CUDA driver mismatch** is the most common failure mode. The
+`vllm==0.19.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
+CUDA 12.x — check your driver with `nvidia-smi` before assuming the
+prebuilt wheel fits.
 
 The `VLLM_USE_PRECOMPILED=1` flag tells `uv` to skip building vLLM
 from source. If your CUDA version doesn't match the prebuilt wheel,
@@ -140,6 +148,8 @@ Outside Docker you're responsible for `HF_TOKEN`,
 - **[Profiler guide](/docs/profiler/overview)**: capture per-layer
   CUDA kernel timings into the per-category CSV bundle the simulator
   consumes.
-- **[bench/](https://github.com/casys-kaist/LLMServingSim/tree/main/bench)**
-  on GitHub, run vLLM end-to-end and validate the simulator against
-  ground truth (TTFT / TPOT / throughput / running-waiting plots).
+- **[Bench CLI](/docs/reference/bench-cli)**: run vLLM end-to-end and
+  validate the simulator against ground truth, with every flag for both
+  subcommands.
+- **[Validation](/docs/validation)**: the accuracy numbers those runs
+  produced.

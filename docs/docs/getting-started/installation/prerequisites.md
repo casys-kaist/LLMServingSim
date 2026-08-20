@@ -16,7 +16,7 @@ CPU, but the profiler and the vLLM benchmark need an NVIDIA GPU.
 | **Docker** | ✓ | ✓ (or bare-metal install) |
 | **NVIDIA GPU** |  | ✓ |
 | **NVIDIA Container Toolkit** |  | ✓ (for GPU passthrough into Docker) |
-| **CUDA driver** |  | 13.x or compatible |
+| **CUDA driver** |  | 12.x for the default `vllm/vllm-openai:v0.19.0` image; 13.x needs the `v0.19.0-cu130` tag instead |
 | **Disk** | ~3 GB | ~10 GB additional (vLLM image + HF model cache) |
 | **RAM** | 16 GB | 32 GB+ recommended |
 
@@ -75,8 +75,19 @@ HF authentication. The profiler can auto-fetch these if you set:
 export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-You only need this if you plan to **profile** new models. Running
-pre-profiled simulations does not require an HF token.
+Running pre-profiled simulations never needs a token. You do need one
+for anything that touches the Hub:
+
+- **Profiling** a gated model, where the profiler auto-fetches its
+  `config.json` on first run.
+- **`bench run`**, which loads real weights — a much larger download
+  than a config file.
+- **`workloads.generators`**, which pulls the source dataset (and, with
+  `--use-vllm`, the model too).
+
+`scripts/docker-vllm.sh` forwards `HF_TOKEN` from your shell into the
+container and mounts `~/.cache/huggingface`, so a download is shared
+with the host and happens once.
 
 Get a token from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
 
