@@ -1,4 +1,4 @@
-# #!/bin/bash
+#!/bin/bash
 
 # Single instance example (prefix caching in xPU memory is default now)
 python -m serving --cluster-config 'configs/cluster/single_node_single_instance.json' \
