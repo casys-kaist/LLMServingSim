@@ -233,7 +233,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - Chakra's `pyproject.toml` pinned `protobuf==6.*` while its checked-in
   `et_def_pb2.py` is generated for the 7.35.1 runtime, so a fresh
   `scripts/compile.sh` downgraded protobuf and left the converter raising
-  `VersionError` on import
+  `VersionError` on import. The `astrasim/tutorial-micro2024` image ships
+  5.28.3, so this hit any first-time setup
+- `scripts/docker-sim.sh` never installed `rich`, which
+  `serving/core/logger.py` and `bench/core/logger.py` both import. It was
+  present only as a transitive dependency of `transformers` (via `typer`),
+  so trimming the install list would have broken the simulator. `rich` is
+  now declared, and the five packages nothing in this container imports —
+  `transformers`, `datasets`, `msgspec`, `scikit-learn`, `xgboost` — are
+  gone. `xgboost` and `msgspec` had no reference anywhere in the
+  repository; `scikit-learn` and `transformers` are only used by the
+  legacy `profiler/v0/` tree (which has its own container,
+  `profiler/v0/docker.sh`), and `datasets` only by the workload
+  generators. `workloads/generators` now asks for `transformers` by name
+  the way it already asked for `datasets`, rather than surfacing a bare
+  `ModuleNotFoundError`
 - **Model-architecture YAML docs matched the code again**
   ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52)). The
   `adding-model-architecture` page documented `cls:`, `category:`,
