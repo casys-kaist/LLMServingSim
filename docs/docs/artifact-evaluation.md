@@ -20,7 +20,7 @@ who want to reproduce the published figures end to end.
 | Paper | Venue | Branch | Reproduces |
 | --- | --- | --- | --- |
 | **LLMServingSim 2.0** | ISPASS 2026 | [`ispass26-artifact`](https://github.com/casys-kaist/LLMServingSim/tree/ispass26-artifact) | Figures 5–10 |
-| **LLMServingSim** | IISWC 2024 | (released artifact, see [Zenodo DOI](https://doi.org/10.5281/zenodo.12803583)) | Original paper figures |
+| **LLMServingSim** | IISWC 2024 | [`iiswc24-artifact`](https://github.com/casys-kaist/LLMServingSim/tree/iiswc24-artifact), also released on [Zenodo](https://doi.org/10.5281/zenodo.12803583) | Original paper figures |
 
 The CAL 2025 entry shares the ISPASS 2026 codebase and does not have
 its own artifact branch.
