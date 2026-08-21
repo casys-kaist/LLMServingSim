@@ -248,6 +248,21 @@ The other 13 are plain keys on the instance object. `mem_util` sits
 It must be a number in `(0, 1]` — it is a *fraction*, so `0.9`, never
 `90`. Anything else raises at startup rather than being clamped.
 
+:::caution Match it to a measured run when the KV cache saturates
+`mem_util` sizes the KV cache, and that only shows up in the results once a run
+actually fills it — below the ceiling nothing is preempted and the capacity is
+invisible. On a card with headroom, leave it at the default.
+
+When a run does saturate, the default is the wrong number: the simulator does
+not model vLLM's activation peak or CUDA context, so `0.9` here gives **more**
+KV cache than vLLM gets at the same fraction. Read
+`kv_cache.num_gpu_blocks` from the bench run's `meta.json` and pick the
+`mem_util` whose **KV Cache Initialization** banner reports that same block
+count. On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — that is
+`0.833919`, and it takes the run from -20.7% TTFT / +12.9% TPOT to
++0.6% / +0.2%. See [Validation](../validation) and
+[KV cache and memory](../simulator/scheduling/kv-cache-and-memory).
+:::
 #### `0` means unlimited, with one caveat
 
 `max_num_seqs` and `max_num_batched_tokens` route through a

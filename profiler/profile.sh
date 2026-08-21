@@ -23,11 +23,12 @@ set -euo pipefail
 # ``configs/model/<MODEL>.json`` relative to the LLMServingSim root.
 # The profiler reads model_type from that config to pick an
 # architecture yaml under profiler/models/.
-MODEL="meta-llama/Llama-3.1-8B"
+# MODEL="meta-llama/Llama-3.1-8B"
+MODEL="Qwen/Qwen3-32B"
 
 # GPU identifier used as an output folder name under ``perf/``.
 # Free-form — pick something meaningful for your hardware.
-HARDWARE="RTX4090"
+HARDWARE="RTXPRO6000"
 
 # =============================================================================
 # EDIT THESE (OPTIONAL — uncomment and adjust as needed)
@@ -35,7 +36,7 @@ HARDWARE="RTX4090"
 
 # --- TP sweep ---------------------------------------------------------------
 # Comma-separated list; must include 1.
-TP_DEGREES="1"
+TP_DEGREES="1,2"
 
 # --- Engine kwargs ----------------------------------------------------------
 # DTYPE is normally inferred from the model config's ``torch_dtype``
@@ -71,7 +72,7 @@ MEASUREMENT_ITERATIONS=3
 # decode-kv batches (1-2 hours per TP). Required for the alpha
 # formula fit that the simulator uses to predict skewed batches.
 # Set SKIP_SKEW=1 to disable.
-SKIP_SKEW=1
+# SKIP_SKEW=1
 #
 # Per-axis geometric factors for the skew sweep. 2.0 (default) is
 # doubling. Crank higher (e.g. 4.0 on kvs / kp) to coarsen axes

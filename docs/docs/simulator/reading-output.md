@@ -105,7 +105,7 @@ stdout while a run is in progress:
 
 Independently of the level, a run always prints a startup banner, a
 KV-cache sizing block, the periodic heartbeat, and the final results.
-`bench/examples/<model>/outputs/sim.log` holds complete real examples of
+`bench/examples/<hardware>/<model>/outputs/sim.log` holds complete real examples of
 all of it; every sample on this page is copied from there.
 
 ### Startup banner
@@ -114,7 +114,7 @@ all of it; every sample on this page is copied from there.
 ──────────────────────────── LLMServingSim2.0 ────────────────────────────
                               Input configuration
 
-  • Cluster config             : bench/examples/configs/Llama-3.1-8B.json
+  • Cluster config             : bench/examples/RTXPRO6000/Llama-3.1-8B/config.json
   • Run ID                     : run_1787203264816023_112338
   • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1787203264816023_112338
   • Dataset                    : workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
@@ -387,10 +387,13 @@ decoder block hurts.
 
 ## Validation against known references
 
-LLMServingSim is validated end-to-end against real vLLM. On the three
-bundled configurations, TPOT and end-to-end latency means land within
-1.5%; TTFT means run -2.6% to -5.8%, which is a small absolute
-difference on a metric with small absolute values. Numbers and plots are on
+LLMServingSim is validated end-to-end against real vLLM. On the four
+bundled configurations, TPOT means land within 1.7% and end-to-end
+latency means within 2.2%; TTFT means span +1.3% to -13.6%, which is a
+small absolute difference on a metric with small absolute values. The
+RTX 4090 run — the one whose card saturates and whose `mem_util` is
+calibrated to the measured KV block count — is inside 1% on every
+metric. Numbers and plots are on
 **[Validation](/docs/validation)**; the harness that produces them is
 **[Bench CLI](/docs/reference/bench-cli)**. Complete real logs for
 those runs are committed under

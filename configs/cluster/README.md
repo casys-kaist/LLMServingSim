@@ -115,6 +115,17 @@ instances[i].dtype  >  --dtype  >  model config torch_dtype  >  bfloat16
 The resolved value picks the profile variant folder, so
 `profiler/perf/{hardware}/{model}/{variant}/tp{N}/` must exist for it.
 
+> **Calibrate `mem_util` when the KV cache saturates.** It sizes the KV cache,
+> and that only affects results once a run actually fills it — below the
+> ceiling nothing is preempted and the capacity is invisible, so the default
+> `0.9` is fine. When a run does hit the ceiling the default is wrong: the
+> simulator does not model vLLM's activation peak or CUDA context, so `0.9`
+> here buys more KV cache than `0.9` does in vLLM. Read
+> `kv_cache.num_gpu_blocks` from the bench run's `meta.json` and pick the
+> `mem_util` whose startup "KV Cache Initialization" line reports the same
+> block count. On the bundled RTX 4090 example that is `0.833919`, and it is
+> the difference between -20.7% and +0.6% on TTFT mean.
+
 **`npu_mem.mem_util` is the one nested override.** The other 13 are plain instance keys;
 `mem_util` lives inside `npu_mem` because its only job is to scale `mem_size`. It must be a
 number in `(0, 1]` — a fraction, so `0.9`, never `90`.
@@ -214,6 +225,9 @@ scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
 | `single_node_moe_single_instance.json` | Single node, Qwen3-MoE with TP=2 EP=2 |
 | `single_node_moe_dp_ep_instance.json` | Single node, two MoE instances in one DP group sharing experts over EP=2 |
 | `single_node_dp_instance.json` | Single node, DP=2 x TP=2 dense model (4 GPUs) |
+| `rtx4090_single_instance.json` | RTX 4090 (24 GB), Llama-3.1-8B TP=1. `mem_util` calibrated to the validated bench run |
+| `rtx4090_tp2_instance.json` | Two RTX 4090s as TP=2, Llama-3.1-8B. Not validated, so `mem_util` is left at the default |
+| `rtx4090_multi_instance.json` | Two independent TP=1 RTX 4090 instances behind the router |
 | `single_node_moe_dp_tp_instance.json` | Single node, DP=2 x TP=2 MoE (EP=2, 4 GPUs) |
 | `single_node_moe_dp_pp_instance.json` | Single node, DP=2 x PP=2 MoE (EP=2, 4 GPUs) |
 | `single_node_moe_dp_tp_pp_instance.json` | Single node, DP=2 x TP=2 x PP=2 MoE (EP=4, 8 GPUs) |

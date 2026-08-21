@@ -66,7 +66,14 @@ LLMServingSim/
 │   │   ├── validate.py         # bench-vs-sim comparison entry point
 │   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
 │   │   └── logger.py           # Rich-based logger + stdio capture
-│   ├── results/                # output: bench/results/<run_id>/
+│   ├── results/                # output: bench/results/<run_id>/ (gitignored)
+│   ├── examples/               # committed end-to-end runs, keyed <hardware>/<model>/
+│   │   ├── <hw>/<model>/config.json   # the cluster config the example runs
+│   │   ├── <hw>/<model>/vllm/         # ground truth: meta.json, requests.jsonl, timeseries.csv
+│   │   ├── <hw>/<model>/outputs/      # sim.csv, sim.log
+│   │   ├── <hw>/<model>/validation/   # summary.txt + plots
+│   │   ├── run.sh              # re-run the simulator side: run.sh <hardware>/<model>
+│   │   └── validate.sh         # re-run the comparison: validate.sh <hardware>/<model>
 │   ├── bench.sh                # host-side wrapper for `python -m bench run`
 │   └── validate.sh             # host-side wrapper for `python -m bench validate`
 ├── scripts/                    # Shared shell entry points (env / build, not module-specific)
@@ -426,7 +433,16 @@ arrival time to avoid busy-looping.
   LMCache / `OffloadingConnector` attached
 - KV capacity is `npu_mem.mem_size * npu_mem.mem_util - weight`, divided into `--block-size`
   blocks. vLLM also subtracts the activation peak and CUDA context, which are not modelled,
-  so the simulator's capacity is an upper bound at the same utilization
+  so the simulator's capacity is an upper bound at the same utilization. That only matters
+  when a run **saturates** the KV cache: below the ceiling nothing is preempted and the
+  configured capacity is invisible in the results. **For a run that does saturate,
+  calibrate `mem_util` so the block count matches `kv_cache.num_gpu_blocks` in the bench
+  run's `meta.json` before comparing latency at all.** On the bundled RTX 4090 example
+  (24 GB, pinned at its ceiling) the matched value is `0.833919`, which moves TTFT mean
+  from -20.7% to +0.6% and TPOT mean from +12.9% to +0.2% against the same vLLM run. The
+  RTXPRO6000 examples peak at 58-97% of budget on a 96 GB card and stay at `0.9` --
+  calibrating them would change nothing, so do not treat `mem_util` as a general
+  explanation for validation error
 - `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
   `memory_model.py` keeps the static sizing math and a byte-level view; `npu_used` is a
   property over the pool, so there is one ledger per tier

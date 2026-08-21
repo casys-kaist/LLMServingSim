@@ -70,11 +70,16 @@ container** (`astrasim/tutorial-micro2024`). They share the
 | `RTXPRO6000` | `meta-llama/Llama-3.1-8B` | `bf16` | 1, 2 |
 | `RTXPRO6000` | `Qwen/Qwen3-32B` | `bf16` | 1, 2 |
 | `RTXPRO6000` | `Qwen/Qwen3-30B-A3B-Instruct-2507` | `bf16` | 1, 2 |
+| `RTX4090` | `meta-llama/Llama-3.1-8B` | `bf16` | 1 |
 
-That is the whole set: one hardware target, three models, **`bf16`
-only**, TP=1 and TP=2. If your `(hardware, model, variant, tp)` combo is
-in this table you can skip the profiler entirely; anything else needs a
-profile run.
+That is the whole set: two hardware targets, three models, **`bf16`
+only**, and only the RTXPRO6000 bundles carry TP=2. If your
+`(hardware, model, variant, tp)` combo is in this table you can skip the
+profiler entirely; anything else needs a profile run. The RTX 4090
+bundle was contributed in
+[#59](https://github.com/casys-kaist/LLMServingSim/pull/59) and is the
+one validated end-to-end inside 1% on every metric — see
+**[Validation](/docs/validation)**.
 
 Two consequences that catch people out:
 
@@ -83,8 +88,9 @@ Two consequences that catch people out:
   startup until you profile it with `KV_CACHE_DTYPE=fp8`. See
   **[Examples → FP8 KV cache](/docs/examples/memory-tiers/fp8-kv-cache)**.
 - **TP=4 and above need a profile run**, even on RTXPRO6000 with a
-  bundled model. `_load_perf_db` hard-errors on a missing `tp<N>/`
-  folder rather than extrapolating from TP=2.
+  bundled model, and so does **TP=2 on RTX4090** — that bundle is TP=1
+  only. `_load_perf_db` hard-errors on a missing `tp<N>/` folder rather
+  than extrapolating.
 
 ## Prerequisites
 

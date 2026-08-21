@@ -219,11 +219,14 @@ Positional, with three environment overrides:
 
 ## Committed examples
 
-`bench/examples/` holds three end-to-end runs — a dense single-GPU
-baseline, a TP=2 dense run, and a DP+EP MoE run — each bundling the
-vLLM artifacts, the simulator output, and the resulting validation
-summary and plots. `bench/examples/run.sh` re-runs the simulator side
-and `bench/examples/validate.sh` re-runs the comparison. The headline
+`bench/examples/` holds four end-to-end runs, keyed
+`<hardware>/<model>` — a dense single-GPU baseline, a TP=2 dense run and
+a DP+EP MoE run on RTXPRO6000, plus the same dense baseline on an
+RTX 4090 — each bundling its cluster `config.json`, the vLLM artifacts,
+the simulator output, and the resulting validation summary and plots.
+`bench/examples/run.sh <hardware>/<model>` re-runs the simulator side
+and `bench/examples/validate.sh <hardware>/<model>` re-runs the
+comparison; both take every example when given no argument. The headline
 numbers are on **[Validation](/docs/validation)**.
 
 ## What's next

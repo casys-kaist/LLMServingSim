@@ -98,29 +98,30 @@ simulator's output for the same dataset:
 
 ```bash
 # 1. Rerun the sim side of an existing example
-./bench/examples/run.sh Llama-3.1-8B
+./bench/examples/run.sh RTXPRO6000/Llama-3.1-8B
 
 # 2. Compare against the committed vLLM reference
-./bench/examples/validate.sh Llama-3.1-8B
+./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B
 ```
 
-Output lands in `bench/examples/Llama-3.1-8B/validation/`:
+Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 
 - `summary.txt`: aggregate error on TTFT / TPOT / throughput.
-- A handful of PDFs: per-request latency CDF, throughput timeline,
-  running-waiting curves.
+- Three PNGs: `latency.png` (per-request latency CDF), `throughput.png`
+  (throughput timeline), `requests.png` (running / waiting curves).
 
-The committed reference baselines land within 1.5% on TPOT and
-end-to-end latency means and within 5.8% on TTFT means — see
-**[Validation](/docs/validation)** for the per-configuration table.
+The committed reference baselines land within 1.7% on TPOT means and
+2.2% on end-to-end latency means; TTFT means span +1.3% to -13.6%
+— see **[Validation](/docs/validation)** for the per-configuration
+table.
 **A regression beyond ~5% against those baselines is a blocker.**
 Smaller movements need an explanation in the PR description (e.g.,
 "this fixes an under-counting bug; the new error is closer to ground
 truth than the old").
 
 Compare against the numbers in
-`bench/examples/<model>/validation/summary.txt`, not against the ~5%
-figure in the abstract: TTFT already sits at -5.8% on the MoE
+`bench/examples/<hardware>/<model>/validation/summary.txt`, not against the ~5%
+figure in the abstract: TTFT already sits at -13.6% on the MoE
 configuration, so "within 5%" is not a bar it currently clears.
 
 For deeper detail on the validation methodology, see
@@ -151,7 +152,7 @@ without rerunning the rest.
 In your PR description, include the exact command you ran and the
 key number from the output. Examples:
 
-> Validation: `./bench/examples/validate.sh Llama-3.1-8B` →
+> Validation: `./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B` →
 > TTFT MAPE 2.1% (was 2.3%), TPOT MAPE 1.7% (unchanged), throughput
 > 1.2% (was 1.4%).
 

@@ -134,6 +134,43 @@ Initialization** at startup:
   • Instance [0] : 585248 tokens / 36578 blocks (71.44 GiB/rank at util 0.90)
 ```
 
+:::caution Calibrate `mem_util` when the KV cache is the binding constraint
+`mem_util` only changes behaviour once a run actually **saturates** the KV
+cache. Below that, the pool never runs out, nothing is preempted, and the
+capacity you configured is invisible in the results. On a card with plenty of
+headroom the default `0.9` is perfectly fine.
+
+When a run does hit the ceiling, the number matters a great deal — and the
+default is not the right one. Because the simulator does not model vLLM's
+activation peak or CUDA context, `0.9` here buys noticeably more KV cache than
+`0.9` does in vLLM. More cache means less preemption, so the simulated run
+finishes early and every latency metric skews with it.
+
+Set it from the measured run in that case. `python -m bench run` records what
+vLLM actually resolved in `meta.json`:
+
+```json
+"kv_cache": { "num_gpu_blocks": 2588, "block_size": 16, "num_kv_tokens": 41408 }
+```
+
+Then pick the `mem_util` whose **KV Cache Initialization** line reports that
+same block count. The bundled RTX 4090 / Llama-3.1-8B example is exactly this
+case — 24 GB, pinned at its ceiling for most of the run — and the matched value
+is `0.833919`, not `0.9`:
+
+| | KV tokens | blocks | TTFT mean | TPOT mean | Latency mean |
+| --- | --- | --- | --- | --- | --- |
+| vLLM (measured) | 41,408 | 2,588 | — | — | — |
+| `mem_util: 0.9` | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
+| `mem_util: 0.833919` | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
+
+Same profile bundle, same workload, same engine flags — only the capacity
+differs. The bundled RTXPRO6000 examples, by contrast, peak at 58-97% of their
+budget, so they are left at `0.9`: there is nothing for a calibration to
+change. Read the peak `Each NPU Memory Usage` percentage off the heartbeat to
+tell which case you are in — remember its ceiling is `mem_util * 100`, not 100.
+:::
+
 The scheduler takes `ceil(tokens / block_size)` blocks per active request
 from the pool's free list, and returns them when the request finishes or is
 preempted.

@@ -9,6 +9,18 @@
 # Edit the variables below for your run, then execute:
 #
 #     ./bench/bench.sh
+#
+# Every setting below is also an environment override, so a different
+# model / hardware target needs no separate copy of this script:
+#
+#     MODEL=meta-llama/Llama-3.1-8B \
+#     DATASET=workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl \
+#     TP=1 MAX_NUM_SEQS=256 MAX_MODEL_LEN=32768 \
+#     ./bench/bench.sh
+#
+# (that one is the RTX 4090 / Llama-3.1-8B run committed under
+# bench/examples/RTX4090/Llama-3.1-8B/ -- MAX_MODEL_LEN is capped so the
+# KV cache fits in 24 GB.)
 
 set -euo pipefail
 

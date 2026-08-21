@@ -11,10 +11,13 @@ LOG_LEVEL="${LOG_LEVEL:-INFO}"
 PREFIX="${PREFIX:-}"
 TITLE_PREFIX="${TITLE_PREFIX:-vLLM vs LLMServingSim}"
 
+# Examples are keyed by <hardware>/<model>, matching the directory layout
+# under this folder.
 DEFAULT_EXAMPLES=(
-    "Llama-3.1-8B"
-    "Qwen3-32B"
-    "Qwen3-30B-A3B-Instruct-2507"
+    "RTXPRO6000/Llama-3.1-8B"
+    "RTXPRO6000/Qwen3-32B"
+    "RTXPRO6000/Qwen3-30B-A3B-Instruct-2507"
+    "RTX4090/Llama-3.1-8B"
 )
 
 repo_relative_path() {
@@ -35,7 +38,7 @@ repo_relative_path() {
 }
 
 validate_example() {
-    local model_dir="$1"
+    local model_dir="$1"   # <hardware>/<model>
     local vllm_dir="$SCRIPT_DIR/$model_dir/vllm"
     local sim_csv="$SCRIPT_DIR/$model_dir/outputs/sim.csv"
     local sim_log="$SCRIPT_DIR/$model_dir/outputs/sim.log"
@@ -82,14 +85,11 @@ if [[ $# -eq 0 ]]; then
 fi
 
 for example in "$@"; do
-    case "$example" in
-        Qwen3-32B|Qwen3-30B-A3B-Instruct-2507|Llama-3.1-8B)
-            validate_example "$example"
-            ;;
-        *)
-            echo "Unknown example: $example" >&2
-            echo "Known examples: ${DEFAULT_EXAMPLES[*]}" >&2
-            exit 2
-            ;;
-    esac
+    if [[ -d "$SCRIPT_DIR/$example" ]]; then
+        validate_example "$example"
+    else
+        echo "Unknown example: $example" >&2
+        echo "Known examples: ${DEFAULT_EXAMPLES[*]}" >&2
+        exit 2
+    fi
 done

@@ -101,7 +101,7 @@ research question it lets you ask.
 
 The exact command(s) you ran and the key result. For example:
 
-  ./bench/examples/validate.sh Llama-3.1-8B
+  ./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B
   -> TTFT MAPE 2.1% (was 2.3%), TPOT 1.7% (unchanged)
 
 ## Notes

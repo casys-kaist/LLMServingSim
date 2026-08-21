@@ -17,7 +17,8 @@
                     "npu_mem": {
                         "mem_size": 24,
                         "mem_bw": 1008,
-                        "mem_latency": 0
+                        "mem_latency": 0,
+                        "mem_util": 0.833919
                     },
                     "num_npus": 1,
                     "tp_size": 1,
@@ -29,7 +30,8 @@
                     "npu_mem": {
                         "mem_size": 24,
                         "mem_bw": 1008,
-                        "mem_latency": 0
+                        "mem_latency": 0,
+                        "mem_util": 0.833919
                     },
                     "num_npus": 1,
                     "tp_size": 1,

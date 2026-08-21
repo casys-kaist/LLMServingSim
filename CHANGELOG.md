@@ -6,6 +6,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- RTX 4090 profile bundle for `meta-llama/Llama-3.1-8B` (bf16, TP=1), including
+  the heterogeneous-decode skew sweep, contributed by
+  [@Arifuzzamanjoy](https://github.com/Arifuzzamanjoy)
+  ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59)), plus
+  `configs/cluster/rtx4090_{single,tp2,multi}_instance.json`. Validated
+  end-to-end against a real vLLM run on the same card: every TTFT / TPOT /
+  latency metric, mean through P99, lands inside 1%.
+- `bench/examples/` is now keyed by `<hardware>/<model>` instead of `<model>`,
+  so the same model can be validated on more than one card. Each example also
+  carries its own `config.json` beside its `vllm/`, `outputs/` and
+  `validation/` folders, replacing the parallel `bench/examples/configs/` tree
+  that had to be kept in sync by hand. `run.sh` and `validate.sh` take
+  `<hardware>/<model>` and discover examples from the directory layout rather
+  than a hardcoded list, so adding one needs no script edit.
+- The RTX 4090 / Llama-3.1-8B run is committed as the fourth canonical example
+  under `bench/examples/RTX4090/Llama-3.1-8B/`.
 - Per-tier KV cache block pools (`serving/core/block_pool.py`) and a tiered
   manager over them (`serving/core/kv_cache_manager.py`), ported from vLLM
   v0.19.0's `block_pool.py` / `kv_cache_manager.py` and the block/queue
@@ -76,6 +92,33 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `MemoryModel` exists.
 
 ### Changed
+- All four canonical examples were regenerated on current `main`, and the
+  committed validation numbers moved: the previous summaries predated the block
+  pool rework, the pipeline-stage fix and the attention-interpolation change,
+  so they no longer described the code. TPOT means now land within 1.7% and
+  end-to-end latency means within 2.2%; TTFT means span +1.3% to
+  -13.6% (the MoE run, on a median of 138.8 ms vs 108.6 ms — a 30 ms absolute
+  difference on the smallest values in the set). Every one of the twelve
+  RTXPRO6000 means moved in the negative direction, which is what removing the
+  log-space interpolation bias would do: log blending of a per-axis-linear
+  kernel over-predicted by 9-14%, so correcting it made the simulator faster.
+  Docs that quoted "within 1.5%" or "-2.6% to -5.8%" are updated to the values
+  now in the committed `summary.txt` files.
+- **`npu_mem.mem_util` must be calibrated against the run you are comparing
+  against.** The simulator does not model vLLM's activation peak or CUDA
+  context, so the default `0.9` buys more KV cache than `0.9` does in vLLM —
+  and KV capacity drives preemption, which drives every latency metric. This
+  only bites when a run actually **saturates** the cache: the RTXPRO6000
+  examples peak at 58-97% of budget on a 96 GB card and are unaffected, while
+  the 24 GB RTX 4090 run sits at its ceiling. The fix is to read
+  `kv_cache.num_gpu_blocks` out of the bench run's `meta.json`
+  and pick the `mem_util` whose startup "KV Cache Initialization" line reports
+  the same block count. On the RTX 4090 example that is `0.833919`, not `0.9`,
+  and it is the difference between -20.7% TTFT / +12.9% TPOT and
+  +0.6% / +0.2% against the same vLLM run, with nothing else changed. Now
+  documented as a caution on Validation, KV cache and memory, the cluster-config
+  reference, `configs/cluster/README.md` and `AGENTS.md`, and baked into the
+  bundled RTX 4090 configs.
 - The attention grid is interpolated on a **linear** scale instead of in log
   space (`_axis_bracket`). The profiler sweeps every axis geometrically, which
   made log space look like the matching choice, but grid spacing decides where
@@ -138,6 +181,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   real offload tier.
 
 ### Removed
+- `bench/bench-rtx4090.sh`. It was a copy of `bench/bench.sh` differing only in
+  default `MODEL` / `DATASET` / `TP` / `MAX_NUM_SEQS` / `MAX_MODEL_LEN`, every
+  one of which is already an environment override there; the RTX 4090
+  invocation is now an example in that script's header.
+- `host_metadata.txt` and `scripts/capture-host-metadata.sh`. The script wrote
+  three `nvidia-smi` fields while the committed file carried ten hand-written
+  ones, so re-running it would have overwritten the file with something else,
+  and the information is already recorded in
+  `profiler/perf/<hw>/<model>/<variant>/meta.yaml` and in the `hardware` block
+  of a bench run's `meta.json`.
+- `bench/results/` and `outputs/rtx4090_llama/` run artifacts that had been
+  committed past `.gitignore`. Committed bench artifacts belong under
+  `bench/examples/<hardware>/<model>/`.
 - `serving/core/radix_tree.py` (675 lines), the SGLang-derived prefix-cache
   radix tree, **replaced by `block_pool.py` + `kv_cache_manager.py`** (see
   Added). It had served as both the prefix index and the allocator, and as an
