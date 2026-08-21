@@ -20,8 +20,9 @@ of these on) is on
 | **EP** (expert) | MoE experts split across ranks | ALLTOALL | Around the MoE block |
 | **DP+EP** | EP across multiple instances | ALLTOALL | Same, but across instance boundaries with wave-sync |
 
-TP and EP can share the same GPUs. DP+EP requires a `dp_group`
-identifier on the cluster config.
+TP and EP can share the same GPUs. DP requires a `dp_group`
+identifier on the cluster config — for a dense model that is plain data
+parallelism, and for MoE it also spreads experts across the group.
 
 ## TP, ALLREDUCE on every dense layer
 
@@ -200,11 +201,13 @@ have scheduled their batches for the current wave. Trace generation
 is **deferred** until all members have scheduled. When the last
 member arrives:
 
-- The simulator computes `dp_sum_total_len = sum(total_len)` and
-  `dp_max_total_len = max(total_len)` across the group.
-- `comm_size_alltoall` is set to
-  `dp_max_total_len * hidden_size * fp_size`: the *max* across the
-  group, matching CUDA-graph padding in production MoE serving.
+- The simulator takes `max_total_len` across the group and pads every
+  member's batch up to it, matching CUDA-graph DP padding in production
+  serving.
+- The MoE collective size is anchored to that same `max_total_len` — *not*
+  `max x dp_group_size`. That calibrates the AllGather/ReduceScatter
+  bandwidth model against the same `link_bw` that already matches
+  AllReduce.
 - All members generate their traces with the same `comm_size`, even
   if their per-instance `total_len` differs.
 
@@ -226,16 +229,25 @@ So both halves of the sync, Python deferral on submission, ASTRA-Sim
 blocking on the collective, together produce a deterministic
 wave-synchronous schedule.
 
-## 2D ASTRA-Sim topology and `involved_dim`
+## Multi-dimensional ASTRA-Sim topology and `involved_dim`
 
-`config_builder` generates a 2D ASTRA-Sim network when DP groups are
-present. The topology is `npus_count: [tp_size, dp_group_size]`.
-Collectives are scoped per dimension via the `involved_dim` BoolList
-on each `COMM_COLL_NODE`:
+`config_builder` generates a multi-dimensional ASTRA-Sim network when DP
+groups are present, innermost dimension first:
+`npus_count: [tp_size, dp_group_size]`, or
+`[tp_size, pp_size, dp_group_size]` when `pp_size > 1`. This mirrors
+vLLM's rank layout, `all_ranks.reshape(-1, dp, pp, pcp, tp)`; the
+`pp_size` dimension is omitted when it is 1, so DP+TP configs keep their
+2-D topology. Collectives are scoped per dimension via the
+`involved_dim` BoolList on each `COMM_COLL_NODE`:
 
-- **TP-ALLREDUCE:** `involved_dim = [True, False]`: dim 0 only.
-- **EP-ALLTOALL:** `involved_dim = [False, True]`: dim 1 only when
-  EP spans the DP group; `[True, True]` if EP also spans TP.
+- **TP-ALLREDUCE:** the TP dim only — `[True, False]`, or
+  `[True, False, False]` with PP.
+- **EP:** the DP dim, plus the TP dim when EP spans past one instance's
+  GPUs — `[False, True]` / `[True, True]`, or `[False, False, True]` /
+  `[True, False, True]` with PP. The PP dim is **never** involved:
+  vLLM's EP group is `all_ranks.transpose(1, 2).reshape(-1, dp*pcp*tp)`,
+  whose transpose pins the pipeline stage, so experts are sharded across
+  the DP x TP ranks of one stage.
 
 The `involved_dim` is encoded in the trace's `comm_type` field with
 a `:dim0,dim1` suffix:
@@ -284,12 +296,14 @@ A rough decision tree (the *configuration* angle is on
   EP-ALLTOALL replaces TP-ALLREDUCE on the MoE block.
 - **MoE, want to scale experts past one instance's GPUs:** DP+EP
   with `dp_group` set. EP spans instances via wave-sync.
+- **Dense model, want data-parallel replicas:** `dp_group` set and no
+  `ep_size`. The replicas are wave-synchronized but share no experts.
 
 ## Gotchas
 
 1. **`ep_size > tp_size` requires `dp_group`.** Otherwise the cluster
-   config builder rejects the spec. EP needs the 2D topology to scale
-   beyond a single instance's GPU count.
+   config builder rejects the spec. EP needs the DP dimension of the
+   topology to scale beyond a single instance's GPU count.
 2. **Dummy batches are real ASTRA-Sim work.** A DP group with one
    idle instance still pays the ALLTOALL cost on the dummy batch.
    This is what production looks like, wave-sync is wave-sync.

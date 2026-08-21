@@ -1,0 +1,47 @@
+{
+    "num_nodes": 1,
+    "link_bw": 16,
+    "link_latency": 20000,
+    "nodes": [
+        {
+            "num_instances": 2,
+            "cpu_mem": {
+                "mem_size": 512,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "num_npus": 2,
+                    "tp_size": 2,
+                    "pp_size": 1,
+                    "ep_size": 2,
+                    "dp_group": "A",
+                    "pd_type": null
+                },
+                {
+                    "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "num_npus": 2,
+                    "tp_size": 2,
+                    "pp_size": 1,
+                    "ep_size": 2,
+                    "dp_group": "A",
+                    "pd_type": null
+                }
+            ]
+        }
+    ]
+}

@@ -57,10 +57,17 @@ trace-generation time.
 
 ### Layer rows
 
-Each row has 11 fields, written as **fixed-width left-aligned
-columns** by `serving/core/utils.py::_FMT` — 30 characters for
-`Layername`, 15 for each of the rest, padded with spaces. Nothing is
-tab-separated. Both readers (`trace_generator`'s own re-read and the
+Each row has 11 fields, written as **left-aligned columns** by
+`serving/core/utils.py::_FMT` — a 30-character minimum for `Layername`,
+15 for each of the rest, **plus an explicit single space after every
+field but the last**. Nothing is tab-separated.
+
+That trailing space is load-bearing. `{:<15}` pads a value shorter than
+the column but emits nothing for one that already fills it, so a
+15-character field would butt straight against the next and the readers
+would see the two merged into one. `ALLREDUCE:1,0,0` — a `comm_type`
+with three-dimensional `involved_dim` — is 15 characters exactly. Treat
+the widths as a minimum column, not a guarantee. Both readers (`trace_generator`'s own re-read and the
 Chakra converter) split on runs of arbitrary whitespace
 (`re.findall(r'\S+', line)` and `line.strip().split()` respectively),
 so the column widths are for human legibility only and no field may
@@ -256,17 +263,17 @@ what the generator writes (scroll right for the full row):
 ```
 COLOCATED		model_parallel_NPU_group: 1
 292
-Layername                     comp_time      input_loc      input_size     weight_loc     weight_size    output_loc     output_size    comm_type      comm_size      misc
-embedding_0                   5386           REMOTE:0       40             LOCAL          1050673152     LOCAL          81920          NONE           0              NONE
-layernorm_1                   2416           LOCAL          81920          LOCAL          8192           LOCAL          81920          NONE           0              NONE
-qkv_proj_2                    36000          LOCAL          81920          LOCAL          50331648       LOCAL          122880         NONE           0              NONE
-rotary_emb_3                  2795           LOCAL          102400         LOCAL          0              LOCAL          102400         NONE           0              NONE
-attention_4                   7985           LOCAL          81920          LOCAL          0              LOCAL          81920          NONE           0              NONE
-o_proj_5                      25611          LOCAL          81920          LOCAL          33554432       LOCAL          81920          NONE           0              NONE
+Layername                      comp_time       input_loc       input_size      weight_loc      weight_size     output_loc      output_size     comm_type       comm_size       misc
+embedding_0                    5386            REMOTE:0        40              LOCAL           1050673152      LOCAL           81920           NONE            0               NONE
+layernorm_1                    2416            LOCAL           81920           LOCAL           8192            LOCAL           81920           NONE            0               NONE
+qkv_proj_2                     36000           LOCAL           81920           LOCAL           50331648        LOCAL           122880          NONE            0               NONE
+rotary_emb_3                   2795            LOCAL           102400          LOCAL           0               LOCAL           102400          NONE            0               NONE
+attention_4                    7985            LOCAL           81920           LOCAL           0               LOCAL           81920           NONE            0               NONE
+o_proj_5                       25611           LOCAL           81920           LOCAL           33554432        LOCAL           81920           NONE            0               NONE
 ... (decoder blocks 1..31 elided) ...
-final_layernorm_289           2624           LOCAL          81920          LOCAL          8192           LOCAL          81920          NONE           0              NONE
-lm_head_290                   714006         LOCAL          81920          LOCAL          1050673152     LOCAL          2565120        NONE           0              NONE
-sampler_291                   24746          LOCAL          2565120        LOCAL          0              REMOTE:0       40             NONE           0              NONE
+final_layernorm_289            2624            LOCAL           81920           LOCAL           8192            LOCAL           81920           NONE            0               NONE
+lm_head_290                    714006          LOCAL           81920           LOCAL           1050673152      LOCAL           2565120         NONE            0               NONE
+sampler_291                    24746           LOCAL           2565120         LOCAL           0               REMOTE:0        40              NONE            0               NONE
 ```
 
 A layer's `output_size` is **not** in general the next layer's `input_size`:

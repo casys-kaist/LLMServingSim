@@ -187,9 +187,12 @@ Per-iteration text traces are removed after Chakra conversion by default, and th
 generated run directory is removed after a successful simulation by default. Use
 `--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for
 debugging.
-For DP groups, generates a 2D network topology `[tp_size, dp_group_size]` and sets
-`system.json` collective implementations to match the number of topology dimensions.
-Computes `tp_dim`/`ep_dim` per instance for `involved_dim` scoping.
+For DP groups, generates a multi-dimensional network topology, innermost dimension
+first: `[tp_size, dp_group_size]`, or `[tp_size, pp_size, dp_group_size]` when
+`pp_size > 1`, matching vLLM's `all_ranks.reshape(-1, dp, pp, pcp, tp)`. The
+`system.json` collective implementations are sized to match the number of topology
+dimensions. Computes `tp_dim`/`ep_dim` per instance for `involved_dim` scoping; EP is
+scoped to the DP and TP dims and never PP.
 
 ### `power_model.py`
 Estimates power and energy consumption per node, covering NPU, CPU, DRAM, interconnect, NIC,

@@ -68,7 +68,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `tp_size` | Integer | * | Tensor parallel degree (inferred from `num_npus // pp_size` if omitted) |
 | `pp_size` | Integer | No | Pipeline parallel degree (default: 1) |
 | `ep_size` | Integer | No | Expert parallel degree (default: `tp_size` for MoE, 1 for dense) |
-| `dp_group` | String/null | No | DP group ID. Instances with the same string share experts via cross-instance ALLTOALL |
+| `dp_group` | String/null | No | DP group ID. Instances with the same string form one data-parallel group, wave-synchronized per iteration; for MoE they also share experts across the group |
 | `max_num_seqs` | Integer | No | Per-instance override for `--max-num-seqs` (`0` = unlimited) |
 | `max_num_batched_tokens` | Integer | No | Per-instance override for `--max-num-batched-tokens` (`0` = capped at the model's `max_position_embeddings`, see below) |
 | `long_prefill_token_threshold` | Integer | No | Per-instance override for `--long-prefill-token-threshold` |
@@ -173,13 +173,25 @@ decode instance.
 - DP is achieved via multiple instances with the same `dp_group`
 - Without `dp_group`: `ep_size <= tp_size`
 - For MoE models: `ep_size` must divide `num_local_experts`
+- All members of a `dp_group` must agree on `tp_size`, `pp_size` and `ep_size`
+- For a **MoE** model in a `dp_group`, `ep_size` is the total EP degree across
+  the group, so it must be divisible by the group size, and
+  `ep_size / dp_group_size <= tp_size`. For a **dense** model `ep_size` is not a
+  degree to spread over the group (there are no experts to shard), so neither
+  check applies and plain data parallelism works — see
+  `single_node_dp_instance.json`
 
-### DP+EP topology:
-When `dp_group` is set, `config_builder.py` generates a 2D ASTRA-Sim topology
-`[tp_size, dp_group_size]` with per-dimension collective routing via `involved_dim`.
-ALLREDUCE (TP) runs on dim 0 only, ALLTOALL (EP) runs on dim 1. All instances in a
-DP group share one ASTRA-Sim process with wave-synchronized scheduling. MoE expert
-weights are sharded by `ep_size` (each instance holds `num_local_experts // ep_size` experts).
+### DP topology:
+When `dp_group` is set, `config_builder.py` generates a multi-dimensional
+ASTRA-Sim topology, innermost dimension first: `[tp_size, dp_group_size]`, or
+`[tp_size, pp_size, dp_group_size]` when `pp_size > 1`. This mirrors vLLM's rank
+layout (`all_ranks.reshape(-1, dp, pp, pcp, tp)`); `pp_size` is omitted when it
+is 1 so existing DP+TP configs keep their 2-D topology. Collectives are routed
+per dimension via `involved_dim`: TP-ALLREDUCE on the TP dim only, and EP on the
+DP and TP dims but never PP (vLLM's EP group pins the pipeline stage). All
+instances in a DP group share one ASTRA-Sim process with wave-synchronized
+scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
+`num_local_experts // ep_size` experts).
 
 ### Optional fields
 
@@ -201,6 +213,10 @@ weights are sharded by `ep_size` (each instance holds `num_local_experts // ep_s
 | `single_node_pd_per_instance_config.json` | P/D disaggregation with prefill/decode-specific runtime limits |
 | `single_node_moe_single_instance.json` | Single node, Qwen3-MoE with TP=2 EP=2 |
 | `single_node_moe_dp_ep_instance.json` | Single node, two MoE instances in one DP group sharing experts over EP=2 |
+| `single_node_dp_instance.json` | Single node, DP=2 x TP=2 dense model (4 GPUs) |
+| `single_node_moe_dp_tp_instance.json` | Single node, DP=2 x TP=2 MoE (EP=2, 4 GPUs) |
+| `single_node_moe_dp_pp_instance.json` | Single node, DP=2 x PP=2 MoE (EP=2, 4 GPUs) |
+| `single_node_moe_dp_tp_pp_instance.json` | Single node, DP=2 x TP=2 x PP=2 MoE (EP=4, 8 GPUs) |
 | `single_node_4_instance_2TP.json` | Single node, four TP=2 instances |
 | `single_node_heterogeneous.json` | Single node, P/D pair with different per-instance runtime settings |
 | `single_node_moe_multi_instance.json` | Single node, two MoE instances |

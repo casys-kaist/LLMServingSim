@@ -176,7 +176,7 @@ Three rules the table cannot show:
 | `tp_size` | int | inferred from `num_npus // pp_size` | Tensor-parallel degree |
 | `pp_size` | int | `1` | Pipeline-parallel degree |
 | `ep_size` | int | `tp_size` (MoE) / `1` (dense) | Expert-parallel degree |
-| `dp_group` | string \| null | `null` | Group ID. Instances with the same string share experts via cross-instance ALLTOALL |
+| `dp_group` | string \| null | `null` | Group ID. Instances with the same string form one data-parallel group, wave-synchronized per iteration; for MoE they also share experts across the group |
 
 **Constraints:**
 
@@ -185,6 +185,12 @@ Three rules the table cannot show:
   transformer-block boundaries, so a stage cannot be empty
 - Without `dp_group`: `ep_size <= tp_size`
 - For MoE: `ep_size` must divide `num_local_experts`
+- All members of a `dp_group` must agree on `tp_size`, `pp_size` and `ep_size`
+- For a **MoE** model in a `dp_group`, `ep_size` is the total EP degree across
+  the group: it must be divisible by `dp_group_size`, and
+  `ep_size / dp_group_size <= tp_size`. For a **dense** model `ep_size` is not a
+  degree to spread over the group, so neither check applies — plain data
+  parallelism over a dense model is supported (`single_node_dp_instance.json`)
 
 ### Runtime overrides (optional)
 
@@ -355,7 +361,7 @@ Structural, in `config_builder.py`:
   three keys are required in `cpu_mem` and, if present, `cxl_mem`.
 - `num_npus == tp_size * pp_size`, and `pp_size <= num_hidden_layers`.
 - `dp_group` must be a string or `null`, and all instances sharing one
-  `dp_group` must agree on `tp_size` **and** `ep_size`.
+  `dp_group` must agree on `tp_size`, `pp_size` **and** `ep_size`.
 - Hardware folder must exist at
   `profiler/perf/<hardware>/<model_name>/<variant>/tp<tp_size>/`.
 
