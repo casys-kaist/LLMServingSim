@@ -269,14 +269,31 @@ def _read_category_csv(path, key_cols):
 
 
 def _build_1d_table(df, layer_col, key_col):
-    """Dense / per-sequence: per-layer sorted (keys, values) table."""
+    """Dense / per-sequence: per-layer sorted (keys, values) table.
+
+    Built from column lists in one pass rather than through
+    ``groupby``/``sort_values``/``drop_duplicates``. pandas spends roughly
+    37 us per row on that path, which put the attention table alone at
+    ~693 ms per ``tp<N>/`` folder; the same construction in plain Python
+    is ~9 ms and yields an identical structure.
+
+    Duplicate keys resolve last-wins. That is deterministic, where the
+    pandas path was not: ``sort_values`` defaults to an unstable
+    quicksort, so which of two rows sharing a key survived
+    ``drop_duplicates`` was unspecified. No bundle under
+    ``profiler/perf/`` currently carries a duplicate key in any category,
+    so this changes no existing lookup; for a CSV that gained rows from a
+    partial re-profile, last-wins takes the newer measurement.
+    """
+    grouped = {}
+    for layer, key, val in zip(df[layer_col].tolist(),
+                               df[key_col].astype(int).tolist(),
+                               df["latency_ns"].astype(int).tolist()):
+        grouped.setdefault(str(layer), {})[key] = val
     out = {}
-    for layer, g in df.groupby(layer_col):
-        g = g.sort_values(key_col).drop_duplicates(subset=[key_col])
-        out[str(layer)] = {
-            "keys": g[key_col].astype(int).tolist(),
-            "values": g["latency_ns"].astype(int).tolist(),
-        }
+    for layer, by_key in grouped.items():
+        keys = sorted(by_key)
+        out[layer] = {"keys": keys, "values": [by_key[k] for k in keys]}
     return out
 
 
@@ -287,24 +304,30 @@ def _build_attention_table(df):
     in log-space on each axis (plus a zero-pinned fallback when the
     axis value is 0, which always comes from an exact sample).
     """
-    pc_vals = sorted({int(v) for v in df["prefill_chunk"].tolist()})
-    nd_vals = sorted({int(v) for v in df["n_decode"].tolist()})
+    pc_col = df["prefill_chunk"].astype(int).tolist()
+    nd_col = df["n_decode"].astype(int).tolist()
+    kp_col = df["kv_prefill"].astype(int).tolist()
+    kd_col = df["kv_decode"].astype(int).tolist()
+    lat_col = df["latency_ns"].astype(int).tolist()
+
+    # (prefill_chunk, n_decode) -> kv_prefill -> kv_decode -> latency_ns.
+    # One pass in plain Python; see _build_1d_table for why not groupby.
+    grouped = {}
+    for pc, nd, kp, kd, lat in zip(pc_col, nd_col, kp_col, kd_col, lat_col):
+        grouped.setdefault((pc, nd), {}).setdefault(kp, {})[kd] = lat
+
     slices = {}
-    for (pc, nd), g in df.groupby(["prefill_chunk", "n_decode"]):
-        slice_tbl = {}
-        for kp, g2 in g.groupby("kv_prefill"):
-            g2 = g2.sort_values("kv_decode").drop_duplicates(subset=["kv_decode"])
-            slice_tbl[int(kp)] = {
-                "keys": g2["kv_decode"].astype(int).tolist(),
-                "values": g2["latency_ns"].astype(int).tolist(),
-            }
-        kp_vals_s = sorted(slice_tbl.keys())
-        slices[(int(pc), int(nd))] = {
-            "kv_prefill_vals": kp_vals_s,
-            "rows": [slice_tbl[kp] for kp in kp_vals_s],
-        }
+    for key, by_kp in grouped.items():
+        kp_vals_s = sorted(by_kp)
+        rows = []
+        for kp in kp_vals_s:
+            by_kd = by_kp[kp]
+            kd_keys = sorted(by_kd)
+            rows.append({"keys": kd_keys, "values": [by_kd[k] for k in kd_keys]})
+        slices[key] = {"kv_prefill_vals": kp_vals_s, "rows": rows}
+
     return {
-        "pc_vals": pc_vals, "nd_vals": nd_vals,
+        "pc_vals": sorted(set(pc_col)), "nd_vals": sorted(set(nd_col)),
         "pc_nd_pairs": sorted(slices.keys()),
         "slices": slices,
     }
@@ -312,16 +335,18 @@ def _build_attention_table(df):
 
 def _build_moe_table(df):
     """MoE table: (tokens, activated_experts) → latency_ns."""
-    tokens_by_experts = {}
-    for ae, g in df.groupby("activated_experts"):
-        g = g.sort_values("tokens").drop_duplicates(subset=["tokens"])
-        tokens_by_experts[int(ae)] = {
-            "keys": g["tokens"].astype(int).tolist(),
-            "values": g["latency_ns"].astype(int).tolist(),
-        }
-    ae_vals = sorted(tokens_by_experts.keys())
-    return {"activated_experts_vals": ae_vals,
-            "rows": [tokens_by_experts[a] for a in ae_vals]}
+    grouped = {}
+    for ae, tok, lat in zip(df["activated_experts"].astype(int).tolist(),
+                            df["tokens"].astype(int).tolist(),
+                            df["latency_ns"].astype(int).tolist()):
+        grouped.setdefault(ae, {})[tok] = lat
+    ae_vals = sorted(grouped)
+    rows = []
+    for ae in ae_vals:
+        by_tok = grouped[ae]
+        tok_keys = sorted(by_tok)
+        rows.append({"keys": tok_keys, "values": [by_tok[k] for k in tok_keys]})
+    return {"activated_experts_vals": ae_vals, "rows": rows}
 
 
 def _load_perf_db(hardware, model, variant, tp_needed, model_type):
@@ -346,36 +371,14 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type):
     meta = _load_meta(root)
     _hydrate_skew_fit_tables(meta, root)
     arch = _load_architecture(model_type)
-    tables_per_tp = {}
     available_tps = []
     for entry in sorted(os.listdir(root)):
         if not entry.startswith("tp"):
             continue
         try:
-            tp = int(entry[2:])
+            available_tps.append(int(entry[2:]))
         except ValueError:
             continue
-        tp_dir = os.path.join(root, entry)
-        tables = {}
-
-        dense_df = _read_category_csv(os.path.join(tp_dir, "dense.csv"), None)
-        if dense_df is not None:
-            tables["dense"] = _build_1d_table(dense_df, "layer", "tokens")
-
-        per_seq_df = _read_category_csv(os.path.join(tp_dir, "per_sequence.csv"), None)
-        if per_seq_df is not None:
-            tables["per_sequence"] = _build_1d_table(per_seq_df, "layer", "sequences")
-
-        attn_df = _read_category_csv(os.path.join(tp_dir, "attention.csv"), None)
-        if attn_df is not None:
-            tables["attention"] = _build_attention_table(attn_df)
-
-        moe_df = _read_category_csv(os.path.join(tp_dir, "moe.csv"), None)
-        if moe_df is not None:
-            tables["moe"] = _build_moe_table(moe_df)
-
-        tables_per_tp[tp] = tables
-        available_tps.append(tp)
 
     perf_db = {
         "meta": meta,
@@ -383,8 +386,10 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type):
         "variant": variant,
         "hardware": hardware,
         "model": model,
+        "root": root,
         "available_tps": sorted(available_tps),
-        "tables": tables_per_tp,
+        # Per-TP category tables, filled in by _tp_tables on first lookup.
+        "tables": {},
     }
     _perf_db_cache[cache_key] = perf_db
     _check_tp_coverage(perf_db, tp_needed, hardware, model, variant)
@@ -471,17 +476,54 @@ def _lookup_1d(keys, values, query):
     return _linear_interpolate(keys[lo], values[lo], keys[hi], values[hi], query)
 
 
+def _build_tp_tables(tp_dir):
+    """Build every category table present in one ``tp<N>/`` folder."""
+    tables = {}
+    dense_df = _read_category_csv(os.path.join(tp_dir, "dense.csv"), None)
+    if dense_df is not None:
+        tables["dense"] = _build_1d_table(dense_df, "layer", "tokens")
+
+    per_seq_df = _read_category_csv(os.path.join(tp_dir, "per_sequence.csv"), None)
+    if per_seq_df is not None:
+        tables["per_sequence"] = _build_1d_table(per_seq_df, "layer", "sequences")
+
+    attn_df = _read_category_csv(os.path.join(tp_dir, "attention.csv"), None)
+    if attn_df is not None:
+        tables["attention"] = _build_attention_table(attn_df)
+
+    moe_df = _read_category_csv(os.path.join(tp_dir, "moe.csv"), None)
+    if moe_df is not None:
+        tables["moe"] = _build_moe_table(moe_df)
+    return tables
+
+
 def _tp_tables(perf_db, tp):
-    """Fetch the category-table dict for a given TP degree, with a
-    clear error if the TP wasn't profiled.
+    """Fetch the category-table dict for a given TP degree, building it on
+    first use, with a clear error if the TP wasn't profiled.
+
+    Lazy because a bundle may carry many ``tp<N>/`` folders while one run
+    touches at most two of them: its own TP degree, plus tp1 for the
+    ``tp_stable`` layers and for MoE, which are profiled once at tp=1 (see
+    _effective_tp and _lookup_moe). Building every folder up front cost
+    ~700 ms per folder that the run never queried.
+
+    Every caller reaches the tables through here, so a lazily-built folder
+    is indistinguishable from an eagerly-built one. That matters for
+    _layer_available in particular: it used to read perf_db["tables"]
+    directly with a {} default, which under lazy building would have
+    reported a present layer as missing and silently skipped emitting it.
     """
     tables = perf_db["tables"].get(tp)
-    if tables is None:
+    if tables is not None:
+        return tables
+    if tp not in perf_db["available_tps"]:
         raise KeyError(
             f"No profile data for tp={tp} on {perf_db['hardware']}/"
             f"{perf_db['model']}/{perf_db['variant']}; available: "
             f"{perf_db['available_tps']}"
         )
+    tables = _build_tp_tables(os.path.join(perf_db["root"], f"tp{tp}"))
+    perf_db["tables"][tp] = tables
     return tables
 
 
@@ -1177,7 +1219,7 @@ def _layer_available(perf_db, tp, layer_name):
     if category is None:
         return False
     tp_eff = _effective_tp(perf_db, category, layer_name, tp)
-    tables = perf_db["tables"].get(tp_eff, {})
+    tables = _tp_tables(perf_db, tp_eff)
     if category == "dense":
         return layer_name in tables.get("dense", {})
     if category == "per_sequence":
