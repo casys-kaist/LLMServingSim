@@ -1,5 +1,4 @@
 import os
-import re
 from .request import *
 from .utils import *
 import pandas as pd
@@ -1026,7 +1025,8 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
 
     wt_loc = get_device(ctx.placement, layer_num, layer_name, "weights")
 
-    lines.append(formatter(layer_name, str(latency_ns), input_loc, str(inp), wt_loc, str(wt), output_loc, str(out), comm_type, str(comm_size), batch_tag))
+    lines.append((layer_name, str(latency_ns), input_loc, str(inp), wt_loc,
+                  str(wt), output_loc, str(out), comm_type, str(comm_size), batch_tag))
 
     if power_acc is not None:
         power_acc.npu_latencies_ns.append(latency_ns)
@@ -1078,13 +1078,13 @@ def _with_dim(comm_type, involved_dim):
 def _emit_pim_attention(ctx, bctx, lines, power_acc, layer_num, batch_tag='NONE'):
     """Emit PIM attention for decode requests across PIM channels."""
     for ch in range(ctx.pim_channels):
-        lines.append(f"PIM {ch}\n")
+        lines.append((f"PIM {ch}",))
         for L in bctx.decode_lens[ch]:
             inp, _, out = calculate_sizes(ctx.model, "attention", L, pim=True, parallel=ctx.tp_size, fp=ctx.fp)
             inp //= bctx.channel_split
             out //= bctx.channel_split
             pim_lat = int(ctx.pim_model.get_pim_latency(ctx.n_head, ctx.kv_head, ctx.head_dim, L, bctx.channel_split))
-            lines.append(formatter("attention", str(pim_lat),
+            lines.append(("attention", str(pim_lat),
                 f'REMOTE:{ctx.node_id}.{ch}', str(inp),
                 get_device(ctx.placement, layer_num, "attention", "weights"), '0',
                 f'REMOTE:{ctx.node_id}.{ch}', str(out),
@@ -1092,7 +1092,7 @@ def _emit_pim_attention(ctx, bctx, lines, power_acc, layer_num, batch_tag='NONE'
             if power_acc is not None and pim_lat > 0:
                 power_acc.pim_latencies_ns.append(pim_lat)
                 power_acc.dram_weight_bytes += inp + out
-    lines.append("PIM END\n")
+    lines.append(("PIM END",))
 
 
 def _emit_npu_attention(ctx, bctx, lines, power_acc, layer_num, batch_tag='NONE'):
@@ -1161,9 +1161,9 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
 
     for i in range(emit_ep):
         if i == 0:
-            lines.append(f"EXPERT {i} {dispatch_comm_type} {dispatch_comm_size}\n")
+            lines.append((f"EXPERT {i} {dispatch_comm_type} {dispatch_comm_size}",))
         else:
-            lines.append(f"EXPERT {i} NONE 0\n")
+            lines.append((f"EXPERT {i} NONE 0",))
 
         # ``local_tokens`` here is the per-rank workload after dispatch
         # — already scaled to this rank's real tokens (no DP-padding sum).
@@ -1177,7 +1177,7 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
                 ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp)
             max_rank_latency_ns = max(max_rank_latency_ns, rank_latency_ns)
 
-            lines.append(formatter("expert", str(rank_latency_ns), 'LOCAL', str(rank_inp),
+            lines.append(("expert", str(rank_latency_ns), 'LOCAL', str(rank_inp),
                 wt_loc, str(rank_wt), 'LOCAL', str(rank_out), 'NONE', '0', batch_tag))
 
             if power_acc is not None and wt_loc != 'LOCAL':
@@ -1187,7 +1187,7 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
     if power_acc is not None and max_rank_latency_ns > 0:
         power_acc.npu_latencies_ns.append(max_rank_latency_ns)
 
-    lines.append(f"EXPERT END {combine_comm_type} {combine_comm_size}\n")
+    lines.append((f"EXPERT END {combine_comm_type} {combine_comm_size}",))
 
     # Post-expert ReduceScatter power (combine)
     if power_acc is not None and ep_total > 1:
@@ -1334,18 +1334,16 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
     return _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
 
-def _emit_final_layers(ctx, bctx, f, batch_tag='NONE'):
+def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
     """Emit the architecture's head layers (final_layernorm, lm_head,
     sampler — ordered per the yaml) and feed them into the power model.
     The last emitted layer routes its output to REMOTE so the Chakra
     converter places a MEM_STORE node back to CPU.
     """
     head_layers = _sequence(ctx.perf_db, "head")
-    lines = []
     for i, layer_name in enumerate(head_layers):
         output_loc = f'REMOTE:{ctx.node_id}' if i == len(head_layers) - 1 else 'LOCAL'
-        _emit_layer(ctx, bctx, layer_name, lines, None, batch_tag, output_loc=output_loc)
-    f.writelines(lines)
+        _emit_layer(ctx, bctx, layer_name, rows, None, batch_tag, output_loc=output_loc)
 
     if ctx.power_model is not None:
         for layer_name in head_layers:
@@ -1373,7 +1371,7 @@ def _emit_pp_pd_power(ctx, bctx):
 # _synthesize_trace (non-interleaved)
 # ======================================================================
 
-def _emit_prologue(ctx, bctx, f, batch_tag='NONE'):
+def _emit_prologue(ctx, bctx, rows, batch_tag='NONE'):
     """Emit prologue layers (typically just embedding). The first layer's
     input is routed from REMOTE to match the Chakra converter's
     MEM_LOAD node placement.
@@ -1381,11 +1379,10 @@ def _emit_prologue(ctx, bctx, f, batch_tag='NONE'):
     prologue_layers = _sequence(ctx.perf_db, "prologue")
     if not prologue_layers:
         return 0
-    lines = []
+    before = len(rows)
     for i, layer_name in enumerate(prologue_layers):
         input_loc = f'REMOTE:{ctx.node_id}' if i == 0 else 'LOCAL'
-        _emit_layer(ctx, bctx, layer_name, lines, None, batch_tag, input_loc=input_loc)
-    f.writelines(lines)
+        _emit_layer(ctx, bctx, layer_name, rows, None, batch_tag, input_loc=input_loc)
     if ctx.power_model:
         for layer_name in prologue_layers:
             lat = _layer_latency_for_power(ctx, bctx, layer_name)
@@ -1394,11 +1391,11 @@ def _emit_prologue(ctx, bctx, f, batch_tag='NONE'):
             if get_device(ctx.placement, None, layer_name, "weights") != 'LOCAL':
                 _, wt, _ = calculate_sizes(ctx.model, layer_name, bctx.total_len, fp=ctx.fp)
                 ctx.power_model.add_dram_energy_consumption(ctx.node_id, wt)
-    return len(lines)
+    return len(rows) - before
 
 
 def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_total, pd_type, node_id, instance_id,
-                      batch, max_len, output_path, placement, block_mode_on, gate,
+                      batch, max_len, placement, block_mode_on, gate,
                       enable_attn_offloading, power_model, pim_model, fp,
                       variant, kv_cache_dtype='auto',
                       runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
@@ -1422,38 +1419,38 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
     # pipeline stages on block boundaries (see _pp_stage_boundaries).
     block_starts = []
 
-    with open(output_path, 'w') as f:
-        written = _emit_prologue(ctx, bctx, f)
+    rows = []
+    written = _emit_prologue(ctx, bctx, rows)
 
-        # Transformer blocks
-        num_layers = config['num_hidden_layers']
-        iter_count, copy_count = (num_layers, 1) if block_mode_on else (1, num_layers)
+    # Transformer blocks
+    num_layers = config['num_hidden_layers']
+    iter_count, copy_count = (num_layers, 1) if block_mode_on else (1, num_layers)
 
-        for layer_num in range(iter_count):
-            block_lines, block_power = _build_transformer_block(ctx, bctx, layer_num, 'NONE', str(batch.batch_id))
+    for layer_num in range(iter_count):
+        block_lines, block_power = _build_transformer_block(ctx, bctx, layer_num, 'NONE', str(batch.batch_id))
 
-            # MoE blocks are only safely replayable when the router
-            # opts into block copy (BALANCED is deterministic; others
-            # carry tiny per-layer variance that block_copy swallows
-            # for the sake of trace-generation speed).
-            can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
-            if can_copy:
-                for _ in range(copy_count):
-                    block_starts.append(written)
-                    f.writelines(block_lines)
-                    written += len(block_lines)
-                    block_power.flush(ctx, enable_attn_offloading)
-            else:
+        # MoE blocks are only safely replayable when the router
+        # opts into block copy (BALANCED is deterministic; others
+        # carry tiny per-layer variance that block_copy swallows
+        # for the sake of trace-generation speed).
+        can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
+        if can_copy:
+            for _ in range(copy_count):
                 block_starts.append(written)
-                f.writelines(block_lines)
+                rows.extend(block_lines)
                 written += len(block_lines)
                 block_power.flush(ctx, enable_attn_offloading)
+        else:
+            block_starts.append(written)
+            rows.extend(block_lines)
+            written += len(block_lines)
+            block_power.flush(ctx, enable_attn_offloading)
 
-        # Final layers
-        _emit_final_layers(ctx, bctx, f)
-        _emit_pp_pd_power(ctx, bctx)
+    # Final layers
+    _emit_final_layers(ctx, bctx, rows)
+    _emit_pp_pd_power(ctx, bctx)
 
-    return block_starts
+    return rows, block_starts
 
 
 # ======================================================================
@@ -1461,7 +1458,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
 # ======================================================================
 
 def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_total, pd_type, node_id, instance_id,
-                                  batches, max_len, output_path, placement, block_mode_on, gate,
+                                  batches, max_len, placement, block_mode_on, gate,
                                   enable_attn_offloading, power_model, pim_model, fp,
                                   variant, kv_cache_dtype='auto',
                                   runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
@@ -1490,75 +1487,68 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 
     num_layers = config['num_hidden_layers']
 
-    with open(output_path, 'w') as f:
-        # PROLOGUE: Batch1 prologue + first pre-attn
-        _emit_prologue(ctx, bctx1, f, 'BATCH_1')
+    rows = []
 
-        pre_attn1_lines = []
-        pre_attn1_power = PowerAccumulator([], [], 0, 0)
-        _emit_pre_attn_layers(ctx, bctx1, 0, pre_attn1_lines, pre_attn1_power, 'BATCH_1')
-        f.writelines(pre_attn1_lines)
-        pre_attn1_power.flush(ctx, enable_attn_offloading)
+    # PROLOGUE: Batch1 prologue + first pre-attn
+    _emit_prologue(ctx, bctx1, rows, 'BATCH_1')
 
-        # Batch2 prologue + first pre-attn
-        _emit_prologue(ctx, bctx2, f, 'BATCH_2')
+    pre_attn1_power = PowerAccumulator([], [], 0, 0)
+    _emit_pre_attn_layers(ctx, bctx1, 0, rows, pre_attn1_power, 'BATCH_1')
+    pre_attn1_power.flush(ctx, enable_attn_offloading)
 
-        pre_attn2_lines = []
-        pre_attn2_power = PowerAccumulator([], [], 0, 0)
-        _emit_pre_attn_layers(ctx, bctx2, 0, pre_attn2_lines, pre_attn2_power, 'BATCH_2')
-        f.writelines(pre_attn2_lines)
-        pre_attn2_power.flush(ctx, enable_attn_offloading)
+    # Batch2 prologue + first pre-attn
+    _emit_prologue(ctx, bctx2, rows, 'BATCH_2')
 
-        # MIDDLE LAYERS: interleaved post_attn + pre_attn
-        middle_layers = num_layers - 1
-        iter_count, copy_count = (middle_layers, 1) if block_mode_on else (1, middle_layers)
+    pre_attn2_power = PowerAccumulator([], [], 0, 0)
+    _emit_pre_attn_layers(ctx, bctx2, 0, rows, pre_attn2_power, 'BATCH_2')
+    pre_attn2_power.flush(ctx, enable_attn_offloading)
 
-        for layer_num in range(iter_count):
-            block_lines = []
-            block_power = PowerAccumulator([], [], 0, 0)
+    # MIDDLE LAYERS: interleaved post_attn + pre_attn
+    middle_layers = num_layers - 1
+    iter_count, copy_count = (middle_layers, 1) if block_mode_on else (1, middle_layers)
 
-            # Batch1: post_attn(current) + pre_attn(next)
-            _emit_post_attn_layers(ctx, bctx1, layer_num, block_lines, block_power, f"{batches[0].batch_id}.0", 'BATCH_1')
-            _emit_pre_attn_layers(ctx, bctx1, layer_num + 1, block_lines, block_power, 'BATCH_1')
+    for layer_num in range(iter_count):
+        block_lines = []
+        block_power = PowerAccumulator([], [], 0, 0)
 
-            # Batch2: post_attn(current) + pre_attn(next)
-            _emit_post_attn_layers(ctx, bctx2, layer_num, block_lines, block_power, f"{batches[1].batch_id}.1", 'BATCH_2')
-            _emit_pre_attn_layers(ctx, bctx2, layer_num + 1, block_lines, block_power, 'BATCH_2')
+        # Batch1: post_attn(current) + pre_attn(next)
+        _emit_post_attn_layers(ctx, bctx1, layer_num, block_lines, block_power, f"{batches[0].batch_id}.0", 'BATCH_1')
+        _emit_pre_attn_layers(ctx, bctx1, layer_num + 1, block_lines, block_power, 'BATCH_1')
 
-            # MoE blocks are only safely replayable when the router
-            # opts into block copy (BALANCED is deterministic; others
-            # carry tiny per-layer variance that block_copy swallows
-            # for the sake of trace-generation speed).
-            can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
-            if can_copy:
-                for _ in range(copy_count):
-                    f.writelines(block_lines)
-                    block_power.flush(ctx, enable_attn_offloading)
-            else:
-                f.writelines(block_lines)
+        # Batch2: post_attn(current) + pre_attn(next)
+        _emit_post_attn_layers(ctx, bctx2, layer_num, block_lines, block_power, f"{batches[1].batch_id}.1", 'BATCH_2')
+        _emit_pre_attn_layers(ctx, bctx2, layer_num + 1, block_lines, block_power, 'BATCH_2')
+
+        # MoE blocks are only safely replayable when the router
+        # opts into block copy (BALANCED is deterministic; others
+        # carry tiny per-layer variance that block_copy swallows
+        # for the sake of trace-generation speed).
+        can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
+        if can_copy:
+            for _ in range(copy_count):
+                rows.extend(block_lines)
                 block_power.flush(ctx, enable_attn_offloading)
+        else:
+            rows.extend(block_lines)
+            block_power.flush(ctx, enable_attn_offloading)
 
-        # EPILOGUE: last layer post_attn + final layers
-        last_lines = []
-        last_power = PowerAccumulator([], [], 0, 0)
-        _emit_post_attn_layers(ctx, bctx1, num_layers - 1, last_lines, last_power, f"{batches[0].batch_id}.0", 'BATCH_1')
-        f.writelines(last_lines)
-        last_power.flush(ctx, enable_attn_offloading)
-        _emit_final_layers(ctx, bctx1, f, 'BATCH_1')
+    # EPILOGUE: last layer post_attn + final layers
+    last_power = PowerAccumulator([], [], 0, 0)
+    _emit_post_attn_layers(ctx, bctx1, num_layers - 1, rows, last_power, f"{batches[0].batch_id}.0", 'BATCH_1')
+    last_power.flush(ctx, enable_attn_offloading)
+    _emit_final_layers(ctx, bctx1, rows, 'BATCH_1')
 
-        last_lines2 = []
-        last_power2 = PowerAccumulator([], [], 0, 0)
-        _emit_post_attn_layers(ctx, bctx2, num_layers - 1, last_lines2, last_power2, f"{batches[1].batch_id}.1", 'BATCH_2')
-        f.writelines(last_lines2)
-        last_power2.flush(ctx, enable_attn_offloading)
-        _emit_final_layers(ctx, bctx2, f, 'BATCH_2')
+    last_power2 = PowerAccumulator([], [], 0, 0)
+    _emit_post_attn_layers(ctx, bctx2, num_layers - 1, rows, last_power2, f"{batches[1].batch_id}.1", 'BATCH_2')
+    last_power2.flush(ctx, enable_attn_offloading)
+    _emit_final_layers(ctx, bctx2, rows, 'BATCH_2')
 
-        _emit_pp_pd_power(ctx, bctx1)
+    _emit_pp_pd_power(ctx, bctx1)
 
     # Sub-batch interleaving leaves both sub-batches mid-block at every
     # group edge, so there is no single tensor to hand to the next stage.
     # generate_trace refuses the combination before we get here.
-    return []
+    return rows, []
 
 
 # ======================================================================
@@ -1671,11 +1661,11 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         runtime_max_num_seqs=max_num_seqs,
                         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len)
     if not enable_sub_batch_interleaving:
-        block_starts = _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
+        rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)
     else:
         batches = _make_sub_batch(batch)
         if len(batches) < 2 or len(batches[0].requests) == 0 or len(batches[1].requests) == 0:
-            block_starts = _synthesize_trace(*synth_args, batch, max_len, output_path, **synth_kwargs)
+            rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)
         else:
             if pp_size > 1:
                 raise ValueError(
@@ -1683,17 +1673,11 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                     "an interleaved trace leaves both sub-batches mid-block at every "
                     "group edge, so a pipeline stage has no single hidden state to pass on"
                 )
-            block_starts = _synthesize_interleaved_trace(*synth_args, batches, max_len, output_path, **synth_kwargs)
+            rows, block_starts = _synthesize_interleaved_trace(*synth_args, batches, max_len, **synth_kwargs)
 
     stage_boundaries = _pp_stage_boundaries(block_starts, pp_size)
 
-    with open(output_path, 'r') as f:
-        dic = []
-        for line in f.readlines():
-            split = re.findall(r'\S+', line)
-            dic.append(split)
-
-    # vllm: open output txt file and add load, evict mem
+    # vllm: prepend the load / evict rows
     mem = []
     if load_size != 0:
         load = ["kv_load", '0', 'LOCAL', '0', get_device(placement, None, None, 'kv_evict_loc'), str(load_size), 'LOCAL', '0', 'NONE', '0', 'NONE']
@@ -1709,34 +1693,100 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     if power_model is not None:
         power_model.print_log(node_id)
 
-    result = mem + dic
+    # instance type
+    if pd_type == None:
+        instance_type = 'COLOCATED'
+    elif pd_type == 'prefill':
+        instance_type = 'PREFILL'
+    elif pd_type == 'decode':
+        instance_type = 'DECODE'
+    else:
+        raise ValueError(f"Unknown instance type {pd_type}.")
+
+    header_line = f"{instance_type}\t\tmodel_parallel_NPU_group: {pp_size}"
+    if stage_boundaries:
+        header_line += "\t\tpp_stage_boundaries: " + ",".join(str(b) for b in stage_boundaries)
+
+    _write_trace(output_path, header_line, mem + rows)
+    return
+
+
+# ======================================================================
+# Trace file writer
+# ======================================================================
+
+_TRACE_ROW_FIELDS = 11
+
+# One-shot guard, see _write_trace.
+_row_format_checked = False
+
+
+def _write_trace(output_path, header_line, rows):
+    """Write the trace file in a single pass.
+
+    Rows arrive as field tuples straight from the emitters: eleven fields
+    for a layer, one for an ``EXPERT``/``PIM`` marker whose text occupies
+    the name column with the rest blank. Layer names get their final row
+    index appended here, and here only, because that index depends on how
+    many ``kv_load``/``kv_evict`` rows were prepended -- which is not known
+    until every row exists.
+
+    This replaces a write -> read back -> ``re.findall`` per line -> rewrite
+    round trip. The round trip existed purely to renumber, and it cost a
+    regex split per row on top of writing the file, reading it, and writing
+    it again. A 145-iteration run spent 42,341 ``re.findall`` calls on it.
+
+    Marker rows are told apart by field count rather than by the old
+    ``"EXPERT" not in name and "PIM" not in name`` substring test, which
+    would have mislabelled any future layer whose canonical name contained
+    either word.
+    """
+    global _row_format_checked
+
+    lines = []
+    for i, row in enumerate(rows):
+        if len(row) == _TRACE_ROW_FIELDS:
+            lines.append(formatter(f'{row[0]}_{i}', *row[1:]))
+        elif len(row) == 1:
+            lines.append(formatter(row[0], *([''] * 10)))
+        else:
+            raise ValueError(
+                f"trace row {i} has {len(row)} fields; expected "
+                f"{_TRACE_ROW_FIELDS} for a layer row or 1 for a marker. "
+                f"Row: {row!r}"
+            )
+
+    # Dropping the read-back also drops the place where a formatted row
+    # that had swallowed its own column separator used to surface -- as a
+    # short field list, which then raised a TypeError on the rewrite. That
+    # is how the 15-character ``ALLREDUCE:1,0,0`` case was caught. The
+    # explicit separators in utils._FMT now make a merge unrepresentable,
+    # so this is a regression guard on _FMT rather than the primary
+    # defence, and it runs on the *formatted* text because the field tuple
+    # is never the thing at fault: a correct 11-element row is exactly what
+    # formatting merged. Checking every row of every trace would cost a
+    # split per row and give back the speed this change bought, so it
+    # validates the first trace written in the process, which is enough to
+    # fail immediately on any run.
+    if not _row_format_checked:
+        _row_format_checked = True
+        for i, (row, line) in enumerate(zip(rows, lines)):
+            if len(row) != _TRACE_ROW_FIELDS:
+                continue
+            got = len(line.split())
+            if got != _TRACE_ROW_FIELDS:
+                raise ValueError(
+                    f"trace row {i} formatted to {got} whitespace-separated "
+                    f"fields instead of {_TRACE_ROW_FIELDS}: a value filled "
+                    f"its column and merged with the next. Widen the column "
+                    f"in utils._FMT. Row: {row!r}"
+                )
 
     with open(output_path, 'w') as f:
-        # instance type
-        if pd_type == None:
-            instance_type = 'COLOCATED'
-        elif pd_type == 'prefill':
-            instance_type = 'PREFILL'
-        elif pd_type == 'decode':
-            instance_type = 'DECODE'
-        else:
-            raise ValueError(f"Unknown instance type {pd_type}.")
-
-        header_line = f"{instance_type}\t\tmodel_parallel_NPU_group: {pp_size}"
-        if stage_boundaries:
-            header_line += "\t\tpp_stage_boundaries: " + ",".join(str(b) for b in stage_boundaries)
         f.write(header_line + "\n")
-        f.write(str(len(result))+'\n')
+        f.write(str(len(rows)) + '\n')
         f.write(header())
-
-        # add layer_number at the end of the layer_name
-        for i in range(0, len(result)):
-            if "EXPERT" not in result[i][0] and "PIM" not in result[i][0]:
-                new_string = f'{result[i][0]}_{i}'
-                f.write(formatter(new_string, *result[i][1:]))
-            else:
-                f.write(formatter(' '.join(result[i]),'','','','','','','','','',''))
-    return
+        f.writelines(lines)
 
 
 # ======================================================================
