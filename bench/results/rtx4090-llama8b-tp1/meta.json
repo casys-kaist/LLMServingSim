@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "model": "meta-llama/Llama-3.1-8B",
+  "vllm_version": "0.19.0",
+  "engine_kwargs": {
+    "model": "meta-llama/Llama-3.1-8B",
+    "tensor_parallel_size": 1,
+    "data_parallel_size": 1,
+    "enable_expert_parallel": false,
+    "max_num_seqs": 128,
+    "max_num_batched_tokens": 2048,
+    "max_model_len": 32768,
+    "dtype": "bfloat16",
+    "kv_cache_dtype": "auto",
+    "seed": 42
+  },
+  "dataset_path": "workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl",
+  "dataset_hash": "05e48b32da530d4a3dd77f3d47c6fe694ac8308d611aa088e38bb10fba2b3b3a",
+  "num_requests": 300,
+  "started_at": "2026-08-17T21:03:42.715398Z",
+  "finished_at": "2026-08-17T21:06:35.229535Z",
+  "tick_seconds": 1.0
+}

@@ -1,0 +1,10 @@
+GPU: NVIDIA GeForce RTX 4090
+VRAM: 24 GB GDDR6X
+Memory Bandwidth: 1008 GB/s
+Power Limit: 450 W
+Driver: 580.95.05
+CUDA: 12.8
+vLLM: 0.19.0
+PCIe: Gen4 x16
+Profiled: 2026-08-17T19:43:32+00:00
+Measurement Iterations: 3
