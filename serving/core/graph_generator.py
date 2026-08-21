@@ -1,11 +1,87 @@
+import glob
+import hashlib
 import os
 import subprocess
+from collections import OrderedDict
 from time import time
 from .request import *
 from .logger import get_logger
 from .run_paths import input_path
 
 logger = get_logger("GraphGenerator")
+
+# ----------------------------------------------------------------------
+# Content-addressed cache of converted graphs.
+#
+# A DP group whose members are unevenly loaded spends half its waves on
+# dummy batches: an idle member emits a 1-token placeholder so the round's
+# ALLTOALL still has a partner, and _pad_batch_to_max then inflates it to
+# the group's max, so its trace is the same shape and cost as a real one.
+# On the swe-bench MoE DP+EP example that is 4,405 of 8,810 batches -- and
+# only 22 of those 4,405 traces are distinct, with one accounting for
+# 4,382. Converting that same graph 4,382 times cost ~12 s of a 63 s run.
+#
+# Keyed on the trace bytes plus every other input the converter reads
+# (num_npus, npu_offset, local_offloading -- its whole CLI surface besides
+# the paths), so a hit is byte-identical to a miss by construction. The
+# PREFILL path writes two files per rank and both land next to each other,
+# so the cache stores whatever `llm.*.et` a conversion produced rather
+# than assuming a count.
+#
+# Held as bytes rather than paths because each DP wave needs its own copy:
+# ASTRA-Sim is handed one folder per wave and every member reads its own
+# `llm.<npu>.et` out of it.
+# ----------------------------------------------------------------------
+_ET_CACHE = OrderedDict()          # key -> [(basename, bytes), ...]
+_ET_CACHE_BYTES = 0
+_ET_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_ET_CACHE_STATS = {"hit": 0, "miss": 0, "skipped": 0}
+
+# Traces seen exactly once. A graph is only worth holding after it repeats:
+# most *real* batches produce a unique trace (3,482 distinct out of 4,405 on
+# the swe-bench MoE DP+EP example), and caching those on first sight filled
+# 64 MB with entries that were never read again, evicting the dummy-wave
+# graph that actually repeats. Storing on second sight costs one extra
+# conversion per distinct trace and keeps the cache to what earns its keep.
+_ET_SEEN = OrderedDict()
+_ET_SEEN_MAX = 200_000
+
+
+def graph_cache_stats():
+    """Hit/miss counts for the converted-graph cache."""
+    return dict(_ET_CACHE_STATS, entries=len(_ET_CACHE), bytes=_ET_CACHE_BYTES)
+
+
+def _et_names(workload_dir):
+    return set(glob.glob(os.path.join(workload_dir, "llm.*.et")))
+
+
+def _cache_store(key, paths):
+    """Read the freshly converted files into the cache, evicting LRU.
+
+    Only caches a trace that has been seen before; see _ET_SEEN.
+    """
+    global _ET_CACHE_BYTES
+    if key not in _ET_SEEN:
+        _ET_SEEN[key] = None
+        while len(_ET_SEEN) > _ET_SEEN_MAX:
+            _ET_SEEN.popitem(last=False)
+        return
+    entry = []
+    total = 0
+    for path in sorted(paths):
+        with open(path, "rb") as f:
+            blob = f.read()
+        entry.append((os.path.basename(path), blob))
+        total += len(blob)
+    if not entry or total > _ET_CACHE_MAX_BYTES:
+        _ET_CACHE_STATS["skipped"] += 1
+        return
+    _ET_CACHE[key] = entry
+    _ET_CACHE_BYTES += total
+    while _ET_CACHE_BYTES > _ET_CACHE_MAX_BYTES and len(_ET_CACHE) > 1:
+        _, evicted = _ET_CACHE.popitem(last=False)
+        _ET_CACHE_BYTES -= sum(len(b) for _, b in evicted)
 
 # Chakra's LLMConverter, imported once and reused for the whole run.
 #
@@ -43,7 +119,7 @@ def _get_llm_converter():
     return _LLMConverter
 
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, in_process=True):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, in_process=True, reuse_graphs=True):
 
     cwd = os.getcwd()
     chakra = os.path.join(cwd, "extern/graph_frontend/chakra")
@@ -62,6 +138,30 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
     output_path = input_path(inputs_root, "workload", output_name, "llm")
     workload_dir = os.path.dirname(output_path)
     os.makedirs(workload_dir, exist_ok=True)
+
+    cache_key = None
+    if reuse_graphs:
+        with open(trace_path, "rb") as f:
+            digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
+        cache_key = (digest, num_npus, npu_offset, enable_local_offloading)
+        cached = _ET_CACHE.get(cache_key)
+        if cached is not None:
+            _ET_CACHE.move_to_end(cache_key)
+            _ET_CACHE_STATS["hit"] += 1
+            logger.debug("Graph cache hit for %s", trace_path,
+                         extra={"node_id": node_id, "instance_id": instance_id})
+            for name, blob in cached:
+                with open(os.path.join(workload_dir, name), "wb") as g:
+                    g.write(blob)
+            if cleanup_trace:
+                try:
+                    os.remove(trace_path)
+                except FileNotFoundError:
+                    pass
+            return
+        _ET_CACHE_STATS["miss"] += 1
+
+    before = _et_names(workload_dir) if cache_key is not None else None
 
     if in_process:
         logger.debug("Converting graph in-process: %s -> %s", trace_path, output_path,
@@ -85,6 +185,9 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
         logger.debug("Generating graph with command: %s", " ".join(cmd), extra={"node_id": node_id, "instance_id": instance_id})
 
         subprocess.run(cmd, cwd=chakra, text=True, check=True)
+
+    if cache_key is not None:
+        _cache_store(cache_key, _et_names(workload_dir) - before)
 
     if cleanup_trace:
         try:
