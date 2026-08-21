@@ -148,7 +148,7 @@ GPUs.
 | `tp_size` | int | inferred | Tensor-parallel degree |
 | `pp_size` | int | `1` | Pipeline-parallel degree |
 | `ep_size` | int | `tp_size` (MoE) / `1` (dense) | Expert-parallel degree |
-| `dp_group` | string\|null | `null` | Instances with the same string form a DP group and share experts via cross-instance ALLTOALL |
+| `dp_group` | string\|null | `null` | Instances with the same string form one data-parallel group, wave-synchronized per iteration; for MoE they also share experts across the group |
 
 You only need to provide **one of** `num_npus` or `tp_size`. The other
 gets inferred. So:
@@ -300,12 +300,15 @@ Full semantics, including `dtype`'s three-level fallback and the
 
 ## DP+EP, the topology that needs more explanation
 
-When multiple instances share the same `dp_group`, they form a **2D
-ASTRA-Sim topology** sized `[tp_size, dp_group_size]`. Collectives are
-scoped per dimension:
+When multiple instances share the same `dp_group`, they form a
+**multi-dimensional ASTRA-Sim topology**, innermost dimension first:
+`[tp_size, dp_group_size]`, or `[tp_size, pp_size, dp_group_size]` when
+`pp_size > 1`. Collectives are scoped per dimension:
 
-- **TP ALLREDUCE** runs on dim 0 only (within an instance)
-- **EP ALLTOALL** runs on dim 1 only (across the DP group)
+- **TP ALLREDUCE** runs on the TP dim only (within an instance)
+- **EP** runs on the DP dim, plus the TP dim when EP spans past one
+  instance's GPUs. The PP dim is never involved — vLLM's EP group pins
+  the pipeline stage.
 
 All instances in a DP group share **one** ASTRA-Sim process with
 wave-synchronized scheduling. MoE expert weights are sharded by
@@ -325,7 +328,7 @@ the cluster config and **generates three ASTRA-Sim input files** under
 
 | Generated file | Driven by |
 | --- | --- |
-| `network/network.yml` | `link_bw`, `link_latency`, `[tp_size, dp_group_size]` topology |
+| `network/network.yml` | `link_bw`, `link_latency`, `[tp_size, (pp_size,) dp_group_size]` topology |
 | `system/system.json` | Memory bandwidths, scheduling policy, per-dim collective implementations |
 | `memory/memory_expansion.json` | CXL devices and any extended memory tiers |
 
@@ -334,7 +337,7 @@ the cluster config.
 
 ## Provided configs
 
-The repo ships **20** worked configs under `configs/cluster/`. Those
+The repo ships **24** worked configs under `configs/cluster/`. Those
 without a link are runnable as-is but have no dedicated example page:
 
 | Config | Shape | Used by |
@@ -350,6 +353,10 @@ without a link are runnable as-is but have no dedicated example page:
 | `single_node_tp_pp_instance.json` | 4 GPUs as `tp=2 x pp=2` | [Pipeline parallel](./parallelism/pipeline-parallel) |
 | `single_node_moe_single_instance.json` | Qwen3-MoE, TP=2 EP=2 | [Expert parallel](./parallelism/expert-parallel) |
 | `single_node_moe_dp_ep_instance.json` | 2 MoE instances in one DP group, EP=2 | [DP+EP MoE](./parallelism/dp-ep-moe) |
+| `single_node_dp_instance.json` | DP=2 x TP=2, dense model, 4 GPUs | — |
+| `single_node_moe_dp_tp_instance.json` | DP=2 x TP=2 MoE, EP=2, 4 GPUs | — |
+| `single_node_moe_dp_pp_instance.json` | DP=2 x PP=2 MoE, EP=2, 4 GPUs | — |
+| `single_node_moe_dp_tp_pp_instance.json` | DP=2 x TP=2 x PP=2 MoE, EP=4, 8 GPUs | — |
 | `single_node_moe_multi_instance.json` | 2 MoE instances, no DP group | — |
 | `single_node_moe_pd_instance.json` | MoE with P/D disaggregation | — |
 | `single_node_moe_pp_instance.json` | MoE on 4 GPUs, `tp=2 x pp=2`, `ep=2` | [Pipeline parallel](./parallelism/pipeline-parallel) |

@@ -673,7 +673,23 @@ def main():
             controller.write_flush(p, dp_ready_workloads.pop(instance_id))
             responded = True
         # DP group: truly idle instance (no inflight batch) — create dummy batch so ALLTOALL syncs
-        elif new_req is None and instance_id in inst_dp_group and sys == inst2npu_mapping[instance_id] and len(schedulers[instance_id].inflight) == 0:
+        # An idle DP member has to keep pace with a busy one. vLLM requires every
+        # rank of a DP group to run the same number of forwards, and with PP a
+        # rank has pp_size microbatches in flight at once -- so the gate here is
+        # schedule()'s own pipeline-depth rule, not "nothing in flight". Gating on
+        # == 0 lets the member holding the real request run ahead by up to
+        # pp_size batches, and the dp_pending barrier then waits for a round the
+        # idle members can never join.
+        #
+        # Any NPU of the instance may open the round, not just its first. Which
+        # NPU ASTRA-Sim asks about is not ours to choose, and an instance whose
+        # start NPU is busy or starved would otherwise never contribute a dummy
+        # -- the barrier then waits on a member that cannot answer. ``not in
+        # dp_pending[dg]`` keeps it to one dummy per member per round, which is
+        # what the start-NPU test used to be standing in for.
+        elif (new_req is None and instance_id in inst_dp_group
+              and instance_id not in dp_pending[inst_dp_group[instance_id]]
+              and len(schedulers[instance_id].inflight) < schedulers[instance_id].pp_size):
             dg = inst_dp_group[instance_id]
             if dp_pending[dg]:
                 # Emit a 1-token dummy; the uniform pad-to-max pass below
@@ -683,6 +699,14 @@ def main():
                 dummy = Batch(schedulers[instance_id].get_batch_id(), instances[instance_id]["model_name"],
                               1, 1, [1], [], 0, 1, [], [], [1], current, 0)
                 dummy.fired.append(sys)
+                # Register it the way scheduler._build_batch registers a real
+                # batch. Without this the instance's other NPUs get nothing:
+                # schedule() routes them to _schedule_existing, which searches
+                # inflight, finds no dummy, and they fall through to "pass" --
+                # so their .et never runs and the group's EP collective blocks
+                # forever. Invisible at tp=pp=1, where the start NPU is the only
+                # NPU an instance owns.
+                schedulers[instance_id].inflight.append(dummy)
                 dp_pending[dg][instance_id] = (dummy, inst2node_mapping[instance_id])
 
                 if len(dp_pending[dg]) == len(dp_groups[dg]):
@@ -710,6 +734,7 @@ def main():
 
                     for inst_id in dp_groups[dg]:
                         batch, nid = dp_pending[dg][inst_id]
+                        batch.workload_name = dp_workload_name
                         inst = instances[inst_id]
                         inst_cfg = instance_runtime_configs[inst_id]
                         generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
@@ -748,7 +773,15 @@ def main():
                     responded = True
         # runnable batch exists
         elif new_req is not None:
-            if sys == inst2npu_mapping[instance_id]:  # first NPU of the instance
+            # ``_build_batch`` returns a batch fired only by the NPU that built
+            # it, so a longer ``fired`` means this poll joined a batch through
+            # ``_schedule_existing``. With DP groups any NPU of an instance may
+            # open a round (the idle-member dummy in particular), so the start
+            # NPU can arrive here holding a batch it did not build -- it has to
+            # be served like any other joiner, not registered into the round a
+            # second time.
+            built_here = len(new_req.fired) == 1  # implies sys is the start NPU
+            if built_here:  # first NPU of the instance, opening a new batch
                 waiting_request[instance_id] = False
                 instance = instances[instance_id]
                 dg = inst_dp_group.get(instance_id)
@@ -777,6 +810,7 @@ def main():
 
                         for inst_id in dp_groups[dg]:
                             batch, nid = dp_pending[dg][inst_id]
+                            batch.workload_name = dp_workload_name
                             inst = instances[inst_id]
                             inst_cfg = instance_runtime_configs[inst_id]
                             generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
@@ -837,11 +871,33 @@ def main():
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
-            elif new_req is not None:
-                # Non-first NPU: pick up existing batch workload
-                workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id,
-                                        inputs_root=run_paths.inputs_root)
-                controller.write_flush(p, workload)
+            else:
+                # Joined an existing batch: pick up its workload. workload_name
+                # matters for a DP batch, whose graph lives in the group's shared
+                # folder -- deriving the default instance<id>_batch<id> path here
+                # points at a directory that was never written, and ASTRA-Sim
+                # stalls on the missing .et instead of failing.
+                #
+                # A DP batch is in ``inflight`` from the moment its own instance
+                # schedules it, but it is only stamped with the shared folder
+                # when the *last* member of the group joins the barrier. In that
+                # window ``_schedule_existing`` will hand it to this NPU with no
+                # name yet, so wait instead of guessing a path: hand the claim
+                # back and pass, and the batch is re-offered on a later poll once
+                # the round is assembled. The instance is necessarily already in
+                # ``dp_pending`` (the batch exists because its first NPU built
+                # it), so passing here cannot stall the barrier.
+                if sys == inst2npu_mapping[instance_id]:
+                    waiting_request[instance_id] = False
+                if instance_id in inst_dp_group and new_req.workload_name is None:
+                    new_req.fired.remove(sys)
+                    controller.write_flush(p, "pass")
+                    responded = True
+                else:
+                    workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id,
+                                            workload_name=new_req.workload_name,
+                                            inputs_root=run_paths.inputs_root)
+                    controller.write_flush(p, workload)
 
         # check time to store throughput (only print on start NPU to avoid transient states)
         if current > last_log + INTERVAL and sys == inst2npu_mapping[instance_id]:

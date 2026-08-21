@@ -131,6 +131,7 @@ def _resolve_parallelism(instance, model_config):
     instance["pp_size"] = pp_size
     instance["ep_size"] = ep_size
     instance["dp_group"] = dp_group
+    instance["is_moe"] = is_moe
 
     return num_npus, tp_size, pp_size, ep_size, dp_group
 
@@ -147,29 +148,60 @@ def _resolve_dp_groups(all_instances):
         # All members must have same tp_size and ep_size
         tp0 = members[0]["tp_size"]
         ep0 = members[0]["ep_size"]
+        pp0 = members[0]["pp_size"]
         for m in members[1:]:
             if m["tp_size"] != tp0:
                 raise ValueError(f"DP group '{group_name}': tp_size mismatch ({tp0} vs {m['tp_size']})")
             if m["ep_size"] != ep0:
                 raise ValueError(f"DP group '{group_name}': ep_size mismatch ({ep0} vs {m['ep_size']})")
+            if m["pp_size"] != pp0:
+                raise ValueError(f"DP group '{group_name}': pp_size mismatch ({pp0} vs {m['pp_size']})")
 
         dp_size = len(members)
-        ep_total = ep0  # ep_size in config is the total EP degree across DP group
-        local_ep = ep_total // dp_size
-        if ep_total % dp_size != 0:
-            raise ValueError(f"DP group '{group_name}': ep_size ({ep_total}) not divisible by dp_group_size ({dp_size})")
-        if local_ep > tp0:
-            raise ValueError(f"DP group '{group_name}': local_ep ({local_ep}) > tp_size ({tp0})")
-
-        # Topology dimensions for DP group: dim 0 = TP (intra-instance), dim 1 = DP (cross-instance)
-        # ALLREDUCE (TP): dim 0 only. ALLTOALL (EP): dim 1 (or both if EP spans TP+DP).
-        tp_dim = [True, False]  # ALLREDUCE on dim 0 only
-        if ep_total <= tp0:
-            # EP fits within TP dimension (no cross-instance ALLTOALL)
-            ep_dim = [True, False]
+        if not members[0].get("is_moe", True):
+            # A dense model has no experts, so ``ep_size`` is not a parallelism
+            # degree to spread over the group -- it is 1 because there is
+            # nothing to shard. Dividing it by dp_group_size would reject pure
+            # data parallelism over a dense model, which is what vLLM's
+            # ``--data-parallel-size`` does on its own.
+            ep_total = 1
+            local_ep = 1
         else:
-            # EP spans both dimensions (cross-instance ALLTOALL)
-            ep_dim = [True, True] if tp0 > 1 else [False, True]
+            ep_total = ep0  # ep_size in config is the total EP degree across DP group
+            local_ep = ep_total // dp_size
+            if ep_total % dp_size != 0:
+                raise ValueError(f"DP group '{group_name}': ep_size ({ep_total}) not divisible by dp_group_size ({dp_size})")
+            if local_ep > tp0:
+                raise ValueError(f"DP group '{group_name}': local_ep ({local_ep}) > tp_size ({tp0})")
+
+        # Topology dimensions for a DP group, innermost first:
+        #   [tp_size] + ([pp_size] if pp > 1) + [dp_group_size]
+        # matching vLLM's rank layout, which is DP x PP x TP with TP contiguous
+        # (``parallel_state.initialize_model_parallel``:
+        # ``all_ranks.reshape(-1, dp, pp, pcp, tp)``).
+        #
+        # Collective scoping follows the groups vLLM builds off that layout:
+        #   TP  ``all_ranks.view(-1, tp)``                    -> the TP dim only.
+        #   EP  ``all_ranks.transpose(1, 2).reshape(-1, dp*pcp*tp)`` -> DP and TP,
+        #       and deliberately **not** PP: the transpose pins the PP index, so
+        #       experts are sharded across the DP x TP ranks of one pipeline
+        #       stage. Marking PP involved would drag the other stages' NPUs into
+        #       a collective they never join in vLLM.
+        has_pp = pp0 > 1
+        if has_pp:
+            tp_dim = [True, False, False]
+            if ep_total <= tp0:
+                ep_dim = [True, False, False]
+            else:
+                ep_dim = [True, False, True] if tp0 > 1 else [False, False, True]
+        else:
+            tp_dim = [True, False]
+            if ep_total <= tp0:
+                # EP fits within TP dimension (no cross-instance ALLTOALL)
+                ep_dim = [True, False]
+            else:
+                # EP spans both dimensions (cross-instance ALLTOALL)
+                ep_dim = [True, True] if tp0 > 1 else [False, True]
 
         for m in members:
             m["dp_group_size"] = dp_size
@@ -204,11 +236,20 @@ def _compute_network_dims(instances):
             dp_groups.setdefault(dg, []).append(inst)
 
     if dp_groups:
-        # DP group mode: topology = [tp_size, dp_group_size]
-        # All instances in DP group must have same tp_size (validated by
-        # _resolve_dp_groups).
+        # DP group mode: topology = [tp_size, pp_size, dp_group_size], innermost
+        # first, mirroring vLLM's DP x PP x TP rank layout. pp_size is dropped
+        # when it is 1 so a plain DP+TP config keeps the 2-D topology (and the
+        # collective dim vectors in _resolve_dp_groups keep their 2-element form).
+        #
+        # Leaving pp_size out entirely -- which this did -- sizes the world at
+        # tp * dp while tp * pp * dp NPUs exist, so ASTRA-Sim waits on ranks its
+        # topology has no room for and the run hangs with no error.
+        # All members agree on tp/pp/ep (validated by _resolve_dp_groups).
         first_group = next(iter(dp_groups.values()))
-        dims = [first_group[0]["tp_size"], len(first_group)]
+        tp_size = first_group[0]["tp_size"]
+        pp_size = first_group[0]["pp_size"]
+        dims = ([tp_size, pp_size, len(first_group)] if pp_size > 1
+                else [tp_size, len(first_group)])
     else:
         # Independent instances: standard topology.
         total_npu = sum(

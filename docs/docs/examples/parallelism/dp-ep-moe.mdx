@@ -63,9 +63,10 @@ DP+EP cluster:
 - **`ep_size: 2`** while `tp_size: 1`: EP spans the DP group
   (`ep_size > tp_size` only allowed when a `dp_group` is set).
 
-`config_builder.py` sees the DP group and emits a 2D ASTRA-Sim
-topology `[tp_size, dp_group_size] = [1, 2]`. Collectives are scoped
-per dimension via the `involved_dim` BoolList:
+`config_builder.py` sees the DP group and emits a topology sized
+`[tp_size, dp_group_size] = [1, 2]` — innermost dimension first, with a
+`pp_size` dimension inserted in the middle when `pp_size > 1`.
+Collectives are scoped per dimension via the `involved_dim` BoolList:
 
 - TP-ALLREDUCE: `[True, False]`: dim 0 only (within instance, no-op
   here since `tp_size=1`)

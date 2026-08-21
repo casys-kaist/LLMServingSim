@@ -82,11 +82,41 @@ python -m serving --cluster-config 'configs/cluster/single_node_single_instance.
 #     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_run.csv' \
 #     --num-reqs 10
 
+# Data parallelism example, dense model (dp=2 x tp=2 -> 4 GPUs)
+# python -m serving --cluster-config 'configs/cluster/single_node_dp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_dp_run.csv' \
+#     --num-reqs 10
+
 # MoE DP+EP with agentic session example (SWE-bench)
 # python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_ep_instance.json' \
 #     --dtype bfloat16 --block-size 16 \
 #     --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' --output 'outputs/example_moe_dp_ep_run.csv' \
 #     --num-reqs 1 # session count in agentic workload
+
+# MoE DP+TP example (dp=2 x tp=2, ep=2 -> 4 GPUs)
+# python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_tp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_dp_tp_run.csv' \
+#     --num-reqs 10
+
+# MoE DP+PP example (dp=2 x pp=2, ep=2 -> 4 GPUs)
+# python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_dp_pp_run.csv' \
+#     --num-reqs 10
+
+# MoE DP+TP+PP example (dp=2 x tp=2 x pp=2, ep=4 -> 8 GPUs)
+# python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_tp_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_dp_tp_pp_run.csv' \
+#     --num-reqs 10
+
+# MoE DP+EP across two nodes (dp=2 x tp=2, ep=4 -> 4 GPUs, per-dimension link settings)
+# python -m serving --cluster-config 'configs/cluster/dual_node_moe_dp_ep_intra_inter_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_dual_moe_dp_ep_run.csv' \
+#     --num-reqs 10
 
 
 # -----------------------------------------------------------------------------------------------

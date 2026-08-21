@@ -60,6 +60,11 @@ possible. These shaped the project as much as the patches did.
 - **[@hsule](https://github.com/hsule)**
   - Narrowed the pipeline-parallelism hang to the stage-boundary send/recv size
     mismatch ([#55](https://github.com/casys-kaist/LLMServingSim/issues/55))
+  - `pp > 1` could complete the same request twice, corrupting the per-request
+    CSV and raising `KeyError` in `cache_blocks` with prefix caching on
+    ([#62](https://github.com/casys-kaist/LLMServingSim/issues/62))
+  - DP groups hung with no error whenever combined with `tp > 1` or `pp > 1`
+    ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65))
 - **[@bui-thanh-lam](https://github.com/bui-thanh-lam)**
   - Model-architecture YAML documentation had drifted from the schema
     ([#52](https://github.com/casys-kaist/LLMServingSim/issues/52))

@@ -93,7 +93,15 @@ class Scheduler:
 
         # One batch in flight per pipeline stage.
         if len(self.inflight) >= self.pp_size:
-            return None
+            # The start NPU is a joiner too. With DP groups any NPU of the
+            # instance may open a round -- the idle-member dummy in particular
+            # -- and ``add_done`` only completes a batch once ``start_npu`` has
+            # run it, so a batch opened by another NPU would otherwise never
+            # finish and the group's collective would block forever. For a
+            # non-DP instance every in-flight batch was built here, so
+            # ``start_npu`` is already in ``fired`` and this returns None
+            # exactly as before.
+            return self._schedule_existing(sys, batch_id)
 
         token_budget = self.max_num_batched_tokens
         # (request, tokens scheduled, num_computed_tokens before this step)

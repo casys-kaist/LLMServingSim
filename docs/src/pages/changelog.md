@@ -196,6 +196,48 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   lifetime.
 
 ### Fixed
+- **DP groups no longer hang when combined with `tp > 1` or `pp > 1`**
+  ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65)). A DP group
+  only makes progress if every NPU of every member runs the same round, and
+  `add_done` enforces that silently — it refuses to complete a batch until both
+  `start_npu` and the instance's last NPU appear in `batch.end` — so any path
+  that creates or serves a batch the start NPU cannot claim deadlocks with no
+  error. Six defects broke that, each invisible at `tp=pp=1` where an instance
+  owns exactly one NPU: the idle member's dummy batch was never registered in
+  `inflight`; the non-first NPU derived the solo `instance<id>_batch<id>`
+  workload path instead of the group's shared folder (`Batch` now carries
+  `workload_name`); `_compute_network_dims` omitted `pp_size`, sizing the world
+  at `tp * dp` while `tp * pp * dp` NPUs exist; the dummy gate was
+  `len(inflight) == 0`, so a member holding a real request could run `pp_size`
+  batches ahead of a round the idle members could never join; a DP batch was
+  servable in the window between entering `inflight` and being stamped with the
+  shared folder, where ASTRA-Sim logged `workload file: ... .et does not exist`
+  and hung; and `schedule()` routed on `sys != start_npu`, so the start NPU
+  could only *build* a batch, never join one another NPU had opened. `ep_size`
+  turned out to be irrelevant — `dp=2 x tp=2` fails identically at `ep=2`
+  (`involved_dim=[True, False]`) and `ep=4` (`[True, True]`). The topology is
+  now `[tp, pp, dp]` innermost-first, matching vLLM's
+  `all_ranks.reshape(-1, dp, pp, pcp, tp)`, with `pp` dropped when it is 1 so
+  existing configs keep their 2-D topology. Reported by
+  [@hsule](https://github.com/hsule)
+- Data parallelism over a **dense** model was rejected at startup with
+  `ep_size (1) not divisible by dp_group_size (2)`. `ep_size` defaults to 1 for
+  a dense model because there are no experts to shard, not because it is a
+  degree to spread over the group, so the EP divisibility checks now apply only
+  to MoE models. `configs/cluster/single_node_dp_instance.json` is the repro
+- **`pp > 1` could complete the same request twice**
+  ([#62](https://github.com/casys-kaist/LLMServingSim/issues/62)). With
+  `pp_size > 1` a request is legitimately present in more than one in-flight
+  batch, so it can finish on an earlier batch while a later one is still
+  running, and `add_done` had no guard for that — the whole completion path ran
+  once per in-flight batch. With prefix caching on this raised `KeyError` in
+  `cache_blocks`, whose `req_to_blocks` entry the first pass had already freed;
+  with it off the request landed in the per-request CSV twice, `req_cnt` counted
+  it twice, and `add_latency` was re-run with the later batch's clock. Chunked
+  prefill is the trigger because it is the only thing that takes the pipeline to
+  depth 2 with a single request. `add_done` now skips requests already marked
+  `FINISHED`, the same guard and placement as vLLM V1's `update_from_output`.
+  Reported by [@hsule](https://github.com/hsule)
 - **Pipeline parallelism no longer deadlocks at most `pp_size` values**
   ([#55](https://github.com/casys-kaist/LLMServingSim/issues/55)). The Chakra
   converter split stages by *trace-line* count

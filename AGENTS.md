@@ -269,7 +269,13 @@ each iteration. Composable helpers:
 ### Trace file format
 Each trace is a whitespace-aligned text file consumed by the Chakra converter
 (fixed-width columns from `utils.py::_FMT`; the converter splits on any
-whitespace):
+whitespace). The sample below is illustrative, not byte-accurate — see
+`docs/docs/reference/trace-format.md` for the real widths. Every field except the
+last carries an **explicit trailing space** in `_FMT`: `{:<15}` pads a short value
+but emits nothing for one that already fills the column, so a 15-character value
+like `ALLREDUCE:1,0,0` (3-D `involved_dim`) would otherwise run into the next
+field and the row would come back one short. `header()` goes through `_FMT` too, so
+the whole file has one layout:
 
 ```
 COLOCATED		model_parallel_NPU_group: {pp_size}		pp_stage_boundaries: 73,145,217
@@ -290,8 +296,10 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
   `lm_head`
 - `comp_time`: latency in nanoseconds (from the per-category CSVs, whose `time_us` is converted at load time)
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
-- `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, or with dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`
-  (the `:dim0,dim1` suffix maps to ASTRA-Sim's `involved_dim` BoolList for multi-dimensional topologies)
+- `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, `ALLGATHER`, `REDUCESCATTER`, or with
+  dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`, `ALLREDUCE:1,0,0` (the
+  `:dim0,...` suffix maps to ASTRA-Sim's `involved_dim` BoolList for
+  multi-dimensional topologies, one entry per topology dimension)
 - `comm_size` on `qkv_proj` carries the **P/D KV transfer amount** (per layer, per rank,
   K+V only, honouring `kv_cache_dtype`), and is 0 unless `pd_type == "prefill"`.
   `convert_prefill` reads it for the per-layer SEND/RECV to the paired decode NPU. It used
@@ -467,7 +475,9 @@ Cluster configs in `configs/cluster/` define hardware topology. Key instance fie
 - `tp_size`: tensor parallel degree (required or inferred)
 - `pp_size`: pipeline parallel degree (optional, default 1)
 - `ep_size`: expert parallel degree (optional, default `tp_size` for MoE, 1 for dense)
-- `dp_group`: DP group ID string (optional, instances with same string share experts)
+- `dp_group`: DP group ID string (optional). Instances with the same string form one
+  data-parallel group, wave-synchronized per iteration; for MoE they also share
+  experts across the group. Works for dense models too (plain DP replicas)
 - `npu_mem.mem_bw`: NPU memory bandwidth (also set as `local-mem-bw` in system.json)
 - `npu_mem.mem_util`: fraction of `mem_size` usable for weights plus KV cache (optional,
   default from `--npu-memory-utilization`, itself `0.9`). KV capacity is
@@ -481,7 +491,11 @@ Parallelism inference: users may provide partial info (e.g., `num_npus=4, tp_siz
 and `config_builder.py` infers the rest (`pp_size=2`). Validation ensures
 `num_npus = tp_size * pp_size`, `pp_size <= num_hidden_layers` (stages are cut on
 transformer-block boundaries, so a stage cannot be empty), and `ep_size` divides
-`num_local_experts`.
+`num_local_experts`. Members of a `dp_group` must agree on `tp_size`, `pp_size` and
+`ep_size`. For a **MoE** model in a DP group `ep_size` is the total EP degree across
+the group, so it must be divisible by `dp_group_size` and
+`ep_size / dp_group_size <= tp_size`; for a **dense** model `ep_size` is 1 because
+there are no experts to shard, so neither check applies.
 
 TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP
 (ALLTOALL). DP is achieved via multiple instances with the same `dp_group`.
@@ -503,19 +517,39 @@ internally (`msg_size = data_size / nodes_in_ring`).
 - ALLTOALL for MoE: pass full activation tensor size
 
 ### Multi-dimensional topology and `involved_dim`
-For DP+EP configurations, the network topology is 2D: `npus_count: [tp_size, dp_group_size]`.
-Collectives are scoped to specific dimensions via the `involved_dim` BoolList attribute
-on COMM_COLL_NODE protobuf nodes:
-- ALLREDUCE (TP): `involved_dim=[True, False]` — dim 0 only
-- ALLTOALL (EP): `involved_dim=[False, True]` — dim 1 only (or `[True, True]` if EP spans TP+DP)
+For DP configurations the network topology is multi-dimensional, innermost dimension
+first: `npus_count: [tp_size, dp_group_size]`, or `[tp_size, pp_size, dp_group_size]`
+when `pp_size > 1`. This mirrors vLLM's rank layout
+(`parallel_state.initialize_model_parallel`: `all_ranks.reshape(-1, dp, pp, pcp, tp)`);
+the `pp_size` dimension is omitted when it is 1, so existing DP+TP configs keep their
+2-D topology and their recorded baselines. Collectives are scoped to specific
+dimensions via the `involved_dim` BoolList attribute on COMM_COLL_NODE protobuf nodes:
+- ALLREDUCE (TP): the TP dim only — `[True, False]`, or `[True, False, False]` with PP
+- EP: the DP dim, plus the TP dim when EP spans past one instance's GPUs —
+  `[False, True]` / `[True, True]`, or `[False, False, True]` / `[True, False, True]`
+  with PP. **Never** the PP dim: vLLM's EP group is
+  `all_ranks.transpose(1, 2).reshape(-1, dp*pcp*tp)`, and that transpose pins the PP
+  index, so experts are sharded across the DP x TP ranks of one pipeline stage.
+  Marking PP involved would drag the other stages' NPUs into a collective they never
+  join in vLLM
+
+A DP round only completes if **every NPU of every member instance runs it**.
+`Scheduler.add_done` enforces this by refusing to complete a batch until both
+`start_npu` and the instance's last NPU appear in `batch.end`, and **nothing raises
+when that cannot happen** — the batch simply never finishes and the group's collective
+blocks forever. Any code path that creates or serves a batch the start NPU cannot
+claim is therefore a silent deadlock; that was issue #65. `schedule()` lets the start
+NPU fall through to `_schedule_existing` when the pipeline is full for exactly this
+reason, and a DP batch is not servable to any NPU until the barrier has stamped its
+`workload_name`.
 
 The `involved_dim` is encoded in the trace `comm_type` field as `ALLTOALL:0,1` (parsed by
 the Chakra converter's `_parse_comm_type`). ASTRA-Sim's `Workload::issue_comm()` reads this
 and passes it to `generate_all_to_all()`, which skips dimensions where `involved_dim` is false.
 
 The `system.json` collective implementations must have one entry per topology dimension
-(e.g., `"all-to-all-implementation": ["ring", "ring"]` for 2D). `config_builder.py`
-generates this automatically based on whether DP groups are present.
+(e.g., `"all-to-all-implementation": ["ring", "ring"]` for 2D, three entries for 3D).
+`config_builder.py` generates this automatically from the topology it emitted.
 
 ### MoE expert blocks
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank
@@ -535,8 +569,18 @@ through two mechanisms:
    IDs, causing ASTRA-Sim to block until both NPUs reach the collective.
 
 When one DP instance is idle (no requests), a dummy batch (1 decode token) is created
-so it can participate in the ALLTOALL sync. When one instance finishes all requests,
-it continues generating dummy batches until all DP group members are done.
+so it can participate in the sync. When one instance finishes all requests, it
+continues generating dummy batches until all DP group members are done.
+
+The dummy is gated on `len(inflight) < pp_size`, not `== 0`: vLLM requires every rank
+of a DP group to run the same number of forwards, and with PP a rank has `pp_size`
+microbatches in flight, so the gate is `schedule()`'s own pipeline-depth rule. Gating
+on `== 0` lets the member holding a real request run `pp_size` batches ahead of a round
+the idle members can never join. **Any** NPU of the instance may open a round (`not in
+dp_pending[dg]` keeps it to one per member per round) — which NPU ASTRA-Sim asks about
+is not ours to choose. Because of that the dummy is appended to
+`schedulers[i].inflight` the way `_build_batch` registers a real batch, and the start
+NPU must be able to join it (see the `involved_dim` section above).
 
 ### Chakra graph converter
 The Chakra converter (`astra-sim/extern/graph_frontend/chakra/src/converter/llm_converter.py`)
@@ -640,6 +684,16 @@ No dedicated unit-test suite. Validate by:
   `(tag, src, dst, chunk_size, chunk_id)`, so a mismatch silently deadlocks the
   receiving NPU instead of raising. That was issue #55: only the `pp_size` values
   whose line-count cuts happened to land between two size-agreeing layers ran
+- **Don't gate a DP batch on which NPU is asking.** `sys == inst2npu_mapping[i]` does
+  **not** mean "built this batch": any NPU of an instance may open a DP round, so the
+  start NPU can arrive holding a batch it joined through `_schedule_existing`. Route on
+  whether the batch is new (`len(batch.fired) == 1`) instead, or the round is
+  registered twice and the graph regenerated. And never hand an NPU a DP batch whose
+  `workload_name` is still `None` — that derives the solo `instance<id>_batch<id>`
+  folder, which is never written for a DP batch, and ASTRA-Sim logs
+  `[critical] workload file ... does not exist` and then **hangs instead of exiting**.
+  Both were issue #65; `add_done` needs `start_npu in batch.end` to complete a batch,
+  so any batch the start NPU cannot claim deadlocks silently
 - **Don't assume `hidden_size == num_heads * head_dim`** — use explicit `head_dim` from config
 - **Use canonical vLLM layer names** (`qkv_proj`, `o_proj`, `gate_up_proj`,
   `act_fn`, `down_proj`, `rotary_emb`, `qk_norm`, `attention`, `layernorm`,

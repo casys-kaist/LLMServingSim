@@ -143,6 +143,13 @@ class Batch:
         self.prefill_k_list = prefill_k_list
         self.decode_k_list = decode_k_list
 
+        # DP groups write every member's graph into one shared workload folder,
+        # so the path cannot be re-derived from (instance_id, batch_id) the way a
+        # solo batch's can. Remember it here: every NPU of the instance has to be
+        # handed the same folder, not just the one that generated it. None means
+        # "derive the default path".
+        self.workload_name = None
+
         # for debugging
         self.scheduled_tokens = None
     def log(self):

@@ -8,18 +8,25 @@ from .run_paths import input_path
 # Formatting string for a trace file's per-layer row. Kept in this
 # module because trace writers live across the codebase and import it
 # as the canonical row template.
+# The trailing space on every field but the last is load-bearing, not cosmetic.
+# ``{:<15}`` pads a *shorter* value but emits nothing extra for one that is
+# already 15 characters, so the next field butts straight against it and the
+# readers -- which split on whitespace -- see the two merged into one. A
+# 3-dimensional involved_dim does exactly that: ``ALLREDUCE:1,0,0`` is 15
+# characters on the nose, and the row comes back one field short. The widths
+# below are therefore a minimum column, and the separator is explicit.
 _FMT = (
-    "{:<30}"  # Layername
-    "{:<15}"  # comp_time
-    "{:<15}"  # input_loc
-    "{:<15}"  # input_size
-    "{:<15}"  # weight_loc
-    "{:<15}"  # weight_size
-    "{:<15}"  # output_loc
-    "{:<15}"  # output_size
-    "{:<15}"  # comm_type
-    "{:<15}"  # comm_size
-    "{:<15}"  # misc
+    "{:<30} "  # Layername
+    "{:<15} "  # comp_time
+    "{:<15} "  # input_loc
+    "{:<15} "  # input_size
+    "{:<15} "  # weight_loc
+    "{:<15} "  # weight_size
+    "{:<15} "  # output_loc
+    "{:<15} "  # output_size
+    "{:<15} "  # comm_type
+    "{:<15} "  # comm_size
+    "{:<15}"   # misc
     "\n"
 )
 
@@ -38,17 +45,20 @@ def get_workload(batch, hardware, instance_id=0, event=False, workload_name=None
 
 
 def header():
-    string_list = [
+    """The column-name row, formatted through the same template as the data rows.
+
+    Built with ``_FMT`` rather than its own width list so the whole file has one
+    layout and the guaranteed-separator invariant holds for every line. These
+    particular labels can never overflow -- the longest is 11 characters against
+    a 15-character column -- but a header in a different format than the rows
+    below it invites exactly the kind of off-by-one-field reading that the
+    separator is there to prevent.
+    """
+    return _FMT.format(
         "Layername", "comp_time", "input_loc", "input_size",
         "weight_loc", "weight_size", "output_loc", "output_size",
         "comm_type", "comm_size", "misc",
-    ]
-    ileft_list = [30, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15]
-    output = ""
-    for string, ileft in zip(string_list, ileft_list):
-        output += ('{0:<' + str(ileft) + '}').format(string)
-    output += '\n'
-    return output
+    )
 
 
 def formatter(layername, comp_time, input_loc, input_size, weight_loc, weight_size, output_loc, output_size, comm_type, comm_size, misc):

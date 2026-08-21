@@ -67,7 +67,7 @@ cluster configs cover the major features:
 | Multi-instance routing | `single_node_multi_instance.json` |
 | Prefill / decode disaggregation | `single_node_pd_instance.json` |
 | MoE, expert parallelism | `single_node_moe_single_instance.json` |
-| DP+EP wave sync | `single_node_moe_dp_ep_instance.json` |
+| DP wave sync, DP+TP / DP+PP / DP+EP | `single_node_moe_dp_ep_instance.json`, `single_node_moe_dp_tp_instance.json`, `single_node_moe_dp_pp_instance.json`, `single_node_moe_dp_tp_pp_instance.json`, `dual_node_moe_dp_ep_intra_inter_instance.json`, `single_node_dp_instance.json` (dense) |
 | CXL placement | `single_node_cxl_instance.json` |
 | PIM offload | `single_node_pim_instance.json` |
 | Power model | `single_node_power_instance.json` |
@@ -77,6 +77,14 @@ cluster configs cover the major features:
 `serving/run.sh` contains ready-to-run commands for all of these.
 Pick the relevant ones and confirm they still produce sensible
 output.
+
+:::caution Run the *whole* DP row, not one config
+A DP group only makes progress if every NPU of every member runs the
+same round, and nothing raises when that stops being true — the run
+just stops making progress. `tp=1, pp=1` DP hides most of it, because
+an instance then owns exactly one NPU. Issue #65 survived precisely
+because only the `tp=1` DP config was ever exercised.
+:::
 
 ## 3. Bench validation (changes that affect end-to-end accuracy)
 
