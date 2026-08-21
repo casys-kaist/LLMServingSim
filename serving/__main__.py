@@ -62,7 +62,7 @@ def _pad_batch_to_max(batch, max_len):
     batch.num_decode += pad              # counted for lm_head / dense shape
 
 
-def _pass_response(router, current, suppressible=True):
+def _pass_response(router, current, state_changed=False):
     """The "pass" answer, carrying the next known arrival when there is one.
 
     ASTRA-Sim stops re-asking an NPU that passed until either some NPU
@@ -73,17 +73,15 @@ def _pass_response(router, current, suppressible=True):
     past an arrival it should have admitted, in the case where every other
     instance is still mid-batch and so no report is coming.
 
-    ``suppressible=False`` sends ``pass -1``, which opts the NPU out. That
-    is required for DP-group instances, where being polled is itself part
-    of the model: an idle member emits a 1-token dummy batch so the round's
-    ALLTOALL still syncs, so the poll rate decides how many dummy waves
-    exist. Suppressing them moved moe_dp_pp by -4.0% (578 batches -> 572)
-    and moe_dp_tp_pp by +0.14%. That poll-rate dependence is a pre-existing
-    property of the dummy-wave logic, not something suppression introduced,
-    but it has to be fixed in the scheduler before these instances can be
-    suppressed.
+``state_changed=True`` sends ``pass -1``: this pass altered scheduler
+    state, so it is not idempotent and re-asking is not a wasted question.
+    The three DP-barrier passes do that -- joining a round with a dummy,
+    joining it with a real batch, or handing a batch claim back -- and none
+    of them is preceded by a report, so nothing else would lift the
+    suppression. ASTRA-Sim treats it like a workload assignment: this NPU
+    stays askable and every other one is re-opened too.
     """
-    if not suppressible:
+    if state_changed:
         return "pass -1"
     nxt = router.get_next_pending_arrival()
     if nxt is None or nxt <= current:
@@ -814,7 +812,8 @@ def main():
                     controller.write_flush(p, workload)
                     responded = True
                 else:
-                    controller.write_flush(p, _pass_response(router, current, suppressible=False))
+                    # Joined the round with a dummy; the round is not complete.
+                    controller.write_flush(p, _pass_response(router, current, state_changed=True))
                     responded = True
         # runnable batch exists
         elif new_req is not None:
@@ -892,7 +891,7 @@ def main():
                         controller.write_flush(p, workload)
                     else:
                         # Waiting for other DP members — send pass
-                        controller.write_flush(p, _pass_response(router, current, suppressible=False))
+                        controller.write_flush(p, _pass_response(router, current, state_changed=True))
                         responded = True
                 else:
                     # Independent instance: generate trace immediately
@@ -940,7 +939,7 @@ def main():
                     waiting_request[instance_id] = False
                 if instance_id in inst_dp_group and new_req.workload_name is None:
                     new_req.fired.remove(sys)
-                    controller.write_flush(p, _pass_response(router, current, suppressible=False))
+                    controller.write_flush(p, _pass_response(router, current, state_changed=True))
                     responded = True
                 else:
                     workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id,
@@ -1081,7 +1080,7 @@ def main():
                 if not all_dp_empty:
                     # Other DP members still have work — keep this instance alive for dummy waves
                     if not responded:
-                        controller.write_flush(p, _pass_response(router, current, suppressible=False))
+                        controller.write_flush(p, _pass_response(router, current))
                     flush.stdout.flush()
                     continue
 
@@ -1114,9 +1113,7 @@ def main():
             # advance current time so the next iteration can pick them up.
             # Built before the jump below: _pass_response compares against
             # the clock ASTRA-Sim is actually at, not the one we skip to.
-            pass_msg = _pass_response(
-                router, current,
-                suppressible=instance_id not in inst_dp_group)
+            pass_msg = _pass_response(router, current)
             if router.has_deferred_sessions() or router.has_pending_requests():
                 next_arrival = router.get_next_pending_arrival()
                 if next_arrival is not None and next_arrival > current:
