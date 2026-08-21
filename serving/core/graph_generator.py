@@ -7,6 +7,7 @@ from time import time
 from .request import *
 from .logger import get_logger
 from .run_paths import input_path
+from .trace_generator import write_trace
 
 logger = get_logger("GraphGenerator")
 
@@ -50,6 +51,22 @@ _ET_SEEN_MAX = 200_000
 def graph_cache_stats():
     """Hit/miss counts for the converted-graph cache."""
     return dict(_ET_CACHE_STATS, entries=len(_ET_CACHE), bytes=_ET_CACHE_BYTES)
+
+
+def _rows_digest(trace):
+    """Digest a synthesized trace without formatting it.
+
+    Keyed on the same content the formatter would emit -- the header line and
+    every field of every row, in order -- but joined with separators instead
+    of padded into columns, which is far cheaper than the real format and
+    just as discriminating. Cryptographic rather than ``hash()`` because a
+    collision here would silently hand back the wrong graph.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    h.update(trace.header_line.encode())
+    h.update(b"\n")
+    h.update("\n".join("\t".join(row) for row in trace.rows).encode())
+    return h.hexdigest()
 
 
 def _et_names(workload_dir):
@@ -119,7 +136,7 @@ def _get_llm_converter():
     return _LLMConverter
 
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, in_process=True, reuse_graphs=True):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, in_process=True, reuse_graphs=True, trace=None):
 
     cwd = os.getcwd()
     chakra = os.path.join(cwd, "extern/graph_frontend/chakra")
@@ -141,8 +158,13 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
 
     cache_key = None
     if reuse_graphs:
-        with open(trace_path, "rb") as f:
-            digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
+        if trace is not None:
+            digest = _rows_digest(trace)
+        else:
+            # The event-handler trace is written straight to disk by
+            # generate_event, so there are no rows to hash.
+            with open(trace_path, "rb") as f:
+                digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
         cache_key = (digest, num_npus, npu_offset, enable_local_offloading)
         cached = _ET_CACHE.get(cache_key)
         if cached is not None:
@@ -153,13 +175,23 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
             for name, blob in cached:
                 with open(os.path.join(workload_dir, name), "wb") as g:
                     g.write(blob)
-            if cleanup_trace:
+            # A hit never needs the text: nothing is going to parse it. Write
+            # it only when the caller is keeping the intermediate artifacts
+            # for inspection.
+            if trace is not None:
+                if not cleanup_trace:
+                    write_trace(trace)
+            elif cleanup_trace:
                 try:
                     os.remove(trace_path)
                 except FileNotFoundError:
                     pass
             return
         _ET_CACHE_STATS["miss"] += 1
+
+    # The converter reads the trace as text, so it has to exist from here on.
+    if trace is not None:
+        write_trace(trace)
 
     before = _et_names(workload_dir) if cache_key is not None else None
 

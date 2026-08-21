@@ -778,7 +778,7 @@ def main():
                         batch.workload_name = dp_workload_name
                         inst = instances[inst_id]
                         inst_cfg = instance_runtime_configs[inst_id]
-                        generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
+                        trace_data = generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                        inst["local_ep"], inst["ep_total"], inst["pd_type"],
                                        nid, inst_id,
                                        inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
@@ -799,7 +799,8 @@ def main():
                                        inputs_root=run_paths.inputs_root,
                                        cleanup_trace=args.cleanup_inputs,
                                        in_process=args.chakra_in_process,
-                                       reuse_graphs=args.reuse_graphs)
+                                       reuse_graphs=args.reuse_graphs,
+                                       trace=trace_data)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                     workload_name=dp_workload_name,
@@ -857,7 +858,7 @@ def main():
                             batch.workload_name = dp_workload_name
                             inst = instances[inst_id]
                             inst_cfg = instance_runtime_configs[inst_id]
-                            generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
+                            trace_data = generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                            inst["local_ep"], inst["ep_total"], inst["pd_type"],
                                            nid, inst_id,
                                            inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
@@ -878,7 +879,8 @@ def main():
                                            inputs_root=run_paths.inputs_root,
                                            cleanup_trace=args.cleanup_inputs,
                                            in_process=args.chakra_in_process,
-                                           reuse_graphs=args.reuse_graphs)
+                                           reuse_graphs=args.reuse_graphs,
+                                           trace=trace_data)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                         workload_name=dp_workload_name,
@@ -896,7 +898,7 @@ def main():
                 else:
                     # Independent instance: generate trace immediately
                     inst_cfg = instance_runtime_configs[instance_id]
-                    generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
+                    trace_data = generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
                                    instance["local_ep"], instance["ep_total"],
                                    instance["pd_type"],
                                    node_id, instance_id,
@@ -915,7 +917,8 @@ def main():
                                    inputs_root=run_paths.inputs_root,
                                    cleanup_trace=args.cleanup_inputs,
                                    in_process=args.chakra_in_process,
-                                   reuse_graphs=args.reuse_graphs)
+                                   reuse_graphs=args.reuse_graphs,
+                                   trace=trace_data)
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
