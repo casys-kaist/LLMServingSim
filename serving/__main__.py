@@ -346,19 +346,6 @@ def main():
                         help='remove generated ASTRA-Sim inputs under astra-sim/inputs/runs/<run-id> '
                         'after a successful simulation (default: enabled). Use --no-cleanup-inputs '
                         'to preserve generated trace files, Chakra workloads, and input configs for debugging')
-    parser.add_argument('--chakra-in-process', action=argparse.BooleanOptionalAction, default=True,
-                        help='run the Chakra trace-to-protobuf converter inside the simulator process '
-                        '(default: enabled). Spawning it as a subprocess costs ~56 ms of interpreter '
-                        'startup per batch against ~1.3 ms of conversion work. Use '
-                        '--no-chakra-in-process to fall back to the subprocess, which isolates '
-                        'converter crashes at the cost of dominating wall-clock')
-    parser.add_argument('--reuse-graphs', action=argparse.BooleanOptionalAction, default=True,
-                        help='reuse an already-converted Chakra graph when a batch produces a '
-                        'byte-identical trace (default: enabled). A DP group with uneven load '
-                        'spends half its waves on dummy batches whose trace is very nearly a '
-                        'constant, so the same graph is otherwise converted thousands of times. '
-                        'The cache is keyed on the trace bytes and the converter\'s other '
-                        'inputs, so a hit is byte-identical to a conversion')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
                         help='skip the prefill phase, running decode only')
     parser.add_argument('--num-reqs', type=int, default=0,
@@ -620,8 +607,7 @@ def main():
     generate_event(int(event_time), inputs_root=run_paths.inputs_root)
     # Make Chakra Grapth
     generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root,
-                   cleanup_trace=args.cleanup_inputs, in_process=args.chakra_in_process,
-                   reuse_graphs=args.reuse_graphs)
+                   cleanup_trace=args.cleanup_inputs)
     # set first workload file
     workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
@@ -798,8 +784,6 @@ def main():
                                        workload_name=dp_workload_name,
                                        inputs_root=run_paths.inputs_root,
                                        cleanup_trace=args.cleanup_inputs,
-                                       in_process=args.chakra_in_process,
-                                       reuse_graphs=args.reuse_graphs,
                                        trace=trace_data)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
@@ -878,8 +862,6 @@ def main():
                                            workload_name=dp_workload_name,
                                            inputs_root=run_paths.inputs_root,
                                            cleanup_trace=args.cleanup_inputs,
-                                           in_process=args.chakra_in_process,
-                                           reuse_graphs=args.reuse_graphs,
                                            trace=trace_data)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
@@ -916,8 +898,6 @@ def main():
                                    inst_cfg["enable_local_offloading"],
                                    inputs_root=run_paths.inputs_root,
                                    cleanup_trace=args.cleanup_inputs,
-                                   in_process=args.chakra_in_process,
-                                   reuse_graphs=args.reuse_graphs,
                                    trace=trace_data)
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)

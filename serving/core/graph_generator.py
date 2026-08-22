@@ -1,7 +1,6 @@
 import glob
 import hashlib
 import os
-import subprocess
 from collections import OrderedDict
 from time import time
 from .request import *
@@ -107,7 +106,8 @@ def _cache_store(key, paths):
 # ~56 ms per call, of which ~52 ms was interpreter startup plus the
 # protobuf import and ~1.3 ms was the actual conversion — which made
 # graph generation 73-85% of simulator wall-clock across every config
-# profiled (1 NPU, 8 NPUs, and MoE DP+EP alike).
+# profiled (1 NPU, 8 NPUs, and MoE DP+EP alike). The subprocess path is
+# gone; `git log` has it if it is ever needed to isolate a converter crash.
 #
 # Calling the converter in-process is safe because it keeps *all* of its
 # mutable state on the instance (`next_node_id`, `next_comm_tag`,
@@ -115,10 +115,9 @@ def _cache_store(key, paths):
 # batches, so a fresh LLMConverter per batch is equivalent to a fresh
 # process. Verified byte-identical over 146 `.et` files.
 #
-# The import resolves to the *installed* chakra in site-packages, exactly
-# as the subprocess did (there is no `chakra/` package inside the chakra
-# repo root, so cwd never mattered). Editing the tree still requires
-# `pip3 install .` to take effect — see AGENTS.md.
+# The import resolves to the *installed* chakra in site-packages, not the
+# checked-out tree, so editing the tree requires `pip3 install .` to take
+# effect — see AGENTS.md.
 _LLMConverter = None
 
 
@@ -126,8 +125,8 @@ def _get_llm_converter():
     """Import LLMConverter on first use and cache the class.
 
     Deferred rather than imported at module scope so a broken or
-    not-yet-installed chakra fails at the same point in the run as it did
-    with the subprocess, instead of at simulator import time.
+    not-yet-installed chakra fails when a graph is first converted, rather
+    than at simulator import time.
     """
     global _LLMConverter
     if _LLMConverter is None:
@@ -136,10 +135,9 @@ def _get_llm_converter():
     return _LLMConverter
 
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, in_process=True, reuse_graphs=True, trace=None):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, trace=None):
 
     cwd = os.getcwd()
-    chakra = os.path.join(cwd, "extern/graph_frontend/chakra")
     if inputs_root is None:
         inputs_root = os.path.join(cwd, "inputs")
 
@@ -156,76 +154,56 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
     workload_dir = os.path.dirname(output_path)
     os.makedirs(workload_dir, exist_ok=True)
 
-    cache_key = None
-    if reuse_graphs:
-        if trace is not None:
-            digest = _rows_digest(trace)
-        else:
-            # The event-handler trace is written straight to disk by
-            # generate_event, so there are no rows to hash.
-            with open(trace_path, "rb") as f:
-                digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
-        cache_key = (digest, num_npus, npu_offset, enable_local_offloading)
-        cached = _ET_CACHE.get(cache_key)
-        if cached is not None:
-            _ET_CACHE.move_to_end(cache_key)
-            _ET_CACHE_STATS["hit"] += 1
-            logger.debug("Graph cache hit for %s", trace_path,
-                         extra={"node_id": node_id, "instance_id": instance_id})
-            for name, blob in cached:
-                with open(os.path.join(workload_dir, name), "wb") as g:
-                    g.write(blob)
-            # A hit never needs the text: nothing is going to parse it. Write
-            # it only when the caller is keeping the intermediate artifacts
-            # for inspection.
-            if trace is not None:
-                if not cleanup_trace:
-                    write_trace(trace)
-            elif cleanup_trace:
-                try:
-                    os.remove(trace_path)
-                except FileNotFoundError:
-                    pass
-            return
-        _ET_CACHE_STATS["miss"] += 1
+    if trace is not None:
+        digest = _rows_digest(trace)
+    else:
+        # The event-handler trace is written straight to disk by
+        # generate_event, so there are no rows to hash.
+        with open(trace_path, "rb") as f:
+            digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
+    cache_key = (digest, num_npus, npu_offset, enable_local_offloading)
 
-    # The in-process converter takes the rows directly; only the subprocess,
-    # and the event-handler trace that generate_event writes itself, need the
-    # text. Write it anyway when the caller is keeping the artifacts.
-    rows_path = trace is not None and in_process
-    if trace is not None and (not rows_path or not cleanup_trace):
+    cached = _ET_CACHE.get(cache_key)
+    if cached is not None:
+        _ET_CACHE.move_to_end(cache_key)
+        _ET_CACHE_STATS["hit"] += 1
+        logger.debug("Graph cache hit for %s", trace_path,
+                     extra={"node_id": node_id, "instance_id": instance_id})
+        for name, blob in cached:
+            with open(os.path.join(workload_dir, name), "wb") as g:
+                g.write(blob)
+        # A hit never needs the text: nothing is going to parse it. Write it
+        # only when the caller is keeping the intermediate artifacts.
+        if trace is not None:
+            if not cleanup_trace:
+                write_trace(trace)
+        elif cleanup_trace:
+            try:
+                os.remove(trace_path)
+            except FileNotFoundError:
+                pass
+        return
+    _ET_CACHE_STATS["miss"] += 1
+
+    # The converter takes the rows directly. Only the event-handler trace,
+    # which generate_event writes to disk itself, arrives as text -- and the
+    # caller may want the text kept for inspection either way.
+    if trace is not None and not cleanup_trace:
         write_trace(trace)
 
-    before = _et_names(workload_dir) if cache_key is not None else None
+    before = _et_names(workload_dir)
 
-    if in_process:
-        logger.debug("Converting graph in-process: %s -> %s", trace_path, output_path,
-                     extra={"node_id": node_id, "instance_id": instance_id})
-        converter = _get_llm_converter()(
-            trace_path, output_path, num_npus, npu_offset, enable_local_offloading,
-        )
-        if rows_path:
-            converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
-        else:
-            converter.convert()
+    logger.debug("Converting graph: %s -> %s", trace_path, output_path,
+                 extra={"node_id": node_id, "instance_id": instance_id})
+    converter = _get_llm_converter()(
+        trace_path, output_path, num_npus, npu_offset, enable_local_offloading,
+    )
+    if trace is not None:
+        converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
     else:
-        cmd = [
-            'python', '-m', 'chakra.src.converter.converter', 'LLM',
-            '--input', trace_path,
-            '--output', output_path,
-            '--num-npus', str(num_npus),
-            '--npu-offset', str(npu_offset),
-        ]
+        converter.convert()
 
-        if enable_local_offloading:
-            cmd.append('--local-offloading')
-
-        logger.debug("Generating graph with command: %s", " ".join(cmd), extra={"node_id": node_id, "instance_id": instance_id})
-
-        subprocess.run(cmd, cwd=chakra, text=True, check=True)
-
-    if cache_key is not None:
-        _cache_store(cache_key, _et_names(workload_dir) - before)
+    _cache_store(cache_key, _et_names(workload_dir) - before)
 
     if cleanup_trace:
         try:
