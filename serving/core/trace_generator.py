@@ -1739,6 +1739,35 @@ _TRACE_ROW_FIELDS = 11
 _row_format_checked = False
 
 
+def indexed_cols(rows):
+    """The field lists the Chakra converter sees after parsing the trace text.
+
+    Mirrors _write_trace's two cases. A layer row gets its final row index
+    appended to the name and keeps its ten other fields. A marker row becomes
+    the tokens of its text -- which is how it comes back today, once the
+    formatter has padded it into the name column and the reader has split the
+    line on whitespace.
+
+    Kept beside _write_trace because the two have to agree exactly: the index
+    is positional and depends on the kv_load/kv_evict rows already sitting at
+    the front. Their agreement is not assumed -- the graphs built from each
+    path are byte-compared.
+    """
+    out = []
+    for i, row in enumerate(rows):
+        if len(row) == _TRACE_ROW_FIELDS:
+            out.append([f'{row[0]}_{i}', *row[1:]])
+        elif len(row) == 1:
+            out.append(row[0].split())
+        else:
+            raise ValueError(
+                f"trace row {i} has {len(row)} fields; expected "
+                f"{_TRACE_ROW_FIELDS} for a layer row or 1 for a marker. "
+                f"Row: {row!r}"
+            )
+    return out
+
+
 def write_trace(trace):
     """Materialise a TraceData as the text file the Chakra converter reads."""
     _write_trace(trace.path, trace.header_line, trace.rows)

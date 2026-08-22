@@ -7,7 +7,7 @@ from time import time
 from .request import *
 from .logger import get_logger
 from .run_paths import input_path
-from .trace_generator import write_trace
+from .trace_generator import indexed_cols, write_trace
 
 logger = get_logger("GraphGenerator")
 
@@ -189,8 +189,11 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
             return
         _ET_CACHE_STATS["miss"] += 1
 
-    # The converter reads the trace as text, so it has to exist from here on.
-    if trace is not None:
+    # The in-process converter takes the rows directly; only the subprocess,
+    # and the event-handler trace that generate_event writes itself, need the
+    # text. Write it anyway when the caller is keeping the artifacts.
+    rows_path = trace is not None and in_process
+    if trace is not None and (not rows_path or not cleanup_trace):
         write_trace(trace)
 
     before = _et_names(workload_dir) if cache_key is not None else None
@@ -201,7 +204,10 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
         converter = _get_llm_converter()(
             trace_path, output_path, num_npus, npu_offset, enable_local_offloading,
         )
-        converter.convert()
+        if rows_path:
+            converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
+        else:
+            converter.convert()
     else:
         cmd = [
             'python', '-m', 'chakra.src.converter.converter', 'LLM',
