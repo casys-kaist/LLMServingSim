@@ -109,7 +109,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   - The converter takes the trace **as field tuples**, not as text. Formatting
     rows into padded columns, writing the file, reading it back and splitting
     each line again is pure overhead once both sides are in the same process.
-    The text file is now written only when `--no-cleanup-inputs` asks for it.
+    The text file is now written only when `--save-trace-text` asks for it.
   - **Converted graphs are reused** when a batch produces an identical trace.
     A DP group with uneven load spends half its waves on dummy batches whose
     trace is nearly a constant: on the swe-bench MoE DP+EP example, 4,405 of
@@ -413,7 +413,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - `outputs/*` (except the committed `outputs/example_*.csv`) and
   `astra-sim/inputs/runs/` are now gitignored. `AGENTS.md` claimed output CSVs
   and generated traces already were; they were not, so scratch from every run
-  accumulated in `git status`, and `--no-cleanup-inputs` could leave gigabytes
+  accumulated in `git status`, and keeping the inputs could leave gigabytes
   of ASTRA-Sim inputs behind.
 - Documentation corrections: the attention lookup was described as
   "nearest-neighbour on `(prefill_chunk, n_decode)`" when it has always

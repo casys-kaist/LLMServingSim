@@ -342,10 +342,19 @@ def main():
     parser.add_argument('--inputs-root', type=str, default=None,
                         help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
                         'astra-sim/inputs/runs/<run-id>')
-    parser.add_argument('--cleanup-inputs', action=argparse.BooleanOptionalAction, default=True,
-                        help='remove generated ASTRA-Sim inputs under astra-sim/inputs/runs/<run-id> '
-                        'after a successful simulation (default: enabled). Use --no-cleanup-inputs '
-                        'to preserve generated trace files, Chakra workloads, and input configs for debugging')
+    parser.add_argument('--save-trace-text', action=argparse.BooleanOptionalAction, default=False,
+                        help='write each batch\'s trace as text, for inspection (default: '
+                        'disabled). Nothing in the pipeline reads it -- the Chakra converter takes '
+                        'the trace rows directly -- so it is produced only on request, and it is '
+                        'the only human-readable form of what the simulator emitted. Implies '
+                        '--keep-inputs, since the text is written into the run directory. Can '
+                        'leave gigabytes behind on a long run')
+    parser.add_argument('--keep-inputs', action=argparse.BooleanOptionalAction, default=False,
+                        help='keep the generated ASTRA-Sim inputs under '
+                        'astra-sim/inputs/runs/<run-id> after a successful simulation (default: '
+                        'disabled). Preserves the Chakra .et workloads and the generated network, '
+                        'system and memory configs, so a run can be replayed through ASTRA-Sim by '
+                        'hand. Replaces --cleanup-inputs, whose polarity was inverted')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
                         help='skip the prefill phase, running decode only')
     parser.add_argument('--num-reqs', type=int, default=0,
@@ -604,10 +613,10 @@ def main():
         event_time = first_arival_time
     else:
         event_time = INTERVAL
-    generate_event(int(event_time), inputs_root=run_paths.inputs_root)
+    event_trace = generate_event(int(event_time), inputs_root=run_paths.inputs_root)
     # Make Chakra Grapth
     generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root,
-                   cleanup_trace=args.cleanup_inputs)
+                   save_trace_text=args.save_trace_text, trace=event_trace)
     # set first workload file
     workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
@@ -783,7 +792,7 @@ def main():
                                        inst_cfg["enable_local_offloading"],
                                        workload_name=dp_workload_name,
                                        inputs_root=run_paths.inputs_root,
-                                       cleanup_trace=args.cleanup_inputs,
+                                       save_trace_text=args.save_trace_text,
                                        trace=trace_data)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
@@ -861,7 +870,7 @@ def main():
                                            inst_cfg["enable_local_offloading"],
                                            workload_name=dp_workload_name,
                                            inputs_root=run_paths.inputs_root,
-                                           cleanup_trace=args.cleanup_inputs,
+                                           save_trace_text=args.save_trace_text,
                                            trace=trace_data)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
@@ -897,7 +906,7 @@ def main():
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],
                                    inputs_root=run_paths.inputs_root,
-                                   cleanup_trace=args.cleanup_inputs,
+                                   save_trace_text=args.save_trace_text,
                                    trace=trace_data)
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)
@@ -1205,7 +1214,9 @@ def main():
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
 
-    if args.cleanup_inputs:
+    # --save-trace-text writes the text into the run directory, so keeping it
+    # is implied: producing the text and then deleting it would be pointless.
+    if not (args.keep_inputs or args.save_trace_text):
         _cleanup_inputs_root(run_paths, logger)
     
 

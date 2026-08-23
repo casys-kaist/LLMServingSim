@@ -318,7 +318,7 @@ instance object is silently ignored — nothing reads the key:
 | Router (cross-instance by definition) | `--request-routing-policy`, `--expert-routing-policy` |
 | Shared lower KV tier | `--enable-prefix-sharing`, `--prefix-storage` |
 | Workload (one per run) | `--dataset`, `--num-reqs`, `--skip-prefill` |
-| Run plumbing | `--output`, `--run-id`, `--inputs-root`, `--cleanup-inputs`, `--log-interval`, `--log-level` |
+| Run plumbing | `--output`, `--run-id`, `--inputs-root`, `--save-trace-text`, `--keep-inputs`, `--log-interval`, `--log-level` |
 
 #### Worked example
 

@@ -677,7 +677,8 @@ No dedicated unit-test suite. Validate by:
 - **Don't commit large files**: generated traces, `.et` files and scratch run
   output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
   `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
-  pass `--no-cleanup-inputs`, which can leave gigabytes behind
+  pass `--keep-inputs` (or `--save-trace-text`, which implies it), either of
+  which can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes

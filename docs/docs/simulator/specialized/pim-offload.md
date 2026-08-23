@@ -161,7 +161,7 @@ a slowdown to PIM:
 
 - Run the same workload with and without `--enable-attn-offloading` and
   compare TPOT.
-- Pass `--no-cleanup-inputs` and read the emitted trace: PIM work sits
+- Pass `--save-trace-text` and read the emitted trace: PIM work sits
   between `PIM <channel>` and `PIM END` markers, with its own
   `comp_time`.
 - Widen the node's `cpu_mem.mem_size` to buy more PIM channels — channel

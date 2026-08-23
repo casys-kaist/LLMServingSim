@@ -135,7 +135,7 @@ def _get_llm_converter():
     return _LLMConverter
 
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True, trace=None):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, save_trace_text=False, *, trace):
 
     cwd = os.getcwd()
     if inputs_root is None:
@@ -154,14 +154,13 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
     workload_dir = os.path.dirname(output_path)
     os.makedirs(workload_dir, exist_ok=True)
 
-    if trace is not None:
-        digest = _rows_digest(trace)
-    else:
-        # The event-handler trace is written straight to disk by
-        # generate_event, so there are no rows to hash.
-        with open(trace_path, "rb") as f:
-            digest = hashlib.blake2b(f.read(), digest_size=16).hexdigest()
-    cache_key = (digest, num_npus, npu_offset, enable_local_offloading)
+    # Every trace arrives as rows now, the event handler's included, so the
+    # text is never an input -- only an artifact somebody asked for.
+    if save_trace_text:
+        write_trace(trace)
+
+    cache_key = (_rows_digest(trace), num_npus, npu_offset,
+                 enable_local_offloading)
 
     cached = _ET_CACHE.get(cache_key)
     if cached is not None:
@@ -172,24 +171,8 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
         for name, blob in cached:
             with open(os.path.join(workload_dir, name), "wb") as g:
                 g.write(blob)
-        # A hit never needs the text: nothing is going to parse it. Write it
-        # only when the caller is keeping the intermediate artifacts.
-        if trace is not None:
-            if not cleanup_trace:
-                write_trace(trace)
-        elif cleanup_trace:
-            try:
-                os.remove(trace_path)
-            except FileNotFoundError:
-                pass
         return
     _ET_CACHE_STATS["miss"] += 1
-
-    # The converter takes the rows directly. Only the event-handler trace,
-    # which generate_event writes to disk itself, arrives as text -- and the
-    # caller may want the text kept for inspection either way.
-    if trace is not None and not cleanup_trace:
-        write_trace(trace)
 
     before = _et_names(workload_dir)
 
@@ -198,16 +181,7 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
     converter = _get_llm_converter()(
         trace_path, output_path, num_npus, npu_offset, enable_local_offloading,
     )
-    if trace is not None:
-        converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
-    else:
-        converter.convert()
+    converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
 
     _cache_store(cache_key, _et_names(workload_dir) - before)
-
-    if cleanup_trace:
-        try:
-            os.remove(trace_path)
-        except FileNotFoundError:
-            pass
     return

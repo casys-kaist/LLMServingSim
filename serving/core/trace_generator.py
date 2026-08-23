@@ -1626,7 +1626,6 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
         inputs_root, "trace", hardware, batch.model,
         f"instance{instance_id}_batch{batch.batch_id}.txt",
     )
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # make trace — accept either the Mistral-style ``num_local_experts``
     # key or the HF/Qwen3 ``num_experts`` key so both family's configs
@@ -1769,7 +1768,13 @@ def indexed_cols(rows):
 
 
 def write_trace(trace):
-    """Materialise a TraceData as the text file the Chakra converter reads."""
+    """Materialise a TraceData as text, for inspection.
+
+    Nothing in the pipeline reads it any more -- the converter takes the rows
+    -- so this only runs when --save-trace-text asks for it. Creates the
+    directory because it is now the only thing that writes there.
+    """
+    os.makedirs(os.path.dirname(trace.path), exist_ok=True)
     _write_trace(trace.path, trace.header_line, trace.rows)
 
 
@@ -1848,34 +1853,26 @@ def _write_trace(output_path, header_line, rows):
 
 # generate event for first request arrival
 def generate_event(alarm, inputs_root=None):
+    """The one-layer trace that idles every NPU until ``alarm``.
 
-    # make inputs for text file
-    result = []
-    fp = 2
-    layer_name = f'event_{alarm}ns'
-    comp_time = alarm
-    input_loc = 'REMOTE'
-    input_size = 0
-    weight_loc = 'LOCAL'
-    weight_size = 0
-    output_loc = 'REMOTE'
-    output_size = 0
-    comm_type = 'NONE'
-    comm_size = 0
-    misc = 'NONE'
-    result.append([layer_name, comp_time, input_loc, input_size, weight_loc, weight_size, output_loc, output_size, comm_type, comm_size, misc])
+    Returns a TraceData like generate_trace, so generate_graph converts it
+    from rows like any other batch. It used to write its file directly, and
+    being the one trace that still arrived as text kept a whole second path
+    alive in generate_graph -- file hashing, ``convert()``, and a per-batch
+    unlink -- for a call that happens once per run.
 
-    # write to the text file
+    Fields are strings for the same reason the emitters produce strings: the
+    row digest joins them, and the text writer formats them.
+    """
     if inputs_root is None:
         inputs_root = os.path.join(os.getcwd(), "inputs")
-    output_path = input_path(inputs_root, "trace", "event_handler.txt")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w') as f:
-        f.write(f"EVENT\n")
-        f.write(f'{len(result)}'+'\n') # length of the text is 1
-        f.write(header())
-        for i in result:
-            f.write(formatter(*i))
+    row = (f'event_{alarm}ns', str(alarm), 'REMOTE', '0', 'LOCAL', '0',
+           'REMOTE', '0', 'NONE', '0', 'NONE')
+    return TraceData(
+        header_line="EVENT",
+        rows=[row],
+        path=input_path(inputs_root, "trace", "event_handler.txt"),
+    )
 
 
 # ======================================================================
