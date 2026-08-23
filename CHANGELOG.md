@@ -127,6 +127,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   - Profile tables are built in plain Python and only for the TP degrees a run
     touches, taking startup for a TP=1 run from 1435 ms to 50 ms; the model
     architecture config is cached instead of re-parsed per scheduled batch.
+- **`--cleanup-inputs` is replaced by two flags**, `--save-trace-text` and
+  `--keep-inputs`, both defaulting off — the same observable default as
+  `--cleanup-inputs` defaulting on, without the double negative. It was doing two
+  unrelated jobs, which were only the same switch because the trace text used to
+  be written unconditionally and then deleted: `--save-trace-text` writes each
+  batch's trace as text for inspection (nothing in the pipeline reads it, so it
+  is produced only on request) and implies `--keep-inputs`, while `--keep-inputs`
+  alone preserves the `.et` workloads and the generated network / system / memory
+  configs so a run can be replayed through ASTRA-Sim by hand. Scripts passing
+  `--no-cleanup-inputs` need to pass `--save-trace-text` or `--keep-inputs`
+  instead.
 - Graph metadata stores the trace's **path** rather than its entire text.
   Nothing consumed it -- `ETFeeder::readGlobalMetadata()` reads the message and
   discards it -- and it was 70% of every `.et`. Files shrink from 117,112 to

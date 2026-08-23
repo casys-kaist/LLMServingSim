@@ -40,7 +40,9 @@ flowchart LR
     PERSEQ --> EMIT
     SKEWBLEND --> EMIT
     MOE --> EMIT
-    EMIT --> TRACEFILE["trace .txt<br/>(per layer)"]
+    EMIT --> ROWS["TraceData<br/>(field tuple per layer)"]
+    ROWS --> GRAPH["Chakra converter<br/>(in-process)"]
+    ROWS -.->|--save-trace-text| TRACEFILE["trace .txt<br/>(for inspection)"]
 ```
 
 ## The data the simulator consumes
