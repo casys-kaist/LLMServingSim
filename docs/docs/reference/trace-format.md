@@ -5,10 +5,17 @@ title: Trace file format
 
 # Trace file format
 
-The simulator's `trace_generator.py` writes a per-batch text trace
-that the Chakra converter then reads to produce the `.et` file
-ASTRA-Sim consumes. This page is the **field-by-field spec** of that
-text trace.
+The simulator's `trace_generator.py` builds a per-batch trace that the
+Chakra converter turns into the `.et` file ASTRA-Sim consumes. This page
+is the **field-by-field spec** of that trace.
+
+The trace is normally handed to the converter **in memory**, as one field
+tuple per layer, and never becomes text: the converter runs inside the
+simulator process, so formatting the fields into padded columns only to
+split them apart again was pure overhead. The text form below is still
+exactly what the fields mean, and it is still what gets written when you
+ask for it with `--no-cleanup-inputs` — so it remains the format to read
+when inspecting what the simulator emitted.
 
 For the *internals* of how this trace is produced, see
 **[Simulator → Trace generation](/docs/simulator/trace-generation)**.
@@ -20,8 +27,13 @@ astra-sim/inputs/runs/<run_id>/trace/<hardware>/<model>/instance_<i>_batch_<b>.t
 ```
 
 One file per (instance × batch), under the run-specific ASTRA-Sim input
-root. Regenerated every iteration and removed after Chakra conversion by
-default. Use `--no-cleanup-inputs` to preserve generated traces.
+root — written only when `--no-cleanup-inputs` is passed. By default no
+text file is produced for a batch at all; the rows go straight to the
+converter.
+
+The one trace that is always written as text is the event handler's
+(`event_handler.txt`), because `generate_event` writes it to disk
+directly rather than building rows.
 
 ## File structure
 
