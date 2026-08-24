@@ -19,8 +19,8 @@ runs that comparison for you.
 
 Two stages, about eight minutes total:
 
-1. **Behaviour** — 58 scenarios, each compared against its recorded
-   `Total clocks (ns)` in `serving/validate-baselines.txt`. Every cluster
+1. **Behaviour** — every scenario in `serving/validate-baselines.txt`,
+   compared against its recorded `Total clocks (ns)`. Every cluster
    config, every parallelism shape (TP, PP, DP and their combinations, EP),
    prefix caching and the tiers below it, the scheduler flags, both routing
    policies, PIM, CXL, P/D disaggregation, agentic sessions and two hardware

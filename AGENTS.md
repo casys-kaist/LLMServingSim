@@ -33,7 +33,7 @@ LLMServingSim/
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
 │   ├── run.sh                  # One runnable example per feature (a menu, not a suite)
-│   ├── validate.sh             # 58 scenarios vs recorded clocks + sim.csv digests
+│   ├── validate.sh             # every scenario vs recorded clocks + bench/examples digests
 │   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
 ├── configs/
 │   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
@@ -681,12 +681,13 @@ website (not the README).
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
 
-1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares 58
-   scenarios against the `Total clocks (ns)` recorded in
-   `serving/validate-baselines.txt`; stage 2 regenerates
-   `bench/examples/*/outputs/sim.csv` and checks each md5. Anything that moved
-   is printed as a markdown table for the PR. `--clocks-only` skips stage 2,
-   `--list` names the scenarios, `--update` rewrites the baselines.
+1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
+   scenario against the `Total clocks (ns)` recorded in
+   `serving/validate-baselines.txt`; stage 2 regenerates each `bench/examples`
+   entry's `outputs/sim.csv` and `validation/summary.txt` and checks both md5s.
+   Anything that moved is printed as a markdown table for the PR.
+   `--clocks-only` skips stage 2, `--list` names the scenarios, `--update`
+   rewrites the baselines, `--help` prints the rest.
    **Run it after every commit that touches `serving/`** — it is cheap enough,
    and it is how the 8-of-19 regression on the perf branch was caught.
 2. For the *size* of an accuracy change, not just its presence:
