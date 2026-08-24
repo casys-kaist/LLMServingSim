@@ -32,7 +32,9 @@ LLMServingSim/
 │   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
-│   └── run.sh                  # Example invocations across cluster configs
+│   ├── run.sh                  # One runnable example per feature (a menu, not a suite)
+│   ├── validate.sh             # 58 scenarios vs recorded clocks + sim.csv digests
+│   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
 ├── configs/
 │   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
 │   ├── model/                  # Model architecture configs (subset of HF config.json)
@@ -676,13 +678,29 @@ website (not the README).
 
 ## Testing & Validation
 
-No dedicated unit-test suite. Validate by:
-1. Running the smallest relevant `python -m serving …` scenario and inspecting
-   the per-request CSV.
-2. For end-to-end accuracy checks against real vLLM, use `python -m bench run`
-   followed by `python -m bench validate` (see `bench/README.md`).
+No unit-test suite. The simulator is deterministic, so validation is exact
+equality against recorded results:
+
+1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares 58
+   scenarios against the `Total clocks (ns)` recorded in
+   `serving/validate-baselines.txt`; stage 2 regenerates
+   `bench/examples/*/outputs/sim.csv` and checks each md5. Anything that moved
+   is printed as a markdown table for the PR. `--clocks-only` skips stage 2,
+   `--list` names the scenarios, `--update` rewrites the baselines.
+   **Run it after every commit that touches `serving/`** — it is cheap enough,
+   and it is how the 8-of-19 regression on the perf branch was caught.
+2. For the *size* of an accuracy change, not just its presence:
+   `./bench/examples/validate.sh` regenerates `validation/summary.txt` and the
+   three plots. A changed `sim.csv` makes those stale, so regenerate and commit
+   them in the same commit.
 3. For profiler changes: edit `MODEL` / `HARDWARE` in `profiler/profile.sh`
    and run `./profiler/profile.sh` from the repo root inside the vLLM container.
+
+A scenario whose clock equals an existing one exercises flag parsing and
+nothing else. Several knobs only bite once the KV cache is saturated, which is
+what the `saturated_*` scenarios are for; `example_trace.jsonl` never gets
+there, and its DP members always drain together, which is what the `*_uneven`
+scenarios are for.
 
 ## Common Pitfalls
 

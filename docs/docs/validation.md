@@ -218,8 +218,8 @@ for the full layout.
 ## What's next
 
 - **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**:
-  the three-tier check (smoke → scenario → bench validate) you run
-  before opening a PR, plus what regression to flag.
+  `./serving/validate.sh` — the check you run before opening a PR, and
+  how to report a number that moved.
 - **[Simulator → Reading the output](/docs/simulator/reading-output)**:
   what every column in the per-request CSV means and how to derive
   your own metrics from it.

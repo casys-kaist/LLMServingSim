@@ -24,8 +24,27 @@ serving/                        Python package
 │   ├── kv_cache_manager.py     tiered KV cache manager (block hashing, allocation)
 │   ├── logger.py               Rich-based logger + stdio capture
 │   └── utils.py                model config loading, formatting helpers
-└── run.sh                      example invocations across cluster configs
+├── run.sh                      one runnable example per feature (a menu, not a suite)
+├── validate.sh                 58 scenarios vs recorded clocks + bench/examples digests
+└── validate-baselines.txt      the recorded values; refresh with validate.sh --update
 ```
+
+## Validating a change
+
+There is no unit-test suite. The simulator is deterministic, so validation is
+exact equality against recorded results:
+
+```bash
+./serving/validate.sh            # both stages, ~8 min
+./serving/validate.sh --help     # options
+```
+
+Stage 1 compares 58 scenarios against the `Total clocks (ns)` in
+`validate-baselines.txt`. Stage 2 regenerates each `bench/examples` entry's
+`outputs/sim.csv` and `validation/summary.txt` and checks their md5s. Anything
+that moved is printed as a markdown table to paste into the PR — a difference
+is not automatically a bug, but it always needs an explanation. See
+[Validating your changes](https://llmservingsim.ai/docs/contributor/validating-changes).
 
 ## Architecture
 

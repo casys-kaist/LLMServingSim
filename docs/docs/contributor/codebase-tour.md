@@ -168,18 +168,24 @@ adding more shell scripts.
 
 ## Tests and fixtures
 
-There is **no unit-test suite**. Validation is done by:
+There is **no unit-test suite**. The simulator is deterministic
+instead, so validation is exact equality against recorded results:
 
-1. Running a smoke `python -m serving …` and inspecting the output
-   CSV.
-2. Running `python -m bench validate` against a known-good vLLM
-   replay (see **[Validating your changes](./validating-changes)**).
+```bash
+./serving/validate.sh
+```
+
+58 scenarios compared against recorded `Total clocks (ns)`, then each
+`bench/examples` entry's `sim.csv` and `validation/summary.txt` checked
+by md5. See **[Validating your changes](./validating-changes)** for
+what to do when something differs, and for the case where no scenario
+covers what you changed.
 
 When adding a feature that has clean inputs and outputs (a new
-`_lookup_*` function, a new memory accounting helper), feel free to
-add a script under `scripts/` or a notebook checked into your
-branch. The project has not adopted a formal test framework yet;
-that itself is an open contribution opportunity.
+`_lookup_*` function, a new memory accounting helper), a scenario in
+`serving/validate.sh` is usually the cheapest way to pin it down. A
+formal unit-test framework is still an open contribution
+opportunity.
 
 ## Where docs live
 
