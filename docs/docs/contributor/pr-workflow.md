@@ -123,9 +123,9 @@ rerun and gives the git log a record of what was checked.
   [@hmchoi](https://github.com/hmchoi)) plus whoever owns the touched
   area. For docs-only PRs, one approval is enough.
 - **What gets blocked vs. nit-picked**:
-  - **Blockers**: bench regressions beyond ~5%, broken smoke run,
-    convention violations from the "never do this" list, missing
-    docs for new flags.
+  - **Blockers**: an unexplained `./serving/validate.sh` difference,
+    bench regressions beyond ~5%, convention violations from the
+    "never do this" list, missing docs for new flags.
   - **Nits**: naming, code style preferences, doc phrasing. The
     reviewer will say "nit:" or use the GitHub label. Address them
     if you agree; defer with a sentence if you don't.
@@ -169,8 +169,7 @@ PR. The maintainer adds it on merge.
   no test CI to watch: the only workflow is `deploy-docs.yml`, which
   builds the docs site and says nothing about the simulator. If
   something broke that the review missed, the way you find out is by
-  running `serving/run.sh`'s relevant scenarios on `main` and comparing
-  `Total clocks (ns)` against what you recorded before.
+  running `./serving/validate.sh` on `main`.
 - **My PR sat for a week with no reviews.** Ping the PR with a
   one-liner. Maintainers do miss notifications.
 - **A reviewer requested changes I disagree with.** Explain your

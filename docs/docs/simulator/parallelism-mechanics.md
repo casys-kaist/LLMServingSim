@@ -176,10 +176,10 @@ sequenceDiagram
     participant DPB as Python<br/>dp_pending barrier
     participant A as ASTRA-Sim
     I1->>I1: scheduler.schedule()
-    I1->>DPB: dp_pending["A"][0] = batch
+    I1->>DPB: dp_pending["A"][0].append(batch)
     Note over I2: scheduling on its own pace
     I2->>I2: scheduler.schedule()
-    I2->>DPB: dp_pending["A"][1] = batch
+    I2->>DPB: dp_pending["A"][1].append(batch)
     Note over DPB: All members ready
     DPB->>I1: emit trace (comm_size = max)
     DPB->>I2: emit trace (comm_size = max)
@@ -196,10 +196,14 @@ synchronization mechanisms work together:
 
 ### 1. Python-side `dp_pending` barrier
 
-In `__main__.py`, a `dp_pending` dict tracks which DP-group members
-have scheduled their batches for the current wave. Trace generation
-is **deferred** until all members have scheduled. When the last
-member arrives:
+In `__main__.py`, `dp_pending` holds one **queue per DP-group member**
+of batches waiting for their wave. Trace generation is **deferred** until
+every member has at least one batch queued; the wave then takes the
+oldest from each, so a wave always pairs the members' *j*-th batches —
+the same pairing production serving gets, where DP rank A's *j*-th
+forward joins the same collective as rank B's *j*-th. The queue matters
+at `pp_size > 1`, where a member can have up to `pp_size` batches
+outstanding at once. When a wave assembles:
 
 - The simulator takes `max_total_len` across the group and pads every
   member's batch up to it, matching CUDA-graph DP padding in production
@@ -216,6 +220,13 @@ If one DP member has no pending requests, the scheduler synthesizes a
 all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
+
+A wave's graphs cannot be emitted at schedule time — the padded
+`max_total_len` is not known until the barrier assembles — so each
+member's graph is handed to the NPU that opened its round on that NPU's
+next poll, ahead of anything the scheduler would otherwise start. That
+keeps each NPU running its batches in the order they were opened, which
+is what the completion bookkeeping assumes.
 
 ### 2. ASTRA-Sim ALLTOALL barrier
 

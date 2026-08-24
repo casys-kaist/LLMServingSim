@@ -32,7 +32,9 @@ LLMServingSim/
 │   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
-│   └── run.sh                  # Example invocations across cluster configs
+│   ├── run.sh                  # One runnable example per feature (a menu, not a suite)
+│   ├── validate.sh             # 58 scenarios vs recorded clocks + sim.csv digests
+│   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
 ├── configs/
 │   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
 │   ├── model/                  # Model architecture configs (subset of HF config.json)
@@ -582,7 +584,10 @@ For DP groups (instances with the same `dp_group`), wave synchronization is achi
 through two mechanisms:
 1. **Python-side dp_pending barrier**: trace generation is deferred until all DP group
    members have scheduled their batches. The ALLTOALL `comm_size` is synchronized to
-   `max(total_len) * hidden_size * fp` across the group.
+   `max(total_len) * hidden_size * fp` across the group. `dp_pending[dg][inst]` is a
+   **FIFO**, not one slot: at `pp_size > 1` a member can have up to `pp_size` batches
+   waiting, and a round pairs the members' *j*-th batches, mirroring vLLM, where DP
+   rank A's *j*-th forward joins the same collective as rank B's *j*-th
 2. **ASTRA-Sim ALLTOALL barrier**: all DP group instances' `.et` files are placed in a
    shared workload folder. The ALLTOALL collectives in both files have matching stream
    IDs, causing ASTRA-Sim to block until both NPUs reach the collective.
@@ -595,11 +600,22 @@ The dummy is gated on `len(inflight) < pp_size`, not `== 0`: vLLM requires every
 of a DP group to run the same number of forwards, and with PP a rank has `pp_size`
 microbatches in flight, so the gate is `schedule()`'s own pipeline-depth rule. Gating
 on `== 0` lets the member holding a real request run `pp_size` batches ahead of a round
-the idle members can never join. **Any** NPU of the instance may open a round (`not in
-dp_pending[dg]` keeps it to one per member per round) — which NPU ASTRA-Sim asks about
+the idle members can never join. **Any** NPU of the instance may open a round (an empty
+`dp_pending[dg][inst]` keeps it to one per member per round: nothing queued means the
+member has not joined the round being assembled) — which NPU ASTRA-Sim asks about
 is not ours to choose. Because of that the dummy is appended to
 `schedulers[i].inflight` the way `_build_batch` registers a real batch, and the start
 NPU must be able to join it (see the `involved_dim` section above).
+
+A DP batch is the one place where the simulator cannot do what vLLM does and
+schedule-then-dispatch in one step (`schedule()` then `execute_model()` in
+`step_with_batch_queue`): its graph needs the group-wide padded `max_total_len`, so
+dispatch waits for the barrier. The invariant that survives is that the dispatch still
+lands **before the next `schedule()` for that NPU** — `dp_ready_workloads` is keyed by
+the NPU that opened the round (`batch.fired[0]`) and is served ahead of `schedule()`.
+Letting a new build take that poll instead is what hung `dp>1 x pp>1`: the NPU ran the
+*second* microbatch's graph as its first iteration, `add_done` credited it to the first
+by `id - 1`, and the other pipeline stage waited forever on a RECV that never came.
 
 ### Chakra graph converter
 The Chakra converter (`astra-sim/extern/graph_frontend/chakra/src/converter/llm_converter.py`)
@@ -662,13 +678,29 @@ website (not the README).
 
 ## Testing & Validation
 
-No dedicated unit-test suite. Validate by:
-1. Running the smallest relevant `python -m serving …` scenario and inspecting
-   the per-request CSV.
-2. For end-to-end accuracy checks against real vLLM, use `python -m bench run`
-   followed by `python -m bench validate` (see `bench/README.md`).
+No unit-test suite. The simulator is deterministic, so validation is exact
+equality against recorded results:
+
+1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares 58
+   scenarios against the `Total clocks (ns)` recorded in
+   `serving/validate-baselines.txt`; stage 2 regenerates
+   `bench/examples/*/outputs/sim.csv` and checks each md5. Anything that moved
+   is printed as a markdown table for the PR. `--clocks-only` skips stage 2,
+   `--list` names the scenarios, `--update` rewrites the baselines.
+   **Run it after every commit that touches `serving/`** — it is cheap enough,
+   and it is how the 8-of-19 regression on the perf branch was caught.
+2. For the *size* of an accuracy change, not just its presence:
+   `./bench/examples/validate.sh` regenerates `validation/summary.txt` and the
+   three plots. A changed `sim.csv` makes those stale, so regenerate and commit
+   them in the same commit.
 3. For profiler changes: edit `MODEL` / `HARDWARE` in `profiler/profile.sh`
    and run `./profiler/profile.sh` from the repo root inside the vLLM container.
+
+A scenario whose clock equals an existing one exercises flag parsing and
+nothing else. Several knobs only bite once the KV cache is saturated, which is
+what the `saturated_*` scenarios are for; `example_trace.jsonl` never gets
+there, and its DP members always drain together, which is what the `*_uneven`
+scenarios are for.
 
 ## Common Pitfalls
 
@@ -714,6 +746,18 @@ No dedicated unit-test suite. Validate by:
   `[critical] workload file ... does not exist` and then **hangs instead of exiting**.
   Both were issue #65; `add_done` needs `start_npu in batch.end` to complete a batch,
   so any batch the start NPU cannot claim deadlocks silently
+- **Don't give a DP group one slot per member anywhere.** `dp_pending[dg][inst]` and
+  `dp_ready_workloads[npu]` are both FIFOs because at `pp_size > 1` a member has up to
+  `pp_size` batches outstanding. Three separate hangs came from single slots: the second
+  registration dropped the first batch from the barrier (it never got a `workload_name`,
+  so the instance's other NPUs retried joining it forever), and the second round
+  overwrote an unconsumed workload (the NPU then ran the *wrong* microbatch's graph). All
+  three are invisible at `pp_size == 1`, where an instance holds one batch at a time
+- **Don't let the start NPU's join depend on the pipeline being full.** `schedule()` tries
+  `_schedule_existing` *before* the `len(inflight) >= pp_size` cap. A dummy opened by a
+  non-start NPU leaves `pp_size - 1` slots free, and gating the join on a full pipeline
+  sent the start NPU down the build path, where an idle member has nothing to build — so
+  it passed forever and `add_done` never saw `start_npu in batch.end`
 - **Don't assume `hidden_size == num_heads * head_dim`** — use explicit `head_dim` from config
 - **Use canonical vLLM layer names** (`qkv_proj`, `o_proj`, `gate_up_proj`,
   `act_fn`, `down_proj`, `rotary_emb`, `qk_norm`, `attention`, `layernorm`,

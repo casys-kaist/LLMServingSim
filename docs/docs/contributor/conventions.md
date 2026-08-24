@@ -202,7 +202,8 @@ The short version (full process is on
 - **One logical change per commit.** Don't bundle a refactor with
   a feature.
 - **PR description includes the validation command you ran**, so
-  the reviewer can rerun it.
+  the reviewer can rerun it — usually `./serving/validate.sh`, plus the
+  report table if anything moved.
 
 ## What's next
 

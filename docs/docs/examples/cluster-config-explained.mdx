@@ -355,7 +355,7 @@ without a link are runnable as-is but have no dedicated example page:
 | `single_node_moe_dp_ep_instance.json` | 2 MoE instances in one DP group, EP=2 | [DP+EP MoE](./parallelism/dp-ep-moe) |
 | `single_node_dp_instance.json` | DP=2 x TP=2, dense model, 4 GPUs | — |
 | `rtx4090_single_instance.json` | RTX 4090, Llama-3.1-8B TP=1, `mem_util` calibrated | [Validation](../validation) |
-| `rtx4090_tp2_instance.json` | 2x RTX 4090 as `tp=2`, Llama-3.1-8B | — |
+| `rtx4090_tp2_instance.json` | 2x RTX 4090 as `tp=2`, Llama-3.1-8B. Needs an RTX4090 `tp=2` profile first — only `tp1` is bundled, so it raises `FileNotFoundError` as shipped | [Profiler](../profiler/overview) |
 | `rtx4090_multi_instance.json` | 2 independent TP=1 RTX 4090 instances | — |
 | `single_node_moe_dp_tp_instance.json` | DP=2 x TP=2 MoE, EP=2, 4 GPUs | — |
 | `single_node_moe_dp_pp_instance.json` | DP=2 x PP=2 MoE, EP=2, 4 GPUs | — |
