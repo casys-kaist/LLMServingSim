@@ -85,7 +85,7 @@ If the change is intended, land the new truth in the same PR:
    that summary stale — leaving them behind publishes accuracy numbers for a
    simulator that no longer exists.
 
-:::caution A passing scenario is not proof your case is covered
+:::caution[A passing scenario is not proof your case is covered]
 `workloads/example_trace.jsonl` has 2–22 token prompts, so most scenarios
 never fill the KV cache and their DP members always drain together. That is
 why issue #65 survived a green `moe_dp_pp`: the bug needed one DP member to

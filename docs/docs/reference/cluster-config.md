@@ -248,7 +248,7 @@ The other 13 are plain keys on the instance object. `mem_util` sits
 It must be a number in `(0, 1]` — it is a *fraction*, so `0.9`, never
 `90`. Anything else raises at startup rather than being clamped.
 
-:::caution Match it to a measured run when the KV cache saturates
+:::caution[Match it to a measured run when the KV cache saturates]
 `mem_util` sizes the KV cache, and that only shows up in the results once a run
 actually fills it — below the ceiling nothing is preempted and the capacity is
 invisible. On a card with headroom, leave it at the default.

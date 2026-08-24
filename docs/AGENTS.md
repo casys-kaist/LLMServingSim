@@ -163,6 +163,38 @@ step is silently a no-op if the source is set to anything else.
   not full URLs. `onBrokenLinks: 'throw'` will fail the build on dead links.
 - **Component names**: PascalCase (`HomepageFeatures`).
 - **File naming**: `kebab-case.md` for docs, matches the URL slug.
+- **Admonitions**: the title goes in **brackets** — `:::caution[Title here]`,
+  closed by `:::`. The bare form `:::caution Title here` is Docusaurus v2 syntax:
+  v3 does not recognise it as a directive, so the whole block renders as a
+  literal paragraph starting `:::caution ...`. Nothing warns — not the build, not
+  `onBrokenLinks: 'throw'` — and it sat on 13 pages before anyone looked at the
+  rendered output. A titleless `:::note` needs no brackets.
+- **A fact the code owns does not go in prose.** Counts, file lists, flag sets,
+  defaults: if a script or config decides it, prose that repeats it goes silently
+  wrong the first time the code changes, and readers take prose as specification.
+  Write "every scenario in `serving/validate-baselines.txt`", not "58 scenarios".
+  Sample output and quoted examples are exempt — readers already read a terminal
+  block or a blockquote as a snapshot from one particular run. Point at the
+  generator instead of mirroring it: `--list` and `--help` cannot go stale.
+
+## Checks that run on the site
+
+- `pnpm build` runs two hooks around it. `prebuild` regenerates
+  `src/pages/changelog.md` from the repo-root `CHANGELOG.md`
+  (`scripts/sync-changelog.mjs`) — **edit `CHANGELOG.md` only**; the page is
+  generated, and committed so a fresh clone works. `postbuild` runs
+  `scripts/check-rendered.mjs`.
+- `scripts/check-rendered.mjs` scans the built HTML for source syntax that
+  survived into visible text — unparsed admonitions, bold, links, headings, table
+  rows, doubled list markers, visible HTML comments, JSX brace leaks. It strips
+  `<pre>`/`<code>`/`<script>` first, since syntax is legitimate there, and exits
+  non-zero on any hit. It exists because this whole class of bug is *not an
+  error*: markup Docusaurus cannot parse becomes text, so the only way to catch
+  it is to look at the output. Run it with `pnpm check-rendered` after a build.
+- **Not covered: mermaid.** Diagrams render client-side, so a broken one looks
+  fine in the built HTML and the scanner cannot see it. Checking them needs a DOM
+  (`mermaid.parse()` in bare node fails on `DOMPurify.addHook`). If you touch a
+  diagram, look at the page.
 
 ## Things explicitly **not** in scope yet
 

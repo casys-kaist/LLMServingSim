@@ -9,7 +9,7 @@ Complete reference for every command-line flag accepted by
 `python -m serving`. For the conceptual side of each flag (what it
 *does* internally), see **[Simulator](/docs/simulator/architecture)**.
 
-:::tip 14 of these can be set per instance
+:::tip[14 of these can be set per instance]
 Flags marked **(per-instance)** below can also be written into an
 individual `instances[i]` object in the cluster config, which wins over
 the CLI value for that instance only. That is how one run serves

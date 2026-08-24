@@ -263,7 +263,7 @@ Llama-3.1-8B version of the same idea, and additionally overrides
 `long_prefill_token_threshold`, `block_size`, `dtype`, and
 `kv_cache_dtype`.
 
-:::caution `max_num_batched_tokens: 0` is not infinity
+:::caution[`max_num_batched_tokens: 0` is not infinity]
 `0` maps to "unlimited", but the scheduler then applies
 `min(max_num_batched_tokens, max_position_embeddings)`. On Qwen3-32B
 that is 40960, so the decode instance above runs at 40960, not

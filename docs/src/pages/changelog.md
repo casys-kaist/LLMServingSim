@@ -9,6 +9,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- `docs/scripts/check-rendered.mjs` — scans the built site for source syntax that
+  survived into visible text (unparsed admonitions, bold, links, headings, table rows,
+  doubled list markers, visible HTML comments, JSX brace leaks). Runs as a `postbuild`
+  hook and as an explicit CI step, and exits non-zero. `pnpm check-rendered`.
 - `serving/validate.sh` — 58 scenarios checked against recorded total clocks, plus md5
   checks on each `bench/examples` entry's `outputs/sim.csv` and
   `validation/summary.txt`, and a markdown report of anything that moved, ready to paste
@@ -167,6 +171,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   the start NPU join. `ep_size` was irrelevant. The topology is now `[tp, pp, dp]`
   innermost-first, matching vLLM, with `pp` dropped when it is 1. Reported by
   [@hsule](https://github.com/hsule)
+- **Every admonition on the docs site rendered as raw text.** `:::caution Title` is
+  Docusaurus v2 syntax; v3 needs `:::caution[Title]`, and the bare form is not
+  recognised as a directive, so the block became a literal paragraph. 14 occurrences
+  across 13 pages, with no build warning. All bracketed, and
+  `docs/scripts/check-rendered.mjs` now fails the build on the whole class
 - `configs/cluster/rtx4090_tp2_instance.json` was documented as runnable in
   `configs/cluster/README.md` ("not validated", i.e. runs without ground truth) and in
   the examples table. It raises `FileNotFoundError`: only `tp1` is profiled for RTX4090.

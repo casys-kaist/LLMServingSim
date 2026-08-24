@@ -45,6 +45,11 @@ jobs:
       - name: Build site
         run: pnpm build
 
+      # Also wired as a postbuild hook, but pnpm's enable-pre-post-scripts
+      # default has flipped between majors, so do not rely on it in CI.
+      - name: Check for unparsed markup in the built site
+        run: pnpm check-rendered
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
