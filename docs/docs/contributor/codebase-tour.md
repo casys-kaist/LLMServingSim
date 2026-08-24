@@ -175,7 +175,7 @@ instead, so validation is exact equality against recorded results:
 ./serving/validate.sh
 ```
 
-58 scenarios compared against recorded `Total clocks (ns)`, then each
+Every scenario compared against its recorded `Total clocks (ns)`, then each
 `bench/examples` entry's `sim.csv` and `validation/summary.txt` checked
 by md5. See **[Validating your changes](./validating-changes)** for
 what to do when something differs, and for the case where no scenario

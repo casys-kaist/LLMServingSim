@@ -25,7 +25,7 @@ serving/                        Python package
 │   ├── logger.py               Rich-based logger + stdio capture
 │   └── utils.py                model config loading, formatting helpers
 ├── run.sh                      one runnable example per feature (a menu, not a suite)
-├── validate.sh                 58 scenarios vs recorded clocks + bench/examples digests
+├── validate.sh                 every scenario vs recorded clocks + bench/examples digests
 └── validate-baselines.txt      the recorded values; refresh with validate.sh --update
 ```
 
@@ -39,7 +39,7 @@ exact equality against recorded results:
 ./serving/validate.sh --help     # options
 ```
 
-Stage 1 compares 58 scenarios against the `Total clocks (ns)` in
+Stage 1 compares every scenario against the `Total clocks (ns)` in
 `validate-baselines.txt`. Stage 2 regenerates each `bench/examples` entry's
 `outputs/sim.csv` and `validation/summary.txt` and checks their md5s. Anything
 that moved is printed as a markdown table to paste into the PR — a difference
