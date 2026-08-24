@@ -91,17 +91,28 @@ class Scheduler:
         if sys != self.start_npu:
             return self._schedule_existing(sys, batch_id)
 
-        # One batch in flight per pipeline stage.
+        # The start NPU is a joiner too, and it has to try joining *before* the
+        # pipeline-depth cap below. With DP groups any NPU of the instance may
+        # open a round -- the idle-member dummy in particular -- and ``add_done``
+        # only completes a batch once ``start_npu`` has run it, so a batch opened
+        # by another NPU would otherwise never finish and the group's collective
+        # would block forever. Gating the join on a *full* pipeline missed
+        # exactly that case: a dummy opened by a non-start NPU leaves
+        # ``pp_size - 1`` slots free, so the start NPU took the build path
+        # instead, found nothing to build (its member is idle) and answered
+        # "pass" forever. Joining never adds a batch, so it cannot breach the cap.
+        #
+        # For a non-DP instance every in-flight batch was built here, so
+        # ``start_npu`` is already in ``fired``, this returns None, and the cap
+        # below decides exactly as it did before.
+        existing = self._schedule_existing(sys, batch_id)
+        if existing is not None:
+            return existing
+
+        # One batch in flight per pipeline stage: vLLM's ``batch_queue``, whose
+        # maxlen is ``max_concurrent_batches`` == ``pipeline_parallel_size``.
         if len(self.inflight) >= self.pp_size:
-            # The start NPU is a joiner too. With DP groups any NPU of the
-            # instance may open a round -- the idle-member dummy in particular
-            # -- and ``add_done`` only completes a batch once ``start_npu`` has
-            # run it, so a batch opened by another NPU would otherwise never
-            # finish and the group's collective would block forever. For a
-            # non-DP instance every in-flight batch was built here, so
-            # ``start_npu`` is already in ``fired`` and this returns None
-            # exactly as before.
-            return self._schedule_existing(sys, batch_id)
+            return None
 
         token_budget = self.max_num_batched_tokens
         # (request, tokens scheduled, num_computed_tokens before this step)

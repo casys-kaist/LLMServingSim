@@ -327,6 +327,42 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `all_ranks.reshape(-1, dp, pp, pcp, tp)`, with `pp` dropped when it is 1 so
   existing configs keep their 2-D topology. Reported by
   [@hsule](https://github.com/hsule)
+- **`dp > 1` combined with `pp > 1` still hung once the DP members stopped
+  draining together** ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65),
+  follow-up). Three more single-slot assumptions, all of them correct at
+  `pp_size == 1`, where an instance holds one batch at a time, and all of them
+  wrong once it holds `pp_size`:
+  - `schedule()` only let the start NPU join an already-formed batch when the
+    pipeline was **full**. A dummy opened by a non-start NPU leaves `pp_size - 1`
+    slots free, so the start NPU took the build path instead, found nothing to
+    build (its member is idle), and answered `pass` forever — `add_done` never
+    saw `start_npu in batch.end`. The join is now tried before the depth cap,
+    which is unreachable for a non-DP instance (the start NPU built every
+    in-flight batch, so it is already in `fired`).
+  - `dp_ready_workloads` held **one** workload per instance and was only
+    consumed when `schedule()` returned nothing. The start NPU built its next
+    microbatch on the very poll that should have dispatched the previous one, and
+    the next round overwrote the entry — so an NPU ran the *second* microbatch's
+    graph as its first iteration, `add_done` credited it to the first by
+    `id - 1`, and the other pipeline stage blocked forever on a pipeline RECV
+    that never came. It is now a FIFO keyed by the NPU that opened the round
+    (`batch.fired[0]`), served **ahead** of `schedule()`. vLLM never has this
+    problem because `schedule()` and `execute_model()` happen in one step; a DP
+    batch has to defer dispatch until the barrier knows the padded
+    `max_total_len`, so the invariant kept is that dispatch still lands before
+    the next schedule for that NPU.
+  - `dp_pending[dg][inst]` also held **one** batch, so a member's second
+    registration silently dropped its first from the barrier. That batch never
+    got a `workload_name`, and the instance's other NPUs re-offered and released
+    it on every poll — the "same batch re-scheduled to the same NPU
+    indefinitely" spin, 150k times in one 200 s run. It is now a per-member FIFO
+    and a wave takes the oldest from each, pairing the members' *j*-th batches
+    the way vLLM pairs DP rank A's *j*-th forward with rank B's *j*-th.
+
+  All three needed a workload whose DP members drain at different times;
+  `workloads/example_trace.jsonl` (2-22 token prompts) cannot reach it, so
+  `serving/run.sh` gains a `moe_dp_pp` entry on a ShareGPT trace. Reported by
+  [@hsule](https://github.com/hsule)
 - Data parallelism over a **dense** model was rejected at startup with
   `ep_size (1) not divisible by dp_group_size (2)`. `ep_size` defaults to 1 for
   a dense model because there are no experts to shard, not because it is a

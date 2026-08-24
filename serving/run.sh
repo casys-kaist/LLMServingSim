@@ -106,6 +106,16 @@ python -m serving --cluster-config 'configs/cluster/single_node_single_instance.
 #     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_moe_dp_pp_run.csv' \
 #     --num-reqs 10
 
+# MoE DP+PP with a workload whose DP members drain at different times.
+# example_trace.jsonl cannot reach that (2-22 token prompts, so both members
+# finish together), and an idle member that has to keep emitting dummy waves
+# while its peer is still busy is the case issue #65 hung on.
+# python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_pp_instance.json' \
+#     --dtype bfloat16 --block-size 16 \
+#     --dataset 'workloads/sharegpt-qwen3-30b-a3b-300-sps10.jsonl' \
+#     --output 'outputs/example_moe_dp_pp_uneven_run.csv' \
+#     --num-reqs 2
+
 # MoE DP+TP+PP example (dp=2 x tp=2 x pp=2, ep=4 -> 8 GPUs)
 # python -m serving --cluster-config 'configs/cluster/single_node_moe_dp_tp_pp_instance.json' \
 #     --dtype bfloat16 --block-size 16 \
