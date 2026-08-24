@@ -101,7 +101,7 @@ attention kernel from the NPU profile to the PIM profile. The rest
 throughput and TPOT, not as a utilization counter. To see whether PIM
 is the bottleneck, compare TPOT against the same workload without
 `--enable-attn-offloading`, or inspect a trace with
-`--no-cleanup-inputs` and look at the `PIM` marker blocks.
+`--save-trace-text` and look at the `PIM` marker blocks.
 
 ## What's interesting
 

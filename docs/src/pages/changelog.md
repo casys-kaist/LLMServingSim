@@ -95,6 +95,57 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `MemoryModel` exists.
 
 ### Changed
+- The simulator is roughly **11x faster** with byte-identical results. Measured
+  on the four `bench/examples/` validation workloads (300 requests each), total
+  wall-clock goes 16m 40s to 1m 26s; the per-example range is 5.2x
+  (RTXPRO6000/Qwen3-32B, whose cost is dominated by ASTRA-Sim's own graph
+  simulation) to 24.6x (RTX4090/Llama-3.1-8B). The 19 `serving/run.sh`
+  scenarios go 18.95 min to 1.94 min. Every one of those scenarios produces an
+  unchanged `Total clocks (ns)`, and all four `bench/examples` `sim.csv` files
+  are byte-identical, so validation accuracy against vLLM is unchanged to the
+  bit. The work was:
+  - The Chakra converter runs **in-process** instead of as a fresh
+    `python -m chakra...` subprocess per batch. The subprocess cost ~56 ms per
+    call, of which ~52 ms was interpreter startup plus the protobuf import
+    against ~1.3 ms of conversion, which made graph generation 73-85% of
+    wall-clock on every config profiled.
+  - The converter takes the trace **as field tuples**, not as text. Formatting
+    rows into padded columns, writing the file, reading it back and splitting
+    each line again is pure overhead once both sides are in the same process.
+    The text file is now written only when `--save-trace-text` asks for it.
+  - **Converted graphs are reused** when a batch produces an identical trace.
+    A DP group with uneven load spends half its waves on dummy batches whose
+    trace is nearly a constant: on the swe-bench MoE DP+EP example, 4,405 of
+    8,810 batches, and only 22 of those 4,405 traces are distinct.
+  - **ASTRA-Sim stops re-asking an idle NPU** until its answer could change --
+    another NPU reporting a new iteration, a workload being assigned, or
+    simulated time reaching a known request arrival. 336,894 of 337,786
+    answers on a 10-request 8-NPU run were `pass`, and 336,890 of those were
+    sent while another instance was mid-batch. Handshakes on that config drop
+    337,786 to 2,462.
+  - The analytical frontends no longer print a per-tick `Checking NPU ...`
+    line per NPU. The frontend had to read every one off the pipe before
+    reaching the `Waiting` it was blocked on: 78% of the lines read on a
+    10-request 8-NPU run, 99.6% on an MoE DP+EP run.
+  - Profile tables are built in plain Python and only for the TP degrees a run
+    touches, taking startup for a TP=1 run from 1435 ms to 50 ms; the model
+    architecture config is cached instead of re-parsed per scheduled batch.
+- **`--cleanup-inputs` is replaced by two flags**, `--save-trace-text` and
+  `--keep-inputs`, both defaulting off — the same observable default as
+  `--cleanup-inputs` defaulting on, without the double negative. It was doing two
+  unrelated jobs, which were only the same switch because the trace text used to
+  be written unconditionally and then deleted: `--save-trace-text` writes each
+  batch's trace as text for inspection (nothing in the pipeline reads it, so it
+  is produced only on request) and implies `--keep-inputs`, while `--keep-inputs`
+  alone preserves the `.et` workloads and the generated network / system / memory
+  configs so a run can be replayed through ASTRA-Sim by hand. Scripts passing
+  `--no-cleanup-inputs` need to pass `--save-trace-text` or `--keep-inputs`
+  instead.
+- Graph metadata stores the trace's **path** rather than its entire text.
+  Nothing consumed it -- `ETFeeder::readGlobalMetadata()` reads the message and
+  discards it -- and it was 70% of every `.et`. Files shrink from 117,112 to
+  24,403 bytes on the swe-bench MoE DP+EP example, about 720 MB to 180 MB of
+  I/O per run. Wall-clock is unaffected; this is an I/O and disk-space change.
 - All four canonical examples were regenerated on current `main`, and the
   committed validation numbers moved: the previous summaries predated the block
   pool rework, the pipeline-stage fix and the attention-interpolation change,
@@ -376,7 +427,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - `outputs/*` (except the committed `outputs/example_*.csv`) and
   `astra-sim/inputs/runs/` are now gitignored. `AGENTS.md` claimed output CSVs
   and generated traces already were; they were not, so scratch from every run
-  accumulated in `git status`, and `--no-cleanup-inputs` could leave gigabytes
+  accumulated in `git status`, and keeping the inputs could leave gigabytes
   of ASTRA-Sim inputs behind.
 - Documentation corrections: the attention lookup was described as
   "nearest-neighbour on `(prefill_chunk, n_decode)`" when it has always

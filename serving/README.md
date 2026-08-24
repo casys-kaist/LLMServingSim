@@ -183,10 +183,11 @@ matching `sequence:` rather than editing this file.
 Parses the user-provided cluster config JSON from `configs/cluster/` and generates the
 ASTRA-Sim input files under `astra-sim/inputs/runs/<run_id>/`: `network/network.yml`,
 `memory/memory_expansion.json`, and `system/system.json`.
-Per-iteration text traces are removed after Chakra conversion by default, and the
-generated run directory is removed after a successful simulation by default. Use
-`--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for
-debugging.
+Per-iteration text traces are not produced at all by default -- the Chakra
+converter takes the trace rows straight from the trace generator -- and the
+generated run directory is removed after a successful simulation. Use
+`--save-trace-text` to write the text for inspection (it implies `--keep-inputs`),
+or `--keep-inputs` alone to preserve the Chakra workloads and input configs.
 For DP groups, generates a multi-dimensional network topology, innermost dimension
 first: `[tp_size, dp_group_size]`, or `[tp_size, pp_size, dp_group_size]` when
 `pp_size > 1`, matching vLLM's `all_ranks.reshape(-1, dp, pp, pcp, tp)`. The

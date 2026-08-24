@@ -140,7 +140,7 @@ all of it; every sample on this page is copied from there.
 
 The **Run ID** and inputs root are what you need to find a run's
 intermediate ASTRA-Sim files, and they only survive if you passed
-`--no-cleanup-inputs`.
+`--keep-inputs` (or `--save-trace-text`, which implies it).
 
 The **KV Cache Initialization** line is the one to read first when
 comparing against real vLLM: it reports the capacity the simulator

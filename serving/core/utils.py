@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 from time import time
 import json
 
@@ -68,7 +69,18 @@ def formatter(layername, comp_time, input_loc, input_size, weight_loc, weight_si
     )
 
 
+@lru_cache(maxsize=None)
 def get_config(model_name):
+    """Load a model architecture config, cached for the process lifetime.
+
+    Cached because the hot path re-read and re-parsed the JSON on every
+    iteration -- generate_trace, the memory model's size helpers and the
+    DP-group scheduling block each call this per scheduled batch.
+
+    The cache hands every caller the *same* dict, so callers must treat it
+    as read-only. They do today: every use is a subscript, a ``.get`` or an
+    ``in`` test, and nothing assigns into it or mutates it in place.
+    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     serving_dir = os.path.dirname(base_dir)
     repo_root = os.path.dirname(serving_dir)

@@ -163,11 +163,14 @@ Concretely:
 
 1. The Python scheduler decides which requests run this iteration and
    produces a `Batch`.
-2. `trace_generator` writes a per-layer text trace to
-   `astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
-3. `graph_generator` shells out to the Chakra converter, producing a
-   protobuf graph at
+2. `trace_generator` builds a per-layer trace as field tuples. With
+   `--save-trace-text` it is also written to
+   `astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`
+   for inspection; nothing in the pipeline reads that file.
+3. `graph_generator` hands those rows to the Chakra converter, running
+   in-process, producing a protobuf graph at
    `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
+   A trace identical to one already converted reuses its graph.
 4. `controller.write_flush(process, "<workload-path>")` sends that
    path over stdin.
 5. ASTRA-Sim reads the `.et` file, executes the compute + comm graph,
@@ -175,12 +178,26 @@ Concretely:
 6. `controller.read_wait` parses that line; the main loop hands the
    cycle count to `scheduler.add_done` to update request metrics.
 
-The protocol is just three commands on the Python → C++ direction:
+The protocol is a handful of commands on the Python → C++ direction:
 
 - A workload path, start running this batch.
-- `pass`: re-poll without computing (used during DP-group sync waits).
+- `pass`: nothing to run. ASTRA-Sim stops re-asking this NPU until
+  something could change the answer — some NPU reporting an iteration
+  the frontend has not processed, or a workload being assigned.
+- `pass <tick>`: the same, plus the next known request arrival. That is
+  the one thing the backend cannot work out for itself, and without it
+  an idle instance would stay quiet past an arrival it should have
+  admitted while every other instance was mid-batch.
+- `pass -1`: this `pass` *changed* scheduler state, so it is not
+  idempotent — the three DP-barrier passes do that (joining a round with
+  a dummy batch, joining it with a real batch, handing a batch claim
+  back). Treated exactly like a workload assignment: re-open every NPU.
 - `done`: this instance is idle.
 - `exit`: shut down.
+
+The frontend and the binary have to match, since an older binary compares
+the answer to `"pass"` exactly and would read `pass 12345` as a workload
+path. Rebuild after changing either side.
 
 There is no shared memory, no callback API, no FFI, only files and a
 text protocol. Adding a new feature on the Python side rarely

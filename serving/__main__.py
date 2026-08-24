@@ -62,6 +62,33 @@ def _pad_batch_to_max(batch, max_len):
     batch.num_decode += pad              # counted for lm_head / dense shape
 
 
+def _pass_response(router, current, state_changed=False):
+    """The "pass" answer, carrying the next known arrival when there is one.
+
+    ASTRA-Sim stops re-asking an NPU that passed until either some NPU
+    reports an iteration the frontend has not processed yet, or this
+    deadline is reached. Those are the only two things that can change what
+    ``schedule()`` returns, so suppressing the re-asks in between skips no
+    decision. Without the deadline an idle instance would stay suppressed
+    past an arrival it should have admitted, in the case where every other
+    instance is still mid-batch and so no report is coming.
+
+``state_changed=True`` sends ``pass -1``: this pass altered scheduler
+    state, so it is not idempotent and re-asking is not a wasted question.
+    The three DP-barrier passes do that -- joining a round with a dummy,
+    joining it with a real batch, or handing a batch claim back -- and none
+    of them is preceded by a report, so nothing else would lift the
+    suppression. ASTRA-Sim treats it like a workload assignment: this NPU
+    stays askable and every other one is re-opened too.
+    """
+    if state_changed:
+        return "pass -1"
+    nxt = router.get_next_pending_arrival()
+    if nxt is None or nxt <= current:
+        return "pass"
+    return f"pass {int(nxt)}"
+
+
 def _runtime_limit(value):
     return float('inf') if value == 0 else value
 
@@ -315,10 +342,19 @@ def main():
     parser.add_argument('--inputs-root', type=str, default=None,
                         help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
                         'astra-sim/inputs/runs/<run-id>')
-    parser.add_argument('--cleanup-inputs', action=argparse.BooleanOptionalAction, default=True,
-                        help='remove generated ASTRA-Sim inputs under astra-sim/inputs/runs/<run-id> '
-                        'after a successful simulation (default: enabled). Use --no-cleanup-inputs '
-                        'to preserve generated trace files, Chakra workloads, and input configs for debugging')
+    parser.add_argument('--save-trace-text', action=argparse.BooleanOptionalAction, default=False,
+                        help='write each batch\'s trace as text, for inspection (default: '
+                        'disabled). Nothing in the pipeline reads it -- the Chakra converter takes '
+                        'the trace rows directly -- so it is produced only on request, and it is '
+                        'the only human-readable form of what the simulator emitted. Implies '
+                        '--keep-inputs, since the text is written into the run directory. Can '
+                        'leave gigabytes behind on a long run')
+    parser.add_argument('--keep-inputs', action=argparse.BooleanOptionalAction, default=False,
+                        help='keep the generated ASTRA-Sim inputs under '
+                        'astra-sim/inputs/runs/<run-id> after a successful simulation (default: '
+                        'disabled). Preserves the Chakra .et workloads and the generated network, '
+                        'system and memory configs, so a run can be replayed through ASTRA-Sim by '
+                        'hand. Replaces --cleanup-inputs, whose polarity was inverted')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
                         help='skip the prefill phase, running decode only')
     parser.add_argument('--num-reqs', type=int, default=0,
@@ -577,10 +613,10 @@ def main():
         event_time = first_arival_time
     else:
         event_time = INTERVAL
-    generate_event(int(event_time), inputs_root=run_paths.inputs_root)
+    event_trace = generate_event(int(event_time), inputs_root=run_paths.inputs_root)
     # Make Chakra Grapth
     generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root,
-                   cleanup_trace=args.cleanup_inputs)
+                   save_trace_text=args.save_trace_text, trace=event_trace)
     # set first workload file
     workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
@@ -737,7 +773,7 @@ def main():
                         batch.workload_name = dp_workload_name
                         inst = instances[inst_id]
                         inst_cfg = instance_runtime_configs[inst_id]
-                        generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
+                        trace_data = generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                        inst["local_ep"], inst["ep_total"], inst["pd_type"],
                                        nid, inst_id,
                                        inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
@@ -756,7 +792,8 @@ def main():
                                        inst_cfg["enable_local_offloading"],
                                        workload_name=dp_workload_name,
                                        inputs_root=run_paths.inputs_root,
-                                       cleanup_trace=args.cleanup_inputs)
+                                       save_trace_text=args.save_trace_text,
+                                       trace=trace_data)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                     workload_name=dp_workload_name,
@@ -769,7 +806,8 @@ def main():
                     controller.write_flush(p, workload)
                     responded = True
                 else:
-                    controller.write_flush(p, "pass")
+                    # Joined the round with a dummy; the round is not complete.
+                    controller.write_flush(p, _pass_response(router, current, state_changed=True))
                     responded = True
         # runnable batch exists
         elif new_req is not None:
@@ -813,7 +851,7 @@ def main():
                             batch.workload_name = dp_workload_name
                             inst = instances[inst_id]
                             inst_cfg = instance_runtime_configs[inst_id]
-                            generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
+                            trace_data = generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                            inst["local_ep"], inst["ep_total"], inst["pd_type"],
                                            nid, inst_id,
                                            inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
@@ -832,7 +870,8 @@ def main():
                                            inst_cfg["enable_local_offloading"],
                                            workload_name=dp_workload_name,
                                            inputs_root=run_paths.inputs_root,
-                                           cleanup_trace=args.cleanup_inputs)
+                                           save_trace_text=args.save_trace_text,
+                                           trace=trace_data)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
                                                                         workload_name=dp_workload_name,
@@ -845,12 +884,12 @@ def main():
                         controller.write_flush(p, workload)
                     else:
                         # Waiting for other DP members — send pass
-                        controller.write_flush(p, "pass")
+                        controller.write_flush(p, _pass_response(router, current, state_changed=True))
                         responded = True
                 else:
                     # Independent instance: generate trace immediately
                     inst_cfg = instance_runtime_configs[instance_id]
-                    generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
+                    trace_data = generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
                                    instance["local_ep"], instance["ep_total"],
                                    instance["pd_type"],
                                    node_id, instance_id,
@@ -867,7 +906,8 @@ def main():
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],
                                    inputs_root=run_paths.inputs_root,
-                                   cleanup_trace=args.cleanup_inputs)
+                                   save_trace_text=args.save_trace_text,
+                                   trace=trace_data)
                     workload = get_workload(new_req, instance["hardware"], instance_id,
                                             inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
@@ -891,7 +931,7 @@ def main():
                     waiting_request[instance_id] = False
                 if instance_id in inst_dp_group and new_req.workload_name is None:
                     new_req.fired.remove(sys)
-                    controller.write_flush(p, "pass")
+                    controller.write_flush(p, _pass_response(router, current, state_changed=True))
                     responded = True
                 else:
                     workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id,
@@ -1032,7 +1072,7 @@ def main():
                 if not all_dp_empty:
                     # Other DP members still have work — keep this instance alive for dummy waves
                     if not responded:
-                        controller.write_flush(p, "pass")
+                        controller.write_flush(p, _pass_response(router, current))
                     flush.stdout.flush()
                     continue
 
@@ -1063,11 +1103,14 @@ def main():
             # If all instances are idle but deferred sessions have pending
             # requests with future arrival times (tool calls still running),
             # advance current time so the next iteration can pick them up.
+            # Built before the jump below: _pass_response compares against
+            # the clock ASTRA-Sim is actually at, not the one we skip to.
+            pass_msg = _pass_response(router, current)
             if router.has_deferred_sessions() or router.has_pending_requests():
                 next_arrival = router.get_next_pending_arrival()
                 if next_arrival is not None and next_arrival > current:
                     current = next_arrival
-            controller.write_flush(p, "pass")
+            controller.write_flush(p, pass_msg)
         
         # flush
         flush.stdout.flush()
@@ -1171,7 +1214,9 @@ def main():
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
 
-    if args.cleanup_inputs:
+    # --save-trace-text writes the text into the run directory, so keeping it
+    # is implied: producing the text and then deleting it would be pointless.
+    if not (args.keep_inputs or args.save_trace_text):
         _cleanup_inputs_root(run_paths, logger)
     
 

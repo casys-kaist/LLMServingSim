@@ -87,7 +87,8 @@ removed after a successful simulation by default.
 | --- | --- | --- | --- |
 | `--run-id` | string | auto-generated | Path-safe id for this simulation run. Used in `astra-sim/inputs/runs/<run-id>` and the `{run_id}` output placeholder |
 | `--inputs-root` | path | `astra-sim/inputs/runs/<run-id>` | Override the generated ASTRA-Sim input root, for example to place intermediates on local SSD or tmpfs |
-| `--cleanup-inputs` / `--no-cleanup-inputs` | bool | `true` | Remove generated trace files after Chakra conversion and remove the generated run directory after a successful simulation. Use `--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for debugging |
+| `--save-trace-text` / `--no-save-trace-text` | bool | `false` | Write each batch's trace as text, for inspection. Nothing in the pipeline reads it — the Chakra converter takes the trace rows directly — so it is produced only on request, and it is the only human-readable form of what the simulator emitted. Implies `--keep-inputs` |
+| `--keep-inputs` / `--no-keep-inputs` | bool | `false` | Keep the generated ASTRA-Sim inputs under `astra-sim/inputs/runs/<run-id>` after a successful simulation: the Chakra `.et` workloads and the generated network / system / memory configs, so a run can be replayed through ASTRA-Sim by hand |
 
 ## Logging
 

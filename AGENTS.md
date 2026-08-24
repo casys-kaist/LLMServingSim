@@ -108,9 +108,9 @@ are not part of the main branch's tree.
 ```
 profiler/perf/<hw>/<model>/<variant>/tp<N>/*.csv (profiled latencies)
     ↓ _load_perf_db() + _lookup_{dense,per_sequence,attention,moe}()
-trace_generator.py → text trace file
-    ↓ Chakra converter
-graph_generator.py → .et protobuf file
+trace_generator.py → per-layer field tuples (TraceData)
+    ↓ Chakra converter, in-process, via LLMConverter.convert_rows()
+graph_generator.py → .et protobuf file (reused when the rows repeat)
     ↓ stdin/stdout IPC
 ASTRA-Sim (C++) → cycle count
     ↓
@@ -274,9 +274,12 @@ each iteration. Composable helpers:
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
 
 ### Trace file format
-Each trace is a whitespace-aligned text file consumed by the Chakra converter
-(fixed-width columns from `utils.py::_FMT`; the converter splits on any
-whitespace). The sample below is illustrative, not byte-accurate — see
+A trace is a list of per-layer field tuples, handed to the Chakra converter
+in memory. `--save-trace-text` also writes it as a whitespace-aligned text
+file (fixed-width columns from `utils.py::_FMT`), which is the only
+human-readable form of what the simulator emitted — nothing in the pipeline
+reads it. The field spec below describes both representations; the text
+columns are what `indexed_cols()` and `_write_trace()` agree on. The sample below is illustrative, not byte-accurate — see
 `docs/docs/reference/trace-format.md` for the real widths. Every field except the
 last carries an **explicit trailing space** in `_FMT`: `{:<15}` pads a short value
 but emits nothing for one that already fills the column, so a 15-character value
@@ -677,7 +680,8 @@ No dedicated unit-test suite. Validate by:
 - **Don't commit large files**: generated traces, `.et` files and scratch run
   output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
   `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
-  pass `--no-cleanup-inputs`, which can leave gigabytes behind
+  pass `--keep-inputs` (or `--save-trace-text`, which implies it), either of
+  which can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes

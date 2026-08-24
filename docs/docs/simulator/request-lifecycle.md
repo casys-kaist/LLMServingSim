@@ -160,21 +160,22 @@ profile DB:
 - MoE → 2D over `(local_tokens, activated_experts)`, profiled at
   TP=1.
 
-The output is a tab-separated text trace at
-`astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
-The text trace is an intermediate input to the Chakra converter and is
-removed after the `.et` graph is generated unless `--no-cleanup-inputs`
-is set.
+The output is a list of per-layer field tuples, handed straight to the
+Chakra converter. Pass `--save-trace-text` to also write it as a
+tab-separated text trace at
+`astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`
+-- nothing in the pipeline reads that file, but it is the only
+human-readable form of what the simulator emitted.
 Full mechanics on **[Trace generation](./trace-generation)**.
 
 ## Stage 7, Converted to Chakra graph
 
-`graph_generator.generate_graph` shells out to Chakra's text→protobuf
-converter, producing
+`graph_generator.generate_graph` calls Chakra's converter in-process,
+handing it the trace rows, producing
 `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
-Chakra workloads remain available while ASTRA-Sim consumes them; the
-run directory is removed after a successful simulation unless
-`--no-cleanup-inputs` is set.
+An identical trace reuses the graph it already converted. Chakra workloads
+remain available while ASTRA-Sim consumes them; the run directory is removed
+after a successful simulation unless `--keep-inputs` is set.
 
 The Chakra converter creates:
 
