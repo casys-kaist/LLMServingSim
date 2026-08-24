@@ -76,16 +76,85 @@ for (const file of htmlFiles) {
   }
 }
 
-console.log(`checked ${htmlFiles.length} built pages`);
-if (findings.size === 0) {
+// ---------------------------------------------------------------------------
+// Mermaid, checked against the *source* rather than the build.
+//
+// theme-mermaid does not leave a <pre class="mermaid"> in the static HTML: the
+// diagram source goes into the JS bundle and a React component renders it in
+// the browser. So the scan above cannot see diagrams at all, and reading the
+// source instead also lets us report file:line for the author.
+//
+// This is a structural check, not mermaid's parser -- mermaid needs a DOM even
+// to parse (`mermaid.parse()` in bare node dies on `DOMPurify.addHook`), which
+// would mean a jsdom dependency. It catches the gross mistakes; a diagram that
+// is structurally sound but has bad node syntax, or renders badly, still needs
+// a human to open the page.
+const DIAGRAM_TYPES = new Set([
+  'graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram',
+  'stateDiagram-v2', 'erDiagram', 'journey', 'gantt', 'pie', 'gitGraph',
+  'mindmap', 'timeline', 'quadrantChart', 'C4Context', 'sankey-beta',
+  'xychart-beta', 'block-beta', 'packet-beta', 'architecture-beta',
+  'requirementDiagram', 'zenuml', 'radar-beta', 'treemap-beta',
+]);
+
+const docsDir = resolve(here, '..', 'docs');
+const srcFiles = [];
+if (existsSync(docsDir)) {
+  (function walk(dir) {
+    for (const e of readdirSync(dir, {withFileTypes: true})) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.mdx?$/.test(e.name)) srcFiles.push(p);
+    }
+  })(docsDir);
+}
+
+const mermaidProblems = [];
+let diagramCount = 0;
+for (const file of srcFiles) {
+  const lines = readFileSync(file, 'utf-8').split('\n');
+  let open = null;
+  lines.forEach((line, i) => {
+    if (open === null && /^\s*```mermaid\s*$/.test(line)) open = i;
+    else if (open !== null && /^\s*```\s*$/.test(line)) {
+      const body = lines.slice(open + 1, i);
+      const where = `${relative(resolve(here, '..', '..'), file)}:${open + 1}`;
+      diagramCount++;
+      const meaningful = body.filter((b) => b.trim() && !b.trim().startsWith('%%'));
+      if (meaningful.length === 0) {
+        mermaidProblems.push(`${where}  empty diagram`);
+      } else {
+        const type = meaningful[0].trim().split(/\s+/)[0].replace(/;$/, '');
+        if (!DIAGRAM_TYPES.has(type)) {
+          mermaidProblems.push(`${where}  unknown diagram type '${type}'`);
+        }
+        // `subgraph` is the one block that mermaid requires be closed by `end`.
+        const subgraphs = body.filter((b) => /^\s*subgraph\b/.test(b)).length;
+        const ends = body.filter((b) => /^\s*end\s*$/.test(b)).length;
+        if (subgraphs > ends) {
+          mermaidProblems.push(`${where}  ${subgraphs} subgraph vs ${ends} end`);
+        }
+      }
+      open = null;
+    }
+  });
+}
+
+console.log(`checked ${htmlFiles.length} built pages and ${diagramCount} mermaid diagrams`);
+if (findings.size === 0 && mermaidProblems.length === 0) {
   console.log('no unparsed markup found');
   process.exit(0);
+}
+
+if (mermaidProblems.length > 0) {
+  console.log('\nmermaid-structure: diagram would fail to render');
+  for (const m of mermaidProblems) console.log(`  ${m}`);
 }
 
 for (const [name, {why, hits}] of findings) {
   console.log(`\n${name}: ${why}`);
   for (const h of [...hits].sort()) console.log(`  ${h}`);
 }
-const total = [...findings.values()].reduce((n, f) => n + f.hits.size, 0);
-console.log(`\n${total} finding(s). These are rendering as raw text on the site.`);
+const total = [...findings.values()].reduce((n, f) => n + f.hits.size, 0) + mermaidProblems.length;
+console.log(`\n${total} finding(s).`);
 process.exit(1);

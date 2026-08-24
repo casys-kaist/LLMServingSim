@@ -11,8 +11,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ### Added
 - `docs/scripts/check-rendered.mjs` — scans the built site for source syntax that
   survived into visible text (unparsed admonitions, bold, links, headings, table rows,
-  doubled list markers, visible HTML comments, JSX brace leaks). Runs as a `postbuild`
-  hook and as an explicit CI step, and exits non-zero. `pnpm check-rendered`.
+  doubled list markers, visible HTML comments, JSX brace leaks), plus a structural
+  check on every mermaid diagram — unknown type, empty, unbalanced `subgraph`/`end` —
+  read from the source, since theme-mermaid leaves nothing in the static HTML. Runs as
+  a `postbuild` hook and as an explicit CI step, and exits non-zero.
+  `pnpm check-rendered`.
 - `serving/validate.sh` — 58 scenarios checked against recorded total clocks, plus md5
   checks on each `bench/examples` entry's `outputs/sim.csv` and
   `validation/summary.txt`, and a markdown report of anything that moved, ready to paste

@@ -191,10 +191,17 @@ step is silently a no-op if the source is set to anything else.
   non-zero on any hit. It exists because this whole class of bug is *not an
   error*: markup Docusaurus cannot parse becomes text, so the only way to catch
   it is to look at the output. Run it with `pnpm check-rendered` after a build.
-- **Not covered: mermaid.** Diagrams render client-side, so a broken one looks
-  fine in the built HTML and the scanner cannot see it. Checking them needs a DOM
-  (`mermaid.parse()` in bare node fails on `DOMPurify.addHook`). If you touch a
-  diagram, look at the page.
+- **Mermaid is checked structurally, from the source.** theme-mermaid leaves no
+  `<pre class="mermaid">` in the static HTML — the diagram source goes into the JS
+  bundle and renders in the browser — so the HTML scan cannot see diagrams at all.
+  The checker reads the ```` ```mermaid ```` blocks out of the `.md`/`.mdx` files
+  instead and reports `file:line`. It catches an unknown diagram type, an empty
+  diagram, and a `subgraph` with no matching `end`.
+  **It is not mermaid's parser**, which needs a DOM even to parse
+  (`mermaid.parse()` in bare node fails on `DOMPurify.addHook`) and would mean a
+  `jsdom` dependency. So bad node syntax inside a structurally sound diagram, and
+  anything visual — overflow, colour contrast, a diagram that renders but says the
+  wrong thing — still needs you to open the page.
 
 ## Things explicitly **not** in scope yet
 
