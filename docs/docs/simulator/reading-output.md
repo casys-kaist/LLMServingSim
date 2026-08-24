@@ -301,7 +301,7 @@ Notes on individual fields:
 - The per-**Instance** blocks report **milliseconds**, unlike the CSV,
   which is nanoseconds throughout.
 
-:::note TTFT is not measured the way vLLM measures it
+:::note[TTFT is not measured the way vLLM measures it]
 The simulator stops the clock when the first token's *computation*
 completes. vLLM stops it when the client *receives* the token, so real
 vLLM TTFT is higher. `bench validate` puts both sides on matched

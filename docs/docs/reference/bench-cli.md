@@ -60,7 +60,7 @@ comparison is not apples-to-apples.
 | `--kv-cache-dtype` | string | `auto` | vLLM `kv_cache_dtype` |
 | `--seed` | int | `42` | Sampling seed |
 
-:::note Defaults differ from `python -m serving`
+:::note[Defaults differ from `python -m serving`]
 `bench run` defaults `--dtype` to `bfloat16` outright, where the
 simulator resolves it from the model config's `torch_dtype`. `bench`
 also has no `--block-size`: vLLM picks the KV block size itself, and
@@ -153,7 +153,7 @@ The simulator's CSV exposes `arrival`, `end_time`, and a per-token ITL
 list directly; bench derives the same fields from vLLM's
 `RequestStateStats`.
 
-:::caution `prompt_throughput` is not comparable tick-for-tick
+:::caution[`prompt_throughput` is not comparable tick-for-tick]
 vLLM counts a prompt once, at prefill completion, so its
 `prompt_throughput` series cannot show preemption and recomputation.
 The simulator's per-tick prompt tokens can. Compare the per-request

@@ -60,7 +60,7 @@ Alpha is a **normalized position on the t_mean → t_max line**:
 `t_max > t_mean` is required, else the row is recorded as `nan` and the
 fit skips it.
 
-:::info Alpha is not clamped to [0, 1]
+:::info[Alpha is not clamped to [0, 1]]
 The name says "normalized", but nothing bounds the ratio, and the
 measured data lands outside `[0, 1]` regularly. Across the six bundles
 in `profiler/perf/`, per `skew.csv`:

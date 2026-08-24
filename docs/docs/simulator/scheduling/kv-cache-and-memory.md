@@ -134,7 +134,7 @@ Initialization** at startup:
   • Instance [0] : 585248 tokens / 36578 blocks (71.44 GiB/rank at util 0.90)
 ```
 
-:::caution Calibrate `mem_util` when the KV cache is the binding constraint
+:::caution[Calibrate `mem_util` when the KV cache is the binding constraint]
 `mem_util` only changes behaviour once a run actually **saturates** the KV
 cache. Below that, the pool never runs out, nothing is preempted, and the
 capacity you configured is invisible in the results. On a card with plenty of

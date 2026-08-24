@@ -32,7 +32,7 @@ Inputs and outputs (vLLM token IDs, sampling params, per-request
 timings) are pinned via `bench`'s strict-replay path so both runs
 process exactly the same prompts in the same order.
 
-:::caution Match `mem_util` to the real run whenever the KV cache saturates
+:::caution[Match `mem_util` to the real run whenever the KV cache saturates]
 `npu_mem.mem_util` sizes the KV cache, and KV cache size only shows up in the
 results once a run actually **fills** it — below that nothing is preempted and
 the capacity is invisible. Of the four configurations here, only the RTX 4090

@@ -192,7 +192,7 @@ sweep-bound warning.
 **not read at run time**, so you can omit them from a synthetic bundle
 or fill them in however you like.
 
-:::danger `alpha_default` does nothing without `enabled: true`
+:::danger[`alpha_default` does nothing without `enabled: true`]
 `_skew_alpha` returns the module fallback — which is **0**, i.e. no
 skew correction at all — unless `skew_fit.enabled` is truthy. So a
 bundle carrying `alpha_default: 0.3` but no `enabled` flag silently

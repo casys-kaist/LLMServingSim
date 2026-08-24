@@ -131,7 +131,7 @@ matching the model you'll run in the simulator:
 | `--vllm-temperature` | `0.0` | Sampling temperature. `0` = greedy, which makes generation reproducible for a given seed |
 | `--vllm-repetition-penalty` | `1.1` | Down-weights already-emitted tokens. `1.0` disables it |
 
-:::note Why the repetition penalty defaults above 1.0
+:::note[Why the repetition penalty defaults above 1.0]
 Free generation at `1.0` tends to ramble past the natural stopping
 point, so EOS never fires and every request runs to
 `--max-output-toks`. `1.1` keeps natural EOS landing at typical

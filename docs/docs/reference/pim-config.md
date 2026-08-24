@@ -51,7 +51,7 @@ device total. How many channels a node has is derived from
 `DDR4_8GB_3200_pim` gets `512 / 8 = 64` channels and an aggregate
 `64 x 25.6 = 1638 GB/s`.
 
-:::warning Adding a fifth config takes a code change
+:::warning[Adding a fifth config takes a code change]
 `pim_model.py` matches the INI's **filename stem** against a
 hard-coded table of calibrated latency coefficients. A new `.ini`
 alone raises `ValueError: Unknown PIM spec: <stem>`. See
