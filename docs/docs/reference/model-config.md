@@ -38,7 +38,7 @@ profiler downloads and caches it on first run. The simulator
 
 | Field | Type | Used by | Description |
 | --- | --- | --- | --- |
-| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`, or a YAML that lists this value under `model_types:`. e.g. `llama`, `qwen3`, `qwen3_moe` (both -> `qwen3.yaml`), `qwen3_5` (-> `qwen3_5.yaml`), `mixtral`, `phimoe` |
+| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`, or a YAML that lists this value under `model_types:`. e.g. `llama`, `qwen3`, `qwen3_moe` (both -> `qwen3.yaml`), `qwen3_5` (-> `qwen3_5.yaml`), `deepseek_v32` and `glm_moe_dsa` (both -> `deepseek_v32.yaml`), `minimax_m3_vl`, `mixtral`, `phimoe` |
 | `hidden_size` | int | both | Model embedding / hidden dim |
 | `num_hidden_layers` | int | both | Number of decoder blocks |
 | `num_attention_heads` | int | both | Total attention heads (for TP scaling) |
@@ -73,6 +73,29 @@ or `num_experts` and treats them equivalently.
 | `torch_dtype` | string | Default weight dtype. Used when `--dtype` isn't passed. e.g. `bfloat16`, `float16`, `float32` |
 | `architectures` | array | First entry's class name is informational; the simulator dispatches via `model_type` |
 
+### Per-layer stack fields
+
+A modern decoder stack is not N identical blocks, and these are what say so.
+Both the profiler (to decide how many layers to instantiate) and the simulator
+(to decide which block each layer emits) read them through
+`profiler/core/stack.py`, so the two cannot disagree. Absent, every layer is
+the same block — which is the right answer for Llama and for Qwen3.
+
+| Field | Decides | Read as |
+| --- | --- | --- |
+| `layer_types` | attention per layer | indexed directly, as vLLM's `qwen3_5.py` does |
+| `full_attention_interval` | attention per layer, when `layer_types` is absent | `"linear_attention" if (i + 1) % interval else "full_attention"` |
+| `decoder_sparse_step`, `mlp_only_layers` | MLP per layer (Qwen3-MoE) | MoE iff `i not in mlp_only_layers and (i + 1) % step == 0` |
+| `first_k_dense_replace`, `moe_layer_freq` | MLP per layer (DeepSeek / GLM) | MoE iff `i >= first_k_dense_replace and i % freq == 0`. A **list**-valued `moe_layer_freq` is a per-layer 0/1 flag instead, as MiniMax-M3 ships |
+| `sparse_attention_config.sparse_attention_freq` | sparse-attention flag per layer (MiniMax-M3) | sparse where the entry is non-zero |
+| `index_topk`, `index_topk_pattern`, `index_topk_freq`, `index_skip_topk_offset` | sparse-attention flag per layer (DeepSeek / GLM) | sparse unless `index_topk_pattern[i] == "S"`, or `max(i - offset + 1, 0) % freq != 0`. `freq` defaults to 1, under which that is never true — so a config declaring only `index_topk` is sparse everywhere |
+
+Note the two MoE rules disagree on the off-by-one, in opposite directions, and
+that is upstream's doing: DeepSeek's test is `layer_idx % moe_layer_freq` and
+Qwen3-MoE's is `(layer_idx + 1) % decoder_sparse_step`. Only rules read out of
+vLLM's own source are implemented; an unrecognised layout falls back to
+"uniform" and says so in the run log.
+
 ## Fields the simulator ignores
 
 The HF config has many more fields the simulator doesn't use -
@@ -84,15 +107,12 @@ fields don't affect simulation.
 `max_position_embeddings` is **not** in that group, despite looking
 like a pure-HF field: see the required table above.
 
-`mlp_only_layers` **is** ignored, and that one has a consequence worth
-knowing. Qwen3-MoE ships it to mark which decoder layers use a dense
-MLP instead of the MoE block, and
-`configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json` carries it. The
-simulator decides MoE-ness once per *model* (`is_moe` is true when the
-config has `num_local_experts` or `num_experts`) and applies the MoE
-path to every layer, so a hybrid model's dense layers are modelled as
-MoE layers. On Qwen3-30B-A3B that list is empty, so nothing is lost
-today — but a genuinely hybrid config would be mis-modelled silently.
+Nor are the per-layer stack fields above: `mlp_only_layers`,
+`first_k_dense_replace`, `layer_types` and the rest are read, and MoE-ness is
+resolved **per layer**. It used to be decided once per model, which modelled a
+hybrid stack's dense layers as MoE layers — invisible on Qwen3-30B-A3B, whose
+`mlp_only_layers` is empty, and wrong for DeepSeek-V3.2 and GLM-5, whose first
+three layers are dense.
 
 ## Examples
 

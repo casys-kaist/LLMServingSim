@@ -49,8 +49,10 @@ LLMServingSim/
 │   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
 │   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
-│   │   ├── fit_alpha.py        # 5-axis weighted-LS alpha fit
+│   │   ├── fit_alpha.py        # per-kernel 5-axis weighted-LS alpha fit
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
+│   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
+│   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── hooks/              # vLLM-internal-API touchpoints (worker ext, MoE patch, etc.)
 │   ├── models/                 # Architecture yamls, one per HF `model_type`
@@ -153,17 +155,33 @@ path), one file lists them all under `model_types:` rather than the catalog
 being duplicated or symlinked. Two files claiming one `model_type` is an error,
 not first-wins.
 
-**Uniform vs heterogeneous stacks.** A catalog declares its layer order in one
-of two mutually exclusive forms. `sequence:` is a uniform stack, every decoder
-block identical — what every family here used until Qwen3.5. `blocks:` +
-`shared:` is a heterogeneous stack, keyed by **axis**
-(`blocks.attn.<layer_types value>`, `blocks.mlp.dense|moe`) rather than by
-block name, because a layer's identity is a tuple and enumerating combinations
-explodes. Which block a given layer runs comes from the *checkpoint's* config
-(`layer_types`, `first_k_dense_replace`, `attn_type_list`,
-`hybrid_override_pattern`), never from the yaml. Profiling a hybrid needs
+**One layer-order form: `blocks:` + `shared:`.** `blocks:` is keyed by **axis**
+(`blocks.attn.<layer_types value>`, `blocks.sparse_attn.<same>` as an overlay,
+`blocks.mlp.dense|moe`) rather than by block name, because a layer's identity
+is a tuple and enumerating combinations explodes. `shared:` holds `prologue`
+and `head`, which run once per iteration. A uniform stack is the degenerate
+case — one entry per axis.
+
+There was a second form, `sequence:`, for uniform stacks. **It is gone; do not
+reintroduce it.** It was this one flattened (`pre_attn`/`post_attn` = the single
+implicit `attn.full_attention`, `mlp_dense`/`mlp_moe` = the `mlp` axis with the
+value in the key name), and two forms meant two code paths — the simulator only
+implemented the flat one, so Qwen3.5 and MiniMax-M3 could not be simulated at
+all. The flattening also encoded a false claim: with the axis in the key there
+is no per-layer question left, and the MLP was resolved once per *model*, which
+modelled DeepSeek-V3.2's and GLM-5's first three dense layers as MoE.
+
+Which block a given layer runs comes from the *checkpoint's* config
+(`layer_types`, `first_k_dense_replace`, `decoder_sparse_step`,
+`moe_layer_freq`, `sparse_attention_freq`, `index_topk_pattern`), never from
+the yaml. `profiler/core/stack.py` owns those rules and **both** the profiler
+and the simulator import it — the profiler to decide how many layers to
+instantiate, the simulator to decide which block each layer emits. Two
+implementations would drift, and the rules disagree on the off-by-one in
+opposite directions between vendors. Profiling a hybrid needs
 `--num-hidden-layers` raised to the smallest count that instantiates every
-block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one.
+block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one;
+the profiler resolves that itself.
 
 **Write a catalog from a live profile dump, not from vLLM's source.** The
 module tree and the profile tree differ both ways: `rotary_emb`, `q_norm`,
@@ -204,6 +222,12 @@ perf/<hw>/<model>/<variant>/
     skew.csv                             raw heterogeneous-decode shots        (skew enabled)
     skew_fit.csv                         fitted per-bucket alpha table         (skew enabled)
 ```
+
+`attention.csv`, `skew.csv` and `skew_fit.csv` are keyed by **`layer`** as well:
+a sparse-attention model has two or three kernels in that category and they
+share neither a latency curve nor an alpha (on MiniMax-M3 the same batch fits
+0.24 / 0.74 / -0.01 for `attention` / `indexer` / `sparse_attention`). A bundle
+profiled before those columns existed holds one kernel and it is `attention`.
 
 `<variant>` is auto-derived from weight + KV dtype (e.g. `bf16`, `bf16-kvfp8`,
 `fp8-kvfp8`) unless `--variant` is set. Times are in **microseconds**. Layers marked
@@ -276,7 +300,7 @@ needs mixed-regime data at `n = X`, profile with `MAX_NUM_SEQS ≥ X + 1`.
 ### Canonical layer names (simulator ↔ profiler, unified)
 The simulator consumes the profiler's per-category CSVs directly. Canonical
 layer names match vLLM's own attribute names. `trace_generator` walks the
-`sequence:` section of `profiler/models/<model_type>.yaml`; the table below
+`blocks:` section of `profiler/models/<model_type>.yaml`; the table below
 lists where each layer appears in the profiler CSVs and how the simulator keys
 the lookup.
 
@@ -297,22 +321,46 @@ the lookup.
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
 | `moe` | moe (always profiled at tp=1; wrapped in EP ALLTOALL) | `(local_tokens, activated_experts)` |
 
+The `attention` category holds **more than one kernel** on a sparse model, and
+they are not interchangeable — the lookup takes a layer name
+(`attention_by_layer`) and so does the skew alpha. MiniMax-M3 profiles
+`attention` (its non-sparse layers), `sparse_attention` and `indexer`;
+DeepSeek/GLM profile `attention` (MLA) and `indexer`. There is deliberately no
+pooled `tables["attention"]` shortcut: there was one, every lookup took it, and
+a sparse layer got the dense kernel's latency (2.1x per layer on M3).
+
+Names beyond this table are per-family and live in the catalogs
+(`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `*_glue`). **`calculate_sizes` in
+`memory_model.py` raises on a name it does not know**, and it knows only the 16
+above — so a new family needs its tensor-size formulas added there before it
+can be simulated, which is outstanding for Qwen3.5 (12 names), DeepSeek/GLM
+(10) and MiniMax-M3 (6).
+
 ### Trace generator structure
-`trace_generator.py` walks the architecture yaml's `sequence:` section to emit
+`trace_generator.py` walks the architecture yaml's `blocks:` section to emit
 each iteration. Composable helpers:
 - `resolve_variant()` / `_load_perf_db()` / `_load_architecture()` — resolve
-  the variant folder, load meta.yaml, load per-category CSVs, and attach the
-  architecture catalog + sequence.
+  the variant folder, load meta.yaml, load per-category CSVs, attach the
+  architecture catalog, and resolve the checkpoint's per-layer block list once
+  (`perf_db["layer_stack"]`, via `profiler/core/stack.py`).
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups. Attention is a 4D lookup:
   each axis is bracketed by its two neighbouring profiled values and
   blended **linearly** (`_axis_bracket`).
-- `_emit_sequence()` — walks a list of canonical names from the yaml, attaches
+- `_shared_layers()` / `_layer_spec()` / `_block_layers()` — the block walk.
+  `_block_layers(perf_db, layer_num, part)` answers "what does *this* layer
+  emit for `pre_attn` / `post_attn` / `mlp`", consulting
+  `blocks.sparse_attn` first and falling through to `blocks.attn`.
+- `_emit_sequence()` — walks a list of canonical names from a block, attaches
   TP ALLREDUCE to `o_proj`/`down_proj`, swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
-  sequence layer is missing from the profile CSVs.
+  layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
   `_emit_final_layers()` — thin wrappers over `_emit_sequence`.
+- `_block_copy_key()` — the reuse key for a built block: `None` when it must be
+  rebuilt (block mode, or a non-deterministic MoE router), otherwise the
+  layers' own `LayerSpec`s. Build once per distinct block *shape*, replay for
+  every layer that shares it.
 - `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
   sub-batch interleaving.
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
@@ -727,12 +775,22 @@ website (not the README).
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
 
-**`profiler/models/*.yaml` is a simulator input**, despite living under
-`profiler/`. The trace generator reads those files directly to learn the layer
-order, so a change there can move every clock in `validate.sh` — merging two
-catalogs into one broke all 16 MoE scenarios exactly this way. When deciding
+**Three things under `profiler/` are simulator inputs**, despite the path. The
+trace generator reads each directly, so a change to any of them can move every
+clock in `validate.sh`:
+
+- **`profiler/models/*.yaml`** — the layer order. Merging two catalogs into one
+  broke all 16 MoE scenarios exactly this way.
+- **`profiler/core/stack.py`** — which block each decoder layer runs, resolved
+  from the checkpoint's config.
+- **`profiler/core/catalog_path.py`** — `model_type` → yaml resolution.
+
+Both `.py` files are deliberately free of third-party imports so the simulator
+container (no pydantic) can import them, and both exist as *one*
+implementation because the two sides already drifted once. When deciding
 whether a change can affect the simulator, the paths to check are
-`serving/`, `configs/`, `bench/`, **`profiler/models/`** and `profiler/perf/`.
+`serving/`, `configs/`, `bench/`, **`profiler/models/`**,
+**`profiler/core/{stack,catalog_path}.py`** and `profiler/perf/`.
 
 1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
    scenario against the `Total clocks (ns)` recorded in
@@ -749,6 +807,14 @@ whether a change can affect the simulator, the paths to check are
    them in the same commit.
 3. For profiler changes: edit `MODEL` / `HARDWARE` in `profiler/profile.sh`
    and run `./profiler/profile.sh` from the repo root inside the vLLM container.
+4. For a catalog change (new or edited `profiler/models/*.yaml`), and after a
+   vLLM upgrade: `python -m profiler coverage <model> --hardware <hw>` inside
+   the vLLM container. It boots once, runs one forward per batch regime, and
+   exits non-zero while any kernel is unbound. This is the only check that
+   catches a catalog entry that names a real class and measures **nothing** —
+   the profile tree holds only modules that launch a kernel of their own, and
+   the module tree cannot tell you which those are. Every one of the four
+   modern families had at least one such entry.
 
 A scenario whose clock equals an existing one exercises flag parsing and
 nothing else. Several knobs only bite once the KV cache is saturated, which is
@@ -758,6 +824,26 @@ scenarios are for.
 
 ## Common Pitfalls
 
+- **Don't reintroduce `sequence:`, or any second layer-order form.** There is
+  one: `blocks:` + `shared:`. A uniform stack is the degenerate case, one entry
+  per axis. `sequence:` was that flattened, and two forms meant two code paths —
+  the simulator only implemented the flat one, so Qwen3.5 and MiniMax-M3 could
+  not be simulated at all. It also encoded a false claim: with the axis in the
+  key there is no per-layer question left, and the MLP was resolved once per
+  *model*, modelling DeepSeek/GLM's first three dense layers as MoE
+- **Don't resolve a per-layer property once per model.** Which block a layer
+  runs comes from the checkpoint via `profiler/core/stack.py`, per layer. The
+  tell for this class of bug is a name like `is_moe` on the context object
+- **Don't reuse a built transformer block across layers without keying on the
+  block shape.** `_block_copy_key` returns the layers' `LayerSpec`s, and the
+  replay is what keeps trace generation O(1) in depth. Getting the key wrong is
+  invisible on a uniform model: an earlier version emitted **one** block
+  instead of `num_hidden_layers` whenever block copy was disabled, understating
+  the clock 3.1x on 48 layers, and the recorded baseline enshrined it
+- **Don't add a layer name to a catalog without a `calculate_sizes` formula.**
+  `memory_model.calculate_sizes` **raises** on an unknown name, so the model
+  becomes unsimulable — which is the state Qwen3.5, DeepSeek/GLM and MiniMax-M3
+  are in today
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
   into the container's site-packages by `scripts/compile.sh`, so editing

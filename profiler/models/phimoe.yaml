@@ -19,12 +19,16 @@
 # cluster config and need not be listed here.
 
 
-sequence:
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    moe:   [moe]
+
+shared:
   prologue:  [embedding]
-  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
-  post_attn: [o_proj, layernorm]
-  mlp_dense: []
-  mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
 

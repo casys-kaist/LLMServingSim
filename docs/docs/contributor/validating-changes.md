@@ -59,12 +59,20 @@ into the container's site-packages, which does not persist, and without it
 every scenario reports "did not finish". Pass `LOG_DIR=<a mounted path>` too,
 or the per-scenario logs die with the container.
 
-:::caution[`profiler/models/` is a simulator input]
-Those YAMLs live under `profiler/` but the trace generator reads them directly
-to learn the layer order, so editing one can move every clock here. Merging two
-catalogs into one broke all 16 MoE scenarios exactly this way. The paths that
-can affect this check are `serving/`, `configs/`, `bench/`,
-**`profiler/models/`** and `profiler/perf/` — not just `serving/`.
+:::caution[Parts of `profiler/` are simulator inputs]
+The trace generator reads three things under `profiler/` directly, so editing
+any of them can move every clock here:
+
+- **`profiler/models/*.yaml`** — the layer order. Merging two catalogs into one
+  broke all 16 MoE scenarios exactly this way.
+- **`profiler/core/stack.py`** — which block each decoder layer runs, resolved
+  from the checkpoint's config. Shared with the profiler on purpose.
+- **`profiler/core/catalog_path.py`** — `model_type` → yaml resolution. Also
+  shared; adding aliasing to only one side is what broke those 16 scenarios.
+
+So the paths that can affect this check are `serving/`, `configs/`, `bench/`,
+**`profiler/models/`**, **`profiler/core/{stack,catalog_path}.py`** and
+`profiler/perf/` — not just `serving/`.
 :::
 
 ## 2. If something changed, report it

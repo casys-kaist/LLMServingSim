@@ -9,32 +9,39 @@ latency. Output CSVs feed the simulator's trace generator.
 ```
 profiler/                     Python package — `python -m profiler ...`
   __init__.py                 package marker + _typeshed shim for vLLM
-  __main__.py                 CLI entry (profile / slice subcommands)
+  __main__.py                 CLI entry (profile / slice / coverage subcommands)
   core/                       internals
-    runner.py                 Orchestration loop
+    runner.py                 Orchestration loop (run_full / run_slice / run_coverage)
     config.py                 Architecture + ProfileArgs + engine defaults
     engine.py                 vLLM lifecycle (spin_up, probe_limits, spin_down)
-    categories.py             Dense / PerSequence / Attention / Expert categories
+    categories.py             Dense / PerSequence / Attention / LinearAttention / Expert
     skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
-    fit_alpha.py              5-axis alpha fit with data-derived bucket axes
+    fit_alpha.py              per-kernel 5-axis alpha fit, data-derived bucket axes
     writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
+    stack.py                  per-layer block composition from the HF config  *
+    catalog_path.py           model_type -> yaml resolution                   *
     logger.py                 Rich-based logging & progress
     hooks/                    vLLM-internal-API touchpoints
-      extension.py            worker extension class
+      extension.py            worker extension class (fire / coverage)
       batch.py                synthetic SchedulerOutput builder
-      timings.py              layerwise_profile tree parser
-    stack.py                    per-layer block composition from the HF config
-      moe_hook.py             FusedMoE forced-routing patch
+      timings.py              layerwise_profile tree parser + coverage accounting
+      moe_hook.py             MoERunner forced-routing patch
   models/                     architecture catalogs (one YAML per model family)
     llama.yaml
     qwen3.yaml                  qwen3 + qwen3_moe
     qwen3_5.yaml                Qwen3.5 / 3.6 / 3.8, dense + MoE (hybrid GDN)
+    deepseek_v32.yaml           DeepSeek-V3.2 + GLM-5 (MLA + token-level DSA)
+    minimax_m3_vl.yaml          MiniMax-M3 (block-level sparse attention)
     mixtral.yaml
     phimoe.yaml
   power/                      nvidia-smi / IPMI power-logging helpers
   perf/                       output root (one folder per hw/model/variant)
   profile.sh                  editable user-run script — edit MODEL/HARDWARE/… then run
   profile-all.sh              helper template: sweep several MODELs × TP degrees
+
+  * imported by the **simulator** too, and kept free of third-party imports for
+    it. One implementation each, because these two already drifted once and it
+    broke every MoE scenario. A change to either moves simulator results.
 
 scripts/                      shared environment / build entry points (top-level)
   docker-vllm.sh              launches the vLLM container (mounts repo root)
@@ -425,23 +432,60 @@ catalog:
 TP (layernorms, sampler). They're profiled once at TP=1 and replicated
 to other tp folders by the writer.
 
+A `vllm:` name may also be a **raw CUDA kernel name** (matching strips a
+trailing `(...)`, and kernel nodes have no parentheses), a **list** of names —
+"every one of these the checkpoint has", summed when several match — or carry a
+trailing `*` to match by **prefix**, which is the only workable binding for a
+fused kernel whose reported name inlines its dtypes. `not_within:` excludes an
+ancestor, for when one class plays two roles `within:` cannot separate.
+
+Beside the catalog, a yaml declares the layer order as `blocks:` (keyed by
+axis: `attn.<layer_types value>`, `sparse_attn.<same>` as an overlay,
+`mlp.dense|moe`) plus `shared:` (`prologue`, `head`). Which block a given layer
+runs comes from the checkpoint's own config, resolved by `core/stack.py` — the
+same module the simulator reads, so the two cannot disagree. A uniform stack is
+the degenerate case: one entry per axis.
+
+### Checking a catalog: `python -m profiler coverage`
+
+A catalog entry can name a real vLLM class and measure **nothing**: the profile
+tree holds only modules that launch a kernel of their own, and modern models
+fuse q-norm/rope/KV-write into one kernel with no module, or write attention as
+bare Triton kernels launched straight from the block. The module tree still
+shows the classes, so the mistake is invisible in the source.
+
+```bash
+python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware <hw>
+```
+
+boots once, runs one forward per batch regime (prefill-only / decode-only /
+mixed — which kernels fire depends on the mix) and reports how much of the
+measured CUDA time the catalog binds, exiting non-zero while any is unbound.
+Run it whenever you write or edit a catalog, and after a vLLM upgrade.
+
 ## Adding a new model
 
 1. **Drop its HF `config.json`** at `configs/model/<org>/<name>.json`.
    (Or let the profiler auto-download on first run if `HF_TOKEN` is
    set in the container.)
 2. **If the model's `model_type` is already supported** (llama / qwen3 /
-   qwen3_moe / qwen3_5 / qwen3_5_moe / mixtral / phimoe), you're done — edit
-   `MODEL=` in `profiler/profile.sh` and run. A hybrid stack needs no extra
-   setting: the layer count is resolved from the checkpoint's config and
-   logged (`NUM_HIDDEN_LAYERS` still overrides it).
-3. **If it's a new architecture family** (e.g., `gemma2`, `deepseek_v3`):
+   qwen3_moe / qwen3_5 / qwen3_5_moe / deepseek_v32 / glm_moe_dsa /
+   minimax_m3_vl / mixtral / phimoe), you're done — edit `MODEL=` in
+   `profiler/profile.sh` and run. A hybrid stack needs no extra setting: the
+   layer count is resolved from the checkpoint's config and logged
+   (`NUM_HIDDEN_LAYERS` still overrides it).
+3. **If it's a new architecture family** (e.g., `gemma2`):
    * Create `models/<model_type>.yaml` mapping the new family's vLLM
      classes to canonical names.
-   * Cross-reference the model's source under
-     `../vllm/vllm/model_executor/models/<name>.py` to identify
-     decoder / attention / MLP class names.
-   * Run the profiler — the new yaml will be picked up automatically.
+   * Read the model's source under
+     `../vllm/vllm/model_executor/models/<name>.py` for orientation, but
+     **write the catalog from a live profile dump, not from the source** — the
+     module tree and the profile tree differ both ways.
+   * Run `python -m profiler coverage <model>` until it binds every kernel,
+     *then* profile.
+   * If the family varies anything per layer, teach `core/stack.py` the rule —
+     read it out of vLLM's source rather than guessing, since the vendors'
+     conventions genuinely disagree.
 
 ## Custom model shapes
 
