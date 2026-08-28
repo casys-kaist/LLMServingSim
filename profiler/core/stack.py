@@ -1,0 +1,222 @@
+"""Resolve a checkpoint's per-layer block composition from its HF config.
+
+A modern decoder stack is not N identical blocks. Qwen3.5/3.6/3.8 interleave
+gated DeltaNet with full attention, GLM and DeepSeek run a dense MLP for the
+first few layers and MoE after, and a checkpoint can vary both at once. The
+profiler needs to know that for one reason above all: it shrinks the model to
+save time, and shrinking to a single layer on a hybrid stack means the catalog
+only ever sees whichever block type happens to come first. Everything else
+about that layer type then reads as free.
+
+So this module answers two questions from the config alone:
+
+* ``resolve_stack`` — what block does each layer run?
+* ``minimal_layer_count`` — the smallest prefix that instantiates every
+  distinct block, which is what the profiler should shrink to.
+
+**Only rules read out of vLLM's own source are implemented.** The field names
+in this area are not standardised and their conventions genuinely disagree —
+DeepSeek's MoE test is ``layer_idx % moe_layer_freq`` while Qwen3-MoE's is
+``(layer_idx + 1) % decoder_sparse_step``, an off-by-one in opposite
+directions — so a plausible-looking guess is a wrong answer, not a
+near-miss. An unrecognised layout falls back to "uniform" and says so, which
+costs a hybrid nothing worse than the behaviour before this module existed.
+
+Kept free of third-party imports so the simulator can share it: the
+trace generator needs the same per-layer answer to emit the right block, and
+two implementations of this would drift.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+# Attention-type value used when a config gives no basis to differentiate.
+FULL_ATTENTION = "full_attention"
+
+MLP_DENSE = "dense"
+MLP_MOE = "moe"
+
+# Config keys that carry the expert count, mirroring config.MOE_NUM_EXPERTS_KEYS.
+# Duplicated deliberately rather than imported: config.py pulls in pydantic,
+# and this module stays importable from the simulator container.
+_EXPERT_COUNT_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    """What one decoder layer is made of.
+
+    Two axes today. A third — whether a sparse-attention indexer runs on this
+    layer, which DeepSeek-V3.2 varies via ``index_topk_pattern`` — belongs
+    here too and is deliberately absent until its rule is read off vLLM
+    rather than guessed.
+    """
+
+    attn: str
+    mlp: str
+
+
+def _num_layers(cfg: dict[str, Any]) -> int:
+    try:
+        n = int(cfg.get("num_hidden_layers") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(n, 0)
+
+
+def _experts(cfg: dict[str, Any]) -> int:
+    for key in _EXPERT_COUNT_KEYS:
+        if key in cfg:
+            try:
+                return int(cfg[key] or 0)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def _attn_types(cfg: dict[str, Any], n: int) -> list[str]:
+    """Attention type per layer.
+
+    Verified against vLLM:
+
+    * ``layer_types`` is indexed directly —
+      ``qwen3_5.py``: ``layer_type=config.layer_types[extract_layer_index(prefix)]``.
+    * when absent, ``full_attention_interval`` generates it —
+      ``transformers_utils/configs/qwen3_5.py``:
+      ``"linear_attention" if bool((i + 1) % interval) else "full_attention"``.
+    """
+    declared = cfg.get("layer_types")
+    if isinstance(declared, list) and declared:
+        # A config may declare more entries than the (possibly shrunk) layer
+        # count; index into it exactly as vLLM does.
+        return [str(declared[i % len(declared)]) for i in range(n)]
+
+    interval = cfg.get("full_attention_interval")
+    if isinstance(interval, int) and interval > 0:
+        return [
+            "linear_attention" if (i + 1) % interval else FULL_ATTENTION
+            for i in range(n)
+        ]
+
+    return [FULL_ATTENTION] * n
+
+
+def _mlp_types(cfg: dict[str, Any], n: int) -> list[str]:
+    """MLP type per layer.
+
+    Verified against vLLM, and note the two rules disagree on the off-by-one:
+
+    * ``qwen3_moe.py``: MoE iff
+      ``layer_idx not in mlp_only_layers and num_experts > 0
+      and (layer_idx + 1) % decoder_sparse_step == 0``
+    * ``deepseek_v2.py``: MoE iff
+      ``n_routed_experts is not None and layer_idx >= first_k_dense_replace
+      and layer_idx % moe_layer_freq == 0``
+
+    A **list**-valued ``moe_layer_freq`` is a different convention again — a
+    per-layer 0/1 flag, as MiniMax-M3 ships — and is read as such. That one is
+    inferred from the config's own shape rather than from source, since the
+    implementation is out-of-tree; being wrong costs a wrong layer count, which
+    surfaces as an empty CSV column rather than a bad number.
+    """
+    experts = _experts(cfg)
+    if experts <= 0:
+        return [MLP_DENSE] * n
+
+    freq = cfg.get("moe_layer_freq")
+    if isinstance(freq, list) and freq:
+        return [
+            MLP_MOE if freq[i % len(freq)] else MLP_DENSE for i in range(n)
+        ]
+
+    step = cfg.get("decoder_sparse_step")
+    if isinstance(step, int) and step > 0:
+        only_mlp = set(cfg.get("mlp_only_layers") or [])
+        return [
+            MLP_DENSE if (i in only_mlp or (i + 1) % step) else MLP_MOE
+            for i in range(n)
+        ]
+
+    first_dense = cfg.get("first_k_dense_replace")
+    if isinstance(first_dense, int):
+        stride = freq if isinstance(freq, int) and freq > 0 else 1
+        return [
+            MLP_MOE if (i >= first_dense and i % stride == 0) else MLP_DENSE
+            for i in range(n)
+        ]
+
+    return [MLP_MOE] * n
+
+
+def resolve_stack(cfg: dict[str, Any]) -> list[LayerSpec]:
+    """One :class:`LayerSpec` per decoder layer, in order.
+
+    Empty when the config declares no layer count.
+    """
+    n = _num_layers(cfg)
+    if n == 0:
+        return []
+    attn = _attn_types(cfg, n)
+    mlp = _mlp_types(cfg, n)
+    return [LayerSpec(attn=attn[i], mlp=mlp[i]) for i in range(n)]
+
+
+def is_uniform(cfg: dict[str, Any]) -> bool:
+    """True when every layer is the same block, i.e. the old assumption holds."""
+    stack = resolve_stack(cfg)
+    return len(set(stack)) <= 1
+
+
+def minimal_layer_count(cfg: dict[str, Any]) -> int:
+    """Smallest layer count that instantiates every distinct block type.
+
+    The smallest **prefix**, not the smallest subset: the profiler shrinks by
+    setting ``num_hidden_layers``, which keeps layers ``0..N-1``, so a block
+    type that first appears at layer 40 forces N to 41 whether we like it or
+    not. Qwen3.8-27B's ``layer_types`` runs gated-DeltaNet three times before
+    the first full-attention layer, so N is 4.
+
+    Returns 1 for a uniform stack — unchanged from the previous behaviour —
+    and never more than the model's own layer count.
+    """
+    stack = resolve_stack(cfg)
+    if not stack:
+        return 1
+    wanted = set(stack)
+    seen: set[LayerSpec] = set()
+    for i, spec in enumerate(stack):
+        seen.add(spec)
+        if seen == wanted:
+            return i + 1
+    return len(stack)
+
+
+def describe(cfg: dict[str, Any]) -> str:
+    """One-line summary for the run log, so the choice is visible.
+
+    The count matters enough to state rather than leave implicit: it decides
+    whether a block type gets profiled at all.
+    """
+    stack = resolve_stack(cfg)
+    if not stack:
+        return "layer stack: unknown (config declares no num_hidden_layers)"
+    n = minimal_layer_count(cfg)
+    if len(set(stack)) <= 1:
+        only = stack[0]
+        return (
+            f"layer stack: uniform, {len(stack)} x "
+            f"({only.attn}, {only.mlp} mlp) -> profiling {n} layer"
+        )
+    counts: dict[LayerSpec, int] = {}
+    for spec in stack:
+        counts[spec] = counts.get(spec, 0) + 1
+    shapes = ", ".join(
+        f"{c}x({s.attn}, {s.mlp})"
+        for s, c in sorted(counts.items(), key=lambda kv: -kv[1])
+    )
+    return (
+        f"layer stack: heterogeneous over {len(stack)} layers -- {shapes} "
+        f"-> profiling {n} layers to reach every block type"
+    )

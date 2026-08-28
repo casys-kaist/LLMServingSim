@@ -286,24 +286,50 @@ with a different interleave ratio.
 
 ### Profiling a heterogeneous stack
 
-The profiler normally shrinks the model to **one** decoder layer: every block
-is identical, so profiling one captures the per-block cost and keeps the run
-cheap. That is exactly wrong for a hybrid — at one layer the catalog can only
-ever see whichever block type happens to come first.
+Nothing to do — the profiler works out the layer count itself.
 
-Pass the smallest layer count that instantiates every block type:
+It shrinks the model to keep runs cheap, and one layer is the right answer only
+when every block is identical. On a hybrid, one layer means the catalog sees
+whichever block type happens to come first and every other layer type reads as
+free. So `profiler/core/stack.py` resolves the per-layer block composition from
+the checkpoint's own config and shrinks to the smallest **prefix** that
+instantiates every distinct block. It logs what it chose:
 
-```bash
-python -m profiler profile Qwen/Qwen3.8-27B --hardware RTXPRO6000     --num-hidden-layers 4
+```
+layer stack: heterogeneous over 64 layers -- 48x(linear_attention, dense),
+16x(full_attention, dense) -> profiling 4 layers to reach every block type
 ```
 
-4, for Qwen3.8-27B, because its `layer_types` runs three linear-attention
-layers before the first full-attention one.
+4 for Qwen3.8-27B, because its `layer_types` runs three linear-attention
+layers before the first full-attention one. A uniform stack resolves to 1,
+exactly as before.
 
-Nothing else changes. vLLM's profiler merges same-class siblings under one
-parent into a single node, and the timing extractor divides by *parent
-invocations x how many times the block sequence emits the layer*, so a
-multi-layer run still yields a per-layer number.
+It has to be the smallest prefix rather than the smallest subset, because
+shrinking works by setting `num_hidden_layers`, which keeps layers `0..N-1`. A
+block type that first appears at layer 40 forces the count to 41.
+
+The count is computed over the **tuple** of (attention type, MLP type), not
+per axis, and that matters: a checkpoint interleaving attention 3:1 *and*
+switching MLP at layer 3 has three distinct blocks — `(linear, dense)`,
+`(full, moe)`, `(linear, moe)` — the last of which first appears at layer 4,
+so the answer is 5. Reasoning axis by axis gives 4 and is wrong.
+
+`--num-hidden-layers` still overrides, and warns if you go below what the
+stack needs.
+
+Only rules read out of vLLM's own source are implemented: `layer_types`,
+`full_attention_interval`, `first_k_dense_replace`, `decoder_sparse_step` +
+`mlp_only_layers`, and a list-valued `moe_layer_freq`. The conventions in this
+area genuinely disagree — DeepSeek tests `layer_idx % moe_layer_freq` while
+Qwen3-MoE tests `(layer_idx + 1) % decoder_sparse_step`, an off-by-one in
+opposite directions — so an unrecognised layout falls back to "uniform" and
+says so rather than guessing.
+
+Nothing else about a multi-layer run changes. vLLM's profiler merges same-class
+siblings under one parent into a single node, and the timing extractor divides
+by *parent invocations x how many times the block sequence emits the layer*, so
+the result is still a per-layer number.
+
 
 ## MoE-specific YAML
 
