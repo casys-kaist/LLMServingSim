@@ -48,14 +48,45 @@ _EXPERT_COUNT_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
 class LayerSpec:
     """What one decoder layer is made of.
 
-    Two axes today. A third — whether a sparse-attention indexer runs on this
-    layer, which DeepSeek-V3.2 varies via ``index_topk_pattern`` — belongs
-    here too and is deliberately absent until its rule is read off vLLM
-    rather than guessed.
+    ``sparse`` is whether this layer runs a sparse-attention selection branch
+    on top of its attention kernel. It is a third axis rather than part of
+    ``attn`` because vendors vary it independently of the attention type.
     """
 
     attn: str
     mlp: str
+    sparse: bool = False
+
+
+def text_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The sub-dict holding the text backbone's hyperparameters.
+
+    A wrapped checkpoint may be stored either way, because the right shape is
+    whatever the model's own config class reads. Qwen3.5's class resolves a
+    flat config, so that one is flattened; MiniMax-M3's is a wrapper that
+    builds its backbone from a ``text_config`` key, and flattening it makes the
+    wrapper fall back to an all-defaults backbone -- silently, with every value
+    we wrote swallowed by ``**kwargs``.
+
+    So every reader of a model config goes through here rather than indexing
+    the top level, or a nested config looks empty and each helper quietly
+    answers for a model nobody asked about. Top-level keys still win when both
+    exist, since that is where a flat config puts them.
+    """
+    inner = cfg.get("text_config")
+    if isinstance(inner, dict) and inner:
+        merged = dict(inner)
+        merged.update({k: v for k, v in cfg.items() if k != "text_config"})
+        # A wrapper's own top-level keys (model_type, architectures) must not
+        # shadow the backbone's, but the backbone has no such keys, so the
+        # update above is safe -- except for the two the wrapper always sets.
+        for key in ("num_hidden_layers", "num_local_experts", "num_experts",
+                    "n_routed_experts", "moe_layer_freq", "layer_types",
+                    "sparse_attention_config", "hidden_size"):
+            if key in inner:
+                merged[key] = inner[key]
+        return merged
+    return cfg
 
 
 def _num_layers(cfg: dict[str, Any]) -> int:
@@ -150,17 +181,68 @@ def _mlp_types(cfg: dict[str, Any], n: int) -> list[str]:
     return [MLP_MOE] * n
 
 
+def _sparse_flags(cfg: dict[str, Any], n: int) -> list[bool]:
+    """Whether each layer runs a sparse-attention selection branch.
+
+    Verified against two implementations, which share no field names:
+
+    * MiniMax-M3 (``vllm/models/minimax_m3/nvidia/model.py``):
+      ``{i for i, f in enumerate(sparse_attention_config["sparse_attention_freq"])
+      if f != 0}``.
+    * DeepSeek-V3.2 / GLM-5 (``deepseek_v2.py``): the model is sparse at all
+      iff it declares ``index_topk``, and a layer *skips* the top-k when
+      ``index_topk_pattern[layer_id] == "S"``, or -- when no pattern is given --
+      when ``max(layer_id - index_skip_topk_offset + 1, 0) % index_topk_freq
+      != 0``. ``index_topk_freq`` defaults to 1, under which that is never
+      true, so a config declaring neither field is sparse on every layer.
+    """
+    sac = cfg.get("sparse_attention_config")
+    if isinstance(sac, dict):
+        freq = sac.get("sparse_attention_freq")
+        if isinstance(freq, list) and freq:
+            return [bool(freq[i % len(freq)]) for i in range(n)]
+        return [bool(sac.get("use_sparse_attention"))] * n
+
+    if "index_topk" not in cfg:
+        return [False] * n
+
+    pattern = cfg.get("index_topk_pattern")
+    if isinstance(pattern, (str, list)) and len(pattern):
+        return [
+            not (pattern[i] == "S") if i < len(pattern) else True
+            for i in range(n)
+        ]
+    try:
+        topk_freq = int(cfg.get("index_topk_freq", 1) or 1)
+    except (TypeError, ValueError):
+        topk_freq = 1
+    try:
+        offset = int(cfg.get("index_skip_topk_offset", 2))
+    except (TypeError, ValueError):
+        offset = 2
+    if topk_freq <= 1:
+        return [True] * n
+    return [
+        max(i - offset + 1, 0) % topk_freq == 0 for i in range(n)
+    ]
+
+
 def resolve_stack(cfg: dict[str, Any]) -> list[LayerSpec]:
     """One :class:`LayerSpec` per decoder layer, in order.
 
     Empty when the config declares no layer count.
     """
+    cfg = text_config(cfg)
     n = _num_layers(cfg)
     if n == 0:
         return []
     attn = _attn_types(cfg, n)
     mlp = _mlp_types(cfg, n)
-    return [LayerSpec(attn=attn[i], mlp=mlp[i]) for i in range(n)]
+    sparse = _sparse_flags(cfg, n)
+    return [
+        LayerSpec(attn=attn[i], mlp=mlp[i], sparse=sparse[i])
+        for i in range(n)
+    ]
 
 
 def is_uniform(cfg: dict[str, Any]) -> bool:
@@ -207,13 +289,14 @@ def describe(cfg: dict[str, Any]) -> str:
         only = stack[0]
         return (
             f"layer stack: uniform, {len(stack)} x "
-            f"({only.attn}, {only.mlp} mlp) -> profiling {n} layer"
+            f"({only.attn}, {only.mlp} mlp"
+            f"{', sparse' if only.sparse else ''}) -> profiling {n} layer"
         )
     counts: dict[LayerSpec, int] = {}
     for spec in stack:
         counts[spec] = counts.get(spec, 0) + 1
     shapes = ", ".join(
-        f"{c}x({s.attn}, {s.mlp})"
+        f"{c}x({s.attn}, {s.mlp}{', sparse' if s.sparse else ''})"
         for s, c in sorted(counts.items(), key=lambda kv: -kv[1])
     )
     return (
