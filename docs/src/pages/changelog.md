@@ -60,109 +60,163 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - `full_cluster_kv_bytes_per_token()` in `memory_model.py`, computing full-cluster KV
   bytes per token straight from an HF config. Avoids the per-rank roundoff in
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
+- **`python -m profiler coverage <model>`** — boots the model once, runs one
+  forward per batch regime (prefill-only / decode-only / mixed), and reports how
+  much of the measured CUDA time the architecture catalog binds. Writes nothing,
+  exits non-zero while any kernel is unbound, and reuses the profiler's own
+  matcher, so a clean report means a real run binds the same things.
+  - Exists because a catalog entry can name a real vLLM class and measure
+    **nothing**. vLLM's profile tree holds only modules that launch a kernel of
+    their own, and modern models fuse q-norm / rope / KV-write into one kernel
+    with no module, or write attention as bare Triton kernels launched straight
+    from the block. The module tree — the natural thing to read a catalog off —
+    still shows the classes, and the symptom is a layer that looks free
+  - Found something in every one of the four modern families. Details in
+    *Fixed* below
+- `profiler/models/minimax_m3_vl.yaml` — MiniMax-M3 (block-level sparse
+  attention over GQA, MoE). The third sparse-attention shape in the repo and
+  deliberately distinct from DeepSeek/GLM's token-level top-k: M3 selects the
+  top `sparse_topk_blocks` blocks of `sparse_block_size` tokens, which is the
+  granularity a KV block pool already speaks. Heterogeneous on two axes at once
+  (layers 0-2 non-sparse + dense MLP, 3+ sparse + MoE), both resolved from the
+  checkpoint. Needs `--block-size 128`; the platform default of 16 fails with
+  "No common block size for 16"
+  - New `blocks.sparse_attn` overlay in the architecture schema, used when a
+    layer's `sparse` flag is set. M3's block difference is the sparse flag, not
+    the attention type — every layer is full attention — which `blocks.attn`,
+    keyed by attention type, could not express
+- Catalog `vllm:` entries accept a trailing **`*`** for prefix matching, and a
+  **list** now means "every one of these", with the matches **summed**. Both are
+  forced by real models: a fused kernel reports its template arguments inline
+  (`fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, ...`), so an exact
+  binding silently stops matching on the fp8 variant; and M3's sparse attention
+  is three Triton kernels with no module to aggregate them, whose sum is what
+  one trace node costs. Summing is a no-op for every catalog whose entries each
+  match one node
 
-### Changed
-- The simulator is roughly **11x faster** with byte-identical results. The four
-  `bench/examples/` workloads go 16m 40s to 1m 26s in total (per-example 5.2x to 24.6x)
-  and the 19 `serving/run.sh` scenarios 18.95 min to 1.94 min, with every
-  `Total clocks (ns)` unchanged and all four `sim.csv` files byte-identical:
-  - The Chakra converter runs **in-process** instead of a subprocess per batch (~56 ms
-    each, ~52 ms of it interpreter startup), which had been 73-85% of wall-clock
-  - The converter takes the trace **as field tuples**, not text. The text file is now
-    written only for `--save-trace-text`
-  - **Converted graphs are reused** on an identical trace -- 4,405 of 8,810 batches are
-    dummies on the swe-bench MoE DP+EP example, only 22 of them distinct
-  - **ASTRA-Sim stops re-asking an idle NPU** until its answer could change: handshakes
-    drop from 337,786 to 2,462 on a 10-request 8-NPU run
-  - The analytical frontends no longer print a per-tick `Checking NPU ...` line, which
-    the frontend had to drain off the pipe (78-99.6% of lines read)
-  - Profile tables are built in plain Python and only for the TP degrees a run touches
-    (TP=1 startup 1435 ms to 50 ms); the architecture config is cached
-- **`--cleanup-inputs` is replaced by `--save-trace-text` and `--keep-inputs`**, both
-  defaulting off -- same observable default, no double negative. It was doing two jobs:
-  writing each batch's trace for inspection, and preserving the `.et` workloads and
-  generated configs for a manual ASTRA-Sim replay. `--no-cleanup-inputs` callers need
-  one of the two instead
-- Graph metadata stores the trace's **path**, not its text. Nothing consumed it and it
-  was 70% of every `.et`: 117,112 to 24,403 bytes per file on the swe-bench MoE DP+EP
-  example, ~720 MB to ~180 MB of I/O per run
-- All four canonical examples were regenerated on current `main`, since the previous
-  summaries predated the block pool rework, the pipeline-stage fix and the interpolation
-  change. TPOT means now land within 1.7% and latency means within 2.2%; TTFT means span
-  +1.3% to -13.6% (the MoE run, 30 ms absolute on the smallest values in the set). Docs
-  quoting "within 1.5%" or "-2.6% to -5.8%" are updated
-- **`npu_mem.mem_util` must be calibrated against the run you compare against.** The
-  simulator models neither vLLM's activation peak nor its CUDA context, so `0.9` buys
-  more KV cache here than in vLLM -- and KV capacity drives preemption. It only bites
-  when a run **saturates** the cache: read `kv_cache.num_gpu_blocks` from the bench
-  run's `meta.json` and pick the `mem_util` whose startup line reports the same count.
-  On the RTX 4090 example that is `0.833919`, worth -20.7% TTFT / +12.9% TPOT versus
-  +0.6% / +0.2%. The 96 GB RTXPRO6000 examples peak at 58-97% and are unaffected
-- The attention grid is interpolated **linearly**, not in log space (`_axis_bracket`).
-  Grid spacing decides where the kernel is sampled; the blend decides how samples
-  combine -- and the kernel is linear in each axis (decode attention fits
-  `time_us = a + b * (n_decode * kv_decode)` at R^2 = 1.0000). Leave-one-out over the
-  measured grid puts log space at +11.6-14.4% mean error against +2.3-3.7% for linear,
-  on all four axes across every bundle in `profiler/perf/`
-- With no skew profile the simulator applies **no** skew correction
-  (`_ATTN_SKEW_ALPHA_FALLBACK` 0.093 -> 0, i.e. `t_mean`) rather than a borrowed
-  constant; bundles with a real `skew_fit` are unaffected. The blend endpoints are far
-  apart (`t_max / t_mean` median ~1.5), so alpha has to be known to a couple of
-  hundredths to be worth applying. It is not bounded to `[0, 1]` either
-- `Scheduler` follows vLLM V1's `schedule()`: `self.running` first, preempting only from
-  its own tail, then `self.waiting` while budget and slots remain. Admission never
-  preempts and is skipped on any step that preempted. `schedule_base` and
-  `schedule_with_prefix` collapse into one `schedule()`; `scheduler.py` drops ~1300 to
-  ~510 lines, `memory_model.py` 885 to ~545
-- Preemption is vLLM verbatim, including `num_computed_tokens = 0`. That is not
-  re-prefill -- the blocks keep their hashes, so recovery comes from the tier hierarchy
-  rather than a "preserve the decode state" path
-- The three prefix-cache modes map onto three real vLLM configurations:
-  `--no-enable-prefix-caching` is prefix caching off, `--enable-prefix-caching` is
-  default vLLM, and `--prefix-storage CPU/CXL` is vLLM with LMCache or
-  `OffloadingConnector`. The previous middle case billed a transfer against an empty tier
-- `num_computed_tokens` advances when the batch is formed, as in vLLM's
-  `_update_after_schedule`, with `Batch.scheduled_tokens` as `add_done`'s snapshot.
-  Advancing at completion let `pp_size > 1` schedule the same tokens twice
-- Prefill and decode are no longer distinct scheduler states. A request catches up to
-  `num_tokens_reached`, and the trace classifies by scheduled token count (>1 = prefill
-  chunk, ==1 = decode) -- the only classification that survives a resumed request
-- A host offload tier uses 256-token chunks (LMCache's default) uniformly. Page size 1
-  matched at token granularity and over-reported hits against any real offload tier
-- `MemoryModel.get_weight` divides the transformer-block weight by `pp_size`
-  (heaviest-rank bound), adding a `pp_size` parameter to `__init__`. PP=1 unchanged
-- `MemoryModel.apply_kv_cache_events` also drains the second-tier queue for CXL prefix
-  storage and CPU + prefix-sharing, preventing unbounded growth. No accounting impact
-- Documentation: the PP write-up in `simulator/parallelism-mechanics.md` now describes
-  the Chakra layer split and inter-stage `COMM_SEND` / `COMM_RECV`, replacing a
-  "scheduling-only" framing; `--expert-routing-policy` is documented as defaulting to
-  `BALANCED` (not the non-existent `COPY`), with `--enable-block-copy` decoupled from
-  it; and `LOAD` scoring (`waiting * 4 + running`) is documented
-
-### Removed
-- `bench/bench-rtx4090.sh` -- a copy of `bench/bench.sh` differing only in defaults that
-  are already environment overrides there. Now an example in that script's header
-- `host_metadata.txt` and `scripts/capture-host-metadata.sh`. The script wrote three
-  `nvidia-smi` fields against ten hand-written ones in the file, and the information is
-  already in the profiler's `meta.yaml` and a bench run's `meta.json`
-- `bench/results/` and `outputs/rtx4090_llama/` artifacts committed past `.gitignore`.
-  Committed bench artifacts belong under `bench/examples/<hardware>/<model>/`
-- `serving/core/radix_tree.py` (675 lines), the SGLang-derived prefix-cache radix tree,
-  **replaced by `block_pool.py` + `kv_cache_manager.py`** (see Added). It served as both
-  index and allocator, and as an allocator it was inexact. Every user-visible
-  prefix-caching flag is unchanged; the SGLang attribution stays in `CONTRIBUTORS.md`
-- `--prioritize-prefill`, the per-instance `prioritize_prefill` key, and
-  `Scheduler._merge_by_arrival_id` (its only caller). vLLM v0.19.0 has no equivalent:
-  `SchedulerPolicy` is `fcfs` or `priority`, i.e. request priority
-- `Request.is_prefill()`, `evict`, `npu_last_node`, `cpu_last_node`,
-  `storage_last_node`, `_prefix_locked`; and from `MemoryModel`: `avail_size`,
-  `evictable_size`, `get_block_kv`, `get_evict_kv`, `lock_prefix`, `unlock_prefix`,
-  `cache_unfinished_req`, `cache_finished_req`, `evict_prefix_cache`, `prefix_match`,
-  `apply_kv_cache_events` and the two `_*_cache_hashtolen` maps
-- `Scheduler.get_first_arrival_time`, which read a never-assigned attribute and had no
-  callers (`Router.get_first_arrival_time` is the live one)
+- **Support for heterogeneous (hybrid) layer stacks in the profiler**, and the
+  first architecture that needs it: `profiler/models/qwen3_5_text.yaml`
+  (Qwen3.5 / Qwen3.8 text tower — gated DeltaNet interleaved with full
+  attention, 3:1).
+  - Architecture yamls may now declare `blocks:` + `shared:` instead of the
+    flat `sequence:`; the two are mutually exclusive and validated as such, so
+    the five existing yamls are untouched. `blocks` is keyed by **axis**
+    (`attn.<layer_types value>`, `mlp.dense|moe`) rather than by block name,
+    because a layer's identity in a modern stack is a tuple — Qwen3.8 varies
+    the attention type, GLM and DeepSeek the MLP, MiniMax-M3 both — and naming
+    every combination explodes. The per-layer values come from the
+    checkpoint's own config, not from the yaml
+  - `Architecture.layer_occurrences()` maxes across block types, which is
+    correct because a layer belongs to one block type or is shared by all of
+    them with the same count
+  - New `catalog.linear_attention` group, and `catalog.attention` no longer has
+    to hold exactly one entry: a sparse-attention model runs an indexer kernel
+    beside the attention kernel on the same axes, so both belong in that group
+- **`linear_attention` profile category** → `tp<N>/linear_attention.csv`, keyed
+  `(layer, prefill_tokens, n_decode)`.
+  - Two axes, not four: a gated-DeltaNet layer keeps a fixed-size conv state
+    and a fixed-size recurrent state per sequence, neither a function of
+    position, so **cost is independent of kv length and no skew correction
+    applies** — measured, a 64x spread in kv length moves it 1.1% and a skewed
+    batch is indistinguishable from a uniform one
+  - Two axes, not one, even though the prefill and decode kernels *are*
+    additive — because **which** kernel runs depends on the mix. A pure-decode
+    batch runs a recurrent kernel; add a prefill chunk and vLLM switches to a
+    fused-gating one, 4.5% apart at the same decode count. A pair of 1-D
+    tables cannot represent a kernel-identity switch
+  - Carries a `layer` column, unlike `attention.csv`, because the block runs
+    several non-interchangeable kernels on the same axes
+  - Decode requests in a linear-attention shot carry history (256 tokens) even
+    though the cost does not depend on it. vLLM's *classification* does:
+    `split_decodes_and_prefills` assumes a decodes-first batch and returns
+    "no decode requests" outright when the first request's query length exceeds
+    the threshold. A pure batch of 1-token requests takes an earlier fast path
+    and needs no history, but a **mixed** batch does not — with zero-history
+    decodes the whole batch was classified as prefill and the mixed-regime
+    kernel never ran, leaving exactly the rows nothing else can supply empty
+    (the mixed regime runs a different kernel from the pure one)
+  - The prefill axis is sampled **chunk-aware**: inside the first chunk, at
+    every chunk boundary, and at the token just past each boundary. Cost is a
+    staircase, not a line — one token past a 64-boundary costs 13.5% more than
+    the boundary itself and the interval to the next is nearly flat, so a plain
+    geometric grid lands only on boundaries and interpolating between them
+    underestimates most of what a chunked-prefill scheduler produces. Chunk
+    length resolves from the model config's `chunk_size`, else vLLM's
+    `FLA_CHUNK_SIZE`
+- Profiler CLI knobs, for parity with the simulator and for hybrid stacks:
+  `--block-size`, `--gpu-memory-utilization` (the simulator spells it
+  `--npu-memory-utilization`), `--max-model-len`, `--num-hidden-layers`,
+  `--linear-attn-chunk`, and `--hf-override KEY=VALUE`.
+  `ProfileArgs.hf_overrides` had existed with no CLI to set it, so it was
+  always `None`; values are JSON-parsed with a string fallback and dotted keys
+  nest. `--num-hidden-layers` is the one hybrid profiling cannot do without:
+  at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **Catalog gaps in all four modern families**, each a layer bound to a class
+  that launches no kernel of its own, so it measured nothing and the layer read
+  as free. Found with the new `coverage` subcommand; none is visible in vLLM's
+  source or module tree. Coverage is now 100% of measured CUDA time in all three
+  regimes for MiniMax-M3, Qwen3.5/3.8, DeepSeek-V3.2 and GLM-5.
+  - MiniMax-M3: q-norm + rope + KV-write are one fused kernel
+    (`fusedMiniMaxM3QNormRopeKVInsertKernel`), and the **whole sparse attention
+    kernel** was unbound — `MiniMaxM3SparseAttention` has no `Attention` node,
+    launching `_gqa_sparse_fwd_kernel` / `_gqa_sparse_decode_kernel` +
+    `_merge_topk_attn_out_kernel` by regime
+  - Qwen3.5/3.8: `_fused_qk_rmsnorm_rope_gate_kernel` (q-norm, k-norm, rope and
+    the output gate, fused) had no entry at all, and the eager reshape/copy work
+    inside the gated-DeltaNet block was unattributed — **12.6% of that block's
+    other kernels put together**, which is exactly the comparison this
+    architecture exists to inform
+  - DeepSeek-V3.2 / GLM-5: both rope modules (the class differs by checkpoint —
+    `DeepseekScalingRotaryEmbedding` on DeepSeek, plain `RotaryEmbedding` on
+    GLM-5), the fused indexer q-rope/quant kernel, and the indexer's own glue.
+    This also answers the question the catalog had left open: a rope module
+    shared across layers **is** reported under each caller, so it comes out
+    per-layer and `within` tells the two apart
+- **Catalog resolution is one implementation, shared by profiler and
+  simulator** (`profiler/core/catalog_path.py`). The `model_types:` alias
+  lookup had been added to the profiler's resolver only; the simulator still
+  matched on filename alone, so merging `qwen3_moe.yaml` into `qwen3.yaml`
+  broke all 16 MoE scenarios in `serving/validate.sh` with
+  `FileNotFoundError: ... qwen3_moe.yaml`. The module is free of third-party
+  imports so the simulator container, which has no pydantic, can import it;
+  the simulator puts the repo root on `sys.path` explicitly because
+  `sys.path[0]` is `''`, which re-resolves against the current directory, and
+  `serving/__main__.py` chdirs into `astra-sim/` first.
+  `profiler/models/*.yaml` is a **simulator input** despite its path, and both
+  `AGENTS.md` and the contributor docs now say so.
+- **`attention.csv` carries a `layer` column.** Relaxing the "exactly one
+  attention entry" rule was not enough: `AttentionCategory.extract_points`
+  averaged every sample into a single point, which was correct while that rule
+  held but silently merged two different kernels once it didn't. Measured on
+  DeepSeek-V3.2-Exp, `MLAAttention` and `SparseAttnIndexer` collapsed into one
+  value per key -- 211 keys, 211 rows, no duplicates. The averaging is also no
+  longer needed for its original purpose, since the timing extractor
+  normalizes by parent invocations.
+  - The simulator splits the attention table **by layer**
+    (`attention_by_layer`), and `_layer_available` asks for the requested
+    kernel instead of answering "is there attention data at all". A bundle
+    profiled before the column existed has one kernel in it, so every row
+    belongs to `attention` and the table comes out identical -- that invariant
+    is what keeps the committed bundles valid
+- **`block_size` is no longer forced to 16** in `HOST_ENGINE_DEFAULTS`. vLLM's
+  platform layer picks a value the model's attention backend can use, and
+  pinning one can leave it with none: DeepSeek-V3.2's sparse MLA fails backend
+  selection outright at 16 (`TRITON_MLA: [sparse not supported],
+  FLASHINFER_MLA_SPARSE_SM120: [block_size not supported]`) where letting vLLM
+  choose gives 64. The comment beside the default already said it "does not
+  change kernel time", so there was nothing to gain by pinning it.
+  `--block-size` still overrides, and `probe_limits` reports what the engine
+  settled on
+- **`torch_dtype` vs `dtype`.** HuggingFace renamed the field; Qwen3.8's config
+  carries only `dtype`, and both `ProfileArgs.effective_variant` and
+  `trace_generator.resolve_variant` read only `torch_dtype`. The profiler wrote
+  to a `default/` variant folder while the simulator looked for `bf16/` — a
+  silent divergence that either raises `FileNotFoundError` or picks a folder
+  that isn't the one measured. Both sides now read `torch_dtype` first, then
+  `dtype`; every committed model config has only the former, so no variant
+  folder changes and no baseline moves
 - **DP groups no longer hang with `tp > 1` or `pp > 1`**
   ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65)). A DP group only makes
   progress if every NPU of every member runs the same round, and `add_done` enforces
@@ -294,6 +348,224 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - Refreshed validation baselines and website plots after the chunked-prefill +
   prefix-cache fix. Means / P99s now slightly over-predict vLLM instead of
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
+
+### Changed
+- **The profiler works out how many layers to instantiate**, instead of always
+  shrinking to one. `profiler/core/stack.py` resolves the per-layer block
+  composition from the checkpoint's config and shrinks to the smallest
+  **prefix** that instantiates every distinct block, logging what it chose.
+  One layer is right only when every block is identical; on a hybrid it means
+  the catalog sees whichever block type comes first and every other layer type
+  reads as free. Qwen3.8-27B resolves to 4, every config predating hybrid
+  support still resolves to 1, and `--num-hidden-layers` overrides — warning
+  when it goes below what the stack needs.
+  - The count is computed over the **tuple** of (attention type, MLP type),
+    not per axis. A checkpoint interleaving attention 3:1 *and* switching MLP
+    at layer 3 has three distinct blocks, the last first appearing at layer 4,
+    so the answer is 5 — axis-by-axis reasoning says 4 and is wrong
+  - Only rules read out of vLLM's own source are implemented (`layer_types`,
+    `full_attention_interval`, `first_k_dense_replace`, `decoder_sparse_step`
+    with `mlp_only_layers`, and a list-valued `moe_layer_freq`). The
+    conventions genuinely disagree — DeepSeek tests
+    `layer_idx % moe_layer_freq`, Qwen3-MoE tests
+    `(layer_idx + 1) % decoder_sparse_step` — so an unrecognised layout falls
+    back to "uniform" and says so rather than guessing
+- `LayerEntry.vllm` also accepts a **list of alternatives**, for a family that
+  swaps the class by checkpoint rather than by structure. `llama.yaml` now
+  binds `rotary_emb: [Llama3RotaryEmbedding, RotaryEmbedding]`, which is what
+  its own header said it could not do: Llama 3 uses the first for its extended
+  rope scaling where Llama 1/2 and Mistral use the second, and the single
+  binding measured nothing there on half the family. No change for Llama-3.1,
+  whose only rotary node is the Llama-3 class
+- **One architecture catalog per model family, not per checkpoint shape.**
+  `profiler/models/qwen3_moe.yaml` is merged into `qwen3.yaml`, which now
+  serves both `qwen3` and `qwen3_moe`. vLLM implements the two in separate
+  modules whose classes differ only by a `Moe` infix
+  (`Qwen3DecoderLayer` vs `Qwen3MoeDecoderLayer`, `Qwen3Attention` vs
+  `Qwen3MoeAttention`) and are otherwise identical layer for layer, so the two
+  files were 90% duplicated and a fix to one silently missed the other.
+  - `LayerEntry.within` accepts a **list of alternatives**; matching takes the
+    deepest one actually present in the ancestor chain, so naming a class this
+    checkpoint doesn't have costs nothing
+  - Both `mlp_dense` and `mlp_moe` are populated in the merged `sequence:`.
+    Nothing new is needed to pick between them: the simulator already emits
+    whichever matches the checkpoint's `is_moe`, read from the model config
+  - A `catalog.moe` entry now means "this family has MoE checkpoints", not
+    "this checkpoint is MoE", so the expert sweep is **skipped** for a member
+    that declares no experts instead of raising. A config that *does* mention
+    MoE but from which `num_experts` / `top_k` cannot both be read still
+    raises — that is an unknown field name, not a dense model
+- `profiler/models/qwen3_5_text.yaml` renamed to **`qwen3_5.yaml`**: it serves
+  Qwen3.5, **Qwen3.6** and Qwen3.8, dense and MoE, and the old name suggested
+  one text tower of one generation. Those three are one architecture —
+  Qwen3.6-27B has the same 64 layers at hidden 5120 as Qwen3.5-27B,
+  Qwen3.6-35B-A3B matches Qwen3.5-35B-A3B, and all of them report
+  `model_type: qwen3_5` / `qwen3_5_moe` and run vLLM's `qwen3_5.py`. The
+  generation number is a checkpoint refresh, not a new structure
+- Shot-feasibility filters read the **live** KV block size
+  (`RuntimeLimits.block_size`) instead of a hardcoded 16. What
+  `HOST_ENGINE_DEFAULTS` requests is not always what the engine uses: on a
+  hybrid stack vLLM enlarges the attention block until an attention page costs
+  at least as many bytes as a mamba state page, then pads the mamba page to
+  match, so one uniform pool covers both — measured at **784 tokens** on
+  Qwen3.8-27B against the 16 we asked for. A filter off by 49x either emits
+  shots the cache cannot hold or silently drops ones it can. At 16 the
+  arithmetic is the old constant exactly, so nothing already profiled moves
+  (`.claude/check_block_size.py`: `dense` and `moe` fire one request and so
+  can never reach the filter; `per_sequence` and `attention` fire n and
+  tighten by 8 and 263 shots at 784)
+- Per-layer timings are normalized by **parent invocations x how many times the
+  block sequence emits the layer**, not by the profiled node's `invocations`.
+  vLLM merges every same-class sibling under one parent into a single node,
+  summing CUDA time and counting *calls*, so `invocations` is only the number
+  of trace nodes when those siblings are interchangeable. In Qwen3.5/3.8's
+  gated-DeltaNet block they are not: `in_proj_qkvz` (5120 -> 16384) and
+  `in_proj_ba` (5120 -> 96) are both `MergedColumnParallelLinear` children, and
+  dividing by `invocations` returned the mean of a large GEMM and a tiny one.
+  There is no discriminator to recover — one node is all vLLM emits — so the
+  catalog models the pair as one layer and the sum is what one trace node
+  costs. The two formulas agree whenever
+  `invocations == parent_invocations x occurrences`, which holds for every
+  homogeneous model, so no committed profile bundle and no
+  `serving/validate.sh` baseline moves; the new behaviour appears only where
+  the old one was wrong. Also unblocks profiling a hybrid stack with
+  `num_hidden_layers > 1`, which is the only way to reach both block types
+- **vLLM pinned to v0.28.0** (was v0.19.0), in `scripts/docker-vllm.sh`,
+  `scripts/install-vllm.sh` and the docs. The tag semantics inverted along the
+  way: `v0.28.0` is the CUDA 13.x build and `v0.28.0-cu129` is the fallback,
+  where `v0.19.0` was CUDA 12.x with a `-cu130` variant. Four vLLM-internal
+  APIs the profiler binds to moved, all under `profiler/core/hooks/`:
+  - `FusedMoE` no longer exists. Models now call `FusedMoEFactory`, which
+    returns a `MoERunner` owning a `router` and a `RoutedExperts`. `moe_hook.py`
+    forges expert routing by swapping `_compute_routing` on the live **router
+    instance** instead of monkey-patching `FusedMoE.forward_native` and then
+    `select_experts` and then `_compute_routing` on the class — one patch where
+    there were three, and no `layer_name` guard needed. `_select_experts` still
+    runs, so EPLB mapping and index-dtype conversion happen as in production
+  - v0.28 ships **two** GPU model runners and picks between them per config —
+    Llama-3.1-8B boots on V2, the Qwen3.8-27B hybrid on V1 — and V2 keeps no
+    persistent `input_batch`. `batch.py` now reads KV-cache-group block sizes
+    from `kv_cache_config.kv_cache_groups[i].kv_cache_spec.block_size`, which
+    both runners derive their tables from, and which is the KV-manager block
+    size directly (no `block_size * blocks_per_kv_block` arithmetic)
+  - `NewRequestData.prefill_token_ids` is declared `= None` but asserted
+    non-None by the V2 runner. Filled in for synthetic requests, matching
+    vLLM's own scheduler, which passes `req._all_token_ids`
+  - `SchedulerOutput` is built from `make_empty()` and then overridden, rather
+    than positionally. v0.28 alone added eight fields; naming them all is a
+    breakage per release for no benefit
+- `probe_limits` reads KV capacity from `cache_config.kv_cache_size_tokens`
+  rather than `num_gpu_blocks * block_size`. vLLM added the former in v0.28
+  precisely because the latter "can be wrong for hybrid models where requests
+  occupy multiple KV cache groups" — measured at **1.72x too high** on
+  Qwen3.8-27B, where vLLM unifies the page size to 784 tokens so an attention
+  page and a mamba state page cost the same bytes. Unchanged for non-hybrid
+  models, so no profiled latency moves
+- `scripts/docker-vllm.sh` takes `VLLM_GPUS` to narrow which GPUs the container
+  claims on a shared machine (`VLLM_GPUS='"device=2,3"'` — the inner quotes are
+  part of the value; without them Docker reads the second field as a GPU count)
+- `pandas` is named explicitly in both install scripts. `profiler/core/skew.py`
+  and `fit_alpha.py` import it directly but had only ever been getting it
+  transitively through `datasets`, and the v0.28.0 image doesn't ship it
+- The simulator is roughly **11x faster** with byte-identical results. The four
+  `bench/examples/` workloads go 16m 40s to 1m 26s in total (per-example 5.2x to 24.6x)
+  and the 19 `serving/run.sh` scenarios 18.95 min to 1.94 min, with every
+  `Total clocks (ns)` unchanged and all four `sim.csv` files byte-identical:
+  - The Chakra converter runs **in-process** instead of a subprocess per batch (~56 ms
+    each, ~52 ms of it interpreter startup), which had been 73-85% of wall-clock
+  - The converter takes the trace **as field tuples**, not text. The text file is now
+    written only for `--save-trace-text`
+  - **Converted graphs are reused** on an identical trace -- 4,405 of 8,810 batches are
+    dummies on the swe-bench MoE DP+EP example, only 22 of them distinct
+  - **ASTRA-Sim stops re-asking an idle NPU** until its answer could change: handshakes
+    drop from 337,786 to 2,462 on a 10-request 8-NPU run
+  - The analytical frontends no longer print a per-tick `Checking NPU ...` line, which
+    the frontend had to drain off the pipe (78-99.6% of lines read)
+  - Profile tables are built in plain Python and only for the TP degrees a run touches
+    (TP=1 startup 1435 ms to 50 ms); the architecture config is cached
+- **`--cleanup-inputs` is replaced by `--save-trace-text` and `--keep-inputs`**, both
+  defaulting off -- same observable default, no double negative. It was doing two jobs:
+  writing each batch's trace for inspection, and preserving the `.et` workloads and
+  generated configs for a manual ASTRA-Sim replay. `--no-cleanup-inputs` callers need
+  one of the two instead
+- Graph metadata stores the trace's **path**, not its text. Nothing consumed it and it
+  was 70% of every `.et`: 117,112 to 24,403 bytes per file on the swe-bench MoE DP+EP
+  example, ~720 MB to ~180 MB of I/O per run
+- All four canonical examples were regenerated on current `main`, since the previous
+  summaries predated the block pool rework, the pipeline-stage fix and the interpolation
+  change. TPOT means now land within 1.7% and latency means within 2.2%; TTFT means span
+  +1.3% to -13.6% (the MoE run, 30 ms absolute on the smallest values in the set). Docs
+  quoting "within 1.5%" or "-2.6% to -5.8%" are updated
+- **`npu_mem.mem_util` must be calibrated against the run you compare against.** The
+  simulator models neither vLLM's activation peak nor its CUDA context, so `0.9` buys
+  more KV cache here than in vLLM -- and KV capacity drives preemption. It only bites
+  when a run **saturates** the cache: read `kv_cache.num_gpu_blocks` from the bench
+  run's `meta.json` and pick the `mem_util` whose startup line reports the same count.
+  On the RTX 4090 example that is `0.833919`, worth -20.7% TTFT / +12.9% TPOT versus
+  +0.6% / +0.2%. The 96 GB RTXPRO6000 examples peak at 58-97% and are unaffected
+- The attention grid is interpolated **linearly**, not in log space (`_axis_bracket`).
+  Grid spacing decides where the kernel is sampled; the blend decides how samples
+  combine -- and the kernel is linear in each axis (decode attention fits
+  `time_us = a + b * (n_decode * kv_decode)` at R^2 = 1.0000). Leave-one-out over the
+  measured grid puts log space at +11.6-14.4% mean error against +2.3-3.7% for linear,
+  on all four axes across every bundle in `profiler/perf/`
+- With no skew profile the simulator applies **no** skew correction
+  (`_ATTN_SKEW_ALPHA_FALLBACK` 0.093 -> 0, i.e. `t_mean`) rather than a borrowed
+  constant; bundles with a real `skew_fit` are unaffected. The blend endpoints are far
+  apart (`t_max / t_mean` median ~1.5), so alpha has to be known to a couple of
+  hundredths to be worth applying. It is not bounded to `[0, 1]` either
+- `Scheduler` follows vLLM V1's `schedule()`: `self.running` first, preempting only from
+  its own tail, then `self.waiting` while budget and slots remain. Admission never
+  preempts and is skipped on any step that preempted. `schedule_base` and
+  `schedule_with_prefix` collapse into one `schedule()`; `scheduler.py` drops ~1300 to
+  ~510 lines, `memory_model.py` 885 to ~545
+- Preemption is vLLM verbatim, including `num_computed_tokens = 0`. That is not
+  re-prefill -- the blocks keep their hashes, so recovery comes from the tier hierarchy
+  rather than a "preserve the decode state" path
+- The three prefix-cache modes map onto three real vLLM configurations:
+  `--no-enable-prefix-caching` is prefix caching off, `--enable-prefix-caching` is
+  default vLLM, and `--prefix-storage CPU/CXL` is vLLM with LMCache or
+  `OffloadingConnector`. The previous middle case billed a transfer against an empty tier
+- `num_computed_tokens` advances when the batch is formed, as in vLLM's
+  `_update_after_schedule`, with `Batch.scheduled_tokens` as `add_done`'s snapshot.
+  Advancing at completion let `pp_size > 1` schedule the same tokens twice
+- Prefill and decode are no longer distinct scheduler states. A request catches up to
+  `num_tokens_reached`, and the trace classifies by scheduled token count (>1 = prefill
+  chunk, ==1 = decode) -- the only classification that survives a resumed request
+- A host offload tier uses 256-token chunks (LMCache's default) uniformly. Page size 1
+  matched at token granularity and over-reported hits against any real offload tier
+- `MemoryModel.get_weight` divides the transformer-block weight by `pp_size`
+  (heaviest-rank bound), adding a `pp_size` parameter to `__init__`. PP=1 unchanged
+- `MemoryModel.apply_kv_cache_events` also drains the second-tier queue for CXL prefix
+  storage and CPU + prefix-sharing, preventing unbounded growth. No accounting impact
+- Documentation: the PP write-up in `simulator/parallelism-mechanics.md` now describes
+  the Chakra layer split and inter-stage `COMM_SEND` / `COMM_RECV`, replacing a
+  "scheduling-only" framing; `--expert-routing-policy` is documented as defaulting to
+  `BALANCED` (not the non-existent `COPY`), with `--enable-block-copy` decoupled from
+  it; and `LOAD` scoring (`waiting * 4 + running`) is documented
+
+### Removed
+- `bench/bench-rtx4090.sh` -- a copy of `bench/bench.sh` differing only in defaults that
+  are already environment overrides there. Now an example in that script's header
+- `host_metadata.txt` and `scripts/capture-host-metadata.sh`. The script wrote three
+  `nvidia-smi` fields against ten hand-written ones in the file, and the information is
+  already in the profiler's `meta.yaml` and a bench run's `meta.json`
+- `bench/results/` and `outputs/rtx4090_llama/` artifacts committed past `.gitignore`.
+  Committed bench artifacts belong under `bench/examples/<hardware>/<model>/`
+- `serving/core/radix_tree.py` (675 lines), the SGLang-derived prefix-cache radix tree,
+  **replaced by `block_pool.py` + `kv_cache_manager.py`** (see Added). It served as both
+  index and allocator, and as an allocator it was inexact. Every user-visible
+  prefix-caching flag is unchanged; the SGLang attribution stays in `CONTRIBUTORS.md`
+- `--prioritize-prefill`, the per-instance `prioritize_prefill` key, and
+  `Scheduler._merge_by_arrival_id` (its only caller). vLLM v0.19.0 has no equivalent:
+  `SchedulerPolicy` is `fcfs` or `priority`, i.e. request priority
+- `Request.is_prefill()`, `evict`, `npu_last_node`, `cpu_last_node`,
+  `storage_last_node`, `_prefix_locked`; and from `MemoryModel`: `avail_size`,
+  `evictable_size`, `get_block_kv`, `get_evict_kv`, `lock_prefix`, `unlock_prefix`,
+  `cache_unfinished_req`, `cache_finished_req`, `evict_prefix_cache`, `prefix_match`,
+  `apply_kv_cache_events` and the two `_*_cache_hashtolen` maps
+- `Scheduler.get_first_arrival_time`, which read a never-assigned attribute and had no
+  callers (`Router.get_first_arrival_time` is the live one)
 
 ### Security
 - Bump `fast-uri` to ≥3.1.2 (CVE-2026-6321 path traversal, CVE-2026-6322 host confusion,
