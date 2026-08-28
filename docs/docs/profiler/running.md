@@ -152,11 +152,13 @@ VERBOSITY=""                # default (INFO)
 
 `profile.sh` is a convenience wrapper; every variable in it maps to a
 flag. Call the module yourself when you want to script a sweep, or for
-the `slice` subcommand, which `profile.sh` does not expose at all.
+the `slice` and `coverage` subcommands, which `profile.sh` does not expose
+at all.
 
 ```bash
-python -m profiler profile <model> --hardware <hw> [options]
-python -m profiler slice   <model> --hardware <hw> --tp-refresh N --group G [options]
+python -m profiler profile  <model> --hardware <hw> [options]
+python -m profiler slice    <model> --hardware <hw> --tp-refresh N --group G [options]
+python -m profiler coverage <model> --hardware <hw> [options]
 ```
 
 `<model>` is an HF-style `<org>/<name>` resolving to
@@ -226,16 +228,48 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
 | Flag | Required | Description |
 | --- | --- | --- |
 | `--tp-refresh` | ✓ | The single TP degree to refresh. Must be a member of `--tp` |
-| `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `moe` |
+| `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `linear_attention`, `moe` |
 
 It boots one engine at that TP, fires only that category's grid, and
 rewrites `tp<N>/<group>.csv` plus `meta.yaml`. Errors out if the
 architecture YAML has no entries in `catalog.<group>` — asking for
 `moe` on a dense model, for instance.
 
-Note `slice` handles only the four uniform categories. The skew sweep
-is not a `--group` value; refresh it with
+Note `slice` handles only the uniform categories. The skew sweep is not a
+`--group` value; refresh it with
 `python -m profiler profile ... --only-skew` instead.
+
+### `coverage`: does the catalog bind every kernel?
+
+```bash
+python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000
+```
+
+Boots one engine at TP=1, runs one forward per batch regime
+(prefill-only / decode-only / mixed) and reports how much of the measured CUDA
+time `profiler/models/<model_type>.yaml` accounts for. Writes nothing, and
+exits non-zero while any kernel is left unbound.
+
+```
+Coverage check: minimax_m3_vl (18 catalog entries, 3 regimes)
+prefill    3997.0 us total,   3997.0 us bound (100.0%), 0 unbound node(s)
+decode     4213.3 us total,   4213.3 us bound (100.0%), 0 unbound node(s)
+mixed      4454.3 us total,   4454.3 us bound (100.0%), 0 unbound node(s)
+Catalog binds every measured kernel, in all 3 regimes.
+```
+
+This exists because a catalog entry can name a real vLLM class and still
+measure nothing: vLLM's profile tree only contains modules that launch a kernel
+of their own, and modern models fuse q-norm, rope and the KV write into a
+single kernel with no module wrapper, or write attention as bare Triton kernels
+launched straight from the block. The module tree still shows the classes, so
+the mistake is invisible in the source — and the symptom is a layer that looks
+free rather than an error. TP=1 only, because coverage is about which nodes
+exist and TP changes tensor shapes, not the module graph.
+
+Run it whenever you write or edit a catalog, and after a vLLM upgrade. Details
+and how to act on a gap: [Adding a model
+architecture](./adding-model-architecture#3-check-what-the-catalog-binds).
 
 ## Multi-model batch sweep: `profile-all.sh`
 

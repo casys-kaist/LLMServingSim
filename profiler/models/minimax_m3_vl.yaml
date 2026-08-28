@@ -1,0 +1,177 @@
+# MiniMax-M3 — class catalog (block-sparse attention + MoE).
+#
+# The third sparse-attention shape in this repo, and deliberately distinct from
+# DeepSeek-V3.2 / GLM-5: those select the **top 2048 tokens** with a lightning
+# indexer over MLA, while M3 selects the **top 16 blocks of 128 tokens** over
+# plain GQA. Same effective budget, different granularity — and the block
+# granularity is the one that maps onto a KV block pool.
+#
+# Heterogeneous on two axes at once, both flipping at layer 3:
+#   layers 0-2   MiniMaxM3Attention        + dense MLP
+#   layers 3+    MiniMaxM3SparseAttention  + MoE
+# Which is which comes from the checkpoint --
+# ``sparse_attention_config.sparse_attention_freq[i] != 0`` for the attention
+# side, ``moe_layer_freq[i] != 0`` for the MLP -- so the profiler resolves the
+# minimum stack depth (4) on its own.
+#
+# ---------------------------------------------------------------------------
+# CONFIG SHAPE: this checkpoint must be stored **nested**, keeping its
+# ``text_config`` key, unlike Qwen3.5's which is flattened. vLLM's
+# ``MiniMaxM3Config`` is a wrapper that builds its backbone from that key and
+# sends everything else to ``**kwargs``; flattened, it constructs an
+# all-defaults backbone (60 layers, 128 experts) and silently ignores the
+# config on disk. See ``stack.text_config`` and
+# ``engine._materialize_config``.
+#
+# BLOCK SIZE: profile with ``--block-size 128``. The platform default of 16
+# fails outright with "No common block size for 16", because the sparse
+# selection works in ``sparse_block_size: 128`` blocks.
+#
+# ---------------------------------------------------------------------------
+# Read off a live module dump. What that caught:
+#
+#  * The sparse layer's qkv projection is a **different class**
+#    (``MinimaxM3QKVParallelLinearWithIndexer``) that fuses the index
+#    projections in, so it is not the same measurement as the dense layer's
+#    ``QKVParallelLinear`` and gets its own entry.
+#  * ``shared_experts`` is a ``MiniMaxM3MLP``, the same class as a dense
+#    layer's own ``mlp`` -- the second family in three where that is true, so
+#    ``not_within`` is the norm rather than an oddity. Its cost is already
+#    inside ``moe``.
+#  * ``MiniMAXGemmaRMSNorm`` fills five roles. Inside
+#    ``MiniMaxM3SparseAttention`` four of them merge into one node (q, k,
+#    index_q, index_k); all four are the same width (head_dim 128 ==
+#    sparse_index_dim 128), so their sum is coherent.
+#  * **The sparse layer has no ``Attention`` node.** Its kernels are launched
+#    straight from ``MiniMaxM3SparseAttention``, and which ones fire depends on
+#    the regime -- ``_gqa_sparse_fwd_kernel`` on a prefill-only batch,
+#    ``_gqa_sparse_decode_kernel`` + ``_merge_topk_attn_out_kernel`` on a
+#    decode-only one, all three on a mixed batch. So ``sparse_attention`` binds
+#    all three and takes their **sum**, which is what one trace node costs; the
+#    regime is already an axis of the attention grid.
+#  * **q_norm, rope and the KV-cache write are one fused kernel** with no
+#    module of its own -- ``fusedMiniMaxM3QNormRopeKVInsertKernel``, launched
+#    directly by either attention module. The RMSNorm modules the module tree
+#    shows there launch nothing, which is why binding them by class measured
+#    zero rows. It is bound by prefix because its reported name inlines the
+#    dtypes.
+#
+# With those two bound, both attention blocks are fully accounted for: on a
+# mixed shot the non-sparse block's parent node is 597.4 us against 597.3 for
+# the sum of its bound children, and the sparse block's 213.1 against 213.3.
+#
+# Re-derive with ``.claude/dump_module_tree.py`` (module structure) and
+# ``.claude/dump_m3_tree.py`` (profile tree per regime -- the authority, since
+# a module that launches no kernel of its own never appears in it).
+
+
+model_types:
+  - minimax_m3_vl        # what vLLM's own MiniMaxM3Config registers under
+
+
+blocks:
+  attn:
+    # Layers 0-2: ordinary GQA, no selection branch.
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, qk_norm_rope, attention]
+      post_attn: [o_proj, layernorm]
+  sparse_attn:
+    # Layers 3+: same attention type, plus the block-selection branch.
+    full_attention:
+      pre_attn:  [layernorm, sparse_qkv_proj, sparse_qk_norm_rope, indexer,
+                  sparse_attention]
+      post_attn: [sparse_o_proj, layernorm]
+  mlp:
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
+  prologue: [embedding]
+  head:     [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: MiniMAXGemmaRMSNorm
+      within: MiniMaxM3DecoderLayer
+      tp_stable: true
+    final_layernorm:
+      vllm: MiniMAXGemmaRMSNorm
+      within: [MiniMaxM3SparseForCausalLM, MiniMaxM3Model]
+      tp_stable: true
+
+    # --- non-sparse attention block (layers 0-2) ---------------------------
+    qkv_proj:
+      vllm: QKVParallelLinear
+    qk_norm_rope:
+      # One fused kernel doing q-norm, rope and the KV-cache write. The
+      # MiniMAXGemmaRMSNorm modules inside the attention block launch nothing
+      # of their own, so there is no norm node to bind here -- binding the
+      # class measured zero rows. Prefix-matched: the reported name inlines
+      # the dtypes, which change per variant.
+      vllm: "void vllm::minimax_m3_fused_ops::fusedMiniMaxM3QNormRopeKVInsertKernel*"
+      within: MiniMaxM3Attention
+    o_proj:
+      vllm: RowParallelLinear
+      within: MiniMaxM3Attention
+
+    # --- sparse attention block (layers 3+) --------------------------------
+    sparse_qkv_proj:
+      # Fuses the index projections into the qkv projection, so this is a
+      # different measurement from the dense layer's QKVParallelLinear.
+      vllm: MinimaxM3QKVParallelLinearWithIndexer
+    sparse_qk_norm_rope:
+      # The same fused kernel on the sparse block, told apart by ``within``.
+      vllm: "void vllm::minimax_m3_fused_ops::fusedMiniMaxM3QNormRopeKVInsertKernel*"
+      within: MiniMaxM3SparseAttention
+    sparse_o_proj:
+      vllm: RowParallelLinear
+      within: MiniMaxM3SparseAttention
+
+    # --- dense MLP (layers 0-2) --------------------------------------------
+    # not_within excludes the shared expert, the same class nested inside
+    # MiniMaxM3MoE and already counted there.
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: MiniMaxM3MLP
+      not_within: MiniMaxM3MoE
+    act_fn:
+      vllm: SiluAndMulWithClamp
+      within: MiniMaxM3MLP
+      not_within: MiniMaxM3MoE
+    down_proj:
+      vllm: RowParallelLinear
+      within: MiniMaxM3MLP
+      not_within: MiniMaxM3MoE
+
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+
+  attention:
+    attention:
+      # The non-sparse layers' kernel (FlashAttention, via the module).
+      vllm: Attention
+      within: MiniMaxM3Attention
+    sparse_attention:
+      # The sparse layers' kernel, which has no module wrapper: three Triton
+      # kernels launched straight from MiniMaxM3SparseAttention, of which the
+      # regime decides how many fire. Their sum is one trace node's cost.
+      vllm: [_gqa_sparse_fwd_kernel, _gqa_sparse_decode_kernel,
+             _merge_topk_attn_out_kernel]
+      within: MiniMaxM3SparseAttention
+    indexer:
+      # Scores blocks over the whole KV before the top-k selection, so it keys
+      # on the same axes as the attention kernel.
+      vllm: MiniMaxM3IndexerTritonImpl
+
+  moe:
+    moe:
+      # The whole block: gate, routed experts and the shared expert.
+      vllm: MiniMaxM3MoE

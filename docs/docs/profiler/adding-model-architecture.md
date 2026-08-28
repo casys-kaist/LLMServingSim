@@ -22,6 +22,8 @@ and compare against the bundled architectures:
 | `llama` | `llama.yaml` | Llama 3.x dense (8B / 70B / 405B / custom shapes), Mistral 7B, derivatives with the same block structure |
 | `qwen3`, `qwen3_moe` | `qwen3.yaml` | Qwen3, dense **and** MoE (0.6B … 32B, 30B-A3B, 235B-A22B), with per-head `qk_norm` |
 | `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
+| `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); both run vLLM's `deepseek_v2` module, so one catalog serves both |
+| `minimax_m3_vl` | `minimax_m3_vl.yaml` | MiniMax-M3 — block-level sparse attention (top-`k` blocks of `sparse_block_size` tokens) over GQA, non-sparse on the first few layers |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
 
@@ -72,9 +74,13 @@ searching for `deepseek_v32` finds the file by name. (A `.` never appears:
 `model_type` values are Python module names upstream.)
 
 For a wrapped checkpoint — a vision-language model whose text tower is the
-thing we profile — that means the config-authoring convention decides the
-name. Store the **text tower flattened to top level**, with `architectures`
-set to the text-only class:
+thing we profile — the config-authoring convention decides the name, and the
+rule is: **store the shape that checkpoint's own config class reads.** Not
+"always flatten". Which shape that is differs per model, and getting it wrong
+fails silently.
+
+Qwen3.5's config class resolves a flat config, so that one is flattened, with
+`architectures` set to the text-only class:
 
 ```json
 {
@@ -87,6 +93,33 @@ set to the text-only class:
 
 so the recorded `model_type` is the text tower's (`qwen3_5_text`), not the VL
 wrapper's (`qwen3_5`). One architecture, one name.
+
+MiniMax-M3's class is a **wrapper**: it builds its backbone from a
+`text_config` key and forwards everything else to `**kwargs`. Flattened, it
+constructs an all-defaults backbone — 60 layers, 128 experts — and every value
+you wrote is swallowed by `**kwargs` with no warning. So that one keeps its
+nesting:
+
+```json
+{
+  "architectures": ["MiniMaxM3SparseForCausalLM"],
+  "model_type": "minimax_m3_vl",
+  "text_config": { "num_hidden_layers": 60, "hidden_size": 6144, "...": "..." }
+}
+```
+
+Two consequences worth knowing before you author a config:
+
+- **The `model_type` you choose must route to the config class the model code
+  expects.** Inventing one, or picking the text tower's name when the wrapper
+  is what vLLM registers, hands you `transformers`' generic config class
+  instead — which lacks fields (`rope_theta`) the model plugin then reads off
+  it.
+- **`hf_overrides` only ever reaches the top level.** For a nested config the
+  profiler mirrors its overrides into `text_config` as well
+  (`engine._materialize_config`), or neither the shrink-to-N-layers nor the TP
+  shard fields would take effect — and the latter fails without an error, so you
+  get a profile of a shape nobody asked for.
 
 Some `model_type` values are different checkpoints of **one** implementation:
 GLM-5 (`glm_moe_dsa`) and DeepSeek-V3.2 (`deepseek_v32`) both run vLLM's
@@ -212,9 +245,31 @@ model runs an indexer kernel alongside the attention kernel on the same axes.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vllm` | ✓ | The vLLM **leaf class name** the CUDA profiler reports, e.g. `QKVParallelLinear`, `RMSNorm`, `Attention`. Not an attribute path |
-| `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` class appears more than once in the model. Matching rule: `node_class == vllm` **and** (`within` is unset **or** `within` appears among the node's ancestor classes) |
+| `vllm` | ✓ | The name the CUDA profiler reports for this layer — a vLLM **leaf class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
+| `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` name appears more than once in the model. Matching rule: the name matches **and** (`within` is unset **or** one of `within`'s alternatives appears among the node's ancestor classes). Accepts a list |
+| `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
 | `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
+
+A **list** under `vllm` means "every one of these the checkpoint has", and
+covers two situations:
+
+- *One layer, different class per checkpoint.* Llama 3 uses
+  `Llama3RotaryEmbedding` for its extended rope scaling where Llama 1/2 and
+  Mistral use the base `RotaryEmbedding`. Listing both lets one catalog cover
+  the family instead of quietly measuring nothing on half of it. Alternatives
+  the checkpoint doesn't have simply never match.
+- *One layer, genuinely several kernels.* MiniMax-M3's sparse attention has no
+  `Attention` module at all: it launches `_gqa_sparse_fwd_kernel` on a
+  prefill-only batch, `_gqa_sparse_decode_kernel` + `_merge_topk_attn_out_kernel`
+  on a decode-only one, and all three on a mixed batch. Listing them binds the
+  block in every regime, and **the matches are summed** — one canonical name is
+  one trace node, so every profile node bound to it is one of that node's parts.
+
+A trailing `*` matches by **prefix**, which is the only workable binding for a
+fused kernel. Those report their template arguments inline, so the exact string
+carries the dtypes — `fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, ...`
+would stop matching the moment you profile the fp8 variant. No class or Triton
+kernel name contains `*`, so the sigil is unambiguous.
 
 `within` is what makes `RMSNorm` usable three times over. Llama has an
 input layernorm and a post-attention layernorm inside
@@ -225,9 +280,15 @@ ones as `layernorm`, and `within: LlamaForCausalLM` catches the last as
 within `LlamaAttention`) from `down_proj` (the same class within
 `LlamaMLP`).
 
-The `(vllm, within)` pair has to be **globally unique** across the
-catalog; the loader rejects duplicates by design, because otherwise one
+The `(vllm, within, not_within)` triple has to be **globally unique** across
+the catalog; the loader rejects duplicates by design, because otherwise one
 profiled kernel would be credited to two canonical names.
+
+When several entries could match one node, the one whose `within` sits
+**deepest** in the ancestor chain wins. That is what lets DeepSeek bind two
+rope modules of the same class: `rotary_emb` scopes to
+`MultiHeadLatentAttentionWrapper` and `indexer_rope_emb` to `Indexer`, which is
+nested inside it, so the indexer's copy lands on the inner entry.
 
 There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
 `o_proj` / `down_proj` and EP ALLTOALL around `moe` are attached by the
@@ -401,11 +462,9 @@ profile tree are not the same thing, and the gaps go both ways:
   a mixed batch. A catalog written from a single mixed shot binds the wrong
   kernel for both pure regimes.
 
-So boot the model and look. Both of the throwaway scripts under `.claude/` in
-the repo do this — `dump_module_tree.py` prints the module tree and the KV
-cache group layout, `dump_tree_by_shot.py` prints the profile tree once per
-batch regime. Bind against their output, and re-run them after a vLLM upgrade
-if timings go strange.
+So boot the model and look, rather than reading the catalog off the source.
+Boot it once per batch regime, since the third bullet means one shot cannot
+show you the whole block.
 
 ### 2. Write `profiler/models/gemma2.yaml`
 
@@ -419,7 +478,54 @@ Gemma-style dense model) and adjust:
 - Set `tp_stable: true` on layers whose latency doesn't depend on
   TP.
 
-### 3. Try profiling
+### 3. Check what the catalog binds
+
+```bash
+python -m profiler coverage google/gemma-2-9b --hardware <your-hw>
+```
+
+This boots the model once, runs one forward per batch regime, and reports how
+much of the measured CUDA time your catalog accounts for — using the same
+matching code a real profiling run uses, so a clean report means the real run
+binds the same things.
+
+```
+prefill    4589.0 us total,   4589.0 us bound (100.0%), 0 unbound node(s)
+decode     4239.7 us total,   4239.7 us bound (100.0%), 0 unbound node(s)
+mixed      4712.3 us total,   4712.3 us bound (100.0%), 0 unbound node(s)
+Catalog binds every measured kernel, in all 3 regimes.
+```
+
+Anything short of that prints the unbound nodes largest-first, with the
+ancestor chain to bind them by:
+
+```
+unbound      3.1 us  _fused_qk_rmsnorm_rope_gate_kernel   under: ... > Qwen3NextAttention
+unbound     34.3 us  void at::native::elementwise_kernel<128, 4, at::nat...
+                                                     under: ... > QwenGatedDeltaNetAttention
+```
+
+The command exits non-zero while any gap remains, so it works in a script. Each
+gap is reported at the shallowest node whose subtree binds nothing at all,
+which is the level you can act on: a node listed here is CUDA time the
+simulator will never see, so the layer it belongs to looks cheaper than it is.
+
+This is the check that catches the failure mode from step 1, and it is worth
+running before you trust any new catalog. Writing the four bundled modern
+families, it found something in every one: MiniMax-M3's q-norm/rope/KV-insert
+(one fused kernel, no module) and its entire sparse attention kernel;
+Qwen3.5's `_fused_qk_rmsnorm_rope_gate_kernel` plus the eager reshape/copy work
+inside the gated-DeltaNet block, which alone was 12.6% of that block; and
+DeepSeek's two rope modules, its fused indexer q-rope/quant kernel and the
+indexer's own glue. Every one of those had a plausible-looking catalog that
+measured nothing there.
+
+To *locate* a gap rather than detect it, the throwaway scripts under `.claude/`
+print the raw trees — `dump_module_tree.py` the module tree and KV cache group
+layout, `dump_m3_tree.py` the profile tree with full ancestor chains, once per
+regime.
+
+### 4. Try profiling
 
 ```bash
 MODEL="google/gemma-2-9b" \
@@ -439,7 +545,7 @@ profiler will:
 If the YAML is right, you'll get clean CSVs. Run a tiny simulation
 to confirm.
 
-### 4. Try simulating
+### 5. Try simulating
 
 In your `cluster_config.json`:
 
@@ -458,7 +564,7 @@ If anything's off (layer not found, infinite loop, missing collective),
 the simulator will tell you which layer in your YAML it doesn't know
 how to handle. Fix and retry.
 
-### 5. Commit + open a PR
+### 6. Commit + open a PR
 
 Once it works, send a PR adding `profiler/models/gemma2.yaml`. Make
 the PR title `Add gemma2 architecture support` and include:

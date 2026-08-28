@@ -3,11 +3,16 @@
 Entry points:
     run_full(arch_path, args, out_root)
     run_slice(arch_path, args, tp, group, out_root)
+    run_coverage(arch_path, args)
 
-Both are called from ``__main__.py``. They differ only in which
-categories and TPs are iterated; everything else — engine spin-up,
-catalog slicing, shot firing, sink coalescing, tp_stable
-replication — is shared.
+The first two are the profiling runs. They differ only in which categories and
+TPs are iterated; everything else — engine spin-up, catalog slicing, shot
+firing, sink coalescing, tp_stable replication — is shared.
+
+``run_coverage`` writes nothing: it boots the same engine and asks how much of
+the model's CUDA time the catalog binds, which is the acceptance test for a
+newly written one. See ``hooks/timings.CoverageReport`` for why reading the
+module tree is not enough.
 """
 
 from __future__ import annotations
@@ -19,11 +24,13 @@ from profiler.core import logger as log
 from profiler.core.categories import (
     CATEGORY_BY_NAME,
     Category,
+    _entry_dict,
     categories_for,
 )
 from profiler.core.config import Architecture, ProfileArgs, load_architecture
 from profiler.core.engine import probe_limits, spin_down, spin_up
-from profiler.core.hooks.timings import TimingSample
+from profiler.core.hooks.batch import Shot
+from profiler.core.hooks.timings import CoverageReport, TimingSample
 from profiler.core.writer import (
     persist_meta,
     replicate_tp_stable,
@@ -284,3 +291,91 @@ def run_slice(
     persist_meta(args, arch_path, engine_kwargs, variant_root)
 
     log.done(variant_root)
+
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+
+# One shot per attention regime. Which kernels a model launches is not a
+# property of the model alone: MiniMax-M3's sparse attention runs a different
+# Triton kernel on a prefill-only batch, on a decode-only batch, and on a mixed
+# one, so a single shot would have declared two thirds of it missing (or, worse,
+# declared full coverage while two kernels went unbound). Small and fixed:
+# coverage asks which nodes appear, not how much they cost.
+_COVERAGE_REGIMES: tuple[tuple[str, dict[str, int]], ...] = (
+    ("prefill", {"prefill_chunk": 64, "kv_prefill": 0,
+                 "n_decode": 0, "kv_decode": 0}),
+    ("decode", {"prefill_chunk": 0, "kv_prefill": 0,
+                "n_decode": 4, "kv_decode": 256}),
+    ("mixed", {"prefill_chunk": 64, "kv_prefill": 0,
+               "n_decode": 4, "kv_decode": 256}),
+)
+
+
+def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport]:
+    """Report how much of the model's CUDA time the catalog binds.
+
+    Boots at tp=1 only. Coverage is about which nodes exist, and TP changes
+    tensor shapes rather than the module graph -- profiling every TP would cost
+    minutes to re-answer the same question.
+
+    Returns the per-regime reports and logs them; writes no CSV. A non-empty
+    ``gaps`` list is the actionable output: each line is a node the catalog
+    binds nothing to, at the shallowest level where that is true.
+    """
+    arch = load_architecture(arch_path)
+
+    # The whole catalog as one slice. Coverage is a property of the catalog,
+    # not of a category, and a layer filed under the wrong category still
+    # binds its node -- that is a different (and much more visible) bug.
+    whole_catalog: dict[str, dict[str, Any]] = {}
+    for group in ("dense", "per_sequence", "attention", "linear_attention",
+                  "moe"):
+        whole_catalog.update(_entry_dict(getattr(arch.catalog, group), arch))
+
+    log.info(
+        "Coverage check: %s (%d catalog entries, %d regimes)",
+        arch_path.stem, len(whole_catalog), len(_COVERAGE_REGIMES),
+    )
+
+    with log.stage("TP=1  booting vLLM engine"):
+        llm, _engine_kwargs, tmpdir = spin_up(args, 1)
+
+    reports: dict[str, CoverageReport] = {}
+    try:
+        for label, spec in _COVERAGE_REGIMES:
+            shot = Shot.attention(**spec)
+            raw = llm.collective_rpc(
+                "coverage",
+                args=(shot.as_dict(), whole_catalog, 1),
+            )[0]
+            reports[label] = CoverageReport.hydrate(raw)
+    finally:
+        spin_down(llm, tmpdir)
+
+    for label, report in reports.items():
+        log.info(
+            "%-8s %8.1f us total, %8.1f us bound (%.1f%%), %d unbound node(s)",
+            label, report.total_us, report.bound_us,
+            100.0 * report.fraction, len(report.gaps),
+        )
+        for cls, us, ancestors in report.gaps[:12]:
+            log.warning(
+                "  unbound %8.1f us  %s   under: %s", us, cls[:64], ancestors,
+            )
+
+    missed = {l: r for l, r in reports.items() if r.gaps}
+    if missed:
+        log.warning(
+            "Catalog does not account for every kernel in %s. Each line above "
+            "is CUDA time the simulator will never see. Bind it, or record in "
+            "the catalog why it is deliberately omitted.",
+            ", ".join(missed),
+        )
+    else:
+        log.info(
+            "Catalog binds every measured kernel, in all %d regimes.",
+            len(reports),
+        )
+    return reports

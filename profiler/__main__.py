@@ -1,12 +1,20 @@
 """CLI entry point: ``python -m profiler ...``.
 
-Two subcommands:
+Three subcommands:
 
     profile <model> --hardware <hw> [options]
         Full sweep: every TP × every category.
 
     slice <model> --hardware <hw> --tp-refresh N --group G [options]
         Refresh one (tp, category) pair.
+
+    coverage <model> [options]
+        Boot once and report how much of the model's CUDA time the
+        architecture catalog binds. Writes nothing. Run this first when
+        adding a model family: a catalog entry can name a real class and
+        still measure nothing, because vLLM's profile tree only holds
+        modules that launch a kernel of their own, and reading the module
+        tree cannot tell you which those are.
 
 Model resolution
 ----------------
@@ -54,7 +62,7 @@ from profiler.core.config import (
     read_model_config,
     resolve_architecture_by_model_type,
 )
-from profiler.core.runner import run_full, run_slice
+from profiler.core.runner import run_coverage, run_full, run_slice
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +486,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_flags(p_slice)
 
+    # ---- coverage ----
+    p_coverage = sub.add_parser(
+        "coverage",
+        help="Report how much CUDA time the catalog binds (writes nothing).",
+    )
+    p_coverage.add_argument(
+        "model",
+        help="HF model id.",
+    )
+    _add_common_flags(p_coverage)
+
     return p
 
 
@@ -522,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
             group=ns.group,
             out_root=ns.out_root,
         )
+    elif ns.cmd == "coverage":
+        reports = run_coverage(arch_path, profile_args)
+        if any(r.gaps for r in reports.values()):
+            return 1
     else:  # pragma: no cover
         parser.error(f"unknown command: {ns.cmd!r}")
 
