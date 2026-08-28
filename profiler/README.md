@@ -23,6 +23,7 @@ profiler/                     Python package — `python -m profiler ...`
       extension.py            worker extension class
       batch.py                synthetic SchedulerOutput builder
       timings.py              layerwise_profile tree parser
+    stack.py                    per-layer block composition from the HF config
       moe_hook.py             FusedMoE forced-routing patch
   models/                     architecture catalogs (one YAML per model family)
     llama.yaml
@@ -431,9 +432,9 @@ to other tp folders by the writer.
    set in the container.)
 2. **If the model's `model_type` is already supported** (llama / qwen3 /
    qwen3_moe / qwen3_5 / qwen3_5_moe / mixtral / phimoe), you're done — edit
-   `MODEL=` in `profiler/profile.sh` and run. A hybrid stack also needs
-   `NUM_HIDDEN_LAYERS` raised to the smallest count that instantiates every
-   block type (4 for Qwen3.8-27B); the default of 1 only ever reaches one.
+   `MODEL=` in `profiler/profile.sh` and run. A hybrid stack needs no extra
+   setting: the layer count is resolved from the checkpoint's config and
+   logged (`NUM_HIDDEN_LAYERS` still overrides it).
 3. **If it's a new architecture family** (e.g., `gemma2`, `deepseek_v3`):
    * Create `models/<model_type>.yaml` mapping the new family's vLLM
      classes to canonical names.

@@ -35,6 +35,8 @@ from profiler.core.config import (
     probe_linear_attn_chunk,
     probe_moe_params,
 )
+from profiler.core.stack import describe as describe_stack
+from profiler.core.stack import minimal_layer_count
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +146,8 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     the written config:
 
         HOST_ENGINE_DEFAULTS["hf_overrides"]   num_hidden_layers=1 (profiling)
+        stack.minimal_layer_count               smallest stack reaching every
+                                                distinct block type
         args.num_hidden_layers                  --num-hidden-layers
         args.hf_overrides                       --hf-override KEY=VALUE
         sharded_overrides                       per-tp divide of SHARD_FIELDS
@@ -180,8 +184,26 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     hf_overrides: dict[str, Any] = dict(
         HOST_ENGINE_DEFAULTS.get("hf_overrides", {})
     )
+
+    # How far to shrink the stack. The default of 1 is right only when every
+    # block is identical; a hybrid needs the smallest prefix that instantiates
+    # every distinct block type, or the catalog never sees the others and
+    # their layers read as free. Resolved from the checkpoint's own config so
+    # nobody has to know that Qwen3.8-27B's answer is 4, and logged because it
+    # decides whether a block type gets measured at all.
+    resolved_layers = minimal_layer_count(args.model_config or {})
+    hf_overrides["num_hidden_layers"] = resolved_layers
+    log.info("%s", describe_stack(args.model_config or {}))
+
     if args.num_hidden_layers is not None:
         hf_overrides["num_hidden_layers"] = args.num_hidden_layers
+        if args.num_hidden_layers < resolved_layers:
+            log.warning(
+                "--num-hidden-layers %d is below the %d needed to reach every "
+                "block type; some layers will have no profiled data and will "
+                "look free to the simulator",
+                args.num_hidden_layers, resolved_layers,
+            )
     if args.hf_overrides:
         hf_overrides = _deep_merge(hf_overrides, args.hf_overrides)
 
