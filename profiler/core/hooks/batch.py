@@ -99,6 +99,63 @@ class Shot:
             raise ValueError("attention Shot must have at least one request")
         return cls(requests=reqs)
 
+    # History given to a linear-attention shot's decode requests. The value is
+    # arbitrary as far as cost goes -- a gated-DeltaNet state is fixed-size
+    # regardless of position, and a 64x spread in this number moves the
+    # measured time 1.1%. It is not arbitrary as far as *classification* goes;
+    # see ``Shot.linear_attention``. One block covers it at every block size
+    # the hybrid page unification produces, so it is free.
+    LINEAR_ATTN_DECODE_HISTORY = 256
+
+    @classmethod
+    def linear_attention(
+        cls,
+        prefill_tokens: int,
+        n_decode: int,
+        decode_history: int | None = None,
+    ) -> "Shot":
+        """Mixed prefill+decode batch for a linear-attention (mamba / GDN) sweep.
+
+        Unlike ``Shot.attention`` there is no kv **axis**: a gated-DeltaNet
+        layer keeps a fixed-size conv state and a fixed-size recurrent state
+        per sequence, neither a function of position, so cost does not depend
+        on how long the sequences are — measured, a 64x spread in kv length
+        moves it 1.1% and a skewed batch is indistinguishable from a uniform
+        one. There is no skew correction to apply either.
+
+        The decodes still carry history, though, because vLLM's *classification*
+        depends on it even where the cost does not.
+        ``split_decodes_and_prefills`` assumes a decodes-first batch and
+        short-circuits:
+
+            if query_lens[0].item() > decode_threshold:
+                # first request is not decode, so no decode requests
+                return 0, num_reqs, 0, num_tokens
+
+        A pure batch of 1-token requests takes an earlier fast path
+        (``max_query_len <= threshold`` => all decodes) and reaches the decode
+        kernel with no history at all. A **mixed** batch does not: with
+        zero-history decodes the whole batch was classified as prefill and the
+        decode kernel never ran, so the mixed-regime rows came out empty.
+        Since GDN runs a *different* kernel in the mixed regime than in the
+        pure one, those rows are exactly the ones that cannot be inferred from
+        anywhere else.
+        """
+        history = (
+            cls.LINEAR_ATTN_DECODE_HISTORY if decode_history is None
+            else decode_history
+        )
+        reqs: list[tuple[int, int]] = []
+        if prefill_tokens > 0:
+            reqs.append((prefill_tokens, 0))
+        if n_decode > 0:
+            reqs.extend([(1, history)] * n_decode)
+        if not reqs:
+            raise ValueError(
+                "linear_attention Shot needs prefill_tokens or n_decode"
+            )
+        return cls(requests=reqs)
+
     @classmethod
     def moe(cls, total_tokens: int, activated_experts: int) -> "Shot":
         """Dense-style batch tagged with MoE routing metadata."""

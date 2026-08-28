@@ -171,19 +171,22 @@ def run_full(
         with log.stage(f"TP={tp}  booting vLLM engine"):
             llm, engine_kwargs, tmpdir = spin_up(args, tp)
             last_engine_kwargs = engine_kwargs
-            limits = probe_limits(llm)
+            limits = probe_limits(llm, args)
 
         # Visibility: what the live engine actually allocated for
         # this (tp, 1-layer-shrunk) configuration. Drives every
         # feasibility filter downstream.
         log.info(
             "TP=%d limits: num_cache_tokens=%d max_model_len=%d "
-            "max_num_batched_tokens=%d max_num_seqs=%d%s",
+            "max_num_batched_tokens=%d max_num_seqs=%d block_size=%d%s%s",
             tp,
             limits.num_cache_tokens,
             limits.max_model_len,
             limits.max_num_batched_tokens,
             limits.max_num_seqs,
+            limits.block_size,
+            (f" linear_attn_chunk={limits.linear_attn_chunk}"
+             if limits.linear_attn_chunk else ""),
             (f" num_experts={limits.num_experts} top_k={limits.top_k}"
              if limits.num_experts else ""),
         )
@@ -261,7 +264,7 @@ def run_slice(
 
     with log.stage(f"TP={tp}  booting vLLM engine"):
         llm, engine_kwargs, tmpdir = spin_up(args, tp)
-        limits = probe_limits(llm)
+        limits = probe_limits(llm, args)
 
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)
