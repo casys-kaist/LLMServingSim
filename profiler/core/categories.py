@@ -55,8 +55,12 @@ class SequencePoint:
 
 @dataclass(frozen=True)
 class AttentionPoint:
-    # Shape mirrors attention.csv (§ DESIGN doc): 4D keyed, one column
-    # per axis, plus microseconds.
+    # 4D keyed, one column per axis, plus microseconds -- and a layer name,
+    # because the group can legitimately hold more than one kernel now. A
+    # sparse-attention model runs an indexer over the whole KV before the
+    # top-k selection, so it keys on exactly these axes and runs on every
+    # attention layer, but it is a different kernel with a different cost.
+    layer: str
     prefill_chunk: int
     kv_prefill: int
     n_decode: int
@@ -193,7 +197,8 @@ def _entry_dict(
     return {
         name: {
             "vllm": e.vllm,
-            "within": e.within,   # str, list[str] or None; see LayerEntry
+            "within": e.within,        # str, list[str] or None; see LayerEntry
+            "not_within": e.not_within,
             "tp_stable": e.tp_stable,
             "occurrences": occurrences.get(name, 1),
         }
@@ -464,20 +469,26 @@ class AttentionCategory(Category):
         # All decodes share kv_decode by construction.
         kv_decode = decode_reqs[0][1] if decode_reqs else 0
 
-        # Attention category has exactly one layer (the attention
-        # kernel). We expect at most one sample per shot. If multiple
-        # show up (e.g., the test model accidentally has >1 layer),
-        # average them so the profile still makes sense.
-        if not timings:
-            return
-        total_us = sum(t.microseconds for t in timings) / len(timings)
-        yield AttentionPoint(
-            prefill_chunk=prefill_chunk,
-            kv_prefill=kv_prefill,
-            n_decode=n_decode,
-            kv_decode=kv_decode,
-            microseconds=total_us,
-        )
+        # One point per matched layer. This used to average every sample into
+        # a single point, which was right while the catalog was required to
+        # declare exactly one attention entry -- it compensated for a
+        # multi-layer test model handing back several samples of the same
+        # kernel. Two things changed: the timing extractor now normalizes by
+        # parent invocations, so a multi-layer run yields one sample per
+        # canonical layer rather than several, and a sparse-attention catalog
+        # declares two genuinely different kernels here. Averaging them
+        # produced a number describing neither -- measured on
+        # DeepSeek-V3.2-Exp, MLAAttention and SparseAttnIndexer collapsed into
+        # one value per key.
+        for sample in timings:
+            yield AttentionPoint(
+                layer=sample.layer,
+                prefill_chunk=prefill_chunk,
+                kv_prefill=kv_prefill,
+                n_decode=n_decode,
+                kv_decode=kv_decode,
+                microseconds=sample.microseconds,
+            )
 
     def catalog_slice(self, arch):
         return _entry_dict(arch.catalog.attention, arch)

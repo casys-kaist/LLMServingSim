@@ -243,7 +243,8 @@ def sink_for(category: Category, out_dir: Path) -> DedupSink:
 _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
     "dense": ["layer", "tokens"],
     "per_sequence": ["layer", "sequences"],
-    "attention": ["prefill_chunk", "kv_prefill", "n_decode", "kv_decode"],
+    "attention": ["layer", "prefill_chunk", "kv_prefill", "n_decode",
+                  "kv_decode"],
     "linear_attention": ["layer", "prefill_tokens", "n_decode"],
     "moe": ["tokens", "activated_experts"],
 }
