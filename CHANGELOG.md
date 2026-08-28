@@ -150,6 +150,34 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **Every attention-category layer was served the same kernel's latency.** The
+  attention CSV grew a `layer` column and `_build_attention_tables_by_layer`
+  split the tables per kernel, but the lookup kept taking a pooled
+  `tables["attention"]` alias and no call site passed a layer name. So on
+  MiniMax-M3 the 57 sparse layers got the non-sparse FlashAttention number for
+  **both** their `indexer` and `sparse_attention` nodes — 32.1 us against a
+  measured 15.0 at a 4-decode/kv-256 batch, **2.1x per sparse layer** — and on
+  DeepSeek-V3.2 / GLM-5 the indexer got `MLAAttention`'s. The alias is gone;
+  there is one way in and it needs a layer name, and an unknown one raises
+  instead of silently resolving. No effect on `llama` / `qwen3`, which have a
+  single kernel in the category (58/58 baselines unchanged).
+- **The skew sweep measured one kernel and applied its alpha to all of them.**
+  `skew.py::_measure` filtered on the literal name `"attention"`. On MiniMax-M3
+  that is an alpha fitted on 3 of 60 layers, applied to the other 57; on
+  DeepSeek/GLM it drops the indexer, which scans the whole KV and is the most
+  skew-sensitive part of the model. `skew.csv` and `skew_fit.csv` now carry a
+  `layer` column and the fit runs per kernel, with a per-kernel
+  `alpha_default_by_layer` fallback. Measured on M3, same batch: **0.24 for
+  `attention`, 0.74 for `indexer`, -0.01 for `sparse_attention`** — the signs
+  disagree, so this was never a rounding error. Bundles profiled before the
+  column read as `attention`, and the simulator falls back to unprefixed keys
+  for `attention` only: any other kernel gets no correction rather than a
+  borrowed one, matching the `SKIP_SKEW=1` behaviour and for the same reason.
+- Docs claimed `alpha < 0` and `alpha > 1` are "clipped at fit time" and that
+  the fit "ignores" them. Nothing is clipped anywhere — out-of-range alphas are
+  real, the weighted-LS fit down-weights noisy rows by `(t_max - t_mean)²`
+  instead of discarding them, and only `nan` rows are dropped. The sibling
+  `output-bundle` page said "**Not clamped**" on the same column
 - **Catalog gaps in all four modern families**, each a layer bound to a class
   that launches no kernel of its own, so it measured nothing and the layer read
   as free. Found with the new `coverage` subcommand; none is visible in vLLM's

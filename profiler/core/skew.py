@@ -18,8 +18,16 @@ which the simulator uses at query time:
                   (t_max_lookup(batch.max_kv) - t_mean_lookup(batch.mean_kv))
 
 Output: ``<variant>/tp<N>/skew.csv`` with per-case columns
-``regime, n, nb, ratio, skew, pc, kp, kvs, kv_big, kv_mean,
+``layer, regime, n, nb, ratio, skew, pc, kp, kvs, kv_big, kv_mean,
 t_mean_us, t_max_us, t_skew_us, alpha``.
+
+One row **per attention-category layer per case**. A sparse-attention model has
+several kernels in that category and they do not share an alpha: MiniMax-M3's
+block selection caps the work its sparse layers do, so past the block budget
+their cost stops tracking kv length at all and ``t_max - t_mean`` collapses,
+while the indexer scans the whole KV and is the most skew-sensitive thing in
+the model. This used to measure the ``attention`` entry only and apply its
+alpha everywhere -- on M3 that is an alpha fitted on 3 of 60 layers.
 
 Downstream pipeline:
 
@@ -317,41 +325,60 @@ def _build_cases(args: ProfileArgs, limits) -> list[SkewCase]:
 # Measurement
 # ---------------------------------------------------------------------------
 
-def _measure(llm, reqs, slice_, iters: int) -> float:
+def _measure(llm, reqs, slice_, iters: int) -> dict[str, float]:
+    """One shot, returning ``{canonical_layer: microseconds}``.
+
+    Every layer the attention-category slice matches, not just ``attention``:
+    the sparse families put two or three genuinely different kernels in this
+    category and each needs its own alpha.
+    """
     shot = Shot(requests=[tuple(r) for r in reqs])
     raw = llm.collective_rpc(
         "fire", args=(shot.as_dict(), slice_, "attention", iters))
     timings = [TimingSample(layer=d["layer"],
                             microseconds=float(d["microseconds"]))
                for d in raw[0]]
-    return sum(t.microseconds for t in timings if t.layer == "attention")
+    out: dict[str, float] = {}
+    for t in timings:
+        out[t.layer] = out.get(t.layer, 0.0) + t.microseconds
+    return out
 
 
-def _measure_case(llm, case: SkewCase, slice_, iters: int) -> dict:
+def _measure_case(llm, case: SkewCase, slice_, iters: int) -> list[dict]:
+    """Three shots, one row per layer measured in all three of them.
+
+    A layer missing from any of the three is dropped rather than fitted from a
+    partial triple -- which happens legitimately, because a kernel that only
+    fires in one batch regime will not appear in the uniform shots.
+    """
     base = [(case.pc, case.kp)] if case.pc > 0 else []
     uni_mean_reqs = base + [(1, case.kv_mean)] * case.n
     uni_max_reqs  = base + [(1, case.kv_big)]  * case.n
     skew_reqs     = base + [(1, case.kv_big)] * case.nb + \
                     [(1, case.kvs)] * (case.n - case.nb)
 
-    t_mean = _measure(llm, uni_mean_reqs, slice_, iters)
-    t_max  = _measure(llm, uni_max_reqs,  slice_, iters)
-    t_skew = _measure(llm, skew_reqs,     slice_, iters)
+    by_mean = _measure(llm, uni_mean_reqs, slice_, iters)
+    by_max  = _measure(llm, uni_max_reqs,  slice_, iters)
+    by_skew = _measure(llm, skew_reqs,     slice_, iters)
 
-    alpha = ((t_skew - t_mean) / (t_max - t_mean)
-             if t_max > t_mean else float("nan"))
-
-    return {
-        "regime": "pure" if case.pc == 0 else "mixed",
-        "n": case.n, "nb": case.nb,
-        "ratio": round(case.nb / case.n, 4),
-        "skew": case.skew, "pc": case.pc, "kp": case.kp, "kvs": case.kvs,
-        "kv_big": case.kv_big, "kv_mean": case.kv_mean,
-        "t_mean_us": round(t_mean, 3),
-        "t_max_us":  round(t_max, 3),
-        "t_skew_us": round(t_skew, 3),
-        "alpha": round(alpha, 4) if alpha == alpha else None,
-    }
+    rows: list[dict] = []
+    for layer in sorted(set(by_mean) & set(by_max) & set(by_skew)):
+        t_mean, t_max, t_skew = by_mean[layer], by_max[layer], by_skew[layer]
+        alpha = ((t_skew - t_mean) / (t_max - t_mean)
+                 if t_max > t_mean else float("nan"))
+        rows.append({
+            "layer": layer,
+            "regime": "pure" if case.pc == 0 else "mixed",
+            "n": case.n, "nb": case.nb,
+            "ratio": round(case.nb / case.n, 4),
+            "skew": case.skew, "pc": case.pc, "kp": case.kp, "kvs": case.kvs,
+            "kv_big": case.kv_big, "kv_mean": case.kv_mean,
+            "t_mean_us": round(t_mean, 3),
+            "t_max_us":  round(t_max, 3),
+            "t_skew_us": round(t_skew, 3),
+            "alpha": round(alpha, 4) if alpha == alpha else None,
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +412,11 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
 
     Returns the combined DataFrame. De-duplicates on the case key so
     a re-run of the same case overwrites rather than duplicates.
+
+    ``layer`` is part of that key: one case now yields one row per
+    attention-category kernel, and without it the last layer measured would
+    evict every other layer's row for the same case. Absent from a CSV written
+    before the column existed, where every row is the ``attention`` kernel.
     """
     frames: list[pd.DataFrame] = []
     if csv_path.exists():
@@ -397,9 +429,19 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
+    # Rows from a CSV written before the layer column existed come out of the
+    # concat with a missing layer. They are all the ``attention`` kernel, and
+    # naming them so is what keeps them in the fit -- left blank they become a
+    # phantom "nan" kernel with its own alpha table.
+    if "layer" in df.columns:
+        df["layer"] = df["layer"].fillna("attention").replace("", "attention")
+    else:
+        df["layer"] = "attention"
+    # Put it first, so the file reads layer-major like skew_fit.csv.
+    df = df[["layer"] + [c for c in df.columns if c != "layer"]]
     # Keep the latest measurement for any repeated key.
     df = df.drop_duplicates(
-        subset=["n", "nb", "skew", "pc", "kp", "kvs"], keep="last"
+        subset=["layer", "n", "nb", "skew", "pc", "kp", "kvs"], keep="last",
     ).reset_index(drop=True)
     df.to_csv(csv_path, index=False)
     return df
@@ -468,7 +510,7 @@ def sample_skew(
     with log.progress(label, total=len(cases)) as bar:
         for i, case in enumerate(cases):
             try:
-                row = _measure_case(llm, case, slice_, iters)
+                case_rows = _measure_case(llm, case, slice_, iters)
             except Exception as e:
                 log.warning(
                     "skew shot failed (n=%d nb=%d pc=%d kp=%d): %s",
@@ -476,7 +518,7 @@ def sample_skew(
                 )
                 bar.advance(1)
                 continue
-            rows.append(row)
+            rows.extend(case_rows)
             bar.advance(1)
             # Save incrementally every 20 rows so a crash doesn't lose data
             if (i + 1) % 20 == 0:
@@ -484,8 +526,12 @@ def sample_skew(
 
     if rows:
         df = _flush_rows(out, rows)
-        # Per-regime alpha summary
-        for regime, sub in df.groupby("regime"):
+        # Per (layer, regime) alpha summary -- pooling the layers would hide
+        # exactly the difference this split exists to capture.
+        group_cols = (["layer", "regime"] if "layer" in df.columns
+                      else ["regime"])
+        for group, sub in df.groupby(group_cols):
+            regime = " ".join(group) if isinstance(group, tuple) else str(group)
             alphas = sub["alpha"].dropna()
             log.info(
                 "%s: n=%d alpha mean=%.3f min=%.3f max=%.3f",

@@ -164,8 +164,25 @@ runs a weighted least-squares fit per bucket.
 
 ### The 5-axis bucket key
 
+Six, counting the kernel. Every key carries a `{layer}|` prefix naming which
+attention-category kernel it was fitted on, and the fit runs **per kernel**.
+That is not bookkeeping: a sparse-attention model puts two or three genuinely
+different kernels in this category and their alphas disagree in sign. On the
+same MiniMax-M3 batch the fit gives 0.24 for `attention`, **0.74** for
+`indexer` — it scores the whole KV before the top-k, so it is the most
+skew-sensitive thing in the model — and **-0.01** for `sparse_attention`, whose
+block budget caps its work so its cost stops tracking kv length at all. Pooling
+those into one alpha describes none of them.
+
+An unfitted bucket falls back to `alpha_default_by_layer[layer]`, that kernel's
+own pooled constant. It never falls back across kernels, and a kernel with no
+skew data at all gets **no correction** — the same behaviour as `SKIP_SKEW=1`,
+for the same reason: the endpoint gap is a large fraction of an iteration, so a
+borrowed alpha is worse than none.
+
 | Axis | Bucket scheme |
 | --- | --- |
+| `layer` | The kernel, verbatim (`attention`, `sparse_attention`, `indexer`, …) |
 | `pc` | One bucket per unique `pc` value (raw) |
 | `n_label` | One bucket per profiled `n` value, plus an overflow bucket: `n<=2`, `n<=4`, `n<=8`, `n<=16`, `n<=32`, `n<=64`, `n<=128`, `n<=256`, `n>256` |
 | `skew_rate_label` | Fixed bins on the normalized [0, 1] rate — the one axis that really is clipped to that range: `sr<=5%`, `sr<=15%`, `sr<=40%`, `sr<=70%`, `sr>70%` |
@@ -190,8 +207,8 @@ lights up finer resolution without simulator code changes.
 - `skew_fit.csv`: full per-bucket alpha mapping. ~1000–5000 rows
   for a typical sweep.
 - `meta.yaml::skew_fit.per_tp[tp]`: summary per TP:
-  `method`, `n_samples`, `alpha_default`, `rel_err_p50/p90/p99`,
-  `signed_mean`, plus a `bucket_table` pointer at
+  `method`, `n_samples`, `alpha_default`, `alpha_default_by_layer`,
+  `rel_err_p50/p90/p99`, `signed_mean`, plus a `bucket_table` pointer at
   `tp<N>/skew_fit.csv`.
 
 This split keeps `meta.yaml` to ~100 lines per variant instead of
@@ -229,19 +246,30 @@ fit's own pooled `alpha_default`, measured on the same GPU.
 ## Gotchas
 
 1. **`skew_fit.csv` is bucket-keyed**, not raw-shape-keyed. A
-   runtime batch with no matching bucket falls back to
-   `alpha_default`. If your workload pushes shapes outside the
-   profiled grid, expect `alpha_default` to dominate, re-profile
+   runtime batch with no matching bucket falls back to that kernel's
+   `alpha_default_by_layer` entry. If your workload pushes shapes outside the
+   profiled grid, expect those defaults to dominate, re-profile
    with wider grid bounds.
-2. **`alpha < 0` or `alpha > 1` are clipped at fit time.**
-   Measurement noise occasionally produces out-of-range raw alphas
-   from a single shot; the fit ignores them.
+2. **Alpha is not clipped, at fit time or query time.** Measured p50 is
+   0.07–0.13, but 14–20% of rows come out negative and 2–5% exceed 1, and both
+   are real: a negative alpha means the skewed mix beat the uniform-mean batch
+   (the endpoint gap can be inside measurement noise, and a block-capped sparse
+   kernel genuinely gets cheaper), and above 1 means it cost more than
+   uniform-max, which tile padding and SM imbalance do not bound. The
+   weighted-LS fit weights each row by `(t_max - t_mean)²`, so rows whose
+   endpoint gap is noise contribute almost nothing without being thrown away.
+   Only `nan` rows — `t_max <= t_mean`, where the ratio is undefined — are
+   dropped.
 3. **Skew correction only fires for non-trivial batches.** Pure
    prefill (`n_decode == 0`) and pure-uniform decode batches don't
    need correction, the uniform grid is already correct.
 4. **MoE doesn't get skew correction.** The simulator's skew path is
    attention-specific. MoE per-rank latency is read directly from
    the 2D `(tokens, activated_experts)` table.
+5. **A kernel with no skew data gets no correction, not a borrowed one.** The
+   alpha is only worth applying if it is known to roughly ±0.02, because the
+   endpoint gap is a large fraction of an iteration. Falling back across
+   kernels would be worse than `t_mean`.
 
 ## What's next
 
