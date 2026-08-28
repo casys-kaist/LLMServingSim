@@ -59,6 +59,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
 
 ### Changed
+- Per-layer timings are normalized by **parent invocations x how many times the
+  block sequence emits the layer**, not by the profiled node's `invocations`.
+  vLLM merges every same-class sibling under one parent into a single node,
+  summing CUDA time and counting *calls*, so `invocations` is only the number
+  of trace nodes when those siblings are interchangeable. In Qwen3.5/3.8's
+  gated-DeltaNet block they are not: `in_proj_qkvz` (5120 -> 16384) and
+  `in_proj_ba` (5120 -> 96) are both `MergedColumnParallelLinear` children, and
+  dividing by `invocations` returned the mean of a large GEMM and a tiny one.
+  There is no discriminator to recover — one node is all vLLM emits — so the
+  catalog models the pair as one layer and the sum is what one trace node
+  costs. The two formulas agree whenever
+  `invocations == parent_invocations x occurrences`, which holds for every
+  homogeneous model, so no committed profile bundle and no
+  `serving/validate.sh` baseline moves; the new behaviour appears only where
+  the old one was wrong. Also unblocks profiling a hybrid stack with
+  `num_hidden_layers > 1`, which is the only way to reach both block types
 - **vLLM pinned to v0.28.0** (was v0.19.0), in `scripts/docker-vllm.sh`,
   `scripts/install-vllm.sh` and the docs. The tag semantics inverted along the
   way: `v0.28.0` is the CUDA 13.x build and `v0.28.0-cu129` is the fallback,

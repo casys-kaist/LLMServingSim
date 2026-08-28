@@ -214,6 +214,24 @@ class Architecture(BaseModel):
     def has_moe(self) -> bool:
         return bool(self.catalog.moe)
 
+    def layer_occurrences(self) -> dict[str, int]:
+        """How many trace nodes each canonical layer contributes per block.
+
+        The profiler needs this to normalize a profiled node's total CUDA
+        time: vLLM merges same-class siblings into one node, so the reported
+        ``invocations`` counts module calls, not trace nodes. See
+        ``hooks/timings.py``.
+
+        A name absent from the sequence (or an architecture with no
+        ``sequence`` at all) is reported as 1 by the caller's ``or 1``, which
+        is the right default — a layer nothing emits has nothing to divide.
+        """
+        counts: dict[str, int] = {}
+        if self.sequence is not None:
+            for name in self.sequence.all_layers():
+                counts[name] = counts.get(name, 0) + 1
+        return counts
+
     def has_tp_dependent_work(self, tp: int) -> bool:
         """True iff this TP pass has any non-tp_stable layers to profile."""
         if tp == 1:
