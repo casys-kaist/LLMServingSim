@@ -338,6 +338,9 @@ def _skew_fit_block(variant_root: Path, tp_degrees: list[int]) -> dict:
             "method": entry.get("method"),
             "n_samples": entry.get("n_samples"),
             "alpha_default": entry.get("alpha_default"),
+            # Per-kernel fallback. An unfitted bucket on a sparse-attention
+            # layer must not inherit the dense kernel's alpha.
+            "alpha_default_by_layer": entry.get("alpha_default_by_layer"),
             "bucket_table": f"tp{int(tp)}/{_SKEW_FIT_CSV_NAME}",
         }
         for k in ("rel_err_p50", "rel_err_p90", "rel_err_p99", "signed_mean"):
@@ -368,6 +371,11 @@ def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
     ``profiler.fit_alpha._bucket_key``. We split them back into their
     components for analyst-friendly columns. The simulator reassembles
     the key from these columns.
+
+    Six parts means the key carries the attention kernel's name as a prefix,
+    which is how a sparse-attention model keeps its indexer's alpha off its
+    attention kernel; five means a fit that predates the prefix, all of it the
+    ``attention`` kernel.
     """
     alphas = fit_entry.get("alpha_by_bucket") or {}
     counts = fit_entry.get("n_by_bucket") or {}
@@ -378,9 +386,13 @@ def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
     rows: list[dict[str, Any]] = []
     for key, alpha in alphas.items():
         parts = key.split("|")
+        layer = "attention"
+        if len(parts) == 6:
+            layer, *parts = parts
         if len(parts) != 5 or not parts[0].startswith("pc="):
             # Don't silently drop malformed rows — keep the raw key.
             rows.append({
+                "layer": layer,
                 "pc": "", "n_label": "", "skew_rate_label": "",
                 "kv_big_label": "", "kp_label": "",
                 "alpha": float(alpha),
@@ -394,6 +406,7 @@ def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
         except (IndexError, ValueError):
             pc = pc_token
         rows.append({
+            "layer": layer,
             "pc": pc,
             "n_label": n_label,
             "skew_rate_label": sr_label,
@@ -404,12 +417,13 @@ def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
         })
 
     rows.sort(key=lambda r: (
+        r["layer"],
         r["pc"] if isinstance(r["pc"], int) else 1 << 30,
         r["n_label"], r["skew_rate_label"],
         r["kv_big_label"], r["kp_label"],
     ))
     fieldnames = [
-        "pc", "n_label", "skew_rate_label", "kv_big_label",
+        "layer", "pc", "n_label", "skew_rate_label", "kv_big_label",
         "kp_label", "alpha", "n_samples",
     ]
     # Preserve the optional raw_key column if any row needed it.

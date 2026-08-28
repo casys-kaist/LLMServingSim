@@ -300,8 +300,14 @@ def _hydrate_skew_fit_tables(meta, variant_root):
 def _read_skew_fit_csv(path):
     """Return (alpha_by_bucket, n_by_bucket) keyed by the pipe-delimited
     bucket string used by ``_skew_alpha``.
+
+    A ``layer`` column is prefixed onto the key, naming the attention kernel
+    the alpha was fitted on. A CSV written before that column existed holds one
+    kernel, and its keys stay unprefixed — which is what ``_skew_alpha`` falls
+    back to for ``attention`` and only for ``attention``.
     """
     df = pd.read_csv(path)
+    has_layer = "layer" in df.columns
     alphas: dict = {}
     counts: dict = {}
     for row in df.itertuples(index=False):
@@ -313,6 +319,8 @@ def _read_skew_fit_csv(path):
                 f"pc={int(row.pc)}|{row.n_label}|{row.skew_rate_label}"
                 f"|{row.kv_big_label}|{row.kp_label}"
             )
+            if has_layer:
+                key = f"{row.layer}|{key}"
         alphas[key] = float(row.alpha)
         if hasattr(row, "n_samples"):
             try:
@@ -586,9 +594,12 @@ def _build_tp_tables(tp_dir):
         # top-k selection -- keyed on the same four axes. Split by layer so
         # they cannot contaminate each other; the plain ``attention`` entry
         # stays exactly what it has always been.
-        by_layer = _build_attention_tables_by_layer(attn_df)
-        tables["attention_by_layer"] = by_layer
-        tables["attention"] = by_layer.get("attention")
+        # Keyed by kernel, with no pooled alias: there used to be a
+        # ``tables["attention"]`` shortcut and every lookup silently took it,
+        # so a sparse model's indexer and sparse-attention layers were both
+        # served the non-sparse kernel's latency (2.1x too high per sparse
+        # layer on MiniMax-M3). One way in, and it needs a layer name.
+        tables["attention_by_layer"] = _build_attention_tables_by_layer(attn_df)
 
     moe_df = _read_category_csv(os.path.join(tp_dir, "moe.csv"), None)
     if moe_df is not None:
@@ -832,6 +843,7 @@ def _skew_alpha(
     skew_rate: float,
     kv_big: int,
     kp: int,
+    layer: str = "attention",
 ) -> float:
     """Resolve alpha for a specific batch from the profile's
     ``skew_fit`` meta block.
@@ -839,13 +851,29 @@ def _skew_alpha(
     Lookup order:
         1. meta.yaml::skew_fit.per_tp[tp].alpha_by_bucket[bucket_key]
            (hydrated from ``tp<N>/skew_fit.csv`` when the meta points
-           at a CSV instead of inlining the mapping). The bucket_key
-           is ``pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}``,
+           at a CSV instead of inlining the mapping). The bucket_key is
+           ``{layer}|pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}``,
            built against ``skew_fit.bucket_axes`` if present — which
            lets the profiler widen axes (more n bins, finer kp bins)
            without a simulator-side code change.
-        2. meta.yaml::skew_fit.per_tp[tp].alpha_default (pooled WLS).
-        3. Module-level fallback constant (``_ATTN_SKEW_ALPHA_FALLBACK``).
+        2. The unprefixed key, **only for ``attention``**: a bundle
+           profiled before skew.csv had a ``layer`` column holds one
+           kernel and it is that one.
+        3. ``alpha_default_by_layer[layer]``, the pooled WLS constant for
+           this kernel.
+        4. ``alpha_default`` (pooled over every kernel), again only for
+           ``attention``.
+        5. Module-level fallback constant (``_ATTN_SKEW_ALPHA_FALLBACK``).
+
+    Why ``layer`` is in the key: the sparse families run two or three
+    kernels in this category and their alphas are not interchangeable.
+    MiniMax-M3's block selection caps the work its sparse layers do, so
+    past the block budget their cost stops tracking kv length and the
+    endpoint gap collapses; its indexer scans the whole KV and is the most
+    skew-sensitive thing in the model. Steps 2 and 4 deliberately refuse to
+    answer for any other layer — handing a sparse kernel the dense one's
+    alpha is the mistake this prefix exists to prevent, and 0 (no
+    correction) is the documented behaviour when a kernel has no skew data.
 
     Returns the fallback constant when the meta block is disabled or
     missing.
@@ -861,6 +889,8 @@ def _skew_alpha(
     if not entry:
         return float(fit_block.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
     axes = _resolve_skew_axes(fit_block, entry)
+    if layer is None:
+        layer = "attention"
     sr = max(0.0, min(1.0, float(skew_rate)))
     n_label = _bucket_label(axes["n_bins"], axes["n_labels"], int(n))
     sr_label = _bucket_label(
@@ -870,16 +900,25 @@ def _skew_alpha(
         axes["kv_big_bins"], axes["kv_big_labels"], int(kv_big),
     )
     kp_label = _bucket_label(axes["kp_bins"], axes["kp_labels"], int(kp))
-    key = f"pc={int(pc)}|{n_label}|{sr_label}|{kvb_label}|{kp_label}"
+    bucket = f"pc={int(pc)}|{n_label}|{sr_label}|{kvb_label}|{kp_label}"
     alphas = entry.get("alpha_by_bucket") or {}
+    key = f"{layer}|{bucket}"
     if key in alphas:
         return float(alphas[key])
-    return float(entry.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
+    if layer == "attention" and bucket in alphas:
+        return float(alphas[bucket])
+    per_layer = entry.get("alpha_default_by_layer") or {}
+    if layer in per_layer:
+        return float(per_layer[layer])
+    if layer == "attention":
+        return float(entry.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
+    return 0.0
 
 
 def _lookup_attention_with_skew(
     perf_db, tp, prefill_chunk, kv_prefill,
     n_decode, kv_decode_mean, kv_decode_max, kv_decode_min,
+    layer="attention",
 ):
     """Attention lookup with skew correction applied.
 
@@ -898,6 +937,7 @@ def _lookup_attention_with_skew(
     """
     t_mean = _lookup_attention(
         perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_mean,
+        layer,
     )
     # No skew → no correction (also saves a redundant lookup).
     if n_decode <= 1 or kv_decode_max == kv_decode_mean:
@@ -909,12 +949,13 @@ def _lookup_attention_with_skew(
     skew_rate = (kv_decode_mean - kv_decode_min) / kv_gap if kv_gap > 0 else 0.5
     alpha = _skew_alpha(
         perf_db, tp, prefill_chunk, n_decode, skew_rate, kv_decode_max,
-        kv_prefill,
+        kv_prefill, layer,
     )
     if alpha == 0.0:
         return max(1, int(round(t_mean)))
     t_max = _lookup_attention(
         perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_max,
+        layer,
     )
     # Guard against interpolation producing t_max < t_mean (can happen
     # at the axis boundary); in that case the formula would produce a
@@ -924,14 +965,32 @@ def _lookup_attention_with_skew(
     return max(1, int(round(t_mean + alpha * (t_max - t_mean))))
 
 
-def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode):
-    """4D log-linear interpolation on (prefill_chunk, kv_prefill,
-    n_decode, kv_decode). Every axis is doubled by the profiler, so we
-    bracket each axis's two nearest profiled values and blend linearly
-    in log-space.
+def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
+                      kv_decode, layer="attention"):
+    """4D interpolation on (prefill_chunk, kv_prefill, n_decode, kv_decode).
+
+    Each axis is bracketed by its two nearest profiled values and blended
+    **linearly** -- not in log space, even though the profiler sweeps every
+    axis geometrically. Grid spacing decides where the kernel is sampled; the
+    blend decides how two samples combine; the kernel is linear in each axis.
+
+    ``layer`` selects which kernel's table to read. A sparse-attention model
+    has several in this category -- MiniMax-M3 profiles ``attention`` (the
+    non-sparse layers), ``sparse_attention`` and ``indexer``, all keyed on the
+    same four axes -- and they are not interchangeable: at a 4-decode/kv-256
+    batch the non-sparse kernel costs 16.1 us against 7.5 for either sparse
+    one, because block selection caps the work the sparse layers do. A bundle
+    profiled before the CSV grew a ``layer`` column has exactly one kernel,
+    filed under ``attention``, so the default keeps it byte-identical.
     """
-    tbl = _tp_tables(perf_db, tp).get("attention")
-    if tbl is None or not tbl["pc_nd_pairs"]:
+    by_layer = _tp_tables(perf_db, tp).get("attention_by_layer") or {}
+    tbl = by_layer.get(layer)
+    if tbl is None:
+        raise KeyError(
+            f"Missing attention profile for layer={layer!r} at tp={tp}. "
+            f"Profiled kernels: {sorted(by_layer) or 'none'}."
+        )
+    if not tbl["pc_nd_pairs"]:
         raise KeyError(f"Missing attention profile for tp={tp}.")
 
     pcq, ndq = max(int(prefill_chunk), 0), max(int(n_decode), 0)
@@ -1108,7 +1167,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             ctx.perf_db, ctx.tp_size,
             bctx.prefill_chunk, bctx.kv_prefill,
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
-            bctx.kv_decode_min,
+            bctx.kv_decode_min, layer_name,
         )
     else:  # dense
         latency_ns = _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
@@ -1436,7 +1495,7 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
             ctx.perf_db, ctx.tp_size,
             bctx.prefill_chunk, bctx.kv_prefill,
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
-            bctx.kv_decode_min,
+            bctx.kv_decode_min, layer_name,
         )
     return _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 

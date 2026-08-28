@@ -222,15 +222,22 @@ def _derive_bucket_axes(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _bucket_key(axes: Mapping[str, Any], pc, n, skew_rate, kv_big, kp) -> str:
-    """Stringified 5-axis key used in the per-TP skew_fit CSV. Format is
-    ``pc={pc}|{n_label}|{skew_rate_label}|{kv_big_label}|{kp_label}``.
+def _bucket_key(axes: Mapping[str, Any], pc, n, skew_rate, kv_big, kp,
+                layer: str | None = None) -> str:
+    """Stringified bucket key used in the per-TP skew_fit CSV. Format is
+    ``[{layer}|]pc={pc}|{n_label}|{skew_rate_label}|{kv_big_label}|{kp_label}``.
 
     ``axes`` is any mapping that carries the ``*_bins`` / ``*_labels``
     tuples. At fit time these come from ``_derive_bucket_axes``; at
     simulator lookup time they come from
     ``meta.yaml::skew_fit.bucket_axes``; both places agree on the
     label strings so the CSV rows resolve cleanly either way.
+
+    ``layer`` names the attention kernel the alpha was fitted on, and is
+    prefixed rather than made a separate dimension so the key stays one
+    string. Omitted only when reconstructing a key for a bundle profiled
+    before ``skew.csv`` had a ``layer`` column, where every row is the
+    ``attention`` kernel.
     """
     n_label = _bucket_label(
         tuple(axes["n_bins"]), tuple(axes["n_labels"]), int(n),
@@ -245,7 +252,8 @@ def _bucket_key(axes: Mapping[str, Any], pc, n, skew_rate, kv_big, kp) -> str:
     kp_label = _bucket_label(
         tuple(axes["kp_bins"]), tuple(axes["kp_labels"]), int(kp),
     )
-    return f"pc={int(pc)}|{n_label}|{sr_label}|{kvb_label}|{kp_label}"
+    key = f"pc={int(pc)}|{n_label}|{sr_label}|{kvb_label}|{kp_label}"
+    return key if layer is None else f"{layer}|{key}"
 
 
 # Backward-compatible alias — some external callers (or older tests)
@@ -284,12 +292,21 @@ def fit_alpha(skew_csv: Path) -> dict[str, Any]:
     Returns a dict with:
         method: "per_bucket_wls_5axis"
         n_samples: total rows used
-        alpha_default: pooled WLS constant (used for bins with no data)
+        alpha_default: pooled WLS constant over every row (legacy scalar)
+        alpha_default_by_layer: {layer -> pooled WLS constant for that kernel}
         bucket_axes: bin edges + labels derived from this TP's data
-        alpha_by_bucket: {bucket_key -> alpha}
+        alpha_by_bucket: {bucket_key -> alpha}, keys prefixed by layer
         n_by_bucket: {bucket_key -> samples_in_bucket}
         rel_err_p50/p90/p99: self-evaluation on the per-bucket prediction
         signed_mean: mean signed error (positive = over-predict)
+
+    The fit is **per attention kernel**. Pooling them would average alphas
+    that describe different work: MiniMax-M3's sparse layers stop tracking kv
+    length past their block budget, so their endpoint gap collapses, while its
+    indexer scans the whole KV. The fallback ``alpha_default`` is per layer for
+    the same reason -- an unfitted sparse bucket must not inherit the
+    non-sparse kernel's alpha. ``alpha_default`` stays as a pooled scalar so a
+    meta.yaml written by this version still reads on an older simulator.
     """
     if not skew_csv.exists():
         return {"enabled": False, "reason": "skew.csv missing"}
@@ -311,11 +328,30 @@ def fit_alpha(skew_csv: Path) -> dict[str, Any]:
     gap = (df["kv_big"] - kv_min_col).clip(lower=1)
     skew_rate_col = (df["kv_mean"] - kv_min_col) / gap
 
+    # A bundle profiled before the layer column existed holds one kernel, and
+    # it is the one the catalog calls ``attention``. ``fillna`` before
+    # ``astype(str)``, or a blank cell becomes the string "nan" and gets its
+    # own alpha table.
+    layers = (df["layer"].fillna("attention").replace("", "attention").astype(str)
+              if "layer" in df.columns
+              else pd.Series(["attention"] * len(df), index=df.index))
     keys = [
-        _bucket_key(axes, r.pc, r.n, sr, r.kv_big, r.kp)
-        for r, sr in zip(df.itertuples(index=False), skew_rate_col)
+        _bucket_key(axes, r.pc, r.n, sr, r.kv_big, r.kp, layer)
+        for r, sr, layer in zip(df.itertuples(index=False), skew_rate_col,
+                                layers)
     ]
-    df = df.assign(_bk=keys)
+    df = df.assign(_bk=keys, _layer=layers.values)
+
+    alpha_default_by_layer = {
+        str(layer): round(
+            _fit_constant_wls(
+                grp["t_max_us"] - grp["t_mean_us"],
+                grp["t_skew_us"] - grp["t_mean_us"],
+            ),
+            4,
+        )
+        for layer, grp in df.groupby("_layer", sort=True)
+    }
 
     alpha_by_bucket: dict[str, float] = {}
     n_by_bucket: dict[str, int] = {}
@@ -337,6 +373,7 @@ def fit_alpha(skew_csv: Path) -> dict[str, Any]:
         "method": "per_bucket_wls_5axis",
         "n_samples": int(len(df)),
         "alpha_default": round(alpha_default, 4),
+        "alpha_default_by_layer": alpha_default_by_layer,
         "bucket_axes": axes,
         "alpha_by_bucket": alpha_by_bucket,
         "n_by_bucket": n_by_bucket,
@@ -383,6 +420,7 @@ def lookup_alpha(
     skew_rate: float,
     kv_big: int,
     kp: int,
+    layer: str = "attention",
 ) -> float:
     """Resolve alpha for a specific batch from a ``skew_fit`` block.
 
@@ -401,8 +439,22 @@ def lookup_alpha(
         return 0.0
     # Per-TP axes override when present (pre-promotion fit blocks).
     axes = entry.get("bucket_axes", axes)
-    key = _bucket_key(axes, pc, n, skew_rate, kv_big, kp)
     alphas = entry.get("alpha_by_bucket", {})
+    key = _bucket_key(axes, pc, n, skew_rate, kv_big, kp, layer)
     if key in alphas:
         return float(alphas[key])
-    return float(entry.get("alpha_default", 0.0))
+    # A bundle profiled before the layer prefix existed holds unprefixed keys,
+    # all of them the ``attention`` kernel. Reading them for any other layer
+    # would hand a sparse kernel the dense one's alpha, which is the bug this
+    # prefix exists to prevent -- so only ``attention`` falls back.
+    if layer == "attention":
+        bare = _bucket_key(axes, pc, n, skew_rate, kv_big, kp)
+        if bare in alphas:
+            return float(alphas[bare])
+    per_layer = entry.get("alpha_default_by_layer") or {}
+    if layer in per_layer:
+        return float(per_layer[layer])
+    if layer == "attention":
+        return float(entry.get("alpha_default", 0.0))
+    # No data for this kernel: no correction, matching the SKIP_SKEW default.
+    return 0.0
