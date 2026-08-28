@@ -82,7 +82,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `enable_local_offloading` | Boolean | No | Per-instance override for `--enable-local-offloading` |
 | `enable_attn_offloading` | Boolean | No | Per-instance override for `--enable-attn-offloading` |
 | `enable_sub_batch_interleaving` | Boolean | No | Per-instance override for `--enable-sub-batch-interleaving` |
-| `enable_block_copy` | Boolean | No | Per-instance override for `--enable-block-copy` |
+| `enable_block_copy` | Boolean | No | Per-instance override for `--enable-block-copy`. Reuses a block's built rows across layers of the same shape; a generation-speed knob, not a trace-content one |
 
 \* At least one of `num_npus` or `tp_size` must be provided. The other is inferred.
 

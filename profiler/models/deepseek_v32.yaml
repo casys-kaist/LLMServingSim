@@ -66,18 +66,23 @@ model_types:
   - glm_moe_dsa    # GLM-5
 
 
-sequence:
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, mla_qkv_a_proj, mla_a_layernorm, mla_b_proj,
+                  rotary_emb,
+                  indexer_wq_b, indexer_wk_proj, indexer_k_norm,
+                  indexer_rope_emb, indexer_q_rope_quant, indexer, indexer_glue,
+                  attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    # Both populated, resolved per layer from the checkpoint: layers
+    # 0..first_k_dense_replace-1 (3) run the dense MLP, the rest MoE.
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
   prologue:  [embedding]
-  pre_attn:  [layernorm, mla_qkv_a_proj, mla_a_layernorm, mla_b_proj,
-              rotary_emb,
-              indexer_wq_b, indexer_wk_proj, indexer_k_norm,
-              indexer_rope_emb, indexer_q_rope_quant, indexer, indexer_glue,
-              attention]
-  post_attn: [o_proj, layernorm]
-  # Both populated: layers 0..2 are dense, the rest MoE, and the simulator
-  # emits whichever matches the checkpoint's is_moe.
-  mlp_dense: [gate_up_proj, act_fn, down_proj]
-  mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 # ----------------------------------------------------------------------
 # Global in-memory cache for the profiler's per-category performance DB.
 # key: (hardware, model, variant)
-# value: dict with keys {meta, architecture, catalog, sequence, tables}
+# value: dict with keys {meta, architecture, layer_stack, tables}
 # ----------------------------------------------------------------------
 _perf_db_cache = {}
 
@@ -89,6 +89,43 @@ def _arch_dirs():
     ]
 
 
+def _profiler_core_module(name):
+    """Import a module from ``profiler.core`` by name.
+
+    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
+    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
+    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
+    any of this runs -- so by then ``profiler`` is not importable by name.
+    Derived from ``__file__`` for the same reason.
+
+    Only modules deliberately kept free of third-party imports may be reached
+    this way; the simulator container has no pydantic, so ``profiler.core.config``
+    is not importable here even though ``catalog_path`` and ``stack`` are.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    import importlib
+
+    return importlib.import_module(f"profiler.core.{name}")
+
+
+def _stack_module():
+    """Import ``profiler.core.stack``, which owns per-layer block resolution.
+
+    Shared with the profiler rather than reimplemented, and for the same
+    reason ``catalog_path`` is: the rules are read out of vLLM's source and
+    the two vendors disagree on the off-by-one (DeepSeek's MoE test is
+    ``layer_idx % moe_layer_freq``, Qwen3-MoE's is
+    ``(layer_idx + 1) % decoder_sparse_step``), so a second implementation
+    would be a second chance to get them backwards. The profiler uses it to
+    decide how many layers to instantiate; the simulator uses it to decide
+    which block each layer emits. They have to agree.
+    """
+    return _profiler_core_module("stack")
+
+
 def _catalog_path_module():
     """Import ``profiler.core.catalog_path``, which owns the naming rule.
 
@@ -103,13 +140,7 @@ def _catalog_path_module():
     any of this runs -- so by then ``profiler`` is not importable by name.
     Derived from ``__file__`` for the same reason.
     """
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    from profiler.core import catalog_path
-
-    return catalog_path
+    return _profiler_core_module("catalog_path")
 
 
 def _arch_yaml_path(model_type):
@@ -210,13 +241,13 @@ class PowerAccumulator:
 #     tp<N>/attention.csv             prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
 #     tp<N>/moe.csv                   tokens, activated_experts, time_us    (MoE only)
 #
-# Architecture structure (catalog + sequence) lives in the profiler's
+# Architecture structure (catalog + block order) lives in the profiler's
 # profiler/models/<model_type>.yaml and drives which canonical
 # layers the simulator emits.
 
 
 def _load_architecture(model_type):
-    """Load catalog + sequence from profiler/models/<model_type>.yaml."""
+    """Load catalog + block order from profiler/models/<model_type>.yaml."""
     path = _arch_yaml_path(model_type)
     if not os.path.isfile(path):
         # Name every catalog that *is* resolvable, including the ``model_types:``
@@ -233,21 +264,10 @@ def _load_architecture(model_type):
         arch = yaml.safe_load(f)
     if "catalog" not in arch:
         raise KeyError(f"Architecture yaml {path} must define 'catalog'.")
-    if "sequence" not in arch:
-        if "blocks" in arch:
-            # The profiler already supports this form; the trace generator does
-            # not walk it yet. Say so, rather than asking for a key the
-            # architecture deliberately doesn't have.
-            raise KeyError(
-                f"Architecture yaml {path} declares a heterogeneous stack "
-                f"('blocks:'), which the profiler supports but the trace "
-                f"generator does not consume yet -- it still walks the flat "
-                f"'sequence:' form. Simulating this model needs the "
-                f"block-aware path in trace_generator."
-            )
+    if "blocks" not in arch:
         raise KeyError(
-            f"Architecture yaml {path} must define 'sequence' (uniform stack) "
-            f"or 'blocks' (heterogeneous stack)."
+            f"Architecture yaml {path} must define 'blocks' (the layer order, "
+            f"keyed by axis) alongside 'shared' (prologue and head)."
         )
     return arch
 
@@ -449,10 +469,16 @@ def _build_moe_table(df):
     return {"activated_experts_vals": ae_vals, "rows": rows}
 
 
-def _load_perf_db(hardware, model, variant, tp_needed, model_type):
+def _load_perf_db(hardware, model, variant, tp_needed, model_type,
+                  model_config=None):
     """Load the per-category perf DB for a (hardware, model, variant)
     tuple and cache it. ``tp_needed`` is a set of int TP degrees the
     simulator will query; each must have its own ``tp<N>/`` folder.
+
+    ``model_config`` is resolved once into a per-layer block list
+    (``layer_stack``) and cached with the rest, because it answers a
+    per-model question -- which block each decoder layer runs -- that the
+    emit path asks once per layer per iteration.
     """
     cache_key = (hardware, model, variant)
     if cache_key in _perf_db_cache:
@@ -490,6 +516,11 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type):
         "available_tps": sorted(available_tps),
         # Per-TP category tables, filled in by _tp_tables on first lookup.
         "tables": {},
+        # One LayerSpec per decoder layer, from the checkpoint's own config.
+        # Empty only when the config declares no num_hidden_layers, which the
+        # simulator has already failed on by the time it gets here.
+        "layer_stack": (_stack_module().resolve_stack(model_config)
+                        if model_config else []),
     }
     _perf_db_cache[cache_key] = perf_db
     _check_tp_coverage(perf_db, tp_needed, hardware, model, variant)
@@ -1065,7 +1096,8 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
             f"profiler/models/<model_type>.yaml"
         )
     tp_needed = {max(int(tp_size), 1)}
-    perf_db = _load_perf_db(hardware, model, variant, tp_needed, model_type)
+    perf_db = _load_perf_db(hardware, model, variant, tp_needed, model_type,
+                            model_config=config)
     warn_if_runtime_exceeds_profiled(
         perf_db, runtime_max_num_batched_tokens, runtime_max_num_seqs)
 
@@ -1157,7 +1189,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
         raise KeyError(
             f"Layer {layer_name!r} is not declared in the architecture yaml "
             f"catalog for {ctx.perf_db['variant']}. Add it to "
-            f"profiler/models/<model_type>.yaml or remove it from the sequence."
+            f"profiler/models/<model_type>.yaml or remove it from the block order."
         )
 
     if category == "per_sequence":
@@ -1357,13 +1389,76 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
 # Block builders (split for interleaving)
 # ======================================================================
 
-def _sequence(perf_db, section):
-    """Fetch a sequence list from the architecture yaml, defaulting to
-    an empty list when the section is absent (e.g. mlp_moe for dense
-    architectures).
+def _shared_layers(perf_db, section):
+    """``shared.prologue`` or ``shared.head`` -- the layers outside every block.
+
+    Once per iteration, not once per decoder layer, which is the whole reason
+    they live outside ``blocks``.
     """
-    seq = perf_db["architecture"].get("sequence") or {}
-    return list(seq.get(section) or [])
+    shared = perf_db["architecture"].get("shared") or {}
+    return list(shared.get(section) or [])
+
+
+def _layer_spec(perf_db, layer_num):
+    """The block composition of one decoder layer, from the checkpoint.
+
+    Which block a layer runs is a property of the *checkpoint*, never of the
+    yaml: ``layer_types`` decides the attention, ``first_k_dense_replace`` /
+    ``decoder_sparse_step`` / ``moe_layer_freq`` the MLP, and
+    ``sparse_attention_freq`` / ``index_topk_pattern`` the sparse flag. See
+    ``profiler/core/stack.py``, which the profiler reads for the same answer.
+    """
+    stack = perf_db.get("layer_stack") or []
+    if not stack:
+        mod = _stack_module()
+        return mod.LayerSpec(attn=mod.FULL_ATTENTION, mlp=mod.MLP_DENSE)
+    return stack[int(layer_num or 0) % len(stack)]
+
+
+def _block_layers(perf_db, layer_num, part):
+    """The canonical layer names decoder layer ``layer_num`` emits for ``part``
+    (``pre_attn`` / ``post_attn`` / ``mlp``).
+
+    This is where a heterogeneous stack stops being uniform. ``blocks`` is
+    keyed by **axis** -- ``attn.<layer_types value>``, ``mlp.dense|moe``, and
+    ``sparse_attn.<layer_types value>`` as an overlay when the layer's sparse
+    flag is set -- because a layer's identity is a tuple and naming every
+    combination explodes: Qwen3.5 varies the attention, DeepSeek and GLM the
+    MLP, MiniMax-M3 both plus sparsity.
+
+    ``sparse_attn`` is consulted first and falls through to ``attn`` when it
+    has no entry for this attention type, which is what DeepSeek and GLM
+    need: every one of their layers is sparse, so there is nothing to tell
+    apart and one ``attn`` block serves them all.
+    """
+    blocks = perf_db["architecture"].get("blocks") or {}
+    spec = _layer_spec(perf_db, layer_num)
+
+    if part == "mlp":
+        by_type = blocks.get("mlp") or {}
+        if spec.mlp not in by_type:
+            raise KeyError(
+                f"Architecture {perf_db['variant']} declares no "
+                f"'blocks.mlp.{spec.mlp}', but layer {layer_num} of "
+                f"{perf_db['model']} runs a {spec.mlp} MLP. Declared: "
+                f"{sorted(by_type) or 'none'}."
+            )
+        return list(by_type.get(spec.mlp) or [])
+
+    group = None
+    if spec.sparse:
+        group = (blocks.get("sparse_attn") or {}).get(spec.attn)
+    if group is None:
+        group = (blocks.get("attn") or {}).get(spec.attn)
+    if group is None:
+        declared = sorted((blocks.get("attn") or {}))
+        raise KeyError(
+            f"Architecture {perf_db['variant']} declares no "
+            f"'blocks.attn.{spec.attn}', but layer {layer_num} of "
+            f"{perf_db['model']} runs {spec.attn}. Declared: "
+            f"{declared or 'none'}."
+        )
+    return list(group.get(part) or [])
 
 
 _skipped_layer_warned = set()
@@ -1402,7 +1497,7 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     yaml, emitting each. ``attention`` triggers PIM attention before the
     NPU kernel when attn offloading is enabled; layers in
     ``_TP_ALLREDUCE_AFTER`` get an ALLREDUCE attached. When a layer is
-    declared in the sequence but the profile CSV lacks data for it
+    declared in a block but the profile CSV lacks data for it
     (e.g., an older profile run that predates a yaml addition), the
     emission is skipped with a single warning per (variant, layer).
     """
@@ -1419,7 +1514,7 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
             if key not in _skipped_layer_warned:
                 _skipped_layer_warned.add(key)
                 logger.warning(
-                    "Layer %r is in the architecture yaml sequence but missing from "
+                    "Layer %r is in the architecture yaml block order but missing from "
                     "the profile CSVs for %s/%s/%s — skipping. Re-profile to include it.",
                     layer_name, ctx.perf_db["hardware"],
                     ctx.perf_db["model"], ctx.perf_db["variant"],
@@ -1448,26 +1543,52 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num)
 
 
+def _block_copy_key(ctx, block_mode_on, *layer_nums):
+    """Cache key for a built transformer block, or None if it must be rebuilt.
+
+    A block's rows carry no layer index -- ``_emit_layer`` writes the canonical
+    name and the writer numbers the lines -- so two layers can share one built
+    block whenever they are the *same* block. That is what makes trace
+    generation O(1) in depth instead of O(num_hidden_layers).
+
+    Two things break the equivalence. ``block_mode_on`` emits each layer
+    separately by definition, and a MoE router that is not deterministic
+    carries per-layer variance (``gate.block_copy`` opts into swallowing it).
+    Beyond those, the key is the layers' own :class:`LayerSpec`s: a
+    heterogeneous stack has genuinely different blocks, and replaying layer 0's
+    would emit gated DeltaNet for all 64 of Qwen3.8's layers, or a dense MLP
+    for all 61 of DeepSeek-V3.2's. Several layer numbers for the interleaved
+    path, whose block straddles a boundary.
+    """
+    if block_mode_on:
+        return None
+    if ctx.is_moe and not ctx.gate.block_copy:
+        return None
+    return tuple(_layer_spec(ctx.perf_db, n) for n in layer_nums)
+
+
 def _emit_pre_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_tag='NONE'):
-    _emit_sequence(ctx, bctx, layer_num, _sequence(ctx.perf_db, "pre_attn"),
+    _emit_sequence(ctx, bctx, layer_num,
+                   _block_layers(ctx.perf_db, layer_num, "pre_attn"),
                    lines, power_acc, batch_tag)
 
 
 def _emit_post_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_id_str, batch_tag='NONE'):
-    # Attention post-processing common to dense and MoE.
-    _emit_sequence(ctx, bctx, layer_num, _sequence(ctx.perf_db, "post_attn"),
+    # Attention post-processing, from this layer's own block.
+    _emit_sequence(ctx, bctx, layer_num,
+                   _block_layers(ctx.perf_db, layer_num, "post_attn"),
                    lines, power_acc, batch_tag)
-    # MLP: either the dense FFN stack or a single MoE block.
-    if ctx.is_moe:
-        moe_seq = _sequence(ctx.perf_db, "mlp_moe")
-        for layer_name in moe_seq:
-            if layer_name == "moe":
-                _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_tag)
-            else:
-                _emit_sequence(ctx, bctx, layer_num, [layer_name], lines, power_acc, batch_tag)
-    else:
-        _emit_sequence(ctx, bctx, layer_num, _sequence(ctx.perf_db, "mlp_dense"),
-                       lines, power_acc, batch_tag)
+    # MLP: whichever this layer runs. Resolved per layer, not per model --
+    # DeepSeek-V3.2 and GLM-5 run a dense MLP for their first
+    # ``first_k_dense_replace`` layers and MoE for the rest, and a model-level
+    # flag emitted MoE for all of them.
+    for layer_name in _block_layers(ctx.perf_db, layer_num, "mlp"):
+        if layer_name == "moe":
+            _emit_moe_block(ctx, bctx, lines, power_acc, layer_num,
+                            batch_id_str, batch_tag)
+        else:
+            _emit_sequence(ctx, bctx, layer_num, [layer_name],
+                           lines, power_acc, batch_tag)
 
 
 def _build_transformer_block(ctx, bctx, layer_num, batch_tag, batch_id_str):
@@ -1506,7 +1627,7 @@ def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
     The last emitted layer routes its output to REMOTE so the Chakra
     converter places a MEM_STORE node back to CPU.
     """
-    head_layers = _sequence(ctx.perf_db, "head")
+    head_layers = _shared_layers(ctx.perf_db, "head")
     for i, layer_name in enumerate(head_layers):
         output_loc = f'REMOTE:{ctx.node_id}' if i == len(head_layers) - 1 else 'LOCAL'
         _emit_layer(ctx, bctx, layer_name, rows, None, batch_tag, output_loc=output_loc)
@@ -1542,7 +1663,7 @@ def _emit_prologue(ctx, bctx, rows, batch_tag='NONE'):
     input is routed from REMOTE to match the Chakra converter's
     MEM_LOAD node placement.
     """
-    prologue_layers = _sequence(ctx.perf_db, "prologue")
+    prologue_layers = _shared_layers(ctx.perf_db, "prologue")
     if not prologue_layers:
         return 0
     before = len(rows)
@@ -1590,27 +1711,25 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
 
     # Transformer blocks
     num_layers = config['num_hidden_layers']
-    iter_count, copy_count = (num_layers, 1) if block_mode_on else (1, num_layers)
 
-    for layer_num in range(iter_count):
-        block_lines, block_power = _build_transformer_block(ctx, bctx, layer_num, 'NONE', str(batch.batch_id))
-
-        # MoE blocks are only safely replayable when the router
-        # opts into block copy (BALANCED is deterministic; others
-        # carry tiny per-layer variance that block_copy swallows
-        # for the sake of trace-generation speed).
-        can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
-        if can_copy:
-            for _ in range(copy_count):
-                block_starts.append(written)
-                rows.extend(block_lines)
-                written += len(block_lines)
-                block_power.flush(ctx, enable_attn_offloading)
-        else:
-            block_starts.append(written)
-            rows.extend(block_lines)
-            written += len(block_lines)
-            block_power.flush(ctx, enable_attn_offloading)
+    # Build one block per distinct block *shape* and replay it for every layer
+    # that shares it. A uniform stack builds once and replays N times, exactly
+    # as before; a heterogeneous one builds once per shape, which is what makes
+    # the replay correct rather than merely fast.
+    built = {}
+    for layer_num in range(num_layers):
+        key = _block_copy_key(ctx, block_mode_on, layer_num)
+        cached = built.get(key) if key is not None else None
+        if cached is None:
+            cached = _build_transformer_block(
+                ctx, bctx, layer_num, 'NONE', str(batch.batch_id))
+            if key is not None:
+                built[key] = cached
+        block_lines, block_power = cached
+        block_starts.append(written)
+        rows.extend(block_lines)
+        written += len(block_lines)
+        block_power.flush(ctx, enable_attn_offloading)
 
     # Final layers
     _emit_final_layers(ctx, bctx, rows)
@@ -1671,32 +1790,31 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 
     # MIDDLE LAYERS: interleaved post_attn + pre_attn
     middle_layers = num_layers - 1
-    iter_count, copy_count = (middle_layers, 1) if block_mode_on else (1, middle_layers)
+    # Each interleaved block straddles a layer boundary -- this layer's
+    # post_attn followed by the next layer's pre_attn -- so its shape depends
+    # on both layers, and the cache key carries both.
+    built = {}
+    for layer_num in range(middle_layers):
+        key = _block_copy_key(ctx, block_mode_on, layer_num, layer_num + 1)
+        cached = built.get(key) if key is not None else None
+        if cached is None:
+            block_lines = []
+            block_power = PowerAccumulator([], [], 0, 0)
 
-    for layer_num in range(iter_count):
-        block_lines = []
-        block_power = PowerAccumulator([], [], 0, 0)
+            # Batch1: post_attn(current) + pre_attn(next)
+            _emit_post_attn_layers(ctx, bctx1, layer_num, block_lines, block_power, f"{batches[0].batch_id}.0", 'BATCH_1')
+            _emit_pre_attn_layers(ctx, bctx1, layer_num + 1, block_lines, block_power, 'BATCH_1')
 
-        # Batch1: post_attn(current) + pre_attn(next)
-        _emit_post_attn_layers(ctx, bctx1, layer_num, block_lines, block_power, f"{batches[0].batch_id}.0", 'BATCH_1')
-        _emit_pre_attn_layers(ctx, bctx1, layer_num + 1, block_lines, block_power, 'BATCH_1')
+            # Batch2: post_attn(current) + pre_attn(next)
+            _emit_post_attn_layers(ctx, bctx2, layer_num, block_lines, block_power, f"{batches[1].batch_id}.1", 'BATCH_2')
+            _emit_pre_attn_layers(ctx, bctx2, layer_num + 1, block_lines, block_power, 'BATCH_2')
 
-        # Batch2: post_attn(current) + pre_attn(next)
-        _emit_post_attn_layers(ctx, bctx2, layer_num, block_lines, block_power, f"{batches[1].batch_id}.1", 'BATCH_2')
-        _emit_pre_attn_layers(ctx, bctx2, layer_num + 1, block_lines, block_power, 'BATCH_2')
-
-        # MoE blocks are only safely replayable when the router
-        # opts into block copy (BALANCED is deterministic; others
-        # carry tiny per-layer variance that block_copy swallows
-        # for the sake of trace-generation speed).
-        can_copy = (not ctx.is_moe or ctx.gate.block_copy) and not block_mode_on
-        if can_copy:
-            for _ in range(copy_count):
-                rows.extend(block_lines)
-                block_power.flush(ctx, enable_attn_offloading)
-        else:
-            rows.extend(block_lines)
-            block_power.flush(ctx, enable_attn_offloading)
+            cached = (block_lines, block_power)
+            if key is not None:
+                built[key] = cached
+        block_lines, block_power = cached
+        rows.extend(block_lines)
+        block_power.flush(ctx, enable_attn_offloading)
 
     # EPILOGUE: last layer post_attn + final layers
     last_power = PowerAccumulator([], [], 0, 0)

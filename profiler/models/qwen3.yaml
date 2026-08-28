@@ -9,11 +9,13 @@
 # below list both alternatives and matching takes whichever the loaded
 # checkpoint actually has.
 #
-# Which MLP runs is not decided here either: the simulator picks ``mlp_moe``
-# or ``mlp_dense`` from the model config (``is_moe``), and the profiler skips
-# the expert sweep for a checkpoint that declares no experts. So
+# Which MLP runs is not decided here either: it is resolved **per layer** from
+# the checkpoint's own config (``profiler/core/stack.py``), and the profiler
+# skips the expert sweep for a checkpoint that declares no experts. So
 # ``Qwen3-32B`` (dense) and ``Qwen3-30B-A3B`` (MoE) both resolve to this file
-# and each gets only the layers it has.
+# and each gets only the layers it has. Qwen3-MoE happens to be MoE on every
+# layer (``decoder_sparse_step: 1``), but that is the checkpoint's answer, not
+# an assumption in the walk.
 #
 # The attention block has per-head QK normalization, merged into a single
 # ``qk_norm`` catalog entry. ``num_experts`` / ``top_k`` are read from the HF
@@ -32,14 +34,20 @@ model_types:
   - qwen3_moe   # MoE checkpoints (Qwen3-30B-A3B / 235B-A22B / ...)
 
 
-sequence:
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    # Both are populated, and which one a layer runs comes from the
+    # checkpoint: Qwen3-MoE is MoE on every layer
+    # (decoder_sparse_step: 1), dense Qwen3 declares no experts at all.
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
   prologue:  [embedding]
-  pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
-  post_attn: [o_proj, layernorm]
-  # Both are populated: the simulator emits whichever matches the
-  # checkpoint's is_moe, so one sequence covers both shapes.
-  mlp_dense: [gate_up_proj, act_fn, down_proj]
-  mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
 

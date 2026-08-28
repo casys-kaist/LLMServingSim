@@ -188,10 +188,23 @@ has:
 
 - A `catalog:` mapping canonical layer names (e.g., `qkv_proj`,
   `attention`, `moe`) to vLLM class names.
-- A `sequence:` describing the per-iteration layer order:
-  `prologue → pre_attn → post_attn → (mlp_dense | mlp_moe) → head`.
+- A `blocks:` describing what one decoder layer emits, keyed by axis, plus a
+  `shared:` for what runs once per iteration:
+  `shared.prologue → (attn.<type>.pre_attn → attn.<type>.post_attn →
+  mlp.<dense|moe>) x num_hidden_layers → shared.head`.
 
-`trace_generator._emit_sequence` walks the sequence list and emits
+Which block a given layer runs comes from the **checkpoint's own config**, not
+from the YAML: `layer_types` decides the attention, `first_k_dense_replace` /
+`decoder_sparse_step` / `moe_layer_freq` the MLP, `sparse_attention_freq` /
+`index_topk_pattern` whether a sparse-selection branch applies.
+`profiler/core/stack.py` owns those rules and both the profiler and the
+simulator read it, so the two cannot disagree about a hybrid stack.
+
+Blocks are built once per distinct block *shape* and replayed for every layer
+that shares it, so trace generation stays O(1) in depth for a uniform model
+while a heterogeneous one still gets the right block per layer.
+
+`trace_generator._emit_sequence` walks a block's layer list and emits
 one trace row per layer. It also:
 
 - Attaches **TP-ALLREDUCE** after `o_proj` and `down_proj` when
@@ -225,23 +238,29 @@ The full DP+EP wave-sync mechanics live on
 
 ## Block copy optimization
 
-For models with `num_hidden_layers > 1` (i.e., all of them), the
-trace's transformer blocks are identical except for layer index.
-Generating each layer's row separately is wasteful, so by default
+Layers that resolve to the same block shape produce identical trace rows — the
+rows carry the canonical layer name, and the writer numbers the lines — so
+building each one separately is wasted work. By default
 `enable_block_copy=True`:
 
-- Generate the full trace for **block 0** only.
-- For blocks 1..N-1, emit a single Chakra `block_copy` instruction
-  that replays block 0's compute pattern with adjusted layer indices.
+- **Build** a block's rows once per distinct block shape.
+- Append that same list once per layer sharing the shape.
 
-This is **always** safe for dense models. For MoE with
-`--expert-routing-policy BALANCED` (the default), it's also safe
-because the policy is deterministic and every layer produces the
-same `(local_tokens, activated_experts)` pair. For `RR` / `RAND`,
-per-layer variance is small once the batch saturates, so block-copy
-remains a harmless approximation; `CUSTOM` policies that need
-per-layer variance can disable it via `block_copy=False` in the
-gate router constructor.
+The emitted trace is unchanged: it still has every layer's rows. This is a
+trace-*generation* optimization, saving the per-layer latency lookups and size
+computations, and there is no `block_copy` instruction in the trace or in
+Chakra. A 48-layer Qwen3-30B-A3B run emits 583 trace lines either way.
+
+The reuse key is the layer's resolved block shape, so a heterogeneous stack
+gets one built block per shape rather than one for the whole model — Qwen3.5's
+gated-DeltaNet and full-attention layers are never shared.
+
+Exact for dense models and for MoE with `--expert-routing-policy BALANCED` (the
+default), which is deterministic, so every layer produces the same
+`(local_tokens, activated_experts)` pair. For `RR` / `RAND`, per-layer variance
+is small once the batch saturates, so block copy remains a harmless
+approximation; `CUSTOM` policies that need per-layer variance can disable it
+via `block_copy=False` in the gate router constructor.
 
 ## Per-rank latency for MoE
 
