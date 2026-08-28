@@ -8,9 +8,9 @@ live with their module — only setup and build helpers are here.
 
 | File | Purpose |
 | --- | --- |
-| `docker-vllm.sh`  | Launch the vLLM Docker container (profiler + bench + workloads.generators). Mounts repo root as `/workspace`, uses official `vllm/vllm-openai:v0.19.0` image, and pre-installs `datasets` + `matplotlib` on first start. |
+| `docker-vllm.sh`  | Launch the vLLM Docker container (profiler + bench + workloads.generators). Mounts repo root as `/workspace`, uses official `vllm/vllm-openai:v0.28.0` image, and pre-installs `datasets` + `matplotlib` on first start. |
 | `docker-sim.sh`   | Launch the simulator Docker container (ASTRA-Sim + sim Python deps). |
-| `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.19.0 plus `datasets` and `matplotlib`. |
+| `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.28.0 plus `datasets` and `matplotlib`. |
 | `compile.sh`      | Build ASTRA-Sim's analytical backend and install the Chakra trace converter. Rerun it after any change under `astra-sim/`, including `llm_converter.py`, which is installed into site-packages rather than imported from the tree. |
 
 ## Typical first-time setup

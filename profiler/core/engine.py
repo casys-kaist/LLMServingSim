@@ -49,7 +49,8 @@ class RuntimeLimits:
     Attributes:
         max_num_batched_tokens: vLLM's scheduler-side token budget.
         max_num_seqs: max concurrent sequences.
-        num_cache_tokens: total KV slots allocated.
+        num_cache_tokens: total KV slots allocated, group-aware (a
+            hybrid request occupies several KV cache groups at once).
         max_model_len: longest single sequence the engine accepts.
         num_experts / top_k: MoE parameters from HF config. None for
             non-MoE models.
@@ -254,9 +255,18 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     """
     cfg = llm.llm_engine.vllm_config
 
-    num_cache_blocks = cfg.cache_config.num_gpu_blocks
-    block_size = cfg.cache_config.block_size
-    assert num_cache_blocks is not None, "vLLM did not report num_gpu_blocks"
+    # ``kv_cache_size_tokens`` is vLLM's own group-aware capacity, added in
+    # v0.28. Prefer it: for a hybrid model whose requests occupy several KV
+    # cache groups at once (attention pages + mamba state), the older
+    # ``num_gpu_blocks * block_size`` overstates what a request can actually
+    # get, and every feasibility filter downstream would inherit that error.
+    # Fall back to the product for engines that leave it unset.
+    num_cache_tokens = getattr(cfg.cache_config, "kv_cache_size_tokens", None)
+    if num_cache_tokens is None:
+        num_cache_blocks = cfg.cache_config.num_gpu_blocks
+        block_size = cfg.cache_config.block_size
+        assert num_cache_blocks is not None, "vLLM did not report num_gpu_blocks"
+        num_cache_tokens = num_cache_blocks * block_size
 
     # MoE params read from the live HF config (post-override).
     hf_cfg = getattr(cfg.model_config, "hf_text_config", None)
@@ -275,7 +285,7 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     return RuntimeLimits(
         max_num_batched_tokens=logical_mnbt,
         max_num_seqs=engine_msq,
-        num_cache_tokens=num_cache_blocks * block_size,
+        num_cache_tokens=int(num_cache_tokens),
         max_model_len=cfg.model_config.max_model_len,
         num_experts=num_experts,
         top_k=top_k,

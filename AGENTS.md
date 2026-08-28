@@ -172,9 +172,13 @@ perf/<hw>/<model>/<variant>/
 `tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1 and
 replicated into other `tp<N>/` folders by the writer.
 
-The profiler Docker uses **vLLM v0.19.0** (`vllm/vllm-openai:v0.19.0` or
-`v0.19.0-cu130` for CUDA 13.x). The MoE hook patches `FusedMoE.forward_native` for
-forced expert routing — method name is version-specific.
+The profiler Docker uses **vLLM v0.28.0** (`vllm/vllm-openai:v0.28.0`, or
+`v0.28.0-cu129` on a CUDA 12.9 host). The MoE hook forges expert routing by
+patching `_compute_routing` on the live router instance — every symbol under
+`profiler/core/hooks/` is a vLLM *internal* API and is version-specific. v0.28
+restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
+`FusedMoEFactory` returning a `MoERunner` that owns a `router` (`BaseRouter`)
+and a `RoutedExperts`.
 
 ### Skew profiling & alpha fit
 FlashAttention's varlen kernel pays tile-padding + SM-imbalance costs when a
@@ -638,9 +642,13 @@ These must match the C++ enum in `astra-sim/astra-sim/system/AstraMemoryAPI.hh`.
 
 ### Docker environments
 - **vLLM container** (used by `python -m profiler`, `python -m bench`, and
-  `python -m workloads.generators`): `vllm/vllm-openai:v0.19.0` (or
-  `v0.19.0-cu130` for CUDA 13.x)
-  - Launched via `scripts/docker-vllm.sh`
+  `python -m workloads.generators`): `vllm/vllm-openai:v0.28.0` (or
+  `v0.28.0-cu129` on a CUDA 12.9 host)
+  - Launched via `scripts/docker-vllm.sh`. Set `VLLM_GPUS` to a docker
+    device spec to keep it off GPUs someone else is using; the inner
+    quotes are part of the value (`VLLM_GPUS='"device=2,3"'`), and
+    without them docker reads the second field as a GPU count. Default
+    is every GPU on the host
   - Mounts the **LLMServingSim repo root** as `/workspace`; container cwd
     is `/workspace`, so `python -m profiler …` etc. work directly
   - Pre-installs `datasets` and `matplotlib` on first start (extra deps

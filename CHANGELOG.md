@@ -59,6 +59,44 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
 
 ### Changed
+- **vLLM pinned to v0.28.0** (was v0.19.0), in `scripts/docker-vllm.sh`,
+  `scripts/install-vllm.sh` and the docs. The tag semantics inverted along the
+  way: `v0.28.0` is the CUDA 13.x build and `v0.28.0-cu129` is the fallback,
+  where `v0.19.0` was CUDA 12.x with a `-cu130` variant. Four vLLM-internal
+  APIs the profiler binds to moved, all under `profiler/core/hooks/`:
+  - `FusedMoE` no longer exists. Models now call `FusedMoEFactory`, which
+    returns a `MoERunner` owning a `router` and a `RoutedExperts`. `moe_hook.py`
+    forges expert routing by swapping `_compute_routing` on the live **router
+    instance** instead of monkey-patching `FusedMoE.forward_native` and then
+    `select_experts` and then `_compute_routing` on the class — one patch where
+    there were three, and no `layer_name` guard needed. `_select_experts` still
+    runs, so EPLB mapping and index-dtype conversion happen as in production
+  - v0.28 ships **two** GPU model runners and picks between them per config —
+    Llama-3.1-8B boots on V2, the Qwen3.8-27B hybrid on V1 — and V2 keeps no
+    persistent `input_batch`. `batch.py` now reads KV-cache-group block sizes
+    from `kv_cache_config.kv_cache_groups[i].kv_cache_spec.block_size`, which
+    both runners derive their tables from, and which is the KV-manager block
+    size directly (no `block_size * blocks_per_kv_block` arithmetic)
+  - `NewRequestData.prefill_token_ids` is declared `= None` but asserted
+    non-None by the V2 runner. Filled in for synthetic requests, matching
+    vLLM's own scheduler, which passes `req._all_token_ids`
+  - `SchedulerOutput` is built from `make_empty()` and then overridden, rather
+    than positionally. v0.28 alone added eight fields; naming them all is a
+    breakage per release for no benefit
+- `probe_limits` reads KV capacity from `cache_config.kv_cache_size_tokens`
+  rather than `num_gpu_blocks * block_size`. vLLM added the former in v0.28
+  precisely because the latter "can be wrong for hybrid models where requests
+  occupy multiple KV cache groups" — measured at **1.72x too high** on
+  Qwen3.8-27B, where vLLM unifies the page size to 784 tokens so an attention
+  page and a mamba state page cost the same bytes. Unchanged for non-hybrid
+  models, so no profiled latency moves
+- `scripts/docker-vllm.sh` takes `VLLM_GPUS` to narrow which GPUs the container
+  claims on a shared machine (`VLLM_GPUS='"device=2,3"'` — the inner quotes are
+  part of the value; without them Docker reads the second field as a GPU count)
+- `pandas` is named explicitly in both install scripts. `profiler/core/skew.py`
+  and `fit_alpha.py` import it directly but had only ever been getting it
+  transitively through `datasets`, and the v0.28.0 image doesn't ship it
+
 - The simulator is roughly **11x faster** with byte-identical results. The four
   `bench/examples/` workloads go 16m 40s to 1m 26s in total (per-example 5.2x to 24.6x)
   and the 19 `serving/run.sh` scenarios 18.95 min to 1.94 min, with every
@@ -160,6 +198,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   callers (`Router.get_first_arrival_time` is the live one)
 
 ### Fixed
+- `profiler/core/hooks/vllm_compat.py` — the profiler could not run at all on
+  vLLM v0.28.0. `vllm/profiler/utils.py` carries an unguarded
+  `from _typeshed import DataclassInstance` (added upstream by `fb946a7f89`,
+  "Make `mypy` opt-out instead of opt-in", #33205), and `_typeshed` is a
+  stub-only module that never exists at runtime, so
+  `vllm.profiler.layerwise_profile` — the profiler's only measurement
+  mechanism — raised `ModuleNotFoundError` on import. The shim installs a
+  placeholder only when the name doesn't already resolve; the symbol is used
+  solely in two annotations, so a bare class satisfies it. Delete once
+  upstream guards the import.
 - **DP groups no longer hang with `tp > 1` or `pp > 1`**
   ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65)). A DP group only makes
   progress if every NPU of every member runs the same round, and `add_done` enforces
