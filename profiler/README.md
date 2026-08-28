@@ -24,10 +24,10 @@ profiler/                     Python package — `python -m profiler ...`
       batch.py                synthetic SchedulerOutput builder
       timings.py              layerwise_profile tree parser
       moe_hook.py             FusedMoE forced-routing patch
-  models/                     architecture catalogs (one YAML per HF model_type)
+  models/                     architecture catalogs (one YAML per model family)
     llama.yaml
-    qwen3.yaml
-    qwen3_moe.yaml
+    qwen3.yaml                  qwen3 + qwen3_moe
+    qwen3_5.yaml                Qwen3.5 / 3.6 / 3.8, dense + MoE (hybrid GDN)
     mixtral.yaml
     phimoe.yaml
   power/                      nvidia-smi / IPMI power-logging helpers
@@ -387,11 +387,14 @@ them from there.
 ## Architecture yamls
 
 `models/<model_type>.yaml` describes one vLLM model family's class
-structure — embedding, layernorm, qkv_proj, attention, etc. The file
-name equals the HuggingFace `model_type` value (`llama`, `qwen3`,
-`qwen3_moe`, `mixtral`, `phimoe`). Catalog entries bind a canonical
-name to a vLLM class, with an optional `within:` parent to
-disambiguate duplicate class names:
+structure — embedding, layernorm, qkv_proj, attention, etc. The file name is
+the `model_type` it primarily serves; a file may serve several by listing them
+under `model_types:`, which is how one catalog covers a family whose dense and
+MoE variants report different `model_type` values (`qwen3` and `qwen3_moe`
+both resolve to `qwen3.yaml`). Catalog entries bind a canonical name to a vLLM
+class, with an optional `within:` parent — a single name, or a list of
+alternatives when the class differs by checkpoint shape — to disambiguate
+duplicate class names:
 
 ```yaml
 catalog:
@@ -426,9 +429,11 @@ to other tp folders by the writer.
 1. **Drop its HF `config.json`** at `configs/model/<org>/<name>.json`.
    (Or let the profiler auto-download on first run if `HF_TOKEN` is
    set in the container.)
-2. **If the model's `model_type` is already supported** (llama / qwen3
-   / qwen3_moe / mixtral / phimoe), you're done — edit `MODEL=` in
-   `profiler/profile.sh` and run.
+2. **If the model's `model_type` is already supported** (llama / qwen3 /
+   qwen3_moe / qwen3_5 / qwen3_5_moe / mixtral / phimoe), you're done — edit
+   `MODEL=` in `profiler/profile.sh` and run. A hybrid stack also needs
+   `NUM_HIDDEN_LAYERS` raised to the smallest count that instantiates every
+   block type (4 for Qwen3.8-27B); the default of 1 only ever reaches one.
 3. **If it's a new architecture family** (e.g., `gemma2`, `deepseek_v3`):
    * Create `models/<model_type>.yaml` mapping the new family's vLLM
      classes to canonical names.

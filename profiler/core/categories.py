@@ -24,7 +24,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar, Iterator
 
-from profiler.core.config import Architecture, LayerEntry, ProfileArgs
+from profiler.core.config import (
+    Architecture,
+    LayerEntry,
+    ProfileArgs,
+    declares_moe,
+)
 from profiler.core.engine import RuntimeLimits
 from profiler.core.hooks.batch import Shot
 from profiler.core.hooks.timings import TimingSample
@@ -188,7 +193,7 @@ def _entry_dict(
     return {
         name: {
             "vllm": e.vllm,
-            "within": e.within,
+            "within": e.within,   # str, list[str] or None; see LayerEntry
             "tp_stable": e.tp_stable,
             "occurrences": occurrences.get(name, 1),
         }
@@ -645,11 +650,19 @@ class ExpertCategory(Category):
         # not from the yaml. If catalog.moe.* entries exist but the
         # live config didn't expose num_experts / top_k, fail loudly.
         if limits.num_experts is None or limits.top_k is None:
+            # One catalog now serves a whole family, so a ``catalog.moe`` entry
+            # says "this family has MoE checkpoints", not "this checkpoint is
+            # MoE". A dense member declares nothing MoE and simply has no
+            # expert sweep to run.
+            model_config = args.model_config or {}
+            if not declares_moe(model_config):
+                return
             raise RuntimeError(
-                "catalog.moe entries are declared but the HF config did "
-                "not expose num_experts / top_k. If this model uses a "
-                "non-standard field name, add it to MOE_NUM_EXPERTS_KEYS "
-                "/ MOE_TOP_K_KEYS in profiler/config.py."
+                "catalog.moe entries are declared and the model config "
+                "mentions MoE, but num_experts / top_k could not both be "
+                "read from it. If this model uses a non-standard field "
+                "name, add it to MOE_NUM_EXPERTS_KEYS / MOE_TOP_K_KEYS in "
+                "profiler/core/config.py."
             )
         num_experts = limits.num_experts
         top_k = limits.top_k

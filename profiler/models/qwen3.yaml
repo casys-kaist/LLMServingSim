@@ -1,31 +1,45 @@
-# Qwen3 family — class catalog (dense decoder-only LLMs, non-MoE).
+# Qwen3 family — class catalog (dense *and* MoE decoder-only LLMs).
 #
-# This catalog covers every dense Qwen3 checkpoint
-# (Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B / ...). Pick the specific
-# model at the CLI. The MoE variants (Qwen3-*-A*B) instantiate a
-# different ForCausalLM class and live in qwen3-moe.yaml.
+# One file for both shapes. vLLM implements them in separate modules
+# (``qwen3.py`` / ``qwen3_moe.py``) whose classes differ only by a ``Moe``
+# infix — ``Qwen3DecoderLayer`` vs ``Qwen3MoeDecoderLayer``,
+# ``Qwen3Attention`` vs ``Qwen3MoeAttention`` — and are otherwise identical
+# layer for layer. Splitting the catalog to match meant two 90%-duplicated
+# files where a fix to one silently missed the other, so the ``within`` fields
+# below list both alternatives and matching takes whichever the loaded
+# checkpoint actually has.
 #
-# Qwen3 introduces per-head QK normalization: an RMSNorm on Q and
-# another on K before rotary. Both are merged into one canonical
-# ``qk_norm`` entry; the profiler sums timings from all RMSNorm
-# instances inside Qwen3Attention.
+# Which MLP runs is not decided here either: the simulator picks ``mlp_moe``
+# or ``mlp_dense`` from the model config (``is_moe``), and the profiler skips
+# the expert sweep for a checkpoint that declares no experts. So
+# ``Qwen3-32B`` (dense) and ``Qwen3-30B-A3B`` (MoE) both resolve to this file
+# and each gets only the layers it has.
 #
-# Canonical layer names mirror vLLM's attribute names (see
-# ../vllm/vllm/model_executor/models/qwen3.py).
+# The attention block has per-head QK normalization, merged into a single
+# ``qk_norm`` catalog entry. ``num_experts`` / ``top_k`` are read from the HF
+# config at engine boot, not declared here.
 #
-# ``sequence:`` describes the ordered pipeline the simulator's
-# trace_generator walks to emit one iteration. Names must appear in
-# ``catalog`` below. TP ALLREDUCE (after ``o_proj`` / ``down_proj``)
-# and EP ALLTOALL (around ``moe``) are attached by the simulator from
-# cluster config and need not be listed here.
+# Canonical layer names mirror vLLM's own attribute names (see
+# ../vllm/vllm/model_executor/models/qwen3.py and qwen3_moe.py).
+#
+# Qwen3.5 / 3.6 / 3.8 are a different architecture despite the name — they
+# interleave gated DeltaNet with full attention and use ``GemmaRMSNorm`` — and
+# live in qwen3_5.yaml.
+
+
+model_types:
+  - qwen3       # dense checkpoints (Qwen3-8B / 14B / 32B / ...)
+  - qwen3_moe   # MoE checkpoints (Qwen3-30B-A3B / 235B-A22B / ...)
 
 
 sequence:
   prologue:  [embedding]
   pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
   post_attn: [o_proj, layernorm]
+  # Both are populated: the simulator emits whichever matches the
+  # checkpoint's is_moe, so one sequence covers both shapes.
   mlp_dense: [gate_up_proj, act_fn, down_proj]
-  mlp_moe:   []
+  mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
 
@@ -35,29 +49,30 @@ catalog:
       vllm: VocabParallelEmbedding
     layernorm:
       vllm: RMSNorm
-      within: Qwen3DecoderLayer
+      within: [Qwen3DecoderLayer, Qwen3MoeDecoderLayer]
       tp_stable: true
     qkv_proj:
       vllm: QKVParallelLinear
     qk_norm:
       vllm: RMSNorm
-      within: Qwen3Attention
+      within: [Qwen3Attention, Qwen3MoeAttention]
       tp_stable: true
     rotary_emb:
       vllm: RotaryEmbedding
     o_proj:
       vllm: RowParallelLinear
-      within: Qwen3Attention
+      within: [Qwen3Attention, Qwen3MoeAttention]
     gate_up_proj:
       vllm: MergedColumnParallelLinear
     act_fn:
       vllm: SiluAndMul
     down_proj:
+      # Qwen3's dense MLP reuses Qwen2's class.
       vllm: RowParallelLinear
       within: Qwen2MLP
     final_layernorm:
       vllm: RMSNorm
-      within: Qwen3ForCausalLM
+      within: [Qwen3ForCausalLM, Qwen3MoeForCausalLM]
       tp_stable: true
   per_sequence:
     lm_head:
@@ -68,3 +83,8 @@ catalog:
   attention:
     attention:
       vllm: Attention
+  moe:
+    # Present for the whole family; a dense checkpoint declares no experts and
+    # the expert sweep is skipped for it.
+    moe:
+      vllm: Qwen3MoeSparseMoeBlock

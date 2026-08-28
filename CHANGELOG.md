@@ -257,6 +257,31 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **One architecture catalog per model family, not per checkpoint shape.**
+  `profiler/models/qwen3_moe.yaml` is merged into `qwen3.yaml`, which now
+  serves both `qwen3` and `qwen3_moe`. vLLM implements the two in separate
+  modules whose classes differ only by a `Moe` infix
+  (`Qwen3DecoderLayer` vs `Qwen3MoeDecoderLayer`, `Qwen3Attention` vs
+  `Qwen3MoeAttention`) and are otherwise identical layer for layer, so the two
+  files were 90% duplicated and a fix to one silently missed the other.
+  - `LayerEntry.within` accepts a **list of alternatives**; matching takes the
+    deepest one actually present in the ancestor chain, so naming a class this
+    checkpoint doesn't have costs nothing
+  - Both `mlp_dense` and `mlp_moe` are populated in the merged `sequence:`.
+    Nothing new is needed to pick between them: the simulator already emits
+    whichever matches the checkpoint's `is_moe`, read from the model config
+  - A `catalog.moe` entry now means "this family has MoE checkpoints", not
+    "this checkpoint is MoE", so the expert sweep is **skipped** for a member
+    that declares no experts instead of raising. A config that *does* mention
+    MoE but from which `num_experts` / `top_k` cannot both be read still
+    raises — that is an unknown field name, not a dense model
+- `profiler/models/qwen3_5_text.yaml` renamed to **`qwen3_5.yaml`**: it serves
+  Qwen3.5, **Qwen3.6** and Qwen3.8, dense and MoE, and the old name suggested
+  one text tower of one generation. Those three are one architecture —
+  Qwen3.6-27B has the same 64 layers at hidden 5120 as Qwen3.5-27B,
+  Qwen3.6-35B-A3B matches Qwen3.5-35B-A3B, and all of them report
+  `model_type: qwen3_5` / `qwen3_5_moe` and run vLLM's `qwen3_5.py`. The
+  generation number is a checkpoint refresh, not a new structure
 - Shot-feasibility filters read the **live** KV block size
   (`RuntimeLimits.block_size`) instead of a hardcoded 16. What
   `HOST_ENGINE_DEFAULTS` requests is not always what the engine uses: on a

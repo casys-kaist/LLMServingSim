@@ -1,6 +1,16 @@
-# Qwen3.5 / Qwen3.8 text tower — class catalog (hybrid gated-DeltaNet + full
-# attention). Covers Qwen3.8-27B (dense MLP) and the Qwen3.5/3.8 MoE
-# checkpoints; pick the model at the CLI.
+# Qwen3.5-generation family — class catalog (hybrid gated-DeltaNet + full
+# attention).
+#
+# Covers **Qwen3.5, Qwen3.6 and Qwen3.8**, dense and MoE. They are one
+# architecture: Qwen3.6-27B has the same 64 layers at hidden 5120 as
+# Qwen3.5-27B, Qwen3.6-35B-A3B matches Qwen3.5-35B-A3B, and every one of them
+# reports ``model_type: qwen3_5`` / ``qwen3_5_moe`` and runs vLLM's
+# ``qwen3_5.py``. The generation number is a checkpoint refresh, not a new
+# structure. Pick the model at the CLI.
+#
+# Plain **Qwen3** (Qwen3-32B, Qwen3-30B-A3B) is a *different* architecture
+# despite the name — no gated DeltaNet, ``RMSNorm`` rather than
+# ``GemmaRMSNorm`` — and lives in qwen3.yaml.
 #
 # This is the first **heterogeneous** architecture in the repo, so it uses
 # ``blocks:`` + ``shared:`` rather than the flat ``sequence:`` the uniform
@@ -38,19 +48,18 @@
 # of these names.
 
 
-# Every HF ``model_type`` this catalog serves. The filename is the primary one
-# (the text tower's own name); the rest are the VL wrapper and the MoE siblings,
-# which are the same implementation with a different MLP -- covered here by
-# ``blocks.mlp.moe``.
+# Every HF ``model_type`` this catalog serves: the VL wrapper's name and the
+# text tower's, for both the dense and the MoE line. Which MLP runs is decided
+# by ``blocks.mlp``, not by the name.
 #
 # ``qwen3_next`` is deliberately NOT listed. It has the same gated-DeltaNet
 # structure but different classes (``Qwen3NextDecoderLayer``, plain ``RMSNorm``
 # instead of ``GemmaRMSNorm``), so it needs its own catalog.
 model_types:
-  - qwen3_5_text
   - qwen3_5
-  - qwen3_5_moe_text
+  - qwen3_5_text
   - qwen3_5_moe
+  - qwen3_5_moe_text
 
 
 blocks:

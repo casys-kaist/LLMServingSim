@@ -114,10 +114,18 @@ def _match_slice(
         if within is None:
             depth = -1
         else:
-            try:
-                depth = ancestors.index(within)
-            except ValueError:
+            # ``within`` may be a list of alternatives, so one catalog can
+            # serve a family whose class names differ by shape (Qwen3's
+            # ``Qwen3DecoderLayer`` vs ``Qwen3MoeDecoderLayer``). Take the
+            # deepest alternative that is actually present; alternatives this
+            # checkpoint doesn't have simply don't match.
+            candidates = [within] if isinstance(within, str) else list(within)
+            depths = [
+                ancestors.index(w) for w in candidates if w in ancestors
+            ]
+            if not depths:
                 continue
+            depth = max(depths)
         if depth > best_depth:
             best_depth = depth
             best_name = canonical

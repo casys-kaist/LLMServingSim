@@ -124,6 +124,20 @@ def probe_linear_attn_chunk(hf_cfg: dict[str, Any]) -> int | None:
     return int(FLA_CHUNK_SIZE) or None
 
 
+def declares_moe(hf_cfg: dict[str, Any]) -> bool:
+    """True if the config mentions MoE at all, however partially.
+
+    Distinguishes the two reasons ``probe_moe_params`` can come back None. A
+    **dense checkpoint of a family whose catalog covers both shapes** declares
+    nothing MoE and should simply skip the expert sweep — that is normal now
+    that one catalog serves a family. A config that declares *some* MoE field
+    but not the pair we need is a different thing: almost certainly a spelling
+    this repo doesn't know yet, and worth failing on.
+    """
+    keys = set(MOE_NUM_EXPERTS_KEYS) | set(MOE_TOP_K_KEYS)
+    return any(k in hf_cfg for k in keys)
+
+
 def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
     """Extract (num_experts, top_k) from a HuggingFace config dict.
 
@@ -161,10 +175,27 @@ class LayerEntry(BaseModel):
     """vLLM leaf class name as reported by the CUDA profiler, e.g.
     ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``."""
 
-    within: str | None = None
-    """Optional immediate-parent class name to disambiguate when the
-    same ``vllm`` class appears multiple times in the model (most
-    commonly RMSNorm, which shows up as input/post/final layernorm)."""
+    within: str | list[str] | None = None
+    """Optional ancestor class name to disambiguate when the same ``vllm``
+    class appears multiple times in the model (most commonly RMSNorm, which
+    shows up as input / post / final layernorm).
+
+    A **list** means "any of these", which is what lets one catalog serve a
+    whole family: vLLM names the same structural class differently per
+    checkpoint shape, so Qwen3's decoder layer is ``Qwen3DecoderLayer`` for a
+    dense checkpoint and ``Qwen3MoeDecoderLayer`` for a MoE one, with
+    everything else identical. Without alternatives the two need duplicate
+    catalogs, and a fix to one silently misses the other. Matching takes the
+    deepest alternative present in the ancestor chain, so listing a name that
+    this checkpoint does not have costs nothing."""
+
+    def within_names(self) -> list[str]:
+        """``within`` as a list, empty when unset."""
+        if self.within is None:
+            return []
+        if isinstance(self.within, str):
+            return [self.within]
+        return list(self.within)
 
     tp_stable: bool = False
     """If True, profile this layer only at TP=1 and replicate the
@@ -358,9 +389,9 @@ class Architecture(BaseModel):
         # (vllm, within) pairs globally unique so layer matching is
         # deterministic. (Multiple catalog-tree nodes can match one
         # entry, that's fine — their timings get averaged by the sink.)
-        pairs: dict[tuple[str, str | None], str] = {}
+        pairs: dict[tuple[str, tuple[str, ...]], str] = {}
         for _, name, entry in self.catalog.all_entries():
-            key = (entry.vllm, entry.within)
+            key = (entry.vllm, tuple(sorted(entry.within_names())))
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "
