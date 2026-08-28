@@ -13,7 +13,11 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 | <a href="https://llmservingsim.ai"><b>Website</b></a> | <a href="https://llmservingsim.ai/docs/getting-started/overview"><b>Documentation</b></a> | <a href="https://llmservingsim.ai/docs/contributor/welcome"><b>Contribute</b></a> | <a href="https://llmservingsim.ai/contact"><b>Contact</b></a> | <a href="https://llmservingsim.ai/changelog"><b>Changelog</b></a> |
 </p>
 
-We have built an LLMServingSim website to help you get started with the simulator. Please visit [llmservingsim.ai](https://llmservingsim.ai) for documentation, contribution guides, and team contact info.
+## Latest News
+
+- [2026/08] Simulation is **~11x faster** with byte-identical results — the four `bench/examples` runs go 16m 40s → 1m 26s. ([#67](https://github.com/casys-kaist/LLMServingSim/pull/67))
+- [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
+- [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
 
 ## About
 
