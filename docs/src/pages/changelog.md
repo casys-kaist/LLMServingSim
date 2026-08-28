@@ -9,6 +9,32 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **One catalog form: `blocks:` + `shared:`.** `sequence:` is gone, and with it
+  the second code path. `blocks:` is keyed by axis
+  (`attn.<layer_types value>`, `sparse_attn.<same>` as an overlay,
+  `mlp.dense|moe`); `shared:` holds `prologue` and `head`. A uniform stack is
+  the degenerate case — one entry per axis — and all seven bundled catalogs are
+  migrated.
+  - `sequence:` was this form **flattened**: its `pre_attn` / `post_attn` were
+    the single implicit `attn.full_attention` block and its `mlp_dense` /
+    `mlp_moe` were the `mlp` axis with the value baked into the key name. Two
+    forms meant two code paths, and `trace_generator` only ever implemented the
+    flat one — it rejected `blocks:` outright, so Qwen3.5/3.8 and MiniMax-M3
+    could not be simulated at all
+  - Baking the axis into the key also removed the per-layer question, and the
+    MLP was resolved once per **model** (`is_moe = gate is not None`). See
+    *Fixed*
+- **Per-layer block resolution in the simulator.** `trace_generator` now reads
+  `profiler/core/stack.py` — the same module the profiler uses to decide how
+  many layers to instantiate — so which block a layer emits comes from the
+  checkpoint's own config (`layer_types`, `first_k_dense_replace`,
+  `decoder_sparse_step`, `moe_layer_freq`, `sparse_attention_freq`,
+  `index_topk_pattern`). One implementation, because the vendors' rules
+  disagree on the off-by-one in opposite directions and a second copy would be
+  a second chance to get them backwards
+  - Blocks are built once per distinct block **shape** and replayed for every
+    layer that shares it, so a uniform model still builds one block and replays
+    it N times while a heterogeneous one gets the right block per layer
 - `docs/scripts/check-rendered.mjs` — scans the built site for source syntax that
   survived into visible text (unparsed admonitions, bold, links, headings, table rows,
   doubled list markers, visible HTML comments, JSX brace leaks), plus a structural
@@ -153,6 +179,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **`--no-enable-block-copy` emitted one transformer block instead of
+  `num_hidden_layers`.** Measured on Qwen3-30B-A3B (48 layers): 19 trace lines
+  where the same run with block copy enabled emits 583, and a total clock
+  3.1x low. The loop was
+  `iter_count, copy_count = (num_layers, 1) if block_mode_on else (1, num_layers)`,
+  so with `block_mode_on` false it ran **once** and the `can_copy=False` branch
+  emitted that single block — `copy_count` was computed and unreachable there.
+  The flag means "build each block separately"; it meant "emit one block".
+  Block copy is now what it is documented to be, an optimization that does not
+  change results: `no_block_copy` and `moe` are the same config differing only
+  by the flag, and they now produce identical traces and identical clocks.
+  **`serving/validate-baselines.txt` moves for `no_block_copy` only**
+  (1037528119 → 1945309759, matching `moe`); the other 57 are unchanged
+- **MoE-ness was decided once per model and applied to every layer.**
+  `is_moe = gate is not None` gated the whole MLP choice, so a hybrid stack's
+  dense layers were modelled as MoE layers. Invisible on Qwen3-30B-A3B, whose
+  `mlp_only_layers` is empty, and wrong for DeepSeek-V3.2 and GLM-5, whose
+  first `first_k_dense_replace` (3) layers run a dense MLP. Resolved per layer
+  now. `mlp_only_layers` is no longer ignored
 - **Every attention-category layer was served the same kernel's latency.** The
   attention CSV grew a `layer` column and `_build_attention_tables_by_layer`
   split the tables per kernel, but the lookup kept taking a pooled

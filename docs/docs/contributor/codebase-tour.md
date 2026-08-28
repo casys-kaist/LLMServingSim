@@ -69,19 +69,29 @@ serving/
 
 ```
 profiler/
-├── __main__.py              CLI dispatch (profile / slice)
+├── __main__.py              CLI dispatch (profile / slice / coverage)
 ├── core/                    internals (runner, engine, categories, fit_alpha)
+│   ├── catalog_path.py      model_type -> yaml resolution   (shared with serving/)
+│   └── stack.py             per-layer block resolution      (shared with serving/)
 ├── models/<model_type>.yaml Architecture catalogs (one per HF model_type)
 ├── perf/<hw>/<model>/...    Output bundles (CSV per category)
 └── profile.sh               Editable user template
 ```
+
+Two of those `core/` modules are **imported by the simulator** and are
+deliberately free of third-party imports for it (the sim container has no
+pydantic). `catalog_path.py` resolves a `model_type` to its yaml;
+`stack.py` resolves which block each decoder layer runs, from the checkpoint's
+config. Both were single implementations that got duplicated once and drifted,
+so treat them as shared contracts: a change there moves simulator results.
 
 **Where to touch by intent:**
 
 | Intent | Edit |
 | --- | --- |
 | Add a new hardware target | Run the profiler with `HARDWARE=` set; output lands in `profiler/perf/<hw>/`. See **[Profiler / Adding hardware](/docs/profiler/adding-hardware)** |
-| Add a new model architecture | Drop a YAML in `profiler/models/<model_type>.yaml`. See **[Profiler / Adding model architecture](/docs/profiler/adding-model-architecture)** |
+| Add a new model architecture | Drop a YAML in `profiler/models/<model_type>.yaml`, then `python -m profiler coverage <model>` until it binds every kernel. See **[Profiler / Adding model architecture](/docs/profiler/adding-model-architecture)** |
+| Teach the layer resolver a new per-layer rule | `profiler/core/stack.py` — read the rule out of vLLM's source, never guess; the vendors' conventions genuinely disagree |
 | Change the skew alpha fit | `profiler/core/fit_alpha.py` |
 | Change what categories get profiled | `profiler/core/categories.py` + `profiler/core/runner.py` |
 | Change output CSV columns | `core/writer.py` (and `_load_perf_db()` in `serving/core/trace_generator.py` to consume them) |

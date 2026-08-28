@@ -226,7 +226,7 @@ other instance keeps the CLI value.
 | `enable_local_offloading` | bool | `--enable-local-offloading` | Emit graph conversion with local offloading for this instance |
 | `enable_attn_offloading` | bool | `--enable-attn-offloading` | Emit PIM attention offload for this instance |
 | `enable_sub_batch_interleaving` | bool | `--enable-sub-batch-interleaving` | Enable sub-batch interleaving for this instance |
-| `enable_block_copy` | bool | `--enable-block-copy` | Reuse one block trace across repeated transformer blocks |
+| `enable_block_copy` | bool | `--enable-block-copy` | Build a block's trace rows once per distinct block shape and reuse them for every layer sharing it. A trace-*generation* optimization — the emitted trace has every layer either way. Off means every layer is built from its own router draw |
 
 #### `npu_mem.mem_util` is the one nested override
 

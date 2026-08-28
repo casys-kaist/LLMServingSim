@@ -289,44 +289,6 @@ class Catalog(BaseModel):
         return out
 
 
-class Sequence(BaseModel):
-    """Ordered pipeline the simulator's ``trace_generator`` walks to
-    emit one iteration. Not used by the profiler itself — only
-    validated here so typos in the yaml fail loudly before profiling.
-
-    This is the **uniform-stack** form: one attention block type, repeated
-    ``num_hidden_layers`` times. A heterogeneous stack uses ``blocks:``
-    instead (see :class:`Blocks`); the two are mutually exclusive and an
-    architecture declares exactly one.
-    """
-    model_config = ConfigDict(extra="forbid")
-
-    prologue: list[str] = Field(default_factory=list)
-    pre_attn: list[str] = Field(default_factory=list)
-    post_attn: list[str] = Field(default_factory=list)
-    mlp_dense: list[str] = Field(default_factory=list)
-    mlp_moe: list[str] = Field(default_factory=list)
-    head: list[str] = Field(default_factory=list)
-
-    def all_layers(self) -> list[str]:
-        return [
-            *self.prologue, *self.pre_attn, *self.post_attn,
-            *self.mlp_dense, *self.mlp_moe, *self.head,
-        ]
-
-    def occurrences(self) -> dict[str, int]:
-        """Emissions per block, for the timing denominator.
-
-        ``prologue`` and ``head`` fire once per *iteration* rather than once
-        per block, but they are also emitted once, so a plain count is right
-        for every section here.
-        """
-        counts: dict[str, int] = {}
-        for name in self.all_layers():
-            counts[name] = counts.get(name, 0) + 1
-        return counts
-
-
 class AttnBlock(BaseModel):
     """One attention block type's layer order, around its attention kernel."""
     model_config = ConfigDict(extra="forbid")
@@ -425,20 +387,26 @@ class Architecture(BaseModel):
     """Parsed architecture yaml.
 
     Holds ``catalog`` (vLLM class bindings — used by the profiler) and the
-    layer order the simulator's trace generator walks. That order comes in one
-    of two forms, and an architecture declares exactly one:
+    layer order the simulator's trace generator walks: ``blocks`` keyed by
+    axis, plus ``shared`` for what sits outside the repeated stack.
 
-    * ``sequence`` — a uniform stack, every block identical. What the five
-      original architectures use.
-    * ``blocks`` + ``shared`` — a heterogeneous stack, keyed by axis. The
-      per-layer values come from the checkpoint's config
-      (``layer_types``, ``first_k_dense_replace``, ...), not from here.
+    There used to be a second form, ``sequence``, for a uniform stack. It was
+    the same thing flattened -- its ``pre_attn`` / ``post_attn`` were the
+    single implicit ``attn.full_attention`` block and its ``mlp_dense`` /
+    ``mlp_moe`` were the ``mlp`` axis with the value baked into the key name.
+    Two forms meant two code paths, and the simulator only ever implemented
+    the flat one, so half the catalogs could not be simulated at all. Worse,
+    the flattening encoded a claim that is not true: baking the axis into the
+    key removes the per-layer question, and the MLP choice was resolved once
+    per *model* -- which modelled DeepSeek-V3.2's and GLM-5's first three
+    dense layers as MoE. One form, and the per-layer values come from the
+    checkpoint's config (``layer_types``, ``first_k_dense_replace``, ...),
+    never from here.
     """
     model_config = ConfigDict(extra="forbid")
 
     catalog: Catalog
     model_types: list[str] = Field(default_factory=list)
-    sequence: Sequence | None = None
     blocks: Blocks | None = None
     shared: Shared | None = None
 
@@ -484,23 +452,23 @@ class Architecture(BaseModel):
                 )
             pairs[key] = name
 
-        # Exactly one layer-order form. Declaring both would leave it
-        # ambiguous which one the trace generator walks, and declaring
-        # neither leaves it with nothing to walk.
-        if self.sequence is not None and self.blocks is not None:
+        # One layer-order form, and it has to be there: the trace generator
+        # has nothing to walk otherwise.
+        if self.blocks is None:
             raise ValueError(
-                "declare either 'sequence' (uniform stack) or 'blocks' "
-                "(heterogeneous stack), not both"
+                "architecture must declare 'blocks' (layer order keyed by "
+                "axis: attn.<layer_types value>, mlp.dense|moe, and "
+                "sparse_attn.<...> when a layer's sparse flag applies)"
             )
-        if self.blocks is None and self.shared is not None:
-            raise ValueError("'shared' only applies alongside 'blocks'")
+        if not self.blocks.attn:
+            raise ValueError(
+                "'blocks.attn' must declare at least one attention block type"
+            )
 
         # Every referenced name must be a canonical name declared in the
         # catalog — catches typos before a profile/simulation run.
         catalog_names = {n for _, n, _ in self.catalog.all_entries()}
         referenced: list[str] = []
-        if self.sequence is not None:
-            referenced += self.sequence.all_layers()
         if self.blocks is not None:
             referenced += self.blocks.all_layers()
         if self.shared is not None:
@@ -534,7 +502,7 @@ class Architecture(BaseModel):
         nothing to divide.
         """
         counts: dict[str, int] = {}
-        for source in (self.sequence, self.blocks, self.shared):
+        for source in (self.blocks, self.shared):
             if source is None:
                 continue
             for name, c in source.occurrences().items():

@@ -60,18 +60,27 @@ The simulation loop in `serving/__main__.py` orchestrates these modules per iter
 ### Trace generation pipeline
 
 The trace generator constructs per-iteration execution traces by walking the
-ordered ``sequence:`` section of the architecture yaml (
-`profiler/models/<model_type>.yaml`). For a standard decoder-only model:
+``blocks:`` and ``shared:`` sections of the architecture yaml
+(`profiler/models/<model_type>.yaml`). For a standard decoder-only model:
 
 ```
-prologue (embedding)
-  → [pre_attn (layernorm → qkv_proj → [qk_norm] → rotary_emb → attention)
-     → post_attn (o_proj[ALLREDUCE] → layernorm)
-     → mlp_dense (gate_up_proj → act_fn → down_proj[ALLREDUCE])
-        or mlp_moe (moe[ALLTOALL])
+shared.prologue (embedding)
+  → [attn.<type>.pre_attn  (layernorm → qkv_proj → [qk_norm] → rotary_emb → attention)
+     → attn.<type>.post_attn (o_proj[ALLREDUCE] → layernorm)
+     → mlp.dense (gate_up_proj → act_fn → down_proj[ALLREDUCE])
+        or mlp.moe (moe[ALLTOALL])
     ] × N_layers
-  → head (final_layernorm → lm_head → sampler)
+  → shared.head (final_layernorm → lm_head → sampler)
 ```
+
+`blocks:` is keyed by **axis**, and which block a given layer runs comes from
+the checkpoint's own config, not from the yaml — `layer_types` decides the
+attention type, `first_k_dense_replace` / `decoder_sparse_step` /
+`moe_layer_freq` the MLP, `sparse_attention_freq` / `index_topk_pattern`
+whether a sparse-selection branch applies. `profiler/core/stack.py` owns those
+rules and both the profiler and the simulator import it. A uniform stack is the
+degenerate case: one entry per axis, one block built and replayed for every
+layer.
 
 Latencies come from the profiler's per-category CSVs under
 `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` — `dense.csv` (keyed on
@@ -158,12 +167,12 @@ defers it to the next engine step on a dedicated stream.
 ### `trace_generator.py`
 Core performance estimator. Loads the profiler's per-category CSVs under
 `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` plus the architecture
-yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's
-``sequence:`` section to emit each iteration's layers. Composable helpers:
+yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's ``blocks:``
+and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 
 - `resolve_variant()` / `_load_perf_db()` / `_load_architecture()` — turn
   `(hardware, model, dtype, kv_cache_dtype)` into a loaded DB with category
-  tables and sequence order.
+  tables, the block order, and the checkpoint's per-layer block resolution.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation
   (dense/per_sequence), 4D linear for attention (each of
@@ -195,8 +204,8 @@ Handles tensor parallelism (ALLREDUCE placement), MoE expert routing with
 `involved_dim` dimension scoping for DP+EP, PIM attention offloading, and
 sub-batch interleaving. The `comm_type` field supports dimension scoping
 (e.g., `ALLTOALL:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a
-new model architecture, add an `profiler/models/<model_type>.yaml` with a
-matching `sequence:` rather than editing this file.
+new model architecture, add a `profiler/models/<model_type>.yaml` with a
+matching `blocks:` / `shared:` rather than editing this file.
 
 ### `config_builder.py`
 Parses the user-provided cluster config JSON from `configs/cluster/` and generates the

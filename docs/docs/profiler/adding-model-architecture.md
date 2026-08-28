@@ -48,7 +48,9 @@ Just adding a YAML is enough when the new model's per-iteration
 flow fits the standard pattern:
 
 ```
-prologue → pre_attn → post_attn → (mlp_dense | mlp_moe) → head
+shared.prologue
+  → (attn.<type>.pre_attn → attn.<type>.post_attn → mlp.<dense|moe>) x N
+  → shared.head
 ```
 
 If the new model has a genuinely novel block structure, sliding
@@ -154,23 +156,35 @@ key fails at load time rather than silently doing nothing:
   profiler reports. Grouped by profile kind.
 - `model_types:` — optional; the extra `model_type` values this file serves
   (see [File naming](#file-naming)).
-- the layer order, in **one** of two forms:
-  - `sequence:` — a **uniform** stack, every decoder block identical. What
-    every dense and MoE family here uses.
-  - `blocks:` + `shared:` — a **heterogeneous** stack, where blocks differ by
-    layer. See [Heterogeneous stacks](#heterogeneous-stacks).
+- `blocks:` — the layer order inside a decoder layer, keyed by **axis**.
+  See [Heterogeneous stacks](#heterogeneous-stacks) for what the axes are.
+- `shared:` — `prologue` and `head`, which run once per *iteration* rather
+  than once per layer.
 
-Declaring both forms is an error.
+There used to be a second form for a uniform stack, `sequence:`, and it is
+gone. It was this one flattened — its `pre_attn` / `post_attn` were the single
+implicit `attn.full_attention` block and its `mlp_dense` / `mlp_moe` were the
+`mlp` axis with the value baked into the key name. Two forms meant two code
+paths and the simulator only implemented the flat one, so half the bundled
+catalogs could not be simulated at all. And baking the axis into the key
+removed the per-layer question: the MLP choice was resolved once per *model*,
+which modelled DeepSeek-V3.2's and GLM-5's first three dense layers as MoE.
+One form, uniform stacks included — a uniform model simply declares one entry
+per axis.
 
 ### Minimal example: `llama.yaml`
 
 ```yaml
-sequence:
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    dense: [gate_up_proj, act_fn, down_proj]
+
+shared:
   prologue:  [embedding]
-  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
-  post_attn: [o_proj, layernorm]
-  mlp_dense: [gate_up_proj, act_fn, down_proj]
-  mlp_moe:   []
   head:      [final_layernorm, lm_head, sampler]
 
 
@@ -294,34 +308,35 @@ There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
 `o_proj` / `down_proj` and EP ALLTOALL around `moe` are attached by the
 simulator from the **cluster config**, not declared here.
 
-### `sequence` section reference
+### Section reference
 
-| Group | Runs | Notes |
+| Section | Runs | Notes |
 | --- | --- | --- |
-| `prologue` | Once at the start of each iteration | Embedding lookup |
-| `pre_attn` | Once per decoder block | Input layernorm, qkv_proj, rotary_emb, `attention` (and `qk_norm` on Qwen3) |
-| `post_attn` | Once per decoder block | o_proj + post-attention layernorm |
-| `mlp_dense` | Once per decoder block (dense models) | gate_up_proj + act_fn + down_proj |
-| `mlp_moe` | Once per decoder block (MoE models) | `moe`, with the EP ALLTOALL surround added by the simulator |
-| `head` | Once at the end of each iteration | final_layernorm + lm_head + sampler |
+| `shared.prologue` | Once at the start of each iteration | Embedding lookup |
+| `blocks.attn.<type>.pre_attn` | Once per decoder layer of that attention type | Input layernorm, qkv_proj, rotary_emb, `attention` (and `qk_norm` on Qwen3) |
+| `blocks.attn.<type>.post_attn` | Once per decoder layer of that type | o_proj + post-attention layernorm |
+| `blocks.sparse_attn.<type>` | Instead of `attn.<type>`, on layers whose sparse flag is set | Same `pre_attn` / `post_attn` shape. Optional; falls through to `attn` |
+| `blocks.mlp.dense` | On layers running a dense MLP | gate_up_proj + act_fn + down_proj |
+| `blocks.mlp.moe` | On layers running MoE | `moe`, with the EP ALLTOALL surround added by the simulator |
+| `shared.head` | Once at the end of each iteration | final_layernorm + lm_head + sampler |
 
 `attention` is **listed explicitly** in `pre_attn`; it is not implicit.
-Every name a sequence group mentions has to exist in `catalog`, and
-every catalog entry the simulator emits has to appear in some sequence
-group.
+Every name a section mentions has to exist in `catalog`, and every catalog
+entry the simulator emits has to appear in some section.
 
-Dense and MoE models both declare all six groups; the unused one is an
-empty list (`mlp_moe: []` for a dense model). Layers may repeat inside
-a group or across groups — `layernorm` appears in both `pre_attn` and
-`post_attn`, which is how one catalog entry covers both norms.
+Declare only the axis values the family actually has: Llama has no
+`mlp.moe`, Mixtral no `mlp.dense`, and a family with both (Qwen3,
+DeepSeek) declares both and lets the checkpoint decide per layer. Layers may
+repeat inside a section or across them — `layernorm` appears in both
+`pre_attn` and `post_attn`, which is how one catalog entry covers both norms.
 
 ## Heterogeneous stacks
 
-`sequence:` assumes every decoder block is identical. Recent architectures
-break that: Qwen3.5/3.8 interleave gated-DeltaNet and full-attention layers
-3:1, GLM and DeepSeek run a dense MLP for the first few layers and MoE after,
-MiniMax-M3 varies both at once and turns its sparse indexer off for the first
-three layers.
+A uniform stack is just the degenerate case: one entry per axis. Recent
+architectures are not uniform. Qwen3.5/3.8 interleave gated-DeltaNet and
+full-attention layers 3:1, GLM and DeepSeek run a dense MLP for the first few
+layers and MoE after, MiniMax-M3 varies both at once and runs plain attention
+on its first three layers.
 
 A layer's identity in such a stack is a **tuple**, not a name, so `blocks:` is
 keyed by **axis** rather than by block name — naming every combination
@@ -403,16 +418,21 @@ the result is still a per-layer number.
 
 ## MoE-specific YAML
 
-An MoE architecture adds a `moe` block to the catalog and populates the
-`mlp_moe` sequence group. From `qwen3.yaml`, which serves both shapes:
+An MoE architecture adds a `moe` block to the catalog and a `blocks.mlp.moe`
+entry. From `qwen3.yaml`, which serves both shapes:
 
 ```yaml
-sequence:
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
   prologue:  [embedding]
-  pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
-  post_attn: [o_proj, layernorm]
-  mlp_dense: [gate_up_proj, act_fn, down_proj]
-  mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
 catalog:
@@ -422,11 +442,13 @@ catalog:
       vllm: Qwen3MoeSparseMoeBlock
 ```
 
-Both MLP groups are populated because one catalog serves the family: the
-simulator emits whichever matches the checkpoint's `is_moe`, and the profiler
-skips the expert sweep for a checkpoint that declares no experts. A `moe`
-catalog entry therefore means "this family has MoE checkpoints", not "this
-checkpoint is MoE". A config that mentions MoE but from which
+Both MLP groups are populated because one catalog serves the family: which one
+a given layer runs is resolved **per layer** from the checkpoint's own config,
+and the profiler skips the expert sweep for a checkpoint that declares no
+experts. A `moe` catalog entry therefore means "this family has MoE
+checkpoints", not "this checkpoint is MoE", and not "every layer is MoE" —
+DeepSeek-V3.2 and GLM-5 run a dense MLP for their first
+`first_k_dense_replace` layers. A config that mentions MoE but from which
 `num_experts` / `top_k` cannot both be read is still an error — that is a
 field name this repo doesn't know yet, not a dense model.
 
@@ -604,10 +626,11 @@ that uses the latent dim (`kv_lora_rank`) instead of
 
 Some models (e.g., experimental architectures) have two MLPs per
 block instead of one. Trace generation needs to know to emit two
-`mlp_dense` runs per block.
+dense-MLP runs per block.
 
-Where: add a new `sequence` group (e.g., `mlp_dense_2`) and have
-`trace_generator._emit_sequence` walk both.
+Where: `blocks.mlp` is keyed by the MLP axis's value, so this is a new axis
+value (e.g. `dense_dual`) plus the rule in `profiler/core/stack.py` that
+resolves a layer to it — not a new section.
 
 These are all relatively small changes (~30–60 LOC each). The YAML
 + the existing trace generator handles 95% of new architectures
@@ -629,4 +652,4 @@ GitHub for the validation methodology and per-model results.
 - **[Output bundle](./output-bundle)**: what CSVs the profiler
   produces given a working YAML.
 - **[Simulator → Trace generation](/docs/simulator/trace-generation)** -
-  what trace_generator does at runtime walking your `sequence:`.
+  what trace_generator does at runtime walking your `blocks:`.

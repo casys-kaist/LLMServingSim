@@ -125,13 +125,19 @@ per-rank token counts that ASTRA-Sim consumes through the trace's
 
 ## `block_copy`: what it means and when it's safe
 
-By default, `block_copy=True`. The trace generator emits the full
-trace for **only the first transformer block** and replays it
-across all blocks via a single `block_copy` Chakra instruction.
+By default, `block_copy=True`. It is a **trace-generation** optimization, not
+a trace-size one: the generator *builds* a block's rows once per distinct block
+shape and appends that same list once per layer that shares it. The emitted
+trace is the full per-layer thing either way — a 48-layer Qwen3-30B-A3B run
+emits 583 trace lines with block copy on and 583 with it off. There is no
+`block_copy` instruction in the trace or in Chakra.
 
-This is **safe** for:
+What it saves is the per-layer latency lookups and size computations, which
+dominate trace-generation time on a deep model.
 
-- Dense models (no MoE, all blocks identical).
+This is **exact** for:
+
+- Dense models (no MoE, every layer of a given block shape is identical).
 - MoE with `BALANCED` (every block routes the same way, since
   BALANCED is deterministic and stateless).
 
@@ -145,8 +151,13 @@ It's an **approximation** for:
 
 For research where per-block variance matters, set
 `enable_block_copy=False` in the trace generator (or pick a policy
-where block_copy is auto-disabled). Simulation runs more slowly but
-generates per-block traces.
+where block_copy is auto-disabled). Trace generation runs more slowly and
+every layer is built from its own router draw.
+
+A heterogeneous stack never shares a block across differing layers, block copy
+or not: the reuse is keyed on the layer's resolved block shape, so Qwen3.5's
+gated-DeltaNet and full-attention layers are built separately even with the
+optimization on.
 
 ## Per-rank latency lookup
 
@@ -191,7 +202,10 @@ across the DP group, see
 
 1. **`block_copy` defaults to True** and silently produces an
    approximation for non-BALANCED policies. If you're studying load
-   imbalance specifically, disable it.
+   imbalance specifically, disable it. It does **not** change the trace for a
+   deterministic router — until v1.2.0 disabling it emitted a single
+   transformer block instead of `num_hidden_layers`, understating the clock
+   by 3.1x on a 48-layer model.
 2. **`activated_experts` is per-rank, not per-token.** A rank with
    100 tokens hitting 8 distinct experts reports `activated_experts
    = 8`, not 800. The latency lookup expects this convention.
