@@ -38,7 +38,7 @@ profiler downloads and caches it on first run. The simulator
 
 | Field | Type | Used by | Description |
 | --- | --- | --- | --- |
-| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`. e.g. `llama`, `qwen3`, `qwen3_moe`, `mixtral`, `phimoe` |
+| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`, or a YAML that lists this value under `model_types:`. e.g. `llama`, `qwen3`, `qwen3_moe` (both -> `qwen3.yaml`), `qwen3_5` (-> `qwen3_5.yaml`), `mixtral`, `phimoe` |
 | `hidden_size` | int | both | Model embedding / hidden dim |
 | `num_hidden_layers` | int | both | Number of decoder blocks |
 | `num_attention_heads` | int | both | Total attention heads (for TP scaling) |

@@ -20,10 +20,19 @@ and compare against the bundled architectures:
 | `model_type` | YAML | Covers |
 | --- | --- | --- |
 | `llama` | `llama.yaml` | Llama 3.x dense (8B / 70B / 405B / custom shapes), Mistral 7B, derivatives with the same block structure |
-| `qwen3` | `qwen3.yaml` | Qwen3 dense (0.6B / 4B / 7B / 14B / 32B), with per-head `qk_norm` |
-| `qwen3_moe` | `qwen3_moe.yaml` | Qwen3 MoE (30B-A3B, 235B-A22B) |
+| `qwen3`, `qwen3_moe` | `qwen3.yaml` | Qwen3, dense **and** MoE (0.6B … 32B, 30B-A3B, 235B-A22B), with per-head `qk_norm` |
+| `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
+
+One file per **family**, not per checkpoint shape. vLLM implements Qwen3's
+dense and MoE variants in separate modules whose classes differ only by a
+`Moe` infix (`Qwen3DecoderLayer` vs `Qwen3MoeDecoderLayer`), so the catalog
+lists both under `within:` and matching takes whichever the loaded checkpoint
+has. Which MLP runs is decided by the model config, not the yaml. Likewise
+Qwen3.5, 3.6 and 3.8 are one architecture — same layer counts, same hidden
+size, same `model_type` — so the generation number is a checkpoint refresh
+rather than a new structure.
 
 If your `model_type` is one of these, you don't need to do anything
 - the existing YAML handles it.
@@ -298,15 +307,15 @@ multi-layer run still yields a per-layer number.
 
 ## MoE-specific YAML
 
-An MoE architecture adds a `moe` block to the catalog and swaps which
-MLP group is populated. From `qwen3_moe.yaml`:
+An MoE architecture adds a `moe` block to the catalog and populates the
+`mlp_moe` sequence group. From `qwen3.yaml`, which serves both shapes:
 
 ```yaml
 sequence:
   prologue:  [embedding]
   pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
   post_attn: [o_proj, layernorm]
-  mlp_dense: []
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
   mlp_moe:   [moe]
   head:      [final_layernorm, lm_head, sampler]
 
@@ -317,11 +326,18 @@ catalog:
       vllm: Qwen3MoeSparseMoeBlock
 ```
 
-The class named here is the **sparse block**, not `FusedMoE` — that is
-the class the CUDA profiler reports for the whole expert path.
+Both MLP groups are populated because one catalog serves the family: the
+simulator emits whichever matches the checkpoint's `is_moe`, and the profiler
+skips the expert sweep for a checkpoint that declares no experts. A `moe`
+catalog entry therefore means "this family has MoE checkpoints", not "this
+checkpoint is MoE". A config that mentions MoE but from which
+`num_experts` / `top_k` cannot both be read is still an error — that is a
+field name this repo doesn't know yet, not a dense model.
 
-See `qwen3_moe.yaml`, `mixtral.yaml` and `phimoe.yaml` for full MoE
-YAMLs.
+The class named here is the **sparse block**, not the fused-expert layer —
+that is the class the CUDA profiler reports for the whole expert path.
+
+See `mixtral.yaml` and `phimoe.yaml` for MoE-only YAMLs.
 
 ## Step-by-step: adding a new `model_type`
 
