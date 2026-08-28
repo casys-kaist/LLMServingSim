@@ -59,6 +59,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
 
 ### Changed
+- Shot-feasibility filters read the **live** KV block size
+  (`RuntimeLimits.block_size`) instead of a hardcoded 16. What
+  `HOST_ENGINE_DEFAULTS` requests is not always what the engine uses: on a
+  hybrid stack vLLM enlarges the attention block until an attention page costs
+  at least as many bytes as a mamba state page, then pads the mamba page to
+  match, so one uniform pool covers both — measured at **784 tokens** on
+  Qwen3.8-27B against the 16 we asked for. A filter off by 49x either emits
+  shots the cache cannot hold or silently drops ones it can. At 16 the
+  arithmetic is the old constant exactly, so nothing already profiled moves
+  (`.claude/check_block_size.py`: `dense` and `moe` fire one request and so
+  can never reach the filter; `per_sequence` and `attention` fire n and
+  tighten by 8 and 263 shots at 784)
 - Per-layer timings are normalized by **parent invocations x how many times the
   block sequence emits the layer**, not by the profiled node's `invocations`.
   vLLM merges every same-class sibling under one parent into a single node,
