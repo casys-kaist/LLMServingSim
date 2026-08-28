@@ -173,17 +173,25 @@ expert-to-rank assignment, not by re-profiling.
 Raw heterogeneous-decode shots:
 
 ```
-regime,n,nb,ratio,skew,pc,kp,kvs,kv_big,kv_mean,t_mean_us,t_max_us,t_skew_us,alpha
-pure,4,1,0.25,4.0,0,0,512,2048,896,74.784,118.88,74.657,-0.0029
-pure,4,1,0.25,4.0,0,0,2048,8192,3584,169.854,321.566,171.394,0.0102
+layer,regime,n,nb,ratio,skew,pc,kp,kvs,kv_big,kv_mean,t_mean_us,t_max_us,t_skew_us,alpha
+attention,pure,4,1,0.25,4.0,0,0,512,2048,896,74.784,118.88,74.657,-0.0029
+attention,pure,4,1,0.25,4.0,0,0,2048,8192,3584,169.854,321.566,171.394,0.0102
 ...
 ```
 
-The columns capture the raw shape of each bimodal batch and the
+One row **per attention-category kernel per case**. A sparse-attention model
+has more than one, and they do not share an alpha — on MiniMax-M3 the same
+batch fits 0.24 for `attention`, 0.74 for `indexer` and -0.01 for
+`sparse_attention`, because block selection caps what the sparse layers do
+while the indexer scans the whole KV. A bundle profiled before this column
+existed has one kernel, and it is `attention`.
+
+The remaining columns capture the raw shape of each bimodal batch and the
 three measurements:
 
 | Column | Meaning |
 | --- | --- |
+| `layer` | Which attention-category kernel this row measures |
 | `regime` | `pure` (decode-only) or `mixed` (with prefill chunk) |
 | `n` | Total decodes in the batch |
 | `nb` | Number of "big" decodes (the outlier KV bucket) |
@@ -207,14 +215,15 @@ The fitted per-bucket alpha table the simulator actually consumes
 at run time:
 
 ```
-pc,n_label,skew_rate_label,kv_big_label,kp_label,alpha,n_samples
-0,n<=128,sr<=15%,kvB<=16k,kp=0,0.0322,4
-0,n<=128,sr<=15%,kvB<=1k,kp=0,0.0323,4
+layer,pc,n_label,skew_rate_label,kv_big_label,kp_label,alpha,n_samples
+attention,0,n<=128,sr<=15%,kvB<=16k,kp=0,0.0322,4
+attention,0,n<=128,sr<=15%,kvB<=1k,kp=0,0.0323,4
 ...
 ```
 
 | Column | Meaning |
 | --- | --- |
+| `layer` | Which attention-category kernel this alpha was fitted on |
 | `pc` | Prefill chunk bucket (raw value) |
 | `n_label` | `n_decode` bucket label |
 | `skew_rate_label` | Skew-rate bucket label. The rate itself *is* clipped to [0, 1], unlike alpha — fixed bins `sr<=5%` / `sr<=15%` / `sr<=40%` / `sr<=70%` / `sr>70%` |
@@ -226,8 +235,13 @@ pc,n_label,skew_rate_label,kv_big_label,kp_label,alpha,n_samples
 Labels are the human-readable comparison strings the fitter emits
 (`n<=128`, `kvB<=4k`, `kp=0`), not slugs — the simulator rebuilds them
 from `meta.yaml::skew_fit.bucket_axes` and joins them into the key
-`pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, so they have to
+`{layer}|pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, so they have to
 match character for character.
+
+The `layer` prefix is what keeps a sparse kernel from inheriting the dense
+one's alpha. A table written before the column existed has unprefixed keys, and
+the simulator falls back to those for `attention` **only** — any other kernel
+gets no correction rather than a borrowed one.
 
 Because the axes are recorded in the meta rather than hardcoded,
 widening the profile sweep lights up finer resolution with no
@@ -366,7 +380,8 @@ recorded here.
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
 | `skew_fit.bucket_axes` | Building the bucket key per batch. Falls back to module defaults for bundles written before these were recorded |
 | `skew_fit.per_tp[tp].alpha_by_bucket` or `.bucket_table` | The alpha table, hydrated from `tp<N>/skew_fit.csv` when the meta points at a CSV |
-| `skew_fit.per_tp[tp].alpha_default` | Fallback for a bucket absent from the table |
+| `skew_fit.per_tp[tp].alpha_default` | Fallback for a bucket absent from the table, pooled over every kernel. Used for `attention` only |
+| `skew_fit.per_tp[tp].alpha_default_by_layer` | Per-kernel fallback, `{layer: alpha}`. What a sparse kernel's unfitted buckets resolve to; absent means no correction |
 
 Everything else — versions, `gpu`, `architecture_sha256`,
 `attention_grid`, `skew_profile`, and the `rel_err_*` / `signed_mean`
