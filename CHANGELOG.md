@@ -214,16 +214,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   callers (`Router.get_first_arrival_time` is the live one)
 
 ### Fixed
-- `profiler/core/hooks/vllm_compat.py` — the profiler could not run at all on
-  vLLM v0.28.0. `vllm/profiler/utils.py` carries an unguarded
-  `from _typeshed import DataclassInstance` (added upstream by `fb946a7f89`,
-  "Make `mypy` opt-out instead of opt-in", #33205), and `_typeshed` is a
-  stub-only module that never exists at runtime, so
-  `vllm.profiler.layerwise_profile` — the profiler's only measurement
-  mechanism — raised `ModuleNotFoundError` on import. The shim installs a
-  placeholder only when the name doesn't already resolve; the symbol is used
-  solely in two annotations, so a bare class satisfies it. Delete once
-  upstream guards the import.
 - **DP groups no longer hang with `tp > 1` or `pp > 1`**
   ([#65](https://github.com/casys-kaist/LLMServingSim/issues/65)). A DP group only makes
   progress if every NPU of every member runs the same round, and `add_done` enforces

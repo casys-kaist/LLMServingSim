@@ -111,9 +111,7 @@ class Extension:
         # execute_model N times here yields the per-call mean — the
         # cheap statistical fix for DVFS / boost-clock jitter that
         # single-sample measurements don't mitigate.
-        from profiler.core.hooks.vllm_compat import import_layerwise_profile
-
-        layerwise_profile = import_layerwise_profile()
+        from vllm.profiler.layerwise_profile import layerwise_profile
 
         with force_moe_routing(route):
             with layerwise_profile() as hook:
