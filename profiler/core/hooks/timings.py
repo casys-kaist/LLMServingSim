@@ -15,7 +15,8 @@ catalog slice the host passed in. A match produces a ``TimingSample``
 
 Matching rule: a catalog entry matches a node iff
     node_class is entry.vllm (or one of them, when it is a list)
-AND (entry.within is None OR some ancestor_class == entry.within)
+AND (entry.within is None OR some ancestor_class is in entry.within)
+AND no ancestor_class is in entry.not_within
 
 The DFS path carries the list of ancestor class names, so the
 ``within`` check is just a membership test.
@@ -118,6 +119,16 @@ def _match_slice(
                 continue
         elif node_class not in wanted:
             continue
+        # An exclusion beats any match: one class can play two roles that
+        # ``within`` cannot separate, because it is the immediate parent in
+        # both (DeepSeek's shared expert is a DeepseekV2MLP, exactly like a
+        # dense layer's own mlp).
+        excluded = spec.get("not_within")
+        if excluded is not None:
+            bad = [excluded] if isinstance(excluded, str) else list(excluded)
+            if any(w in ancestors for w in bad):
+                continue
+
         within = spec.get("within")
         if within is None:
             depth = -1

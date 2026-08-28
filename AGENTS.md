@@ -723,6 +723,13 @@ website (not the README).
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
 
+**`profiler/models/*.yaml` is a simulator input**, despite living under
+`profiler/`. The trace generator reads those files directly to learn the layer
+order, so a change there can move every clock in `validate.sh` — merging two
+catalogs into one broke all 16 MoE scenarios exactly this way. When deciding
+whether a change can affect the simulator, the paths to check are
+`serving/`, `configs/`, `bench/`, **`profiler/models/`** and `profiler/perf/`.
+
 1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
    scenario against the `Total clocks (ns)` recorded in
    `serving/validate-baselines.txt`; stage 2 regenerates each `bench/examples`

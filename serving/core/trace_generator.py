@@ -1,4 +1,5 @@
 import os
+import sys
 from .request import *
 from .utils import *
 import pandas as pd
@@ -54,30 +55,74 @@ def resolve_variant(dtype, kv_cache_dtype, model_config=None):
     """
     weight = dtype
     if not weight and model_config is not None:
-        # HuggingFace renamed this field: ``torch_dtype`` is the legacy
-        # spelling and ``dtype`` the current one (Qwen3.8's config carries
-        # only the latter). Must match the profiler's
-        # ``config.model_config_weight_dtype`` exactly, including the order,
-        # or we look in a variant folder the profiler never wrote.
-        weight = model_config.get("torch_dtype") or model_config.get("dtype")
+        # Must match the profiler's ``config.model_config_weight_dtype``
+        # exactly, including the order, or we look in a variant folder the
+        # profiler never wrote.
+        #
+        # A ``quantization_config`` wins: for a quantized checkpoint the dtype
+        # fields describe the *activation* dtype, not the weights.
+        # DeepSeek-V3.2-Exp is FP8 block-quantized with
+        # ``torch_dtype: bfloat16``. And HuggingFace renamed the dtype field
+        # itself -- ``torch_dtype`` is legacy, ``dtype`` current (Qwen3.8
+        # carries only the latter) -- so both are accepted, legacy first.
+        quant = model_config.get("quantization_config")
+        weight = (quant or {}).get("quant_method") if isinstance(quant, dict) else None
+        weight = weight or model_config.get("torch_dtype") or model_config.get("dtype")
     parts = [_short_dtype(weight) if weight else "default"]
     if kv_cache_dtype and kv_cache_dtype != "auto":
         parts.append(f"kv{_short_dtype(kv_cache_dtype)}")
     return "-".join(parts)
 
 
-def _arch_yaml_path(model_type):
+def _arch_dirs():
+    """Candidate ``profiler/models`` directories, absolute.
+
+    Absolute because ``serving/__main__.py`` chdirs into ``astra-sim/`` early,
+    so anything relative resolves somewhere else by the time this runs.
+    """
     base = os.path.dirname(os.path.abspath(__file__))
     serving_dir = os.path.dirname(base)
     repo_root = os.path.dirname(serving_dir)
-    candidate_paths = [
-        os.path.join(repo_root, "profiler", "models", f"{model_type}.yaml"),
-        os.path.join(serving_dir, "profiler", "models", f"{model_type}.yaml"),
+    return [
+        os.path.join(repo_root, "profiler", "models"),
+        os.path.join(serving_dir, "profiler", "models"),
     ]
-    for path in candidate_paths:
-        if os.path.isfile(path):
-            return path
-    return candidate_paths[0]
+
+
+def _catalog_path_module():
+    """Import ``profiler.core.catalog_path``, which owns the naming rule.
+
+    Shared rather than reimplemented: a catalog may serve several
+    ``model_type`` values through its ``model_types:`` list, and having two
+    implementations of that lookup is what broke every MoE scenario when
+    aliasing was added to the profiler's resolver alone.
+
+    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
+    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
+    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
+    any of this runs -- so by then ``profiler`` is not importable by name.
+    Derived from ``__file__`` for the same reason.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from profiler.core import catalog_path
+
+    return catalog_path
+
+
+def _arch_yaml_path(model_type):
+    catalog_path = _catalog_path_module()
+    for arch_dir in _arch_dirs():
+        if not os.path.isdir(arch_dir):
+            continue
+        found = catalog_path.find_architecture_path(model_type, arch_dir)
+        if found is not None:
+            return found
+    # Nothing matched; return the conventional path so the caller's
+    # not-found error names the file a contributor would create.
+    return os.path.join(_arch_dirs()[0], f"{model_type}.yaml")
 
 
 def _variant_root(hardware, model, variant):
@@ -174,9 +219,15 @@ def _load_architecture(model_type):
     """Load catalog + sequence from profiler/models/<model_type>.yaml."""
     path = _arch_yaml_path(model_type)
     if not os.path.isfile(path):
+        # Name every catalog that *is* resolvable, including the ``model_types:``
+        # each one serves -- a bare "add this file" is unactionable when the
+        # right answer is to add the name to an existing catalog's list.
+        catalog_path = _catalog_path_module()
+        listing = catalog_path.describe_available(_arch_dirs()[0])
         raise FileNotFoundError(
-            f"Architecture yaml not found for model_type={model_type!r} at {path}. "
-            f"Add profiler/models/{model_type}.yaml describing the architecture."
+            f"Architecture yaml not found for model_type={model_type!r} at "
+            f"{path}, and no yaml declares it under 'model_types:'.\n"
+            f"Available architectures:\n{listing}"
         )
     with open(path, "r") as f:
         arch = yaml.safe_load(f)
@@ -351,6 +402,29 @@ def _build_attention_table(df):
     }
 
 
+def _build_attention_tables_by_layer(df):
+    """``{layer_name: attention_table}``, one per kernel in the profile.
+
+    A bundle profiled before the attention CSV grew a ``layer`` column has
+    exactly one kernel in it, so every row belongs to ``attention`` and the
+    resulting table is identical to what ``_build_attention_table`` returned
+    for the whole frame. That is the invariant this function has to hold:
+    every committed bundle must come out byte-identical.
+
+    Newer bundles name the kernel per row, because a sparse-attention model
+    runs an indexer over the whole KV before its top-k selection. It keys on
+    the same four axes as the attention kernel and runs on the same layers,
+    but it is different work -- merging the two gave a value describing
+    neither.
+    """
+    if "layer" not in df.columns:
+        return {"attention": _build_attention_table(df)}
+    out = {}
+    for layer in df["layer"].astype(str).unique().tolist():
+        out[layer] = _build_attention_table(df[df["layer"].astype(str) == layer])
+    return out
+
+
 def _build_moe_table(df):
     """MoE table: (tokens, activated_experts) → latency_ns."""
     grouped = {}
@@ -507,7 +581,14 @@ def _build_tp_tables(tp_dir):
 
     attn_df = _read_category_csv(os.path.join(tp_dir, "attention.csv"), None)
     if attn_df is not None:
-        tables["attention"] = _build_attention_table(attn_df)
+        # A sparse-attention profile carries more than one kernel here -- the
+        # attention kernel and an indexer that scores the whole KV before the
+        # top-k selection -- keyed on the same four axes. Split by layer so
+        # they cannot contaminate each other; the plain ``attention`` entry
+        # stays exactly what it has always been.
+        by_layer = _build_attention_tables_by_layer(attn_df)
+        tables["attention_by_layer"] = by_layer
+        tables["attention"] = by_layer.get("attention")
 
     moe_df = _read_category_csv(os.path.join(tp_dir, "moe.csv"), None)
     if moe_df is not None:
@@ -1244,7 +1325,14 @@ def _layer_available(perf_db, tp, layer_name):
     if category == "per_sequence":
         return layer_name in tables.get("per_sequence", {})
     if category == "attention":
-        return bool(tables.get("attention"))
+        # Ask for the requested kernel, not just "is there attention data".
+        # The group can hold more than one now -- a sparse-attention profile
+        # carries an indexer beside the attention kernel -- and answering yes
+        # for a layer the profile has no rows for would emit a trace node
+        # backed by nothing. For a bundle profiled before the CSV gained a
+        # layer column, ``attention_by_layer`` is ``{"attention": ...}``, so a
+        # catalog declaring ``attention`` still answers exactly as before.
+        return layer_name in (tables.get("attention_by_layer") or {})
     if category == "moe":
         return bool(tables.get("moe"))
     return False

@@ -27,6 +27,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from profiler.core.catalog_path import resolve_architecture_path
+
 
 # ---------------------------------------------------------------------------
 # Constants shared with engine.py
@@ -73,7 +75,14 @@ MODEL_DTYPE_KEYS: tuple[str, ...] = ("torch_dtype", "dtype")
 
 
 def model_config_weight_dtype(hf_cfg: dict[str, Any]) -> Any | None:
-    """The weight dtype a model config declares, or None.
+    """The weight precision a model config declares, or None.
+
+    A ``quantization_config`` wins over the dtype fields, because for a
+    quantized checkpoint those describe the *activation* dtype, not the
+    weights. DeepSeek-V3.2-Exp ships FP8 block-quantized with
+    ``torch_dtype: bfloat16``; naming its variant folder ``bf16`` would both
+    mislabel what was measured (FP8 GEMMs) and collide with a genuine bf16
+    release of the same model.
 
     HuggingFace renamed this field: ``torch_dtype`` is the legacy spelling
     and ``dtype`` the current one (Qwen3.8's config carries only the latter).
@@ -86,6 +95,11 @@ def model_config_weight_dtype(hf_cfg: dict[str, Any]) -> Any | None:
     ``trace_generator.resolve_variant`` can agree — if they disagree the
     simulator looks in a variant folder the profiler never wrote.
     """
+    quant = hf_cfg.get("quantization_config")
+    if isinstance(quant, dict):
+        method = quant.get("quant_method")
+        if method:
+            return method
     for key in MODEL_DTYPE_KEYS:
         v = hf_cfg.get(key)
         if v:
@@ -208,6 +222,19 @@ class LayerEntry(BaseModel):
     deepest alternative present in the ancestor chain, so listing a name that
     this checkpoint does not have costs nothing."""
 
+    not_within: str | list[str] | None = None
+    """Ancestor class(es) that **disqualify** a node from matching this entry.
+
+    Needed when one class plays two roles that ``within`` cannot separate
+    because it is the immediate parent in both. DeepSeek's shared expert is a
+    ``DeepseekV2MLP``, exactly like the dense-MLP layers' own ``mlp``, so
+    ``gate_up_proj`` with ``within: DeepseekV2MLP`` matches both — an 18432-wide
+    GEMM and a 2048-wide one, whose mean describes neither. The deepest-
+    ``within`` rule cannot help: ``DeepseekV2MLP`` is the closest ancestor
+    either way. ``not_within: DeepseekV2MoE`` excludes the shared-expert copy,
+    whose cost is already inside the ``moe`` entry that binds the whole block.
+    """
+
     def within_names(self) -> list[str]:
         """``within`` as a list, empty when unset."""
         if self.within is None:
@@ -215,6 +242,14 @@ class LayerEntry(BaseModel):
         if isinstance(self.within, str):
             return [self.within]
         return list(self.within)
+
+    def not_within_names(self) -> list[str]:
+        """``not_within`` as a list, empty when unset."""
+        if self.not_within is None:
+            return []
+        if isinstance(self.not_within, str):
+            return [self.not_within]
+        return list(self.not_within)
 
     tp_stable: bool = False
     """If True, profile this layer only at TP=1 and replicate the
@@ -413,6 +448,7 @@ class Architecture(BaseModel):
             key = (
                 tuple(sorted(entry.vllm_names())),
                 tuple(sorted(entry.within_names())),
+                tuple(sorted(entry.not_within_names())),
             )
             if key in pairs:
                 raise ValueError(
@@ -557,89 +593,19 @@ def read_model_config(model_config_path: Path) -> dict[str, Any]:
     return _load_model_config(model_config_path)
 
 
-def _declared_model_types(path: Path) -> list[str]:
-    """The ``model_types:`` list a yaml declares, or [] — cheaply.
-
-    Deliberately does not build an ``Architecture``: this runs over every file
-    in the directory during a miss, and a malformed *other* file must not stop
-    the one we are looking for from resolving.
-    """
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
-    except Exception:
-        return []
-    if not isinstance(raw, dict):
-        return []
-    declared = raw.get("model_types") or []
-    if not isinstance(declared, list):
-        return []
-    return [str(v) for v in declared]
-
-
 def resolve_architecture_by_model_type(
     model_type: str,
     arch_dir: Path,
 ) -> Path:
     """Find the architecture yaml serving ``model_type``.
 
-    **Naming rule.** The file is named after the HF ``model_type`` it primarily
-    serves: ``<model_type>.yaml``. ``model_type`` is read from the top level of
-    the ``configs/model/<org>/<name>.json`` handed to the profiler, so for a
-    wrapped checkpoint the config-authoring convention decides it — store the
-    **text tower flattened to top level**, with ``architectures`` set to the
-    text-only class, and the recorded ``model_type`` is the text tower's
-    (``qwen3_5_text``, not the VL wrapper's ``qwen3_5``). One architecture, one
-    name.
-
-    **One file, several model_types.** Some ``model_type`` values are different
-    checkpoints of one implementation — GLM-5 (``glm_moe_dsa``) and
-    DeepSeek-V3.2 (``deepseek_v32``) both run vLLM's ``deepseek_v2`` path, and
-    a wrapped checkpoint answers to both its own and its text tower's name.
-    Rather than duplicate a catalog or lean on symlinks, a yaml lists every
-    value it serves in ``model_types:``. Resolution tries the filename first
-    and only scans for a declaration on a miss, so the common path stays a
-    single stat.
-
-    Two files must not claim the same ``model_type``; that is an error rather
-    than a silent first-wins, because which catalog you got would then depend
-    on directory order.
+    Thin wrapper over ``catalog_path.resolve_architecture_path``, which holds
+    the naming rule. That rule lives in its own dependency-free module because
+    the **simulator** resolves catalogs too, and two implementations of it
+    already drifted once — aliasing landed here and not there, and every MoE
+    scenario broke the moment two ``model_type`` values shared one file.
     """
-    candidate = arch_dir / f"{model_type}.yaml"
-    if candidate.is_file():
-        return candidate.resolve()
-
-    matches = [
-        path for path in sorted(arch_dir.glob("*.yaml"))
-        if model_type in _declared_model_types(path)
-    ]
-    if len(matches) > 1:
-        raise ValueError(
-            f"model_type={model_type!r} is declared by more than one "
-            f"architecture yaml: {[str(m) for m in matches]}. Each "
-            f"model_type must resolve to exactly one catalog."
-        )
-    if matches:
-        return matches[0].resolve()
-
-    # List everything resolvable, not just filenames, so the message is
-    # actionable when the name lives in a model_types: list.
-    available: dict[str, list[str]] = {}
-    for path in sorted(arch_dir.glob("*.yaml")):
-        available[path.stem] = _declared_model_types(path)
-    listing = "\n".join(
-        f"  {stem}.yaml" + (f" (also serves: {', '.join(extra)})" if extra else "")
-        for stem, extra in available.items()
-    )
-    raise FileNotFoundError(
-        f"No architecture yaml found for model_type={model_type!r}. "
-        f"Tried {candidate}, and no yaml declares it under 'model_types:'.\n"
-        f"Available architectures:\n{listing}\n"
-        f"To add support, either create {candidate.name} under {arch_dir} with "
-        f"a catalog matching this model family's vLLM classes, or -- if an "
-        f"existing catalog already describes this implementation -- add "
-        f"{model_type!r} to that file's 'model_types:' list."
-    )
+    return Path(resolve_architecture_path(model_type, str(arch_dir)))
 
 
 # ---------------------------------------------------------------------------
@@ -882,9 +848,15 @@ HOST_ENGINE_DEFAULTS: dict[str, Any] = {
     # Default TP; actual engine always spins up single-GPU (we emulate
     # multi-TP via shrunk hf_overrides, see engine.fuse_engine_kwargs).
     "tensor_parallel_size": 1,
-    # Paging block size. Only affects how we size the synthetic block
-    # table; does not change kernel time.
-    "block_size": 16,
+    # Paging block size is deliberately NOT set: vLLM's platform layer picks
+    # one the model's attention backend can actually use, and forcing a value
+    # can leave it with none. DeepSeek-V3.2's sparse MLA is the case in point --
+    # requesting 16 fails backend selection outright
+    # ("FLASHINFER_MLA_SPARSE_SM120: [block_size not supported]") where letting
+    # vLLM choose gives 64. It only sizes the synthetic block table and never
+    # changes kernel time, so there was nothing to gain by pinning it.
+    # ``--block-size`` still overrides, and ``probe_limits`` reports whatever
+    # the engine settled on so the feasibility filters use the real value.
     # KV cache fraction of GPU memory. 0.9 is generous for the
     # 1-decoder-layer dummy model.
     "gpu_memory_utilization": 0.9,

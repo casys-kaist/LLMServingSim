@@ -116,6 +116,41 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **Catalog resolution is one implementation, shared by profiler and
+  simulator** (`profiler/core/catalog_path.py`). The `model_types:` alias
+  lookup had been added to the profiler's resolver only; the simulator still
+  matched on filename alone, so merging `qwen3_moe.yaml` into `qwen3.yaml`
+  broke all 16 MoE scenarios in `serving/validate.sh` with
+  `FileNotFoundError: ... qwen3_moe.yaml`. The module is free of third-party
+  imports so the simulator container, which has no pydantic, can import it;
+  the simulator puts the repo root on `sys.path` explicitly because
+  `sys.path[0]` is `''`, which re-resolves against the current directory, and
+  `serving/__main__.py` chdirs into `astra-sim/` first.
+  `profiler/models/*.yaml` is a **simulator input** despite its path, and both
+  `AGENTS.md` and the contributor docs now say so.
+- **`attention.csv` carries a `layer` column.** Relaxing the "exactly one
+  attention entry" rule was not enough: `AttentionCategory.extract_points`
+  averaged every sample into a single point, which was correct while that rule
+  held but silently merged two different kernels once it didn't. Measured on
+  DeepSeek-V3.2-Exp, `MLAAttention` and `SparseAttnIndexer` collapsed into one
+  value per key -- 211 keys, 211 rows, no duplicates. The averaging is also no
+  longer needed for its original purpose, since the timing extractor
+  normalizes by parent invocations.
+  - The simulator splits the attention table **by layer**
+    (`attention_by_layer`), and `_layer_available` asks for the requested
+    kernel instead of answering "is there attention data at all". A bundle
+    profiled before the column existed has one kernel in it, so every row
+    belongs to `attention` and the table comes out identical -- that invariant
+    is what keeps the committed bundles valid
+- **`block_size` is no longer forced to 16** in `HOST_ENGINE_DEFAULTS`. vLLM's
+  platform layer picks a value the model's attention backend can use, and
+  pinning one can leave it with none: DeepSeek-V3.2's sparse MLA fails backend
+  selection outright at 16 (`TRITON_MLA: [sparse not supported],
+  FLASHINFER_MLA_SPARSE_SM120: [block_size not supported]`) where letting vLLM
+  choose gives 64. The comment beside the default already said it "does not
+  change kernel time", so there was nothing to gain by pinning it.
+  `--block-size` still overrides, and `probe_limits` reports what the engine
+  settled on
 - **`torch_dtype` vs `dtype`.** HuggingFace renamed the field; Qwen3.8's config
   carries only `dtype`, and both `ProfileArgs.effective_variant` and
   `trace_generator.resolve_variant` read only `torch_dtype`. The profiler wrote

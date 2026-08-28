@@ -53,7 +53,19 @@ Useful variations:
 ./serving/validate.sh --help            # all options
 ```
 
-Run it from the repo root inside the simulator container.
+Run it from the repo root inside the simulator container. In a **fresh**
+container run `./scripts/compile.sh` first — it installs the Chakra converter
+into the container's site-packages, which does not persist, and without it
+every scenario reports "did not finish". Pass `LOG_DIR=<a mounted path>` too,
+or the per-scenario logs die with the container.
+
+:::caution[`profiler/models/` is a simulator input]
+Those YAMLs live under `profiler/` but the trace generator reads them directly
+to learn the layer order, so editing one can move every clock here. Merging two
+catalogs into one broke all 16 MoE scenarios exactly this way. The paths that
+can affect this check are `serving/`, `configs/`, `bench/`,
+**`profiler/models/`** and `profiler/perf/` — not just `serving/`.
+:::
 
 ## 2. If something changed, report it
 
