@@ -159,10 +159,24 @@ class Category(ABC):
         """
 
 
-def _entry_dict(entries: dict[str, LayerEntry]) -> dict[str, dict]:
-    """Serialize a catalog group for RPC transport."""
+def _entry_dict(
+    entries: dict[str, LayerEntry],
+    arch: Architecture,
+) -> dict[str, dict]:
+    """Serialize a catalog group for RPC transport.
+
+    ``occurrences`` rides along because the worker cannot compute it: the
+    profiled tree only knows how many times a *module* was called, not how
+    many trace nodes the architecture emits for it. See ``hooks/timings.py``.
+    """
+    occurrences = arch.layer_occurrences()
     return {
-        name: {"vllm": e.vllm, "within": e.within, "tp_stable": e.tp_stable}
+        name: {
+            "vllm": e.vllm,
+            "within": e.within,
+            "tp_stable": e.tp_stable,
+            "occurrences": occurrences.get(name, 1),
+        }
         for name, e in entries.items()
     }
 
@@ -202,7 +216,7 @@ class DenseCategory(Category):
             )
 
     def catalog_slice(self, arch):
-        return _entry_dict(arch.catalog.dense)
+        return _entry_dict(arch.catalog.dense, arch)
 
     def shot_key(self, shot):
         return (sum(new for new, _ in shot.requests),)
@@ -245,7 +259,7 @@ class SequenceCategory(Category):
             )
 
     def catalog_slice(self, arch):
-        return _entry_dict(arch.catalog.per_sequence)
+        return _entry_dict(arch.catalog.per_sequence, arch)
 
     def shot_key(self, shot):
         return (len(shot.requests),)
@@ -442,7 +456,7 @@ class AttentionCategory(Category):
         )
 
     def catalog_slice(self, arch):
-        return _entry_dict(arch.catalog.attention)
+        return _entry_dict(arch.catalog.attention, arch)
 
     def shot_key(self, shot):
         reqs = shot.requests
@@ -518,7 +532,7 @@ class ExpertCategory(Category):
         )
 
     def catalog_slice(self, arch):
-        return _entry_dict(arch.catalog.moe)
+        return _entry_dict(arch.catalog.moe, arch)
 
     def shot_key(self, shot):
         total_tokens = sum(new for new, _ in shot.requests)
