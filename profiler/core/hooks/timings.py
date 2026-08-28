@@ -14,7 +14,7 @@ catalog slice the host passed in. A match produces a ``TimingSample``
 (layer_name, microseconds for **one trace node**).
 
 Matching rule: a catalog entry matches a node iff
-    node_class == entry.vllm
+    node_class is entry.vllm (or one of them, when it is a list)
 AND (entry.within is None OR some ancestor_class == entry.within)
 
 The DFS path carries the list of ancestor class names, so the
@@ -108,7 +108,15 @@ def _match_slice(
     best_name: str | None = None
     best_depth = -2  # within=None → depth -1; any match wins over no match
     for canonical, spec in slice_.items():
-        if spec["vllm"] != node_class:
+        # ``vllm`` may be a list of alternatives, for a family that swaps the
+        # class by checkpoint rather than by structure (Llama 3's
+        # ``Llama3RotaryEmbedding`` where Llama 1/2 use plain
+        # ``RotaryEmbedding``).
+        wanted = spec["vllm"]
+        if isinstance(wanted, str):
+            if wanted != node_class:
+                continue
+        elif node_class not in wanted:
             continue
         within = spec.get("within")
         if within is None:

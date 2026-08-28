@@ -171,9 +171,28 @@ class LayerEntry(BaseModel):
     # extra="forbid" catches typos in YAML early (e.g., `tp_stabe: true`).
     model_config = ConfigDict(extra="forbid")
 
-    vllm: str
-    """vLLM leaf class name as reported by the CUDA profiler, e.g.
-    ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``."""
+    vllm: str | list[str]
+    """Name the CUDA profiler reports for this layer, e.g.
+    ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``.
+
+    Usually a vLLM leaf class, but a **raw CUDA kernel name** works exactly as
+    well: matching strips a trailing ``(...)`` and compares the rest, and a
+    kernel node has no parentheses. That is the only way to reach layers vLLM
+    never wraps in a module — gated DeltaNet's conv and decode recurrence
+    among them.
+
+    A **list** means "whichever of these the checkpoint has". Some families
+    swap the class by checkpoint rather than by structure: Llama 3 uses
+    ``Llama3RotaryEmbedding`` for its extended rope scaling where Llama 1/2
+    and Mistral use the base ``RotaryEmbedding``, with the layer playing the
+    same role either way. Listing both lets one catalog cover the family
+    instead of quietly measuring nothing on half of it."""
+
+    def vllm_names(self) -> list[str]:
+        """``vllm`` as a list."""
+        if isinstance(self.vllm, str):
+            return [self.vllm]
+        return list(self.vllm)
 
     within: str | list[str] | None = None
     """Optional ancestor class name to disambiguate when the same ``vllm``
@@ -389,9 +408,12 @@ class Architecture(BaseModel):
         # (vllm, within) pairs globally unique so layer matching is
         # deterministic. (Multiple catalog-tree nodes can match one
         # entry, that's fine — their timings get averaged by the sink.)
-        pairs: dict[tuple[str, tuple[str, ...]], str] = {}
+        pairs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
         for _, name, entry in self.catalog.all_entries():
-            key = (entry.vllm, tuple(sorted(entry.within_names())))
+            key = (
+                tuple(sorted(entry.vllm_names())),
+                tuple(sorted(entry.within_names())),
+            )
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "

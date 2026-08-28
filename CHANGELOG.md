@@ -257,6 +257,33 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **The profiler works out how many layers to instantiate**, instead of always
+  shrinking to one. `profiler/core/stack.py` resolves the per-layer block
+  composition from the checkpoint's config and shrinks to the smallest
+  **prefix** that instantiates every distinct block, logging what it chose.
+  One layer is right only when every block is identical; on a hybrid it means
+  the catalog sees whichever block type comes first and every other layer type
+  reads as free. Qwen3.8-27B resolves to 4, every config predating hybrid
+  support still resolves to 1, and `--num-hidden-layers` overrides — warning
+  when it goes below what the stack needs.
+  - The count is computed over the **tuple** of (attention type, MLP type),
+    not per axis. A checkpoint interleaving attention 3:1 *and* switching MLP
+    at layer 3 has three distinct blocks, the last first appearing at layer 4,
+    so the answer is 5 — axis-by-axis reasoning says 4 and is wrong
+  - Only rules read out of vLLM's own source are implemented (`layer_types`,
+    `full_attention_interval`, `first_k_dense_replace`, `decoder_sparse_step`
+    with `mlp_only_layers`, and a list-valued `moe_layer_freq`). The
+    conventions genuinely disagree — DeepSeek tests
+    `layer_idx % moe_layer_freq`, Qwen3-MoE tests
+    `(layer_idx + 1) % decoder_sparse_step` — so an unrecognised layout falls
+    back to "uniform" and says so rather than guessing
+- `LayerEntry.vllm` also accepts a **list of alternatives**, for a family that
+  swaps the class by checkpoint rather than by structure. `llama.yaml` now
+  binds `rotary_emb: [Llama3RotaryEmbedding, RotaryEmbedding]`, which is what
+  its own header said it could not do: Llama 3 uses the first for its extended
+  rope scaling where Llama 1/2 and Mistral use the second, and the single
+  binding measured nothing there on half the family. No change for Llama-3.1,
+  whose only rotary node is the Llama-3 class
 - **One architecture catalog per model family, not per checkpoint shape.**
   `profiler/models/qwen3_moe.yaml` is merged into `qwen3.yaml`, which now
   serves both `qwen3` and `qwen3_moe`. vLLM implements the two in separate

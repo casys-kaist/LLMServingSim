@@ -60,11 +60,12 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # MAX_MODEL_LEN=32768
 
 # --- Layer count ------------------------------------------------------------
-# Layers to instantiate. The default of 1 is right for a uniform stack: every
-# block is identical, so profiling one captures the per-block cost. A HYBRID
-# stack needs the smallest count that reaches every distinct block type, or
-# the catalog only ever sees one of them -- 4 for Qwen3.8-27B, whose
-# layer_types runs gated-DeltaNet x3 before the first full-attention layer.
+# Normally leave this alone. The profiler resolves the layer count from the
+# checkpoint's config -- 1 for a uniform stack, and for a hybrid the smallest
+# count that reaches every distinct block type (4 for Qwen3.8-27B, whose
+# layer_types runs gated-DeltaNet x3 before the first full-attention layer) --
+# and logs what it chose. Set this only to override that; going below what the
+# stack needs leaves layers unprofiled, and the run warns when you do.
 # NUM_HIDDEN_LAYERS=4
 
 # --- Model-config overrides -------------------------------------------------

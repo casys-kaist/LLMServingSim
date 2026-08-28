@@ -5,9 +5,12 @@
 # the HF model config selected at the CLI. One architecture covers
 # every size in the family (8B / 70B / 405B / ...).
 #
-# Uses ``Llama3RotaryEmbedding``, which is specific to Llama 3's
-# extended rope scaling — earlier Llama versions (1, 2) use the base
-# ``RotaryEmbedding`` class and will not match this catalog verbatim.
+# ``rotary_emb`` lists two classes because this one differs by checkpoint
+# rather than by structure: Llama 3 uses ``Llama3RotaryEmbedding`` for its
+# extended rope scaling, while Llama 1/2 and Mistral use the base
+# ``RotaryEmbedding``. Matching takes whichever the loaded checkpoint has, so
+# the catalog covers the family instead of silently measuring nothing there on
+# half of it.
 #
 # Canonical layer names mirror vLLM's attribute names (see
 # ../vllm/vllm/model_executor/models/llama.py).
@@ -39,7 +42,7 @@ catalog:
     qkv_proj:
       vllm: QKVParallelLinear
     rotary_emb:
-      vllm: Llama3RotaryEmbedding
+      vllm: [Llama3RotaryEmbedding, RotaryEmbedding]
     o_proj:
       vllm: RowParallelLinear
       within: LlamaAttention
