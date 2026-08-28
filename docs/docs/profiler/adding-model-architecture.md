@@ -47,17 +47,69 @@ dual MLP decoders, you'll also need to extend
 attach the right collectives. We'll cover that at the end of this
 page.
 
+## File naming
+
+The file is named after the HuggingFace `model_type` it primarily serves:
+`<model_type>.yaml`. `model_type` is read from the **top level** of the
+`configs/model/<org>/<name>.json` you hand the profiler.
+
+For a wrapped checkpoint — a vision-language model whose text tower is the
+thing we profile — that means the config-authoring convention decides the
+name. Store the **text tower flattened to top level**, with `architectures`
+set to the text-only class:
+
+```json
+{
+  "architectures": ["Qwen3_5ForCausalLM"],
+  "model_type": "qwen3_5_text",
+  "hidden_size": 5120,
+  "layer_types": ["linear_attention", "linear_attention", "..."]
+}
+```
+
+so the recorded `model_type` is the text tower's (`qwen3_5_text`), not the VL
+wrapper's (`qwen3_5`). One architecture, one name.
+
+Some `model_type` values are different checkpoints of **one** implementation:
+GLM-5 (`glm_moe_dsa`) and DeepSeek-V3.2 (`deepseek_v32`) both run vLLM's
+`deepseek_v2` path, and a wrapped checkpoint answers to both its own name and
+its text tower's. Rather than duplicate a catalog or lean on symlinks, list
+every value one file serves:
+
+```yaml
+model_types:
+  - qwen3_5_text      # the filename, the text tower's own name
+  - qwen3_5           # the VL wrapper
+  - qwen3_5_moe_text  # MoE sibling: same implementation, different MLP
+  - qwen3_5_moe
+```
+
+Resolution tries `<model_type>.yaml` first and only scans for a declaration on
+a miss, so the common path stays one `stat`. Two files claiming the same
+`model_type` is an error, not a silent first-wins — otherwise which catalog you
+got would depend on directory order.
+
+Alias only what is genuinely the same implementation. `qwen3_next` has the same
+gated-DeltaNet structure as `qwen3_5` but different classes
+(`Qwen3NextDecoderLayer`, plain `RMSNorm` where Qwen3.5 uses `GemmaRMSNorm`),
+so it gets its own file.
+
 ## YAML structure
 
-Each architecture YAML has two top-level sections, and nothing else
-(`extra="forbid"`, so a typo or a stray key fails validation at load
-time rather than silently doing nothing):
+Every top-level key is validated with `extra="forbid"`, so a typo or a stray
+key fails at load time rather than silently doing nothing:
 
-- `sequence:`: declares the order layers run in per iteration. The
-  profiler emits one shot per sequence layer; the simulator's
-  `trace_generator` walks the same list at trace time.
-- `catalog:`: binds canonical layer names to the vLLM class names the
-  CUDA profiler reports. Grouped into four blocks by profile kind.
+- `catalog:` — binds canonical layer names to the vLLM class names the CUDA
+  profiler reports. Grouped by profile kind.
+- `model_types:` — optional; the extra `model_type` values this file serves
+  (see [File naming](#file-naming)).
+- the layer order, in **one** of two forms:
+  - `sequence:` — a **uniform** stack, every decoder block identical. What
+    every dense and MoE family here uses.
+  - `blocks:` + `shared:` — a **heterogeneous** stack, where blocks differ by
+    layer. See [Heterogeneous stacks](#heterogeneous-stacks).
+
+Declaring both forms is an error.
 
 ### Minimal example: `llama.yaml`
 
@@ -111,14 +163,32 @@ catalog:
 ### `catalog` structure
 
 The **profile kind is the block a layer sits in**, not a field on the
-layer. There are exactly four blocks, all optional:
+layer. There are five blocks, all optional:
 
 | Block | Sweep axis | CSV |
 | --- | --- | --- |
 | `dense` | `tokens` (batch total) | `dense.csv` |
 | `per_sequence` | `sequences` (request count) | `per_sequence.csv` |
 | `attention` | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` | `attention.csv` |
+| `linear_attention` | `(prefill_tokens, n_decode)` | `linear_attention.csv` |
 | `moe` | `(tokens, activated_experts)` | `moe.csv` |
+
+`linear_attention` is for mamba / gated-DeltaNet layers. It has **two** axes
+rather than attention's four because there is no kv axis at all: the state is
+fixed-size per sequence regardless of position, so cost does not depend on
+sequence length — measured on Qwen3.8-27B, a 64x spread in kv length moves it
+1.1%, and a batch with wildly uneven lengths is indistinguishable from a
+uniform one. **No skew correction applies**, unlike softmax attention.
+
+It has two axes rather than one because *which kernel runs* depends on the mix:
+a pure-decode batch runs a recurrent kernel, and adding a prefill chunk makes
+vLLM switch to a fused-gating one instead. A pair of 1-D tables cannot express
+a kernel-identity switch.
+
+Its CSV carries a `layer` column, unlike `attention.csv`, because one
+linear-attention block runs several non-interchangeable kernels on the same
+axes. `attention` may also hold more than one entry now — a sparse-attention
+model runs an indexer kernel alongside the attention kernel on the same axes.
 
 ### `catalog` entry fields
 
@@ -166,6 +236,66 @@ empty list (`mlp_moe: []` for a dense model). Layers may repeat inside
 a group or across groups — `layernorm` appears in both `pre_attn` and
 `post_attn`, which is how one catalog entry covers both norms.
 
+## Heterogeneous stacks
+
+`sequence:` assumes every decoder block is identical. Recent architectures
+break that: Qwen3.5/3.8 interleave gated-DeltaNet and full-attention layers
+3:1, GLM and DeepSeek run a dense MLP for the first few layers and MoE after,
+MiniMax-M3 varies both at once and turns its sparse indexer off for the first
+three layers.
+
+A layer's identity in such a stack is a **tuple**, not a name, so `blocks:` is
+keyed by **axis** rather than by block name — naming every combination
+explodes, keying each axis separately does not:
+
+```yaml
+blocks:
+  attn:
+    linear_attention:               # a value from the config's layer_types
+      pre_attn:  [layernorm, gdn_in_proj, gdn_conv_prefill, gdn_prefill]
+      post_attn: [gdn_norm, gdn_out_proj, layernorm]
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
+  prologue: [embedding]
+  head:     [final_layernorm, lm_head, sampler]
+```
+
+The keys under `blocks.attn` are exactly the values the checkpoint's config
+uses, so **which block a given layer runs comes from the checkpoint, not from
+this file** — `layer_types` for Qwen3.5, `first_k_dense_replace` for
+GLM/DeepSeek, `attn_type_list` or `hybrid_override_pattern` elsewhere. That
+keeps one catalog valid across every checkpoint in a family, including ones
+with a different interleave ratio.
+
+`shared:` holds what runs once per *iteration* rather than once per block.
+
+### Profiling a heterogeneous stack
+
+The profiler normally shrinks the model to **one** decoder layer: every block
+is identical, so profiling one captures the per-block cost and keeps the run
+cheap. That is exactly wrong for a hybrid — at one layer the catalog can only
+ever see whichever block type happens to come first.
+
+Pass the smallest layer count that instantiates every block type:
+
+```bash
+python -m profiler profile Qwen/Qwen3.8-27B --hardware RTXPRO6000     --num-hidden-layers 4
+```
+
+4, for Qwen3.8-27B, because its `layer_types` runs three linear-attention
+layers before the first full-attention one.
+
+Nothing else changes. vLLM's profiler merges same-class siblings under one
+parent into a single node, and the timing extractor divides by *parent
+invocations x how many times the block sequence emits the layer*, so a
+multi-layer run still yields a per-layer number.
+
 ## MoE-specific YAML
 
 An MoE architecture adds a `moe` block to the catalog and swaps which
@@ -198,16 +328,33 @@ YAMLs.
 Suppose you want to support `gemma2` (the Google Gemma 2 series).
 HF config has `model_type: "gemma2"`. Workflow:
 
-### 1. Inspect the model's vLLM source
+### 1. Dump what the profiler actually reports
 
-Look at `vllm/model_executor/models/<model>.py`. Identify:
+Read `vllm/model_executor/models/<model>.py` for orientation — the decoder
+block class, the layer attribute names, where the layernorms sit, how experts
+are arranged. But **do not write the catalog from it.** The module tree and the
+profile tree are not the same thing, and the gaps go both ways:
 
-- The decoder block class.
-- Each layer attribute name (`self.qkv_proj`, `self.attention`, …).
-- Whether layernorms are pre-attn / post-attn / both.
-- Whether there are any extra layers (some models have post-MLP
-  layernorms, etc.).
-- For MoE: how experts are arranged.
+- **Real modules that never become profile nodes.** `rotary_emb`, `q_norm` and
+  `k_norm` all exist inside `Qwen3NextAttention`; none of them appears in the
+  profile tree, because their kernels run as bare children of the parent.
+  Binding them silently measures nothing — the CSV gets no row and the layer
+  looks free. `RMSNormGated` is the same.
+- **Kernels that are not modules but can be bound anyway.** Matching compares
+  the profile node's name with the `(...)` suffix stripped, and a raw CUDA
+  kernel node has no parentheses, so `vllm: _causal_conv1d_fwd_kernel` matches
+  exactly as a class name would. For gated DeltaNet this is the *only* way to
+  reach the conv and the decode recurrence.
+- **Kernels that change with the batch regime.** A gated-DeltaNet block runs
+  one set of kernels for pure prefill, another for pure decode, and a third for
+  a mixed batch. A catalog written from a single mixed shot binds the wrong
+  kernel for both pure regimes.
+
+So boot the model and look. Both of the throwaway scripts under `.claude/` in
+the repo do this — `dump_module_tree.py` prints the module tree and the KV
+cache group layout, `dump_tree_by_shot.py` prints the profile tree once per
+batch regime. Bind against their output, and re-run them after a vLLM upgrade
+if timings go strange.
 
 ### 2. Write `profiler/models/gemma2.yaml`
 

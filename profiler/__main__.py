@@ -39,11 +39,13 @@ Verbosity
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from profiler.core import logger as log
 from profiler.core.config import (
@@ -109,6 +111,54 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                    dest="max_num_seqs",
                    help="Max concurrent sequences. Matches vLLM's own "
                         "``--max-num-seqs``. Default: 256.")
+    p.add_argument("--block-size", type=int, default=None,
+                   dest="block_size",
+                   help="KV block size in tokens, vLLM's own "
+                        "``--block-size``. Default: 16, matching the "
+                        "simulator's own --block-size; the two should agree, "
+                        "since a profile measured under one paging regime "
+                        "does not describe another. On a hybrid stack vLLM "
+                        "overrides this to unify attention and mamba page "
+                        "sizes, and the run logs what it settled on.")
+    p.add_argument("--gpu-memory-utilization", type=float, default=None,
+                   dest="gpu_memory_utilization",
+                   help="Fraction of GPU memory vLLM may use; the simulator "
+                        "spells the same thing --npu-memory-utilization. "
+                        "Default: 0.9. Sets the KV block count, which every "
+                        "shot-feasibility filter is measured against, so it "
+                        "changes which shots a sweep contains.")
+    p.add_argument("--max-model-len", type=int, default=None,
+                   dest="max_model_len",
+                   help="Cap the engine's context length. Default: whatever "
+                        "the model config declares. Bounds the kv axes and "
+                        "the per-shot length checks, so lowering it cuts "
+                        "profile time on a long-context model.")
+    p.add_argument("--num-hidden-layers", type=int, default=None,
+                   dest="num_hidden_layers",
+                   help="Layers to instantiate. Default: 1, which is right "
+                        "for a uniform stack where every block is identical. "
+                        "A hybrid stack needs the smallest count that reaches "
+                        "every distinct block type (4 for Qwen3.8-27B, whose "
+                        "layer_types runs gated-DeltaNet x3 then full "
+                        "attention) or the catalog only ever sees one.")
+    p.add_argument("--hf-override", action="append", default=None,
+                   dest="hf_override", metavar="KEY=VALUE",
+                   help="Override one model-config field, repeatable. The "
+                        "value is parsed as JSON when it parses and kept as a "
+                        "string otherwise, so both "
+                        "``--hf-override index_topk=1024`` and "
+                        "``--hf-override 'layer_types=[\"a\",\"b\"]'`` work. "
+                        "Applied on top of the config on disk, under TP "
+                        "sharding. The generic escape hatch for sweeping a "
+                        "shape without editing configs/model/.")
+    p.add_argument("--linear-attn-chunk", type=int, default=None,
+                   dest="linear_attn_chunk",
+                   help="Chunk length the linear-attention prefill scan works "
+                        "in, used to place grid points. Default: resolved "
+                        "from the model config's chunk_size, else vLLM's "
+                        "FLA_CHUNK_SIZE. Measured cost tracks the chunk "
+                        "count, not the token count, so the grid samples "
+                        "boundaries and the points just past them.")
 
     # Attention grid.
     p.add_argument("--attention-max-kv", type=int, default=16384,
@@ -321,6 +371,11 @@ def _build_profile_args(
         kv_cache_dtype=ns.kv_cache_dtype,
         max_num_batched_tokens=ns.max_num_batched_tokens,
         max_num_seqs=ns.max_num_seqs,
+        block_size=getattr(ns, "block_size", None),
+        gpu_memory_utilization=getattr(ns, "gpu_memory_utilization", None),
+        max_model_len=getattr(ns, "max_model_len", None),
+        num_hidden_layers=getattr(ns, "num_hidden_layers", None),
+        linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_chunk_factor=ns.attention_chunk_factor,
         attention_kv_factor=ns.attention_kv_factor,
@@ -332,7 +387,7 @@ def _build_profile_args(
         skew_kvs_factor=getattr(ns, "skew_kvs_factor", 2.0),
         only_skew=getattr(ns, "only_skew", False),
         force=getattr(ns, "force", False),
-        hf_overrides=None,
+        hf_overrides=_parse_hf_overrides(getattr(ns, "hf_override", None)),
         model_config=model_config,
     )
 
@@ -340,6 +395,47 @@ def _build_profile_args(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _parse_hf_overrides(pairs: list[str] | None) -> dict[str, Any] | None:
+    """Turn repeated ``KEY=VALUE`` arguments into a model-config override dict.
+
+    Values go through ``json.loads`` first so numbers, booleans, nulls and
+    lists arrive as the types a model config would hold, and fall back to the
+    raw string when that fails — ``bfloat16`` is not valid JSON but is a
+    perfectly good ``torch_dtype``.
+
+    Dotted keys nest, so ``--hf-override text_config.num_experts=8`` reaches
+    into a wrapped config the way the file itself is shaped.
+    """
+    if not pairs:
+        return None
+    out: dict[str, Any] = {}
+    for raw in pairs:
+        if "=" not in raw:
+            raise SystemExit(
+                f"--hf-override expects KEY=VALUE, got {raw!r}"
+            )
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"--hf-override has an empty key: {raw!r}")
+        try:
+            parsed: Any = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = value
+        target = out
+        *parents, leaf = key.split(".")
+        for part in parents:
+            nxt = target.setdefault(part, {})
+            if not isinstance(nxt, dict):
+                raise SystemExit(
+                    f"--hf-override {key!r} conflicts with an earlier "
+                    f"non-mapping value at {part!r}"
+                )
+            target = nxt
+        target[leaf] = parsed
+    return out
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -375,7 +471,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_slice.add_argument(
         "--group",
-        choices=["dense", "per_sequence", "attention", "moe"],
+        choices=["dense", "per_sequence", "attention", "linear_attention",
+                 "moe"],
         required=True,
         help="Which profile category to refresh.",
     )

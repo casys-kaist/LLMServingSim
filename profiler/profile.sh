@@ -47,6 +47,39 @@ TP_DEGREES="1,2"
 # KV_CACHE_DTYPE="fp8"             # auto / fp8 / fp16 / bf16
 MAX_NUM_BATCHED_TOKENS=2048      # vLLM's --max-num-batched-tokens
 MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
+# BLOCK_SIZE and GPU_MEMORY_UTILIZATION mirror the simulator's --block-size
+# and --npu-memory-utilization; keep them in step with whatever you simulate
+# at, since a profile measured under one paging regime doesn't describe
+# another. GPU_MEMORY_UTILIZATION also sets the KV block count, which every
+# shot-feasibility filter is measured against, so it changes *which* shots the
+# sweep contains.
+# BLOCK_SIZE=16
+# GPU_MEMORY_UTILIZATION=0.9
+# MAX_MODEL_LEN caps the engine's context length; lowering it cuts profile
+# time on a long-context model.
+# MAX_MODEL_LEN=32768
+
+# --- Layer count ------------------------------------------------------------
+# Layers to instantiate. The default of 1 is right for a uniform stack: every
+# block is identical, so profiling one captures the per-block cost. A HYBRID
+# stack needs the smallest count that reaches every distinct block type, or
+# the catalog only ever sees one of them -- 4 for Qwen3.8-27B, whose
+# layer_types runs gated-DeltaNet x3 before the first full-attention layer.
+# NUM_HIDDEN_LAYERS=4
+
+# --- Model-config overrides -------------------------------------------------
+# Override any model-config field without editing configs/model/. Values are
+# parsed as JSON when they parse and kept as strings otherwise; dotted keys
+# nest. Use this to sweep a shape -- sparse-attention top-k, chunk length,
+# expert count -- from the command line.
+# HF_OVERRIDES=("index_topk=1024" "num_experts=64")
+
+# --- Linear attention (mamba / gated DeltaNet) ------------------------------
+# Chunk length the prefill scan works in, used to place grid points. Left
+# unset it resolves from the model config's chunk_size, else from vLLM's
+# FLA_CHUNK_SIZE. Measured cost tracks the CHUNK COUNT rather than the token
+# count, so the grid samples boundaries and the points just past them.
+# LINEAR_ATTN_CHUNK=64
 
 # --- Attention grid ---------------------------------------------------------
 # Upper bound for kv_prefill / kv_decode axes. The grid grows
@@ -119,6 +152,15 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${KV_CACHE_DTYPE:-}" ]]         && cmd+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
 [[ -n "${MAX_NUM_BATCHED_TOKENS:-}" ]] && cmd+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
 [[ -n "${MAX_NUM_SEQS:-}" ]]           && cmd+=(--max-num-seqs "$MAX_NUM_SEQS")
+[[ -n "${BLOCK_SIZE:-}" ]]             && cmd+=(--block-size "$BLOCK_SIZE")
+[[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
+[[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
+[[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
+[[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
+# HF_OVERRIDES is an array, one --hf-override per entry.
+for _ovr in "${HF_OVERRIDES[@]:-}"; do
+    [[ -n "$_ovr" ]] && cmd+=(--hf-override "$_ovr")
+done
 [[ -n "${ATTENTION_MAX_KV:-}" ]]       && cmd+=(--attention-max-kv "$ATTENTION_MAX_KV")
 [[ -n "${ATTENTION_CHUNK_FACTOR:-}" ]] && cmd+=(--attention-chunk-factor "$ATTENTION_CHUNK_FACTOR")
 [[ -n "${ATTENTION_KV_FACTOR:-}" ]]    && cmd+=(--attention-kv-factor "$ATTENTION_KV_FACTOR")

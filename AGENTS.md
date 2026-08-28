@@ -47,7 +47,7 @@ LLMServingSim/
 │   │   ├── runner.py           # Orchestration (spin_up → categories → spin_down)
 │   │   ├── config.py           # Architecture / ProfileArgs / engine defaults
 │   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
-│   │   ├── categories.py       # Dense / PerSequence / Attention / Expert
+│   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
 │   │   ├── fit_alpha.py        # 5-axis weighted-LS alpha fit
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
@@ -55,7 +55,7 @@ LLMServingSim/
 │   │   └── hooks/              # vLLM-internal-API touchpoints (worker ext, MoE patch, etc.)
 │   ├── models/                 # Architecture yamls, one per HF `model_type`
 │   ├── power/                  # nvidia-smi / IPMI power-logging helpers
-│   ├── perf/                   # Output: perf/<hw>/<model>/<variant>/tp<N>/{dense,per_sequence,attention,moe,skew,skew_fit}.csv
+│   ├── perf/                   # Output: perf/<hw>/<model>/<variant>/tp<N>/{dense,per_sequence,attention,linear_attention,moe,skew,skew_fit}.csv
 │   ├── v0/                     # Legacy (pre-rewrite) profiler, kept for reference
 │   ├── profile.sh              # Editable user template (MODEL / HARDWARE / TP_DEGREES / …)
 │   └── profile-all.sh          # Helper: sweeps several MODELs × TP degrees
@@ -136,7 +136,40 @@ The profiler uses vLLM's built-in `layerwise_profile()` via a worker extension c
 capture per-layer CUDA kernel timings from real vLLM execution paths. Architecture is
 dispatched by the HF config's `model_type` field against YAML catalogs under
 `profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
-per-sequence / attention / moe) to vLLM class names.
+per-sequence / attention / linear-attention / moe) to vLLM class names.
+
+**Catalog naming rule.** The file is named after the `model_type` it primarily
+serves. `model_type` is read from the top level of the config handed to the
+profiler, so for a wrapped (VL) checkpoint the convention is to store the
+**text tower flattened to top level** with `architectures` set to the text-only
+class — that makes `qwen3_5_text`, not the wrapper's `qwen3_5`, the recorded
+name. When several `model_type` values are the same implementation (GLM-5's
+`glm_moe_dsa` and DeepSeek-V3.2's `deepseek_v32` both run vLLM's `deepseek_v2`
+path), one file lists them all under `model_types:` rather than the catalog
+being duplicated or symlinked. Two files claiming one `model_type` is an error,
+not first-wins.
+
+**Uniform vs heterogeneous stacks.** A catalog declares its layer order in one
+of two mutually exclusive forms. `sequence:` is a uniform stack, every decoder
+block identical — what every family here used until Qwen3.5. `blocks:` +
+`shared:` is a heterogeneous stack, keyed by **axis**
+(`blocks.attn.<layer_types value>`, `blocks.mlp.dense|moe`) rather than by
+block name, because a layer's identity is a tuple and enumerating combinations
+explodes. Which block a given layer runs comes from the *checkpoint's* config
+(`layer_types`, `first_k_dense_replace`, `attn_type_list`,
+`hybrid_override_pattern`), never from the yaml. Profiling a hybrid needs
+`--num-hidden-layers` raised to the smallest count that instantiates every
+block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one.
+
+**Write a catalog from a live profile dump, not from vLLM's source.** The
+module tree and the profile tree differ both ways: `rotary_emb`, `q_norm`,
+`k_norm` and `RMSNormGated` are real modules that never become profile nodes
+(binding them silently measures nothing), while raw CUDA kernels that are not
+modules *can* be bound by name (`vllm: _causal_conv1d_fwd_kernel`) and are the
+only way to reach gated DeltaNet's conv and decode recurrence. Kernel identity
+also changes with the batch regime — a GDN block runs one set for pure prefill,
+another for pure decode, a third for a mixed batch — so a catalog written from
+a single shot binds the wrong kernel for the others.
 
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
@@ -162,6 +195,7 @@ perf/<hw>/<model>/<variant>/
     dense.csv                            layer, tokens, time_us
     per_sequence.csv                     layer, sequences, time_us
     attention.csv                        prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
+    linear_attention.csv                 layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
     moe.csv                              tokens, activated_experts, time_us   (MoE only)
     skew.csv                             raw heterogeneous-decode shots        (skew enabled)
     skew_fit.csv                         fitted per-bucket alpha table         (skew enabled)

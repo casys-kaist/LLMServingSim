@@ -32,6 +32,7 @@ from profiler.core.config import (
     HOST_ENGINE_DEFAULTS,
     SHARD_FIELDS,
     ProfileArgs,
+    probe_linear_attn_chunk,
     probe_moe_params,
 )
 
@@ -58,6 +59,11 @@ class RuntimeLimits:
             page to match, so one uniform pool covers both. Measured at 784
             on Qwen3.8-27B against the 16 we requested.
         max_model_len: longest single sequence the engine accepts.
+        linear_attn_chunk: chunk length the linear-attention prefill scan
+            works in, or None when the model has no linear-attention layer.
+            A grid-placement quantity, not an engine one: measured cost
+            tracks the chunk count, so the sweep has to sample boundaries and
+            the points just past them.
         num_experts / top_k: MoE parameters from HF config. None for
             non-MoE models.
     """
@@ -67,6 +73,7 @@ class RuntimeLimits:
     num_cache_tokens: int
     max_model_len: int
     block_size: int = 16
+    linear_attn_chunk: int | None = None
     num_experts: int | None = None
     top_k: int | None = None
 
@@ -108,6 +115,12 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
         out["max_num_batched_tokens"] = args.max_num_batched_tokens
     if args.max_num_seqs is not None:
         out["max_num_seqs"] = args.max_num_seqs
+    if args.block_size is not None:
+        out["block_size"] = args.block_size
+    if args.gpu_memory_utilization is not None:
+        out["gpu_memory_utilization"] = args.gpu_memory_utilization
+    if args.max_model_len is not None:
+        out["max_model_len"] = args.max_model_len
     if args.hf_overrides is not None:
         out["hf_overrides"] = args.hf_overrides
     return out
@@ -131,8 +144,12 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     the written config:
 
         HOST_ENGINE_DEFAULTS["hf_overrides"]   num_hidden_layers=1 (profiling)
-        args.hf_overrides                       explicit CLI override
+        args.num_hidden_layers                  --num-hidden-layers
+        args.hf_overrides                       --hf-override KEY=VALUE
         sharded_overrides                       per-tp divide of SHARD_FIELDS
+
+    Later entries win, so an explicit ``--hf-override num_hidden_layers=...``
+    beats ``--num-hidden-layers``, and TP sharding beats both.
 
     MNBT bump: the engine is booted with ``max_num_batched_tokens``
     set to ``logical_mnbt + logical_msq`` so scheduler-bypass fires
@@ -163,6 +180,8 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     hf_overrides: dict[str, Any] = dict(
         HOST_ENGINE_DEFAULTS.get("hf_overrides", {})
     )
+    if args.num_hidden_layers is not None:
+        hf_overrides["num_hidden_layers"] = args.num_hidden_layers
     if args.hf_overrides:
         hf_overrides = _deep_merge(hf_overrides, args.hf_overrides)
 
@@ -251,7 +270,7 @@ def spin_up(
     return llm, kwargs, tmpdir
 
 
-def probe_limits(llm: LLM) -> RuntimeLimits:
+def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     """Read back the runtime shapes the engine accepted.
 
     Undoes the MNBT bump applied in ``fuse_engine_kwargs`` so
@@ -285,6 +304,12 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     moe_params = probe_moe_params(cfg_dict)
     num_experts, top_k = moe_params or (None, None)
 
+    # CLI wins over the resolved value, so a user can widen or coarsen the
+    # prefill grid without editing a model config.
+    chunk = probe_linear_attn_chunk(cfg_dict)
+    if args is not None and args.linear_attn_chunk is not None:
+        chunk = int(args.linear_attn_chunk)
+
     engine_mnbt = cfg.scheduler_config.max_num_batched_tokens
     engine_msq = cfg.scheduler_config.max_num_seqs
     logical_mnbt = engine_mnbt - engine_msq
@@ -294,6 +319,7 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
         max_num_seqs=engine_msq,
         num_cache_tokens=int(num_cache_tokens),
         block_size=int(cfg.cache_config.block_size),
+        linear_attn_chunk=chunk,
         max_model_len=cfg.model_config.max_model_len,
         num_experts=num_experts,
         top_k=top_k,

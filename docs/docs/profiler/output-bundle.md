@@ -20,6 +20,7 @@ profiler/perf/<HARDWARE>/<MODEL>/<variant>/
     ├── dense.csv
     ├── per_sequence.csv
     ├── attention.csv
+    ├── linear_attention.csv      # mamba / gated-DeltaNet models only
     ├── moe.csv                   # MoE models only
     ├── skew.csv                  # skew-enabled runs only
     └── skew_fit.csv              # skew-enabled runs only
@@ -116,6 +117,36 @@ linearly, extrapolating from the top two samples above the grid.
 The grid is geometric (doubling by default, controlled by
 `ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR`). Smaller values
 densify; larger values speed up profiling at some accuracy cost.
+
+## `linear_attention.csv` (mamba / gated-DeltaNet models only)
+
+| Column | Meaning |
+| --- | --- |
+| `layer` | Canonical layer name |
+| `prefill_tokens` | Tokens in the batch's prefill chunk |
+| `n_decode` | Number of decoding sequences |
+| `time_us` | Latency for one trace node, microseconds |
+
+Two axes rather than attention's four, and no kv axis at all: a
+gated-DeltaNet layer keeps a fixed-size conv state and a fixed-size recurrent
+state per sequence, neither a function of position. Cost therefore does not
+depend on sequence length — measured on Qwen3.8-27B, a 64x spread in kv length
+moves it 1.1% — and **no skew correction applies**, unlike `attention.csv`.
+
+Two axes rather than one because *which kernel runs* depends on the mix. A
+pure-decode batch runs a recurrent kernel; add a prefill chunk and vLLM
+switches to a fused-gating one, and the conv switches too. That is why this
+file has a `layer` column where `attention.csv` does not: one block runs
+several non-interchangeable kernels on the same axes, so each gets its own
+rows, and a cell is empty when the batch shape never reaches that kernel.
+
+The `prefill_tokens` axis is sampled **chunk-aware** — inside the first chunk,
+at every chunk boundary, and at the token just past each boundary. Cost is a
+staircase, not a line: one token past a 64-boundary costs 13.5% more than the
+boundary itself, and the interval to the next boundary is nearly flat. A plain
+geometric grid lands only on boundaries, so interpolating between two samples
+underestimates most of the token counts a chunked-prefill scheduler actually
+produces.
 
 ## `moe.csv` (MoE models only)
 
