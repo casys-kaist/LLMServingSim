@@ -139,7 +139,11 @@ dispatched by the HF config's `model_type` field against YAML catalogs under
 per-sequence / attention / linear-attention / moe) to vLLM class names.
 
 **Catalog naming rule.** The file is named after the `model_type` it primarily
-serves. `model_type` is read from the top level of the config handed to the
+serves, spelled **verbatim** — including where vendors disagree: DeepSeek
+writes V3.2 as `deepseek_v32`, Qwen writes 3.5 as `qwen3_5`, so the files are
+`deepseek_v32.yaml` and `qwen3_5.yaml`. Copying upstream's spelling is what
+keeps the rule mechanical; normalising it would mean the filename matches no
+`model_type` and every lookup falls through to the directory scan. `model_type` is read from the top level of the config handed to the
 profiler, so for a wrapped (VL) checkpoint the convention is to store the
 **text tower flattened to top level** with `architectures` set to the text-only
 class — that makes `qwen3_5_text`, not the wrapper's `qwen3_5`, the recorded

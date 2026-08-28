@@ -59,8 +59,17 @@ page.
 ## File naming
 
 The file is named after the HuggingFace `model_type` it primarily serves:
-`<model_type>.yaml`. `model_type` is read from the **top level** of the
-`configs/model/<org>/<name>.json` you hand the profiler.
+`<model_type>.yaml`, spelled **verbatim**. `model_type` is read from the
+**top level** of the `configs/model/<org>/<name>.json` you hand the profiler.
+
+Verbatim means exactly that, including where vendors disagree with each other.
+DeepSeek writes V3.2 as `deepseek_v32` and Qwen writes 3.5 as `qwen3_5`, so the
+files are `deepseek_v32.yaml` and `qwen3_5.yaml` — inconsistent-looking, but
+the inconsistency is upstream's and copying it is what keeps the rule
+mechanical. Normalising to a house style would mean the filename matches no
+`model_type`, so every lookup falls through to the directory scan and nobody
+searching for `deepseek_v32` finds the file by name. (A `.` never appears:
+`model_type` values are Python module names upstream.)
 
 For a wrapped checkpoint — a vision-language model whose text tower is the
 thing we profile — that means the config-authoring convention decides the
