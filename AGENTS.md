@@ -139,7 +139,11 @@ dispatched by the HF config's `model_type` field against YAML catalogs under
 per-sequence / attention / linear-attention / moe) to vLLM class names.
 
 **Catalog naming rule.** The file is named after the `model_type` it primarily
-serves. `model_type` is read from the top level of the config handed to the
+serves, spelled **verbatim** — including where vendors disagree: DeepSeek
+writes V3.2 as `deepseek_v32`, Qwen writes 3.5 as `qwen3_5`, so the files are
+`deepseek_v32.yaml` and `qwen3_5.yaml`. Copying upstream's spelling is what
+keeps the rule mechanical; normalising it would mean the filename matches no
+`model_type` and every lookup falls through to the directory scan. `model_type` is read from the top level of the config handed to the
 profiler, so for a wrapped (VL) checkpoint the convention is to store the
 **text tower flattened to top level** with `architectures` set to the text-only
 class — that makes `qwen3_5_text`, not the wrapper's `qwen3_5`, the recorded
@@ -722,6 +726,13 @@ website (not the README).
 
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
+
+**`profiler/models/*.yaml` is a simulator input**, despite living under
+`profiler/`. The trace generator reads those files directly to learn the layer
+order, so a change there can move every clock in `validate.sh` — merging two
+catalogs into one broke all 16 MoE scenarios exactly this way. When deciding
+whether a change can affect the simulator, the paths to check are
+`serving/`, `configs/`, `bench/`, **`profiler/models/`** and `profiler/perf/`.
 
 1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
    scenario against the `Total clocks (ns)` recorded in

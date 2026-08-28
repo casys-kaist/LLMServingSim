@@ -1,0 +1,152 @@
+# DeepSeek-V3.2 / GLM-5 — class catalog (MLA + DeepSeek Sparse Attention, MoE).
+#
+# One catalog for both, because vLLM runs them through the same module:
+# ``registry.py`` maps ``DeepseekV32ForCausalLM`` *and*
+# ``GlmMoeDsaForCausalLM`` (along with V2, V3 and the original Deepseek) to
+# ``deepseek_v2.py``, so the class names below are shared. The configs agree
+# structurally too — MLA with ``kv_lora_rank 512``, a sparse indexer at
+# ``index_topk 2048``, 256 routed experts plus one shared, and
+# ``first_k_dense_replace 3`` — differing only in head dimensions and in
+# whether expert routing is group-limited.
+#
+# Uniform attention stack (every layer is full attention over the latent KV),
+# heterogeneous MLP: layers 0..2 run a dense MLP and the rest run MoE. That
+# makes the minimum profiling depth 4, which the profiler resolves from the
+# config itself.
+#
+# ---------------------------------------------------------------------------
+# Read off a live profile dump, not off vLLM's source. What that caught here:
+#
+#  * The **shared expert is a ``DeepseekV2MLP``** — the same class as a dense
+#    layer's own ``mlp``. ``within: DeepseekV2MLP`` matches both, and the
+#    deepest-``within`` rule cannot separate them because that class is the
+#    immediate parent either way. Their widths differ by 9x (intermediate_size
+#    18432 against the shared expert's 2048), so the merged mean describes
+#    neither. Hence ``not_within: DeepseekV2MoE`` on the dense-MLP entries;
+#    the shared expert's cost is already inside ``moe``, which binds the whole
+#    block.
+#  * ``q_a_layernorm`` and ``kv_a_layernorm`` are both ``RMSNorm`` inside
+#    ``DeepseekV2MLAAttention``, and ``q_b_proj`` / ``kv_b_proj`` are both
+#    ``ColumnParallelLinear`` there. Each pair is reported as one merged node,
+#    so each is one canonical entry whose value is the pair's **sum** — the
+#    same situation as Qwen3.5's fused input projection.
+#  * The attention kernel is ``MLAAttention``, two levels down
+#    (``mla_attn`` -> ``MultiHeadLatentAttentionWrapper`` -> ``MLAAttention``),
+#    and the indexer kernel is ``SparseAttnIndexer`` inside an ``Indexer``
+#    wrapper. Both are bound in the ``attention`` group: they key on the same
+#    axes and both run per attention layer.
+#  * ``q_a_proj`` and ``kv_a_proj_with_mqa`` do not exist separately — vLLM
+#    fuses them into ``DeepSeekV2FusedQkvAProjLinear``.
+#  * ``rotary_emb`` and ``indexer_rope_emb`` are instantiated on layer 0 only
+#    and shared across layers (vLLM caches rope modules), so they are absent
+#    from later layers' subtrees. Left unbound until a profile run shows how
+#    the tree attributes a shared module's invocations.
+#
+# Re-derive with ``.claude/dump_module_tree.py`` and
+# ``.claude/dump_tree_by_shot.py`` if a vLLM upgrade moves any of these names.
+
+
+model_types:
+  - deepseek_v32   # DeepSeek-V3.2-Exp
+  - glm_moe_dsa    # GLM-5
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, mla_qkv_a_proj, mla_a_layernorm, mla_b_proj,
+              indexer_wq_b, indexer_wk_proj, indexer_k_norm, indexer,
+              attention]
+  post_attn: [o_proj, layernorm]
+  # Both populated: layers 0..2 are dense, the rest MoE, and the simulator
+  # emits whichever matches the checkpoint's is_moe.
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   [moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: DeepseekV2DecoderLayer
+      tp_stable: true
+    final_layernorm:
+      # Root class differs by checkpoint: DeepSeek-V3.2 loads as
+      # DeepseekV3ForCausalLM, GLM-5 as GlmMoeDsaForCausalLM. The profile tree
+      # flattens DeepseekV2Model away when it launches no kernels of its own,
+      # so bind the roots and let the deepest-within rule keep the
+      # decoder-layer norms on ``layernorm``.
+      vllm: RMSNorm
+      within: [DeepseekV3ForCausalLM, DeepseekV2ForCausalLM,
+               GlmMoeDsaForCausalLM, DeepseekV2Model]
+      tp_stable: true
+
+    # --- MLA projections ---------------------------------------------------
+    mla_qkv_a_proj:
+      # q_a and kv_a fused by vLLM into one linear.
+      vllm: DeepSeekV2FusedQkvAProjLinear
+    mla_a_layernorm:
+      # q_a_layernorm + kv_a_layernorm, reported as one merged node.
+      vllm: RMSNorm
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    mla_b_proj:
+      # q_b_proj + kv_b_proj, reported as one merged node.
+      vllm: ColumnParallelLinear
+      within: DeepseekV2MLAAttention
+    o_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLAAttention
+
+    # --- sparse-attention indexer ------------------------------------------
+    indexer_wq_b:
+      vllm: ReplicatedLinear
+      within: Indexer
+    indexer_wk_proj:
+      vllm: MergedColumnParallelLinear
+      within: Indexer
+    indexer_k_norm:
+      # A bare nn.LayerNorm, not RMSNorm.
+      vllm: LayerNorm
+      within: Indexer
+      tp_stable: true
+
+    # --- dense MLP (layers 0..2) -------------------------------------------
+    # not_within excludes the shared expert, which is the same class nested
+    # inside DeepseekV2MoE and 9x narrower.
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+    act_fn:
+      vllm: SiluAndMul
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+    down_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+
+  attention:
+    attention:
+      # mla_attn -> MultiHeadLatentAttentionWrapper -> MLAAttention.
+      vllm: MLAAttention
+    indexer:
+      # Scores the whole KV before the top-k selection, so its cost tracks kv
+      # length on the same axes the attention kernel uses -- which is why it
+      # belongs in this group rather than in dense.
+      vllm: SparseAttnIndexer
+
+  moe:
+    moe:
+      # The whole block: gate, routed experts and the shared expert.
+      vllm: DeepseekV2MoE
