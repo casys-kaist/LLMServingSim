@@ -192,15 +192,24 @@ class LayerEntry(BaseModel):
     Usually a vLLM leaf class, but a **raw CUDA kernel name** works exactly as
     well: matching strips a trailing ``(...)`` and compares the rest, and a
     kernel node has no parentheses. That is the only way to reach layers vLLM
-    never wraps in a module — gated DeltaNet's conv and decode recurrence
-    among them.
+    never wraps in a module — gated DeltaNet's conv and decode recurrence, and
+    MiniMax-M3's sparse attention, among them.
 
-    A **list** means "whichever of these the checkpoint has". Some families
-    swap the class by checkpoint rather than by structure: Llama 3 uses
-    ``Llama3RotaryEmbedding`` for its extended rope scaling where Llama 1/2
-    and Mistral use the base ``RotaryEmbedding``, with the layer playing the
-    same role either way. Listing both lets one catalog cover the family
-    instead of quietly measuring nothing on half of it."""
+    A trailing ``*`` matches by **prefix**. Needed for a fused kernel, whose
+    reported name inlines its template arguments and so carries the dtypes:
+    ``fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, ...`` would stop
+    matching on the fp8 variant, which is a run we deliberately make. No class
+    or Triton-kernel name contains ``*``, so the sigil is unambiguous.
+
+    A **list** means "every one of these that the checkpoint has", and covers
+    two situations. A family may swap the class by checkpoint rather than by
+    structure: Llama 3 uses ``Llama3RotaryEmbedding`` for its extended rope
+    scaling where Llama 1/2 and Mistral use the base ``RotaryEmbedding``, with
+    the layer playing the same role either way — listing both lets one catalog
+    cover the family instead of quietly measuring nothing on half of it. Or one
+    canonical layer may genuinely be several kernels, as MiniMax-M3's sparse
+    attention is (prefill kernel, decode kernel, merge), in which case the
+    matches are summed."""
 
     def vllm_names(self) -> list[str]:
         """``vllm`` as a list."""
@@ -346,11 +355,26 @@ class Blocks(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     attn: dict[str, AttnBlock] = Field(default_factory=dict)
+    sparse_attn: dict[str, AttnBlock] = Field(default_factory=dict)
+    """Overlay used on layers that run a sparse-attention selection branch.
+
+    A third axis rather than more keys under ``attn`` because vendors vary it
+    independently of the attention type: MiniMax-M3 keeps full attention on
+    every layer and switches only sparsity, swapping
+    ``MiniMaxM3Attention`` for ``MiniMaxM3SparseAttention`` with a different
+    qkv projection and an indexer subtree. Keyed by the same attention-type
+    names as ``attn``, so a model varying both stays expressible. Empty means
+    sparse layers use the plain ``attn`` block, which is right for
+    DeepSeek-V3.2 and GLM-5: they are sparse on every layer, so there is
+    nothing to distinguish."""
+
     mlp: dict[str, list[str]] = Field(default_factory=dict)
 
     def all_layers(self) -> list[str]:
         out: list[str] = []
         for block in self.attn.values():
+            out.extend(block.all_layers())
+        for block in self.sparse_attn.values():
             out.extend(block.all_layers())
         for layers in self.mlp.values():
             out.extend(layers)
@@ -369,6 +393,7 @@ class Blocks(BaseModel):
         """
         counts: dict[str, int] = {}
         groups: list[list[str]] = [b.all_layers() for b in self.attn.values()]
+        groups += [b.all_layers() for b in self.sparse_attn.values()]
         groups += [list(v) for v in self.mlp.values()]
         for group in groups:
             per_group: dict[str, int] = {}
@@ -441,8 +466,9 @@ class Architecture(BaseModel):
             )
 
         # (vllm, within) pairs globally unique so layer matching is
-        # deterministic. (Multiple catalog-tree nodes can match one
-        # entry, that's fine — their timings get averaged by the sink.)
+        # deterministic. Several profile-tree nodes may still match one entry,
+        # which is fine and sometimes the point: their timings are summed,
+        # because one canonical name is one trace node.
         pairs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
         for _, name, entry in self.catalog.all_entries():
             key = (

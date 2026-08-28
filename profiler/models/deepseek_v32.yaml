@@ -38,12 +38,27 @@
 #  * ``q_a_proj`` and ``kv_a_proj_with_mqa`` do not exist separately — vLLM
 #    fuses them into ``DeepSeekV2FusedQkvAProjLinear``.
 #  * ``rotary_emb`` and ``indexer_rope_emb`` are instantiated on layer 0 only
-#    and shared across layers (vLLM caches rope modules), so they are absent
-#    from later layers' subtrees. Left unbound until a profile run shows how
-#    the tree attributes a shared module's invocations.
+#    and shared across layers (vLLM caches rope modules), which left open how
+#    the profile tree attributes a shared module. **Measured answer: to each
+#    caller's own subtree** -- one node under ``MultiHeadLatentAttentionWrapper``
+#    and one under ``Indexer``, each with ``invocations`` equal to its parent's,
+#    so both come out per-layer and ``within`` tells them apart (``Indexer`` is
+#    the deeper ancestor, so the deepest-``within`` rule keeps the indexer's
+#    copy off ``rotary_emb``). The **class differs by checkpoint** --
+#    ``DeepseekScalingRotaryEmbedding`` on DeepSeek-V3.2, plain
+#    ``RotaryEmbedding`` on GLM-5 -- so both are listed, exactly as Llama's
+#    catalog lists two.
+#  * The indexer's q-side rope and fp8 quantization are a **fused kernel** with
+#    no module of its own (``_fused_indexer_q_rope_quant_kernel``), and the
+#    ``Indexer`` block also launches eager reshape/copy glue. Neither is
+#    reachable by class, and together with the ropes they were the whole
+#    unattributed remainder: coverage goes from 99.4-99.8% to 100%.
 #
-# Re-derive with ``.claude/dump_module_tree.py`` and
-# ``.claude/dump_tree_by_shot.py`` if a vLLM upgrade moves any of these names.
+# Re-derive with ``.claude/dump_module_tree.py`` (module structure),
+# ``.claude/dump_m3_tree.py`` (profile tree per regime) and
+# ``.claude/check_coverage.py`` (what the catalog still fails to bind -- the
+# authority, since a module that launches no kernel of its own never appears
+# in the profile tree at all).
 
 
 model_types:
@@ -54,7 +69,9 @@ model_types:
 sequence:
   prologue:  [embedding]
   pre_attn:  [layernorm, mla_qkv_a_proj, mla_a_layernorm, mla_b_proj,
-              indexer_wq_b, indexer_wk_proj, indexer_k_norm, indexer,
+              rotary_emb,
+              indexer_wq_b, indexer_wk_proj, indexer_k_norm,
+              indexer_rope_emb, indexer_q_rope_quant, indexer, indexer_glue,
               attention]
   post_attn: [o_proj, layernorm]
   # Both populated: layers 0..2 are dense, the rest MoE, and the simulator
@@ -99,6 +116,13 @@ catalog:
     o_proj:
       vllm: RowParallelLinear
       within: DeepseekV2MLAAttention
+    rotary_emb:
+      # Shared across layers (built on layer 0), but the profile tree still
+      # reports it under each caller, so this is a per-layer number. The class
+      # differs by checkpoint: DeepSeek-V3.2 scales rope for its long context,
+      # GLM-5 does not.
+      vllm: [DeepseekScalingRotaryEmbedding, RotaryEmbedding]
+      within: MultiHeadLatentAttentionWrapper
 
     # --- sparse-attention indexer ------------------------------------------
     indexer_wq_b:
@@ -112,6 +136,25 @@ catalog:
       vllm: LayerNorm
       within: Indexer
       tp_stable: true
+    indexer_rope_emb:
+      # The indexer's own rope. Same class as ``rotary_emb`` above and the same
+      # shared instance; ``Indexer`` is the deeper ancestor, so the
+      # deepest-``within`` rule assigns this node here and that one there.
+      vllm: [DeepseekScalingRotaryEmbedding, RotaryEmbedding]
+      within: Indexer
+    indexer_q_rope_quant:
+      # Indexer q-side rope plus the fp8 quantization of the index queries,
+      # fused into one Triton kernel with no module wrapper.
+      vllm: _fused_indexer_q_rope_quant_kernel
+      within: Indexer
+    indexer_glue:
+      # The eager reshape/copy work the indexer does around its kernels. Each
+      # is a distinct ``at::native::...<functor>`` instantiation, so the ``*``
+      # prefix takes them as a group; the matches are summed into one trace
+      # node. ~6 us per shot, and the last thing between this catalog and full
+      # coverage.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: Indexer
 
     # --- dense MLP (layers 0..2) -------------------------------------------
     # not_within excludes the shared expert, which is the same class nested

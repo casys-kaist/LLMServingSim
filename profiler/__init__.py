@@ -6,7 +6,7 @@ subfolders per TP degree) is consumed directly by LLMServingSim's
 trace_generator at simulation time.
 
 Module map:
-    __main__.py                 CLI dispatch (profile / slice)
+    __main__.py                 CLI dispatch (profile / slice / coverage)
     core/                       profiler internals
         runner.py               full-run orchestration
         config.py               Architecture loader + ProfileArgs + engine defaults

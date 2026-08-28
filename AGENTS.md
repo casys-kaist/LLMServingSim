@@ -42,7 +42,7 @@ LLMServingSim/
 ├── workloads/                   # Request trace datasets (.jsonl)
 │   └── generators/             # ShareGPT/etc → JSONL workload generators
 ├── profiler/                   # vLLM-based layerwise profiler (`python -m profiler`)
-│   ├── __main__.py             # CLI dispatch (profile / slice)
+│   ├── __main__.py             # CLI dispatch (profile / slice / coverage)
 │   ├── core/                   # internals
 │   │   ├── runner.py           # Orchestration (spin_up → categories → spin_down)
 │   │   ├── config.py           # Architecture / ProfileArgs / engine defaults
