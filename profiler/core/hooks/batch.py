@@ -117,6 +117,35 @@ class Shot:
 # version we run in the worker) without pulling in every vLLM symbol.
 
 
+def _kv_group_block_sizes(model_runner) -> list[int]:
+    """Block size of each KV cache group, in tokens, as the KV manager counts them.
+
+    A model can have several KV cache groups — cross-layer managers, and any
+    hybrid stack, where full-attention layers page KV per token while mamba /
+    linear-attention layers hold one fixed-size state per sequence. Each group
+    has its own block size, and a request occupies blocks in *every* group at
+    once, so the caller has to reserve for all of them.
+
+    Read from ``kv_cache_config`` rather than from the worker's block tables:
+    v0.28 ships two GPU model runners and defaults to the newer one, which
+    keeps no persistent ``input_batch`` (it builds one per step) and holds its
+    block tables under a different type. Both runners derive their tables from
+    ``kv_cache_config``, so that is the version-independent source — and it is
+    the KV-manager block size directly, with no kernel-block arithmetic.
+    """
+    kv_cache_config = getattr(model_runner, "kv_cache_config", None)
+    if kv_cache_config is not None:
+        groups = getattr(kv_cache_config, "kv_cache_groups", None)
+        if groups:
+            return [int(g.kv_cache_spec.block_size) for g in groups]
+
+    # Legacy fallback: the V1 runner's persistent input batch. ``block_size``
+    # there is the *kernel* block size, which equals the manager's only when
+    # blocks aren't subdivided — hence the multiply.
+    block_tables = model_runner.input_batch.block_table.block_tables
+    return [int(bt.block_size) * int(bt.blocks_per_kv_block) for bt in block_tables]
+
+
 def assemble_scheduler_output(shot: Shot, model_runner):
     """Build a ``SchedulerOutput`` describing the shot's synthetic batch.
 
@@ -130,7 +159,6 @@ def assemble_scheduler_output(shot: Shot, model_runner):
     # host-side module load time.
     from vllm import SamplingParams
     from vllm.v1.core.sched.output import (
-        CachedRequestData,
         NewRequestData,
         SchedulerOutput,
     )
@@ -144,14 +172,7 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         max_tokens=1,
     )
 
-    # vLLM may have multiple KV-cache groups (cross-layer managers,
-    # hybrid architectures). We honor all of them by reading the
-    # worker's live block_table list.
-    block_tables = model_runner.input_batch.block_table.block_tables
-    block_sizes = [
-        bt.block_size * bt.blocks_per_kv_block
-        for bt in block_tables
-    ]
+    block_sizes = _kv_group_block_sizes(model_runner)
     num_kv_groups = len(block_sizes)
 
     scheduled: list = []
@@ -184,6 +205,13 @@ def assemble_scheduler_output(shot: Shot, model_runner):
                 # Length must equal `history + new_tokens` so vLLM
                 # thinks it's handling a real sequence.
                 prompt_token_ids=[1] * total_len,
+                # V2-model-runner only, and it asserts rather than defaults:
+                # ``add_requests`` passes this straight through as the
+                # request's ``all_token_ids``. vLLM's own scheduler fills it
+                # with ``req._all_token_ids`` (prompt plus everything
+                # generated so far), which for a fresh synthetic request is
+                # just the prompt again.
+                prefill_token_ids=[1] * total_len,
                 mm_features=[],
                 sampling_params=sampling_params,
                 pooling_params=None,
@@ -199,15 +227,15 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         total_num_scheduled_tokens += new_tokens
         req_ids.append(req_id)
 
-    scheduler_output = SchedulerOutput(
-        scheduled_new_reqs=scheduled,
-        scheduled_cached_reqs=CachedRequestData.make_empty(),
-        num_scheduled_tokens=num_scheduled_tokens,
-        total_num_scheduled_tokens=total_num_scheduled_tokens,
-        scheduled_spec_decode_tokens={},
-        scheduled_encoder_inputs={},
-        num_common_prefix_blocks=[0] * num_kv_groups,
-        finished_req_ids=set(),
-        free_encoder_mm_hashes=[],
-    )
+    # Start from vLLM's own empty instance rather than naming every field.
+    # SchedulerOutput grows a field or two most releases (v0.28 alone added
+    # eight, plus spec-decode bookkeeping); constructing positionally means
+    # each of those is a breakage we'd have to chase. ``make_empty`` is
+    # maintained alongside the dataclass, so it always fills whatever the
+    # installed version requires, and we override only what a shot defines.
+    scheduler_output = SchedulerOutput.make_empty()
+    scheduler_output.scheduled_new_reqs = scheduled
+    scheduler_output.num_scheduled_tokens = num_scheduled_tokens
+    scheduler_output.total_num_scheduled_tokens = total_num_scheduled_tokens
+    scheduler_output.num_common_prefix_blocks = [0] * num_kv_groups
     return scheduler_output, set(req_ids)

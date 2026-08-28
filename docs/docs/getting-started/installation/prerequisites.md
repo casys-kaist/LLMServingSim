@@ -16,7 +16,7 @@ CPU, but the profiler and the vLLM benchmark need an NVIDIA GPU.
 | **Docker** | ✓ | ✓ (or bare-metal install) |
 | **NVIDIA GPU** |  | ✓ |
 | **NVIDIA Container Toolkit** |  | ✓ (for GPU passthrough into Docker) |
-| **CUDA driver** |  | 12.x for the default `vllm/vllm-openai:v0.19.0` image; 13.x needs the `v0.19.0-cu130` tag instead |
+| **CUDA driver** |  | 13.x for the default `vllm/vllm-openai:v0.28.0` image; 12.9 hosts need the `v0.28.0-cu129` tag instead |
 | **Disk** | ~3 GB | ~10 GB additional (vLLM image + HF model cache) |
 | **RAM** | 16 GB | 32 GB+ recommended |
 

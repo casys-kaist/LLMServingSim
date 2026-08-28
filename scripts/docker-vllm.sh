@@ -22,8 +22,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../scripts
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"                    # .../LLMServingSim
 
+# Which GPUs to expose. Defaults to every GPU on the host; set VLLM_GPUS to a
+# docker device spec to narrow it on a shared machine. Note the inner double
+# quotes — they are required, and are part of the value:
+#     VLLM_GPUS='"device=2,3"' ./scripts/docker-vllm.sh
+# Without them docker splits the value on the comma and reads the second field
+# as a GPU *count*, failing with "cannot set both Count and DeviceIDs".
 docker run --name vllm_docker \
-  --gpus all \
+  --gpus "${VLLM_GPUS:-all}" \
   -it \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -v "$REPO_ROOT":/workspace \
@@ -31,5 +37,5 @@ docker run --name vllm_docker \
   --shm-size=16g \
   -w /workspace \
   --entrypoint /bin/bash \
-  vllm/vllm-openai:v0.19.0 \
-  -c "pip install datasets matplotlib && exec bash"
+  vllm/vllm-openai:v0.28.0 \
+  -c "pip install datasets matplotlib pandas && exec bash"
