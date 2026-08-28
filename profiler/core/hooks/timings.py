@@ -11,7 +11,7 @@ node has:
 We walk that tree in DFS order, strip the ``(...)`` argument suffix
 from each class name, and try to match every node against the
 catalog slice the host passed in. A match produces a ``TimingSample``
-(layer_name, per-invocation microseconds).
+(layer_name, microseconds for **one trace node**).
 
 Matching rule: a catalog entry matches a node iff
     node_class == entry.vllm
@@ -19,6 +19,30 @@ AND (entry.within is None OR some ancestor_class == entry.within)
 
 The DFS path carries the list of ancestor class names, so the
 ``within`` check is just a membership test.
+
+Normalization rule: vLLM merges every same-class sibling under one parent
+into a *single* node, summing ``cuda_time_us`` and counting calls in
+``invocations``. So ``invocations`` is not the number of trace nodes — it is
+``parent_invocations x modules_of_this_class_per_parent``. Dividing by it is
+only correct when those sibling modules are interchangeable.
+
+They are not always. Qwen3.5/3.8's gated-DeltaNet block holds two
+``MergedColumnParallelLinear`` children, ``in_proj_qkvz`` (5120 -> 16384) and
+``in_proj_ba`` (5120 -> 96); the profiler reports one node with
+``invocations = 2 x layers``, and dividing by that yields the mean of a large
+GEMM and a tiny one, which describes neither. There is no discriminator to
+recover — one node is all vLLM ever emits — so the catalog models the pair as
+one canonical layer and we want their **sum**.
+
+The denominator that gets both cases right is
+
+    parent_invocations  x  occurrences of the layer in one block's sequence
+
+which the host passes in as ``occurrences``. For a layer the sequence emits
+twice per block (an input and a post-attention layernorm) this is the
+per-call mean, as before; for a fused pair emitted once it is their sum. When
+``invocations == parent_invocations x occurrences`` — every homogeneous
+model — it is identical to dividing by ``invocations``.
 """
 
 from __future__ import annotations
@@ -31,11 +55,12 @@ from typing import Any
 class TimingSample:
     """One layer-level CUDA timing extracted from a shot.
 
-    ``microseconds`` is already divided by the invocation count, so if
-    a layer was called multiple times inside a single forward pass
-    (which can happen e.g. if a decoder has more than one layer and we
-    forgot to set hf_overrides.num_hidden_layers=1) each sample
-    represents the *per-call* cost.
+    ``microseconds`` is the cost of **one trace node**: the profiled total
+    divided by the number of parent invocations times the number of times
+    the block sequence emits this layer. Profiling several decoder layers at
+    once (which hybrid stacks require) therefore still yields a per-layer
+    number, and a canonical layer covering two fused sibling modules yields
+    their sum rather than their mean. See the module docstring.
     """
 
     layer: str
@@ -68,7 +93,7 @@ def _match_slice(
 
     ``slice_`` is the host-to-worker serialized form of a ``Catalog``
     group — ``{canonical_name: {"vllm": cls, "within": parent_cls_or_None,
-    "tp_stable": ...}}``.
+    "tp_stable": ..., "occurrences": int}}``.
 
     Ambiguity rule: when several catalog entries match the same node
     (same ``vllm`` class, several ``within`` candidates all present in
@@ -115,20 +140,27 @@ def extract_samples(
     """
     samples: list[TimingSample] = []
 
-    def walk(nodes: list[dict[str, Any]], ancestors: list[str]) -> None:
+    def walk(
+        nodes: list[dict[str, Any]],
+        ancestors: list[str],
+        parent_invocations: int,
+    ) -> None:
         for node in nodes:
             raw_name = str(node["entry"]["name"])
             cls = _strip_class_name(raw_name)
+            invocations = max(1, int(node["entry"]["invocations"]))
 
             # Try to match this node against the requested slice.
             canonical = _match_slice(cls, ancestors, slice_)
             if canonical is not None:
                 cuda_us = float(node["entry"]["cuda_time_us"])
-                invocations = max(1, int(node["entry"]["invocations"]))
+                occurrences = max(
+                    1, int(slice_[canonical].get("occurrences") or 1)
+                )
                 samples.append(
                     TimingSample(
                         layer=canonical,
-                        microseconds=cuda_us / invocations,
+                        microseconds=cuda_us / (parent_invocations * occurrences),
                     )
                 )
 
@@ -136,7 +168,7 @@ def extract_samples(
             # are defined by parent-class; their actual kernel time is
             # in a leaf that we want to reach independently.
             children = node.get("children") or []
-            walk(children, ancestors + [cls])
+            walk(children, ancestors + [cls], invocations)
 
-    walk(tree, ancestors=[])
+    walk(tree, ancestors=[], parent_invocations=1)
     return samples
