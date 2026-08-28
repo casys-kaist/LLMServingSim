@@ -70,10 +70,11 @@ blocks:
     # no skew correction to apply.
     linear_attention:
       pre_attn:  [layernorm, gdn_in_proj, gdn_conv_prefill, gdn_post_conv,
-                  gdn_conv_decode, gdn_prefill, gdn_decode, gdn_decode_mixed]
+                  gdn_conv_decode, gdn_prefill, gdn_decode, gdn_decode_mixed,
+                  gdn_glue]
       post_attn: [gdn_norm, gdn_out_proj, layernorm]
     full_attention:
-      pre_attn:  [layernorm, qkv_proj, attention]
+      pre_attn:  [layernorm, qkv_proj, qk_norm_rope, attention, attn_glue]
       post_attn: [o_proj, layernorm]
   mlp:
     dense: [gate_up_proj, act_fn, down_proj]
@@ -121,12 +122,38 @@ catalog:
     gdn_out_proj:
       vllm: RowParallelLinear
       within: QwenGatedDeltaNetAttention
+    gdn_glue:
+      # Everything else the gated-DeltaNet block launches: the eager PyTorch
+      # reshapes, copies and index_put that move its conv and recurrent state
+      # around. Measured at 12.6% of the block's other kernels put together
+      # (~108 us against 747 on a mixed shot, 3 GDN layers), so leaving it
+      # unbound would make GDN look cheaper than it is -- which is the one
+      # comparison this architecture exists to inform.
+      #
+      # There is no single name to bind: each is a distinct
+      # ``at::native::...<functor>`` instantiation. The ``*`` prefix takes them
+      # as a group, ``within`` keeps the group scoped to this block, and the
+      # matches are summed, so this stays one trace node.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: QwenGatedDeltaNetAttention
 
     # --- full-attention block ---------------------------------------------
     qkv_proj:
       vllm: QKVParallelLinear
+    qk_norm_rope:
+      # q-norm, k-norm, rope and the output gate, fused into one Triton kernel.
+      # The catalog had no entry for any of them: the RMSNorm and rotary
+      # modules are still in the module tree, but they launch nothing of their
+      # own, so binding them by class would have measured zero. Only the
+      # profile tree shows this.
+      vllm: _fused_qk_rmsnorm_rope_gate_kernel
+      within: Qwen3NextAttention
     o_proj:
       vllm: RowParallelLinear
+      within: Qwen3NextAttention
+    attn_glue:
+      # The same eager-glue bucket as gdn_glue, for the full-attention block.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
       within: Qwen3NextAttention
 
     # --- MLP (Qwen3.8-27B is dense; the class is shared with Qwen2 MoE) ----

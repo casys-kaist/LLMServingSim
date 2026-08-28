@@ -57,6 +57,40 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - `full_cluster_kv_bytes_per_token()` in `memory_model.py`, computing full-cluster KV
   bytes per token straight from an HF config. Avoids the per-rank roundoff in
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
+- **`python -m profiler coverage <model>`** — boots the model once, runs one
+  forward per batch regime (prefill-only / decode-only / mixed), and reports how
+  much of the measured CUDA time the architecture catalog binds. Writes nothing,
+  exits non-zero while any kernel is unbound, and reuses the profiler's own
+  matcher, so a clean report means a real run binds the same things.
+  - Exists because a catalog entry can name a real vLLM class and measure
+    **nothing**. vLLM's profile tree holds only modules that launch a kernel of
+    their own, and modern models fuse q-norm / rope / KV-write into one kernel
+    with no module, or write attention as bare Triton kernels launched straight
+    from the block. The module tree — the natural thing to read a catalog off —
+    still shows the classes, and the symptom is a layer that looks free
+  - Found something in every one of the four modern families. Details in
+    *Fixed* below
+- `profiler/models/minimax_m3_vl.yaml` — MiniMax-M3 (block-level sparse
+  attention over GQA, MoE). The third sparse-attention shape in the repo and
+  deliberately distinct from DeepSeek/GLM's token-level top-k: M3 selects the
+  top `sparse_topk_blocks` blocks of `sparse_block_size` tokens, which is the
+  granularity a KV block pool already speaks. Heterogeneous on two axes at once
+  (layers 0-2 non-sparse + dense MLP, 3+ sparse + MoE), both resolved from the
+  checkpoint. Needs `--block-size 128`; the platform default of 16 fails with
+  "No common block size for 16"
+  - New `blocks.sparse_attn` overlay in the architecture schema, used when a
+    layer's `sparse` flag is set. M3's block difference is the sparse flag, not
+    the attention type — every layer is full attention — which `blocks.attn`,
+    keyed by attention type, could not express
+- Catalog `vllm:` entries accept a trailing **`*`** for prefix matching, and a
+  **list** now means "every one of these", with the matches **summed**. Both are
+  forced by real models: a fused kernel reports its template arguments inline
+  (`fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, ...`), so an exact
+  binding silently stops matching on the fp8 variant; and M3's sparse attention
+  is three Triton kernels with no module to aggregate them, whose sum is what
+  one trace node costs. Summing is a no-op for every catalog whose entries each
+  match one node
+
 - **Support for heterogeneous (hybrid) layer stacks in the profiler**, and the
   first architecture that needs it: `profiler/models/qwen3_5_text.yaml`
   (Qwen3.5 / Qwen3.8 text tower — gated DeltaNet interleaved with full
@@ -116,6 +150,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **Catalog gaps in all four modern families**, each a layer bound to a class
+  that launches no kernel of its own, so it measured nothing and the layer read
+  as free. Found with the new `coverage` subcommand; none is visible in vLLM's
+  source or module tree. Coverage is now 100% of measured CUDA time in all three
+  regimes for MiniMax-M3, Qwen3.5/3.8, DeepSeek-V3.2 and GLM-5.
+  - MiniMax-M3: q-norm + rope + KV-write are one fused kernel
+    (`fusedMiniMaxM3QNormRopeKVInsertKernel`), and the **whole sparse attention
+    kernel** was unbound — `MiniMaxM3SparseAttention` has no `Attention` node,
+    launching `_gqa_sparse_fwd_kernel` / `_gqa_sparse_decode_kernel` +
+    `_merge_topk_attn_out_kernel` by regime
+  - Qwen3.5/3.8: `_fused_qk_rmsnorm_rope_gate_kernel` (q-norm, k-norm, rope and
+    the output gate, fused) had no entry at all, and the eager reshape/copy work
+    inside the gated-DeltaNet block was unattributed — **12.6% of that block's
+    other kernels put together**, which is exactly the comparison this
+    architecture exists to inform
+  - DeepSeek-V3.2 / GLM-5: both rope modules (the class differs by checkpoint —
+    `DeepseekScalingRotaryEmbedding` on DeepSeek, plain `RotaryEmbedding` on
+    GLM-5), the fused indexer q-rope/quant kernel, and the indexer's own glue.
+    This also answers the question the catalog had left open: a rope module
+    shared across layers **is** reported under each caller, so it comes out
+    per-layer and `within` tells the two apart
 - **Catalog resolution is one implementation, shared by profiler and
   simulator** (`profiler/core/catalog_path.py`). The `model_types:` alias
   lookup had been added to the profiler's resolver only; the simulator still
