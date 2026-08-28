@@ -196,7 +196,8 @@ class DenseCategory(Category):
         for n in _token_grid(limits.max_num_batched_tokens):
             # Guard against absurdly small KV caches where even a
             # dense prefill wouldn't fit in a single block budget.
-            if ((n + _BLOCK_SIZE - 1) // _BLOCK_SIZE) * _BLOCK_SIZE > limits.num_cache_tokens:
+            bs = limits.block_size
+            if ((n + bs - 1) // bs) * bs > limits.num_cache_tokens:
                 continue
             # Context-length bound: a single request of length n must
             # leave room for the sampler's +1 write.
@@ -243,7 +244,7 @@ class SequenceCategory(Category):
             # N single-token requests → N new tokens + N blocks used.
             if n > limits.max_num_batched_tokens:
                 continue
-            if n * _BLOCK_SIZE > limits.num_cache_tokens:
+            if n * limits.block_size > limits.num_cache_tokens:
                 continue
             yield Shot.per_sequence(num_sequences=n)
 
@@ -275,10 +276,12 @@ _ATTN_CHUNK_START = 16      # smallest prefill chunk we profile
 _ATTN_N_DECODE_START = 1    # smallest decode batch
 _ATTN_KV_START = 16        # smallest KV context (for both prefill & decode)
 
-# Must match HOST_ENGINE_DEFAULTS["block_size"] (16). Used for
-# block-aligned KV-budget feasibility checks so shots are only
-# generated when the paged cache can actually hold them.
-_BLOCK_SIZE = 16
+# Block-aligned KV-budget feasibility checks read ``limits.block_size``, not a
+# constant: what we request in HOST_ENGINE_DEFAULTS is not always what the
+# engine uses. A hybrid stack makes vLLM enlarge the attention block until an
+# attention page is at least as many bytes as a mamba state page (784 tokens
+# on Qwen3.8-27B against the 16 we asked for), and a filter off by 49x either
+# emits shots the cache cannot hold or silently drops ones it can.
 
 
 def _geometric_grid(max_value: int, start: int, factor: float = 2.0) -> list[int]:
@@ -400,9 +403,10 @@ class AttentionCategory(Category):
                         # rounds up to a whole block, so block-aligned
                         # totals can be up to ~2× the raw KV tokens
                         # for tiny requests. Compute exactly.
-                        def _aligned(total_len: int) -> int:
-                            return ((total_len + _BLOCK_SIZE - 1)
-                                    // _BLOCK_SIZE) * _BLOCK_SIZE
+                        bs = limits.block_size
+
+                        def _aligned(total_len: int, bs: int = bs) -> int:
+                            return ((total_len + bs - 1) // bs) * bs
                         prefill_block_toks = (
                             _aligned(chunk + kv_p) if chunk > 0 else 0
                         )
@@ -502,7 +506,8 @@ class ExpertCategory(Category):
             # +1 headroom) + cache.
             if n_tokens >= limits.max_model_len:
                 continue
-            if ((n_tokens + _BLOCK_SIZE - 1) // _BLOCK_SIZE) * _BLOCK_SIZE > limits.num_cache_tokens:
+            bs = limits.block_size
+            if ((n_tokens + bs - 1) // bs) * bs > limits.num_cache_tokens:
                 continue
             for activated in _power_of_two_grid(num_experts):
                 # Minimum activations per call is top_k (every token
