@@ -181,8 +181,10 @@ of skew correction is documented on
 ## Walking the architecture YAML
 
 Each model has an architecture YAML at
-`profiler/models/<model_type>.yaml` (e.g., `llama.yaml`,
-`qwen3_moe.yaml`). The YAML has:
+`profiler/models/<model_type>.yaml` — or at a YAML that lists its
+`model_type` under `model_types:`, since one file serves a whole family
+(e.g., `llama.yaml`, `qwen3.yaml` for both `qwen3` and `qwen3_moe`). The YAML
+has:
 
 - A `catalog:` mapping canonical layer names (e.g., `qkv_proj`,
   `attention`, `moe`) to vLLM class names.
