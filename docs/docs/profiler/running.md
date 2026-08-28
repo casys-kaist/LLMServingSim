@@ -176,6 +176,12 @@ file is an error.
 | `--kv-cache-dtype` | `auto` | `KV_CACHE_DTYPE` |
 | `--max-num-batched-tokens` | `2048` | `MAX_NUM_BATCHED_TOKENS` |
 | `--max-num-seqs` | `256` | `MAX_NUM_SEQS` |
+| `--block-size` | `16` | `BLOCK_SIZE` |
+| `--gpu-memory-utilization` | `0.9` | `GPU_MEMORY_UTILIZATION` |
+| `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
+| `--num-hidden-layers` | `1` | `NUM_HIDDEN_LAYERS` |
+| `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
+| `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
 | `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
 | `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |

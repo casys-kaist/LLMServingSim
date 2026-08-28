@@ -54,7 +54,12 @@ def resolve_variant(dtype, kv_cache_dtype, model_config=None):
     """
     weight = dtype
     if not weight and model_config is not None:
-        weight = model_config.get("torch_dtype")
+        # HuggingFace renamed this field: ``torch_dtype`` is the legacy
+        # spelling and ``dtype`` the current one (Qwen3.8's config carries
+        # only the latter). Must match the profiler's
+        # ``config.model_config_weight_dtype`` exactly, including the order,
+        # or we look in a variant folder the profiler never wrote.
+        weight = model_config.get("torch_dtype") or model_config.get("dtype")
     parts = [_short_dtype(weight) if weight else "default"]
     if kv_cache_dtype and kv_cache_dtype != "auto":
         parts.append(f"kv{_short_dtype(kv_cache_dtype)}")
@@ -175,9 +180,23 @@ def _load_architecture(model_type):
         )
     with open(path, "r") as f:
         arch = yaml.safe_load(f)
-    if "catalog" not in arch or "sequence" not in arch:
+    if "catalog" not in arch:
+        raise KeyError(f"Architecture yaml {path} must define 'catalog'.")
+    if "sequence" not in arch:
+        if "blocks" in arch:
+            # The profiler already supports this form; the trace generator does
+            # not walk it yet. Say so, rather than asking for a key the
+            # architecture deliberately doesn't have.
+            raise KeyError(
+                f"Architecture yaml {path} declares a heterogeneous stack "
+                f"('blocks:'), which the profiler supports but the trace "
+                f"generator does not consume yet -- it still walks the flat "
+                f"'sequence:' form. Simulating this model needs the "
+                f"block-aware path in trace_generator."
+            )
         raise KeyError(
-            f"Architecture yaml {path} must define both 'catalog' and 'sequence'."
+            f"Architecture yaml {path} must define 'sequence' (uniform stack) "
+            f"or 'blocks' (heterogeneous stack)."
         )
     return arch
 

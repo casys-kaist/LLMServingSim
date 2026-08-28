@@ -60,6 +60,18 @@ class AttentionPoint:
 
 
 @dataclass(frozen=True)
+class LinearAttentionPoint:
+    # Carries ``layer`` unlike AttentionPoint: a linear-attention block runs
+    # several distinct kernels that key on the same axes -- the chunked prefill
+    # scan, and two different decode recurrences depending on whether the batch
+    # also holds a prefill -- and they are not interchangeable.
+    layer: str
+    prefill_tokens: int
+    n_decode: int
+    microseconds: float
+
+
+@dataclass(frozen=True)
 class ExpertPoint:
     tokens: int
     activated_experts: int
@@ -67,7 +79,10 @@ class ExpertPoint:
 
 
 # Union alias for writer.py's benefit.
-Point = DensePoint | SequencePoint | AttentionPoint | ExpertPoint
+Point = (
+    DensePoint | SequencePoint | AttentionPoint | LinearAttentionPoint
+    | ExpertPoint
+)
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +494,144 @@ class AttentionCategory(Category):
 # MoE
 # ---------------------------------------------------------------------------
 
+def _chunk_aware_grid(
+    max_value: int,
+    chunk: int | None,
+    start: int = _ATTN_CHUNK_START,
+    factor: float = 2.0,
+) -> list[int]:
+    """Grid for an axis whose cost is a staircase in ``chunk``, not a line.
+
+    A linear-attention prefill scan works in fixed chunks, and the measured
+    cost tracks the chunk count. On Qwen3.8-27B one token past a 64-boundary
+    costs **13.5% more** than the boundary itself, and the whole interval to
+    the next boundary is nearly flat. A plain geometric grid lands only on
+    boundaries (64, 128, 256 ...), so interpolating between two samples
+    underestimates every token count just past one -- which is most of what a
+    chunked-prefill scheduler actually produces.
+
+    So sample three things: points inside the first chunk (cost still varies
+    with tokens there), each chunk boundary, and the single token past each
+    boundary, which pins the step. Falls back to the plain geometric grid when
+    the chunk length is unknown.
+    """
+    if max_value < 1:
+        return [0]
+    if not chunk or chunk < 2:
+        return _geometric_grid(max_value, start, factor)
+
+    values: set[int] = {0}
+    # Inside the first chunk.
+    v = start
+    while v < min(chunk, max_value):
+        values.add(v)
+        v = max(v + 1, int(round(v * factor)))
+    # Boundaries, and the token that starts the next chunk.
+    c = 1
+    while c * chunk <= max_value:
+        values.add(c * chunk)
+        if c * chunk + 1 <= max_value:
+            values.add(c * chunk + 1)
+        nxt = max(c + 1, int(round(c * factor)))
+        if nxt <= c:
+            break
+        c = nxt
+    values.add(max_value)
+    return sorted(values)
+
+
+class LinearAttentionCategory(Category):
+    """Linear-attention (mamba / gated-DeltaNet) block, keyed by
+    ``(prefill_tokens, n_decode)``.
+
+    Two axes rather than attention's four, because there is no kv axis: the
+    state is fixed-size per sequence regardless of position, so cost is
+    independent of sequence length (measured: 1.1% over a 64x kv spread) and
+    no skew correction applies either.
+
+    Two axes rather than one, though, even though the prefill and decode
+    kernels *are* additive -- because **which** kernel runs depends on the mix.
+    A pure-decode batch runs a recurrent kernel; add a prefill chunk and vLLM
+    switches to a fused-gating one instead, 4.5% apart at the same decode
+    count. A pair of 1-D tables cannot represent a kernel-identity switch.
+    Same argument that justifies the unified 4-D attention grid, and cheap
+    here: ~100 shots against attention's ~1300.
+    """
+
+    name = "linear_attention"
+    sink_filename = "linear_attention.csv"
+    label = "linear_attention"
+
+    def compose_shots(self, arch, args, limits, tp):
+        pre_vals = _chunk_aware_grid(
+            limits.max_num_batched_tokens, limits.linear_attn_chunk,
+        )
+        dec_vals = _geometric_grid(limits.max_num_seqs, _ATTN_N_DECODE_START)
+        bs = limits.block_size
+        for pre in pre_vals:
+            for n_dec in dec_vals:
+                if pre == 0 and n_dec == 0:
+                    continue
+                # Same feasibility rules as the attention grid, minus the kv
+                # ones: MNBT is advisory (the shot bypasses the scheduler) but
+                # bounds the grid, while max_num_seqs is a hard cap because
+                # vLLM V1 preallocates input_batch for exactly that many.
+                if pre + n_dec > (
+                    limits.max_num_batched_tokens + limits.max_num_seqs
+                ):
+                    continue
+                n_reqs = (1 if pre > 0 else 0) + n_dec
+                if n_reqs > limits.max_num_seqs:
+                    continue
+                if pre > 0 and pre + 1 > limits.max_model_len:
+                    continue
+                hist = Shot.LINEAR_ATTN_DECODE_HISTORY
+                if n_dec > 0 and hist + 1 + 1 > limits.max_model_len:
+                    continue
+                # Block budget: every request rounds up to a whole block.
+                blocks = 0
+                if pre > 0:
+                    blocks += ((pre + bs - 1) // bs) * bs
+                blocks += n_dec * (((hist + 1 + bs - 1) // bs) * bs)
+                if blocks > limits.num_cache_tokens:
+                    continue
+                yield Shot.linear_attention(
+                    prefill_tokens=pre, n_decode=n_dec,
+                )
+
+    def extract_points(self, shot, timings, arch, tp):
+        pre, n_dec = _split_linear_attention_shot(shot)
+        for sample in timings:
+            yield LinearAttentionPoint(
+                layer=sample.layer,
+                prefill_tokens=pre,
+                n_decode=n_dec,
+                microseconds=sample.microseconds,
+            )
+
+    def catalog_slice(self, arch):
+        return _entry_dict(arch.catalog.linear_attention, arch)
+
+    def shot_key(self, shot):
+        return _split_linear_attention_shot(shot)
+
+
+def _split_linear_attention_shot(shot: Shot) -> tuple[int, int]:
+    """Recover ``(prefill_tokens, n_decode)`` from a shot's request list.
+
+    ``Shot.linear_attention`` puts at most one multi-token request first and
+    then the 1-token decodes, so a single pass over the requests is enough.
+    """
+    pre = 0
+    n_dec = 0
+    for new, _history in shot.requests:
+        if new > 1:
+            pre += new
+        else:
+            n_dec += 1
+    return (pre, n_dec)
+
+
 class ExpertCategory(Category):
     """MoE block (gate + grouped experts), keyed by
     (tokens, activated_experts)."""
@@ -565,6 +718,7 @@ def categories_for(arch: Architecture, tp: int) -> list[Category]:
         (DenseCategory(), arch.catalog.dense),
         (SequenceCategory(), arch.catalog.per_sequence),
         (AttentionCategory(), arch.catalog.attention),
+        (LinearAttentionCategory(), arch.catalog.linear_attention),
         (ExpertCategory(), arch.catalog.moe),
     ]
     for cat, entries in registry:
@@ -583,5 +737,6 @@ CATEGORY_BY_NAME: dict[str, type[Category]] = {
     DenseCategory.name: DenseCategory,
     SequenceCategory.name: SequenceCategory,
     AttentionCategory.name: AttentionCategory,
+    LinearAttentionCategory.name: LinearAttentionCategory,
     ExpertCategory.name: ExpertCategory,
 }
