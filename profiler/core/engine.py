@@ -251,6 +251,35 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
 # Spin up / spin down
 # ---------------------------------------------------------------------------
 
+def _materialize_config(
+    model_config: dict[str, Any],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """The config to write to disk, with the overrides mirrored where the
+    model's config class will actually read them.
+
+    ``hf_overrides`` reaches the **top level** of a config. That is enough for a
+    flat one, and useless for a wrapper that builds its backbone from a
+    ``text_config`` key: MiniMax-M3's class takes ``text_config`` and sends
+    everything else to ``**kwargs``, so ``num_hidden_layers`` and the TP shard
+    fields land nowhere and the backbone is constructed from its own defaults.
+    That fails loudly at 60 layers of experts (out of memory) and would fail
+    *silently* on a smaller model -- profiling a shape nobody asked for.
+
+    So for a nested config the same overrides are written into ``text_config``
+    as well. Only keys the backbone already declares are touched, so this
+    cannot invent fields the class would reject.
+    """
+    written = copy.deepcopy(model_config)
+    inner = written.get("text_config")
+    if not isinstance(inner, dict):
+        return written
+    for key, value in (kwargs.get("hf_overrides") or {}).items():
+        if key in inner or key == "num_hidden_layers":
+            inner[key] = value
+    return written
+
+
 def spin_up(
     args: ProfileArgs, tp: int
 ) -> tuple[LLM, dict[str, Any], Path]:
@@ -282,7 +311,9 @@ def spin_up(
     )
     tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
     config_path = tmpdir / "config.json"
-    config_path.write_text(json.dumps(args.model_config, indent=2))
+    config_path.write_text(
+        json.dumps(_materialize_config(args.model_config, kwargs), indent=2)
+    )
     log.debug("model config written to %s", config_path)
 
     kwargs["model"] = str(tmpdir)
