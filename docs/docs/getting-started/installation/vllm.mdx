@@ -25,14 +25,25 @@ hardware (RTXPRO6000 or RTX 4090), skip this page.
 <Tabs groupId="install-method">
   <TabItem value="docker" label="Docker (recommended)" default>
 
-The Docker path uses the official `vllm/vllm-openai:v0.19.0` image,
+The Docker path uses the official `vllm/vllm-openai:v0.28.0` image,
 which already contains vLLM, PyTorch, and all CUDA dependencies.
 
-That tag is built against **CUDA 12.x**. On a CUDA 13.x host, edit the
-image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.19.0-cu130`
-instead. The pin matters beyond the driver: the profiler's MoE hook
-patches `FusedMoE.forward_native`, whose name is version-specific, so a
-different vLLM release can break profiling silently.
+That tag is built against **CUDA 13.x**. On a CUDA 12.9 host, edit the
+image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.28.0-cu129`
+instead. The pin matters beyond the driver: every module under
+`profiler/core/hooks/` binds to a vLLM *internal* API — the MoE router,
+the model runner's KV cache groups, `layerwise_profile` — and those move
+between releases, so a different vLLM can break profiling silently.
+
+On a shared machine, set `VLLM_GPUS` to keep the container off GPUs
+someone else is using. The inner quotes are part of the value:
+
+```bash
+VLLM_GPUS='"device=2,3"' ./scripts/docker-vllm.sh
+```
+
+Without them Docker splits on the comma and reads the second field as a
+GPU *count*, failing with `cannot set both Count and DeviceIDs`.
 
 ### 1. (Optional) Set HF_TOKEN
 
@@ -82,7 +93,7 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.19.0` and your GPU listed.
+You should see vLLM `0.28.0` and your GPU listed.
 
   </TabItem>
   <TabItem value="bare-metal" label="Bare metal (uv venv)">
@@ -106,7 +117,7 @@ From the repo root:
 This:
 
 - Creates a local `uv` venv with Python 3.12
-- Installs `vllm==0.19.0` (with `VLLM_USE_PRECOMPILED=1` for the
+- Installs `vllm==0.28.0` (with `VLLM_USE_PRECOMPILED=1` for the
   prebuilt CUDA wheels)
 - Adds `datasets` and `matplotlib` for the workload generator and
   bench plots
@@ -124,13 +135,13 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.19.0` and your GPU.
+You should see vLLM `0.28.0` and your GPU.
 
 **Bare-metal caveats**
 
 **CUDA driver mismatch** is the most common failure mode. The
-`vllm==0.19.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
-CUDA 12.x — check your driver with `nvidia-smi` before assuming the
+`vllm==0.28.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
+CUDA 13.x — check your driver with `nvidia-smi` before assuming the
 prebuilt wheel fits.
 
 The `VLLM_USE_PRECOMPILED=1` flag tells `uv` to skip building vLLM

@@ -30,7 +30,7 @@ from profiler.core.hooks.batch import Shot, assemble_scheduler_output
 from profiler.core.hooks.moe_hook import (
     ExpertRoute,
     force_moe_routing,
-    single_moe_layer,
+    single_moe_runner,
 )
 from profiler.core.hooks.timings import extract_samples
 
@@ -93,10 +93,10 @@ class Extension:
                 raise ValueError(
                     "moe shot missing experts.activated payload"
                 )
-            moe_layer = single_moe_layer(self.model_runner)
+            moe_runner = single_moe_runner(self.model_runner)
             num_tokens = sum(new for new, _ in shot.requests)
             route = ExpertRoute.forge(
-                moe_layer,
+                moe_runner,
                 num_tokens=num_tokens,
                 activated_experts=int(shot.experts["activated"]),
             )
@@ -111,7 +111,9 @@ class Extension:
         # execute_model N times here yields the per-call mean — the
         # cheap statistical fix for DVFS / boost-clock jitter that
         # single-sample measurements don't mitigate.
-        from vllm.profiler.layerwise_profile import layerwise_profile
+        from profiler.core.hooks.vllm_compat import import_layerwise_profile
+
+        layerwise_profile = import_layerwise_profile()
 
         with force_moe_routing(route):
             with layerwise_profile() as hook:
