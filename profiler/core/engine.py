@@ -51,6 +51,12 @@ class RuntimeLimits:
         max_num_seqs: max concurrent sequences.
         num_cache_tokens: total KV slots allocated, group-aware (a
             hybrid request occupies several KV cache groups at once).
+        block_size: KV block size in tokens, as the engine settled on it.
+            Not necessarily what we asked for: on a hybrid stack vLLM
+            enlarges the attention block until an attention page costs at
+            least as many bytes as a mamba state page, then pads the mamba
+            page to match, so one uniform pool covers both. Measured at 784
+            on Qwen3.8-27B against the 16 we requested.
         max_model_len: longest single sequence the engine accepts.
         num_experts / top_k: MoE parameters from HF config. None for
             non-MoE models.
@@ -60,6 +66,7 @@ class RuntimeLimits:
     max_num_seqs: int
     num_cache_tokens: int
     max_model_len: int
+    block_size: int = 16
     num_experts: int | None = None
     top_k: int | None = None
 
@@ -286,6 +293,7 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
         max_num_batched_tokens=logical_mnbt,
         max_num_seqs=engine_msq,
         num_cache_tokens=int(num_cache_tokens),
+        block_size=int(cfg.cache_config.block_size),
         max_model_len=cfg.model_config.max_model_len,
         num_experts=num_experts,
         top_k=top_k,
