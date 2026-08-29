@@ -335,6 +335,51 @@ def _build_attention_tables_by_layer(df):
     return out
 
 
+def _linear_attn_regime(prefill_tokens, n_decode):
+    """Which kernel regime a batch puts a linear-attention block in.
+
+    A gated-DeltaNet block runs a *different set of kernels* for a pure
+    prefill, a pure decode and a mixed batch -- not the same kernel at
+    different sizes. That is why the catalog binds three names and why the
+    profiler measures each only where it fires.
+    """
+    if prefill_tokens > 0 and n_decode > 0:
+        return "mixed"
+    return "prefill" if prefill_tokens > 0 else "decode"
+
+
+def _build_linear_attention_tables_by_layer(df):
+    """``{layer: {regime: 2-D table}}`` from ``linear_attention.csv``.
+
+    Keyed by regime as well as by layer because a kernel that did not fire in
+    a regime has **no rows** for it, and that absence is the profile telling us
+    it does not run there -- ``gdn_decode`` has only ``prefill_tokens == 0``
+    rows, ``gdn_decode_mixed`` only rows with both. Interpolating across the
+    gap would invent a cost for a kernel that never executes.
+    """
+    out = {}
+    layers = df["layer"].astype(str).tolist()
+    pfs = df["prefill_tokens"].astype(int).tolist()
+    nds = df["n_decode"].astype(int).tolist()
+    lats = df["latency_ns"].astype(int).tolist()
+    grouped = {}
+    for layer, pf, nd, lat in zip(layers, pfs, nds, lats):
+        regime = _linear_attn_regime(pf, nd)
+        grouped.setdefault(layer, {}).setdefault(regime, {}).setdefault(nd, {})[pf] = lat
+    for layer, by_regime in grouped.items():
+        out[layer] = {}
+        for regime, by_nd in by_regime.items():
+            nd_vals = sorted(by_nd)
+            rows = []
+            for nd in nd_vals:
+                by_pf = by_nd[nd]
+                pf_keys = sorted(by_pf)
+                rows.append({"keys": pf_keys,
+                             "values": [by_pf[k] for k in pf_keys]})
+            out[layer][regime] = {"n_decode_vals": nd_vals, "rows": rows}
+    return out
+
+
 def _build_moe_table(df):
     """MoE table: (tokens, activated_experts) → latency_ns."""
     grouped = {}
@@ -513,6 +558,11 @@ def _build_tp_tables(tp_dir):
         # served the non-sparse kernel's latency (2.1x too high per sparse
         # layer on MiniMax-M3). One way in, and it needs a layer name.
         tables["attention_by_layer"] = _build_attention_tables_by_layer(attn_df)
+
+    lin_df = _read_category_csv(os.path.join(tp_dir, "linear_attention.csv"), None)
+    if lin_df is not None:
+        tables["linear_attention_by_layer"] = \
+            _build_linear_attention_tables_by_layer(lin_df)
 
     moe_df = _read_category_csv(os.path.join(tp_dir, "moe.csv"), None)
     if moe_df is not None:
@@ -957,6 +1007,36 @@ def _lookup_moe(perf_db, tokens, activated_experts):
     return max(1, int(out))
 
 
+def _lookup_linear_attention(perf_db, tp, layer, prefill_tokens, n_decode):
+    """2-D lookup on ``(prefill_tokens, n_decode)``, or **None**.
+
+    None means this kernel does not fire in this batch's regime -- the profile
+    has no rows for it there -- and the caller must emit nothing rather than
+    substitute a number.
+    """
+    by_layer = _tp_tables(perf_db, tp).get("linear_attention_by_layer") or {}
+    by_regime = by_layer.get(layer)
+    if by_regime is None:
+        raise KeyError(
+            f"Missing linear_attention profile for layer={layer!r} at tp={tp}. "
+            f"Profiled kernels: {sorted(by_layer) or 'none'}."
+        )
+    tbl = by_regime.get(_linear_attn_regime(prefill_tokens, n_decode))
+    if tbl is None:
+        return None
+    nd_vals = tbl["n_decode_vals"]
+    rows = tbl["rows"]
+    ndq = max(int(n_decode), 0)
+    pfq = max(int(prefill_tokens), 0)
+    lo, hi = _lookup_bounds(nd_vals, ndq)
+    val_lo = _lookup_1d(rows[lo]["keys"], rows[lo]["values"], pfq)
+    if lo == hi:
+        return max(1, int(val_lo))
+    val_hi = _lookup_1d(rows[hi]["keys"], rows[hi]["values"], pfq)
+    out = _linear_interpolate(nd_vals[lo], val_lo, nd_vals[hi], val_hi, ndq)
+    return max(1, int(out))
+
+
 def _catalog_has(perf_db, category, name):
     section = perf_db["architecture"]["catalog"].get(category) or {}
     return name in section
@@ -1053,11 +1133,15 @@ def _build_batch_ctx(batch, ctx):
 # ======================================================================
 
 def _layer_category(perf_db, layer_name):
-    """Return which catalog category (dense/per_sequence/attention/moe)
-    a canonical layer belongs to for this architecture, or None if the
-    catalog doesn't include it.
+    """Return which catalog category a canonical layer belongs to for this
+    architecture, or None if the catalog doesn't include it.
+
+    ``linear_attention`` is in the list. It was missing, and a category the
+    dispatcher does not know reads as "not in the catalog": every
+    gated-DeltaNet recurrence -- the defining computation of the architecture --
+    was skipped out of every trace with a one-line warning.
     """
-    for cat in ("per_sequence", "attention", "moe", "dense"):
+    for cat in ("per_sequence", "attention", "linear_attention", "moe", "dense"):
         if _catalog_has(perf_db, cat, layer_name):
             return cat
     return None
@@ -1083,6 +1167,17 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name,
         )
+    elif category == "linear_attention":
+        latency_ns = _lookup_linear_attention(
+            ctx.perf_db, ctx.tp_size, layer_name,
+            bctx.prefill_chunk, bctx.n_decode,
+        )
+        if latency_ns is None:
+            # This kernel does not fire in this batch's regime, so the block
+            # emits nothing for it -- a gated-DeltaNet block runs a different
+            # set of kernels for a pure prefill, a pure decode and a mixed
+            # batch, and the catalog names all three.
+            return 0
     else:  # dense
         latency_ns = _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
@@ -1369,6 +1464,8 @@ def _layer_available(perf_db, tp, layer_name):
         # layer column, ``attention_by_layer`` is ``{"attention": ...}``, so a
         # catalog declaring ``attention`` still answers exactly as before.
         return layer_name in (tables.get("attention_by_layer") or {})
+    if category == "linear_attention":
+        return layer_name in (tables.get("linear_attention_by_layer") or {})
     if category == "moe":
         return bool(tables.get("moe"))
     return False
@@ -1500,6 +1597,11 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name,
         )
+    if category == "linear_attention":
+        return _lookup_linear_attention(
+            ctx.perf_db, ctx.tp_size, layer_name,
+            bctx.prefill_chunk, bctx.n_decode,
+        ) or 0
     return _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
 
