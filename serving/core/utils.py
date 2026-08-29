@@ -83,6 +83,15 @@ def get_config(model_name):
     The cache hands every caller the *same* dict, so callers must treat it
     as read-only. They do today: every use is a subscript, a ``.get`` or an
     ``in`` test, and nothing assigns into it or mutates it in place.
+
+    A **wrapped** checkpoint -- a vision-language model whose text tower is the
+    thing we simulate -- is flattened through ``stack.text_config`` before it
+    is handed out, so every caller sees the backbone's fields at the top level.
+    Otherwise ``config['hidden_size']`` raises on MiniMax-M3 and every helper
+    that reaches for a dimension answers for a model nobody asked about. The
+    wrapper's own ``model_type`` still wins, because that is the name the
+    catalog is keyed by; the backbone's dimensions win where they collide.
+    A flat config comes back unchanged.
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     serving_dir = os.path.dirname(base_dir)
@@ -107,7 +116,38 @@ def get_config(model_name):
             f"{', '.join(candidate_paths)}. Please add the corresponding config file."
         )
 
-    return config
+    return _stack_module().text_config(config)
+
+
+
+# ======================================================================
+# MoE expert count
+# ======================================================================
+
+# The same fact under three names, because the families disagree: Mistral
+# writes ``num_local_experts``, HF/Qwen ``num_experts``, DeepSeek and GLM
+# ``n_routed_experts``. Every site that asked used to spell out its own subset
+# of the three, and every one of them missed the third -- so DeepSeek read as a
+# dense model in the config builder, in the trace generator's gate
+# construction, in its ALLTOALL sizing and in the memory model, four separate
+# silent wrong answers from one omission.
+_EXPERT_COUNT_KEYS = ("num_local_experts", "num_experts", "n_routed_experts")
+
+
+def num_experts(config):
+    """Routed experts this checkpoint declares, or 0 when it is dense."""
+    for key in _EXPERT_COUNT_KEYS:
+        if key in config:
+            try:
+                return int(config[key] or 0)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def is_moe(config):
+    """Whether this checkpoint has routed experts at all."""
+    return num_experts(config) > 0
 
 
 
