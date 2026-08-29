@@ -570,6 +570,39 @@ q_dim = n_head * head_dim        # NOT n_embd
 kv_dim = kv_head * head_dim      # NOT n_embd // group
 ```
 
+### Tensor sizes, block weight and KV shape
+`memory_model.calculate_sizes(model, layer_name, ...)` returns
+`(input, weight, output)` bytes **per rank** for one canonical layer, and
+**raises** on a name it does not know — so a catalog entry without a formula
+here makes the model unsimulable, not merely mis-sized.
+
+`get_weight()` walks the architecture yaml's blocks and the checkpoint's own
+per-layer composition (`utils.get_architecture` / `utils.get_layer_stack`), one
+built weight per distinct block shape. It used to sum a hardcoded
+`layernorm + qkv_proj + o_proj + layernorm + mlp`, which cannot describe MLA
+(no `qkv_proj`) or a hybrid stack. For PP it takes the **heaviest** contiguous
+window of layers, since the first window is the light one on a stack whose
+leading layers are dense.
+
+`kv_bytes_per_token_per_layer()` is the one place that knows the KV shapes, and
+they are not interchangeable:
+
+| Shape | Per token per layer | TP |
+|-------|---------------------|-----|
+| GQA | `2 * kv_head * head_dim * kv_fp` (K and V) | sharded |
+| MLA | `(kv_lora_rank + qk_rope_head_dim) * kv_fp`, one latent, no separate V | **replicated** (`num_kv_heads = 1`) |
+| + sparse indexer | plus `index_head_dim + index_head_dim//128 * 4` bytes (fp8 keys + fp32 scales, uint8) | replicated |
+| linear attention | 0 — the state is per **sequence**, not per token | n/a |
+
+Sizing DeepSeek-V3.2 as GQA read 1,748,992 bytes/token where MLA caches 78,324.
+
+**Verify a new family's shapes against its published parameter count.** It is
+the one number that catches a wrong shape anywhere in the stack, and it is
+public. `.claude/check_param_count.py` sums `calculate_sizes`' weights over the
+catalog and the resolved stack: DeepSeek-V3.2-Exp comes to 671.878B, and minus
+the DSA indexer (0.852B) that is 671.026B — V3's published 671B, with the
+difference being exactly what V3.2 adds.
+
 ### Model configs
 Model architecture configs live in `configs/model/{org}/{model}.json`. These are subsets
 of HuggingFace `config.json` containing fields the simulator needs (`hidden_size`,
