@@ -6,6 +6,34 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Tensor sizes, block weight and KV shape for MLA + DeepSeek sparse
+  attention** (DeepSeek-V3.2, GLM-5) — the first of the modern families the
+  simulator can size at all. Ten new `calculate_sizes` entries
+  (`mla_qkv_a_proj`, `mla_a_layernorm`, `mla_b_proj`, `indexer_wq_b`,
+  `indexer_wk_proj`, `indexer_k_norm`, `indexer_rope_emb`,
+  `indexer_q_rope_quant`, `indexer`, `indexer_glue`), every shape read off
+  vLLM's `deepseek_v2.py` rather than inferred.
+  - Checked against the published parameter count, which is the one number that
+    catches a wrong shape anywhere in the stack: summing the formulas over the
+    checkpoint's own layer composition gives **671.878B** for
+    DeepSeek-V3.2-Exp, and subtracting the DSA indexer (0.852B) leaves
+    **671.026B** — DeepSeek-V3's published 671B. The gap is exactly what V3.2
+    adds over V3
+  - `mla_qkv_a_proj` and both indexer projections are **replicated**, not
+    TP-sharded (`disable_tp=True` / `ReplicatedLinear`); `indexer_k_norm` is a
+    bare `nn.LayerNorm` so it carries a bias as well as a weight
+- `memory_model.kv_bytes_per_token_per_layer()` — one place that knows the
+  three KV shapes: GQA (K+V, sharded), MLA (one replicated latent of
+  `kv_lora_rank + qk_rope_head_dim`, `num_kv_heads = 1`, so **not** divided by
+  TP), and the sparse indexer's own second cache (fp8 keys plus one fp32 scale
+  per 128 elements, 132 bytes/token/layer). `get_kv()` and
+  `full_cluster_kv_bytes_per_token()` both go through it
+- `utils.get_architecture()` / `utils.get_layer_stack()` — the architecture
+  yaml and the checkpoint's per-layer block list, loaded and cached once.
+  `memory_model` needs them to weigh a block and `trace_generator` needs them
+  to emit one; `utils` is the module both already import, so there is one
+  loader rather than two to keep in step
+
 - **One catalog form: `blocks:` + `shared:`.** `sequence:` is gone, and with it
   the second code path. `blocks:` is keyed by axis
   (`attn.<layer_types value>`, `sparse_attn.<same>` as an overlay,
@@ -176,6 +204,31 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **`get_weight()` summed a hardcoded block** —
+  `layernorm + qkv_proj + o_proj + layernorm + mlp` — which is right for
+  families whose blocks look like Llama's and silently wrong for the rest. It
+  now walks the architecture yaml and the checkpoint's own per-layer
+  composition. MLA has no `qkv_proj` at all, so DeepSeek and GLM could not have
+  been weighed by the old path even in principle. Llama's weight is unchanged;
+  Qwen3's grows by 512 bytes per block, the `qk_norm` parameters the hardcoded
+  list omitted, which is below one KV block on every bundled scenario (checked)
+  so no baseline moves
+- **KV cache was sized as GQA for every model.** On DeepSeek-V3.2 that read
+  1,748,992 bytes per token where MLA actually caches **78,324** — a 22x
+  overstatement, and the whole point of MLA
+- **The expert-count fallback missed `n_routed_experts`**, so a DeepSeek or
+  GLM MoE block weighed one expert instead of 256. Same omission in
+  `MemoryModel.is_moe`
+- `moe` weight now counts the **shared** expert(s) (`n_shared_experts`), which
+  run on every token beside the routed ones. No effect on families without the
+  field
+- `o_proj` and `rotary_emb` follow MLA's dims on an MLA checkpoint: o_proj
+  reads `n_head * v_head_dim` (V is a different width from Q — 128x128 on
+  DeepSeek-V3.2, 64x256 on GLM-5) and rope rotates only `qk_rope_head_dim`
+- **PP weight took the first `n_layer // pp` layers**, not the heaviest. On a
+  heterogeneous stack the first window is the light one — DeepSeek's leading
+  three layers are the dense-MLP ones — so the "conservative upper bound" the
+  docstring promises was not one
 - **`--no-enable-block-copy` emitted one transformer block instead of
   `num_hidden_layers`.** Measured on Qwen3-30B-A3B (48 layers): 19 trace lines
   where the same run with block copy enabled emits 583, and a total clock

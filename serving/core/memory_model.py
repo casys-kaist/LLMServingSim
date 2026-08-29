@@ -1,5 +1,5 @@
 import os
-from .utils import get_config
+from .utils import get_architecture, get_config, get_layer_stack
 from .block_pool import Device, BlockPool, PrefixCacheStats
 from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
 from .logger import get_logger
@@ -57,9 +57,15 @@ class MemoryModel():
         # Accept either the Mistral-style ``num_local_experts`` or the
         # HF/Qwen-style ``num_experts`` key — profiler configs track
         # upstream HF naming which varies per family.
-        self.is_moe = 'num_local_experts' in self.config or 'num_experts' in self.config
+        self.is_moe = any(
+            k in self.config
+            for k in ('num_local_experts', 'num_experts', 'n_routed_experts')
+        )
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
+
+        # Filled on first get_kv(); the layer walk is per model, not per call.
+        self._kv_bytes_per_token_per_rank = None
 
         self.weight = self.get_weight() # assume weight is loaded
         if self.weight > self.npu_mem:
@@ -157,6 +163,16 @@ class MemoryModel():
     def get_weight(self):
         """Per-GPU model weight in bytes.
 
+        Walks the architecture yaml's blocks and the checkpoint's own per-layer
+        composition, so a heterogeneous stack is weighed layer by layer: on
+        DeepSeek-V3.2 the first three layers carry a dense MLP and the other 58
+        carry 256 experts, and on Qwen3.8 gated-DeltaNet layers weigh nothing
+        like the full-attention ones. It used to sum a hardcoded
+        ``layernorm + qkv_proj + o_proj + layernorm + mlp``, which is right for
+        exactly the families whose blocks look like Llama's and silently wrong
+        for the rest -- and unrunnable for MLA, whose blocks have no
+        ``qkv_proj`` at all.
+
         Conservative upper bound across PP ranks: assumes a single rank
         holds embedding + final_layernorm + lm_head along with its share
         of transformer blocks (n_layer // pp_size). In real PP these
@@ -164,55 +180,101 @@ class MemoryModel():
         ranks are lighter — but using the heaviest-rank value here keeps
         the `weight > npu_mem` check safe.
         """
-        tp = self.tp_size
         pp = max(self.pp_size, 1)
-        ep = self.ep_size
-        fp = self.fp
-        weight = 0
+        arch = get_architecture(self.model)
+        shared = arch.get("shared") or {}
 
-        _, embedding, _ = calculate_sizes(self.model, 'embedding', 1, parallel=tp, fp=fp)
-        weight += embedding
-        weight += self._get_weight_per_block(tp, ep, fp) * (self.n_layer // pp)
-        _, ln_f, _ = calculate_sizes(self.model, 'final_layernorm', 1, parallel=tp, fp=fp)
-        weight += ln_f
-        _, lm_head, _ = calculate_sizes(self.model, 'lm_head', 1, parallel=tp, fp=fp)
-        weight += lm_head
+        weight = sum(
+            self._layer_weight(name)
+            for name in (shared.get("prologue") or []) + (shared.get("head") or [])
+        )
+
+        # One built weight per distinct block shape, then the **heaviest**
+        # contiguous run of this rank's layers. Taking the first
+        # ``n_layer // pp`` would understate a heterogeneous stack: DeepSeek's
+        # first three layers are the cheap dense ones, so on pp=2 the first
+        # window is the light half and the check this feeds would pass a
+        # configuration that does not fit.
+        stack = get_layer_stack(self.model)
+        per_shape: dict = {}
+        for spec in set(stack):
+            per_shape[spec] = sum(
+                self._layer_weight(name)
+                for name in self._block_layer_names(arch, spec)
+            )
+        per_layer = [per_shape[spec] for spec in stack]
+        per_stage = -(-len(per_layer) // pp)  # ceil, the fullest stage
+        weight += max(
+            sum(per_layer[i:i + per_stage])
+            for i in range(0, max(1, len(per_layer) - per_stage + 1))
+        )
 
         self.logger.info(
             "NPU: model weight %dMB loaded",
-            weight * tp // MB_TO_BYTE,
+            weight * self.tp_size // MB_TO_BYTE,
         )
         return weight
 
-    def _get_weight_per_block(self, tp, ep, fp):
-        """Per-block weight: dense layers use TP, MoE experts use EP."""
-        block_weight = 0
-        _, ln_w, _ = calculate_sizes(self.model, 'layernorm', 1, parallel=tp, fp=fp)
-        block_weight += ln_w  # input layernorm
-        _, qkv_w, _ = calculate_sizes(self.model, 'qkv_proj', 1, parallel=tp, fp=fp)
-        block_weight += qkv_w
-        _, o_w, _ = calculate_sizes(self.model, 'o_proj', 1, parallel=tp, fp=fp)
-        block_weight += o_w
-        block_weight += ln_w  # post layernorm (same weight size)
-        if self.is_moe:
-            _, moe_w, _ = calculate_sizes(self.model, 'moe', 1, parallel=ep, fp=fp)
-            block_weight += moe_w
-        else:
-            _, ffn1_w, _ = calculate_sizes(self.model, 'gate_up_proj', 1, parallel=tp, fp=fp)
-            block_weight += ffn1_w
-            _, ffn2_w, _ = calculate_sizes(self.model, 'down_proj', 1, parallel=tp, fp=fp)
-            block_weight += ffn2_w
-        return block_weight
+    @staticmethod
+    def _block_layer_names(arch, spec):
+        """Every canonical layer one decoder layer of shape ``spec`` emits."""
+        blocks = arch.get("blocks") or {}
+        group = None
+        if spec.sparse:
+            group = (blocks.get("sparse_attn") or {}).get(spec.attn)
+        if group is None:
+            group = (blocks.get("attn") or {}).get(spec.attn)
+        if group is None:
+            raise KeyError(
+                f"Architecture for {arch.get('model_types') or 'this model'} "
+                f"declares no 'blocks.attn.{spec.attn}'."
+            )
+        return (list(group.get("pre_attn") or [])
+                + list(group.get("post_attn") or [])
+                + list((blocks.get("mlp") or {}).get(spec.mlp) or []))
+
+    def _layer_weight(self, name):
+        """One canonical layer's per-rank parameter bytes.
+
+        ``moe`` shards by EP, everything else by TP — the same split
+        ``calculate_sizes`` documents.
+        """
+        parallel = self.ep_size if name == "moe" else self.tp_size
+        _, weight, _ = calculate_sizes(
+            self.model, name, 1, kv_len=1, parallel=parallel, fp=self.fp,
+        )
+        return weight
 
     # -------------------- KV sizing math --------------------
 
     def get_kv(self, seq):
-        # shape of kv cache
-        # (kv_head, batch_size, n_embd//n_head, seq_len) per layer
-        # return batch_size = 1 to caclulate max batch_size in scheduler
+        """Per-rank KV cache bytes for ``seq`` tokens, summed over layers.
 
-        # K & V multiply 2
-        return 2 * self.kv_dim * seq * self.n_layer * self.kv_fp // self.num_npus
+        Walks the checkpoint's own layer composition, because the per-layer
+        answer differs by block: an MLA layer caches a replicated latent, a
+        sparse one adds the indexer's own cache beside it, and a
+        gated-DeltaNet layer caches nothing per token at all.
+
+        Sharding differs with it. GQA splits K and V across ranks; MLA does
+        not (``num_kv_heads = 1``), so its bytes are the same on every rank and
+        must not be divided.
+        """
+        if self._kv_bytes_per_token_per_rank is None:
+            config, kv_fp = self.config, self.kv_fp
+            stack = get_layer_stack(self.model)
+            sharded = config.get('kv_lora_rank') is None
+            if not stack:
+                per_layer = [kv_bytes_per_token_per_layer(config, kv_fp)] * self.n_layer
+            else:
+                per_layer = [
+                    kv_bytes_per_token_per_layer(config, kv_fp, spec)
+                    for spec in stack
+                ]
+            total = sum(per_layer)
+            self._kv_bytes_per_token_per_rank = (
+                total // self.num_npus if sharded else total
+            )
+        return self._kv_bytes_per_token_per_rank * seq
 
     def get_total_kv(self, req):
         """Bytes of KV a request's whole computed context occupies, per rank.
@@ -403,6 +465,53 @@ def build_prefix_pool(tier, capacity_bytes, npu_block_size, cluster_bytes_per_to
                      enable_caching=True, node_id=node_id, instance_id=instance_id)
 
 
+def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
+    """KV cache bytes one token occupies in one decoder layer, cluster-wide.
+
+    Three shapes, and they are not interchangeable:
+
+    * **Grouped-query attention** — ``2 * kv_head * head_dim`` elements, K and
+      V, sharded across TP ranks. What every family here had until now.
+    * **MLA** (DeepSeek-V3.2, GLM-5) — one latent vector of
+      ``kv_lora_rank + qk_rope_head_dim``, no separate V
+      (``MLAAttentionSpec.head_size_v = 0``), and **``num_kv_heads = 1``**, so
+      it is *replicated* across TP ranks rather than sharded. 1152 bytes per
+      token per layer on DeepSeek-V3.2 in bf16, against 28672 for the GQA
+      formula read off the same config -- a 25x difference, and the whole
+      point of MLA.
+    * **Sparse-attention indexer** (the ``sparse`` axis on those two) — a
+      *second* cache beside the latent, ``index_head_dim`` fp8 values plus one
+      fp32 scale per ``quant_block_size`` (128) elements, so literal bytes
+      independent of ``kv_fp``. 132 more per token per layer.
+
+    ``spec`` is the layer's :class:`LayerSpec`; ``None`` answers for a uniform
+    stack. Cluster-wide, i.e. before the per-rank division, so callers can do
+    that once and keep the roundoff in one place.
+    """
+    n_embd = config['hidden_size']
+    n_head = config['num_attention_heads']
+    head_dim = config.get('head_dim', n_embd // n_head)
+    kv_head = config.get('num_key_value_heads', n_head)
+
+    kv_lora_rank = config.get('kv_lora_rank')
+    if kv_lora_rank is None:
+        # GQA: K and V, sharded.
+        return 2 * kv_head * head_dim * kv_fp
+
+    # MLA: one replicated latent. Reported cluster-wide as num_npus copies of
+    # itself would be wrong -- it is the same bytes on every rank -- so the
+    # caller divides and this returns the per-rank figure directly. See
+    # ``MemoryModel.get_kv``.
+    latent = (kv_lora_rank + (config.get('qk_rope_head_dim') or 0)) * kv_fp
+    if spec is not None and not spec.sparse:
+        return latent
+    idx_head_dim = config.get('index_head_dim') or 0
+    if not idx_head_dim or 'index_topk' not in config:
+        return latent
+    # fp8 keys + one fp32 scale per 128-element block, stored as uint8.
+    return latent + idx_head_dim + (idx_head_dim // 128) * 4
+
+
 def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
     """Bytes of KV cache per token aggregated over the full TP cluster.
 
@@ -412,15 +521,13 @@ def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
     for the KV cache regardless of weight dtype.
     """
     config = get_config(model)
-    n_embd = config['hidden_size']
-    n_head = config['num_attention_heads']
-    head_dim = config.get('head_dim', n_embd // n_head)
-    kv_head = config.get('num_key_value_heads', n_head)
-    kv_dim = kv_head * head_dim
-    n_layer = config['num_hidden_layers']
     kv_fp = 1 if kv_cache_dtype == 'fp8' else fp // 8
-    # 2 (K + V) * kv_dim * n_layer * bytes_per_elem
-    return 2 * kv_dim * n_layer * kv_fp
+    stack = get_layer_stack(model)
+    if not stack:
+        return kv_bytes_per_token_per_layer(config, kv_fp) * config['num_hidden_layers']
+    return sum(
+        kv_bytes_per_token_per_layer(config, kv_fp, spec) for spec in stack
+    )
 
 
 # calculate the per-rank input, weight, output size of each layer
@@ -442,10 +549,36 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     ffn_dim = config.get("intermediate_size", config.get("ffn_dim"))  # dense FFN dim
     moe_ffn_dim = config.get("moe_intermediate_size", ffn_dim)  # per-expert FFN dim (may differ from dense)
     # Same both-name fallback as MemoryModel.__init__ — HF / Qwen use
-    # ``num_experts`` while Mistral uses ``num_local_experts``.
+    # ``num_experts``, Mistral ``num_local_experts``, DeepSeek and GLM
+    # ``n_routed_experts``. Missing the third made a DeepSeek MoE block weigh
+    # one expert instead of 256.
     num_local_experts = config.get(
-        "num_local_experts", config.get("num_experts", 1)
+        "num_local_experts",
+        config.get("num_experts", config.get("n_routed_experts", 1)),
     )
+    # Shared experts run on every token beside the routed ones, so their
+    # weights are resident like any other expert.
+    num_shared_experts = int(config.get("n_shared_experts") or 0)
+
+    # --- MLA (DeepSeek-V3.2, GLM-5) ---------------------------------------
+    # Present only on an MLA checkpoint; ``kv_lora_rank`` is the discriminator
+    # because it is the one field the latent cache cannot do without.
+    kv_lora_rank = config.get("kv_lora_rank")
+    is_mla = kv_lora_rank is not None
+    q_lora_rank = config.get("q_lora_rank") or 0
+    qk_nope_dim = config.get("qk_nope_head_dim") or 0
+    qk_rope_dim = config.get("qk_rope_head_dim") or 0
+    v_head_dim = config.get("v_head_dim") or head_dim
+    qk_head_dim = qk_nope_dim + qk_rope_dim
+    # What one rank's o_proj reads, and what the rope actually rotates. On a
+    # non-MLA model these fall back to the plain GQA values.
+    o_in_dim = (n_head * v_head_dim) if is_mla else q_dim
+    rope_dim = qk_rope_dim if is_mla else head_dim
+
+    # --- DeepSeek sparse-attention indexer --------------------------------
+    idx_heads = config.get("index_n_heads") or 0
+    idx_head_dim = config.get("index_head_dim") or 0
+    idx_topk = config.get("index_topk") or 0
 
     p = max(int(parallel), 1)
 
@@ -475,9 +608,17 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
 
     # ----------------- RoPE & Attention Core -----------------
     elif layer_name == "rotary_emb":
-        input_size = ((n_head // p) + (kv_head // p)) * length * head_dim * fp
+        # MLA rotates only the rope half of Q and the single shared K rope
+        # vector (the rest of K lives compressed in the latent), so it is
+        # ``qk_rope_head_dim`` wide over ``n_head + 1`` rows rather than
+        # ``head_dim`` over ``n_head + kv_head``.
+        if is_mla:
+            input_size = ((n_head // p) + 1) * length * rope_dim * fp
+            output_size = input_size
+        else:
+            input_size = ((n_head // p) + (kv_head // p)) * length * head_dim * fp
+            output_size = input_size
         weight_size = 0
-        output_size = ((n_head // p) + (kv_head // p)) * length * head_dim * fp
 
     elif layer_name == "attention":
         if not pim:
@@ -502,8 +643,12 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         output_size = length * ((q_dim + 2 * kv_dim) // p) * fp
 
     elif layer_name == "o_proj":
-        input_size = length * (q_dim // p) * fp
-        weight_size = (q_dim // p) * n_embd * fp
+        # RowParallelLinear: sharded on the input dim. That dim is
+        # ``n_head * v_head_dim`` under MLA, where V is a different width from
+        # Q -- 128 x 128 on DeepSeek-V3.2, 64 x 256 on GLM-5 -- and
+        # ``n_head * head_dim`` everywhere else.
+        input_size = length * (o_in_dim // p) * fp
+        weight_size = (o_in_dim // p) * n_embd * fp
         output_size = length * n_embd * fp
 
     elif layer_name == "gate_up_proj":
@@ -521,16 +666,123 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = (ffn_dim // p) * n_embd * fp
         output_size = length * n_embd * fp
 
+    # ----------------- MLA (DeepSeek-V3.2, GLM-5) -----------------
+    # Shapes read off vLLM's ``deepseek_v2.py``, not inferred. Checked against
+    # the published parameter count: summing these over the checkpoint's own
+    # layer composition gives 671.9B for DeepSeek-V3.2-Exp against a published
+    # 671B.
+    elif layer_name == "mla_qkv_a_proj":
+        # ``DeepSeekV2FusedQkvAProjLinear``, one GEMM producing the q latent
+        # and the kv latent + K rope. It subclasses MergedColumnParallelLinear
+        # but passes ``disable_tp=True``, so it is **replicated** -- every rank
+        # needs the whole latent. (vLLM asserts the fused weight is
+        # 2112 x 7168 on V3.2, i.e. (1536 + 512 + 64) x hidden.)
+        latent_out = q_lora_rank + kv_lora_rank + qk_rope_dim
+        input_size = length * n_embd * fp
+        weight_size = n_embd * latent_out * fp
+        output_size = length * latent_out * fp
+
+    elif layer_name == "mla_a_layernorm":
+        # q_a_layernorm + kv_a_layernorm. Both are ``RMSNorm`` (scale only, no
+        # bias) inside ``DeepseekV2MLAAttention``, so the profiler reports them
+        # as one merged node and this entry carries their **sum**.
+        input_size = length * (q_lora_rank + kv_lora_rank) * fp
+        weight_size = (q_lora_rank + kv_lora_rank) * fp
+        output_size = length * (q_lora_rank + kv_lora_rank) * fp
+
+    elif layer_name == "mla_b_proj":
+        # q_b_proj + kv_b_proj, both ColumnParallelLinear and both reported as
+        # one merged node, so again the sum. Sharded on the output dim.
+        q_b_out = n_head * qk_head_dim
+        kv_b_out = n_head * (qk_nope_dim + v_head_dim)
+        input_size = length * (q_lora_rank + kv_lora_rank) * fp
+        weight_size = (q_lora_rank * (q_b_out // p)
+                       + kv_lora_rank * (kv_b_out // p)) * fp
+        output_size = length * ((q_b_out + kv_b_out) // p) * fp
+
+    # ----------------- DeepSeek sparse-attention indexer -----------------
+    elif layer_name == "indexer_wq_b":
+        # ``ReplicatedLinear`` by construction -- the comment in vLLM is
+        # literally "no tensor parallel, just replicated".
+        idx_q = idx_heads * idx_head_dim
+        input_size = length * q_lora_rank * fp
+        weight_size = q_lora_rank * idx_q * fp
+        output_size = length * idx_q * fp
+
+    elif layer_name == "indexer_wk_proj":
+        # ``wk_weights_proj``: one MergedColumnParallelLinear with
+        # ``disable_tp=True``, producing [index_head_dim | index_n_heads] --
+        # the index key and the per-head weights -- in a single GEMM.
+        idx_kw = idx_head_dim + idx_heads
+        input_size = length * n_embd * fp
+        weight_size = n_embd * idx_kw * fp
+        output_size = length * idx_kw * fp
+
+    elif layer_name == "indexer_k_norm":
+        # A bare ``nn.LayerNorm``, not RMSNorm, so it carries weight **and**
+        # bias.
+        input_size = length * idx_head_dim * fp
+        weight_size = 2 * idx_head_dim * fp
+        output_size = length * idx_head_dim * fp
+
+    elif layer_name == "indexer_rope_emb":
+        # The indexer's own rope: the rope slice of every index-query head,
+        # plus the single MQA index key. Shared instance across layers, so no
+        # weight of its own beyond the cos/sin cache, which is not per-layer.
+        input_size = (idx_heads + 1) * length * qk_rope_dim * fp
+        weight_size = 0
+        output_size = input_size
+
+    elif layer_name == "indexer_q_rope_quant":
+        # ``fused_indexer_q_rope_quant``: rope on the index queries plus the
+        # fp8 quantization they are scored in. Output is 1 byte per element
+        # regardless of ``fp``, plus one fp32 scale per 128-element block --
+        # the ``quant_block_size`` vLLM hardcodes -- and the fp32 weights.
+        idx_q = idx_heads * idx_head_dim
+        scales = idx_heads * max(1, idx_head_dim // 128)
+        input_size = length * (idx_q + idx_heads) * fp
+        weight_size = 0
+        output_size = length * (idx_q + scales * 4 + idx_heads * 4)
+
+    elif layer_name == "indexer":
+        # ``SparseAttnIndexer``: scores every cached index key against this
+        # step's fp8 queries and returns the top-k token ids. The read over
+        # the KV is what makes it an attention-category layer, and it is the
+        # indexer's **own** cache -- fp8 values plus one fp32 scale per
+        # 128-element block -- not the MLA latent cache.
+        idx_q = idx_heads * idx_head_dim
+        idx_cache_per_tok = idx_head_dim + (idx_head_dim // 128) * 4
+        kv = kv_len if kv_len is not None else length
+        input_size = length * idx_q + kv * idx_cache_per_tok
+        weight_size = 0
+        output_size = length * idx_topk * 4  # int32 token indices
+
+    elif layer_name == "indexer_glue":
+        # Not one tensor: the bucket of eager reshape/copy/index_put work the
+        # indexer does around its kernels, bound as a group in the catalog so
+        # its measured cost is not silently dropped. Sized as one pass over
+        # the index queries, which is what those ops move; the *latency* is
+        # measured, this is a stand-in for the byte counts.
+        idx_q = idx_heads * idx_head_dim
+        input_size = length * idx_q * fp
+        weight_size = 0
+        output_size = length * idx_q * fp
+
     elif layer_name == "sampler":
         input_size = length * (vocab_size // p) * fp
         weight_size = 0
         output_size = length * 4  # int32 token IDs
 
     elif layer_name == "moe":
+        # The whole block, matching what the catalog binds: gate, this rank's
+        # routed experts, and the shared expert(s). A shared expert runs on
+        # every token beside the routed ones and is replicated, not sharded
+        # (DeepSeek and GLM ship one; families without the field ship none).
         experts_per_rank = num_local_experts // p
         input_size = length * n_embd * fp
         weight_size = (n_embd * num_local_experts * fp  # gate (replicated)
-                     + experts_per_rank * 3 * n_embd * moe_ffn_dim * fp)  # local experts
+                     + experts_per_rank * 3 * n_embd * moe_ffn_dim * fp
+                     + num_shared_experts * 3 * n_embd * moe_ffn_dim * fp)
         output_size = length * n_embd * fp
 
     # ----------------- LM Head -----------------
