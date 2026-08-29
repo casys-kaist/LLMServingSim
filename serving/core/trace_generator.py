@@ -4,6 +4,7 @@ from .request import *
 from .utils import *
 from .utils import (
     _load_architecture, _stack_module, get_architecture, get_layer_stack,
+    num_experts as utils_num_experts,
 )
 import pandas as pd
 import yaml
@@ -1212,7 +1213,7 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
     # ASTRA-Sim AG ``data_size`` is per-rank local chunk (sum / ep_total);
     # RS ``data_size`` is the pre-scatter total buffer.
     n_embd = ctx.config['hidden_size']
-    num_experts = ctx.config.get('num_local_experts', ctx.config.get('num_experts', 0))
+    num_experts = utils_num_experts(ctx.config)
     dispatch_per_token = (n_embd + num_experts) * ctx.fp
     combine_per_token = n_embd * ctx.fp
     ag_per_rank_tokens = max(1, effective_total_len_comm // max(ep_total, 1))
@@ -1801,10 +1802,11 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
         f"instance{instance_id}_batch{batch.batch_id}.txt",
     )
 
-    # make trace — accept either the Mistral-style ``num_local_experts``
-    # key or the HF/Qwen3 ``num_experts`` key so both family's configs
-    # resolve to a live GateRouter.
-    num_experts_cfg = config.get("num_local_experts", config.get("num_experts"))
+    # make trace — ``utils.num_experts`` knows every spelling the families
+    # use, so a MoE checkpoint resolves to a live GateRouter whichever key it
+    # declares. DeepSeek and GLM write ``n_routed_experts``, which this site
+    # used to miss, leaving ctx.gate None and the MoE block unemittable.
+    num_experts_cfg = utils_num_experts(config)
     if num_experts_cfg:
         gate = GateRouter(
             node_id, instance_id, num_experts_cfg,

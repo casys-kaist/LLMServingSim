@@ -1,5 +1,8 @@
 import os
-from .utils import get_architecture, get_config, get_layer_stack
+from .utils import (
+    get_architecture, get_config, get_layer_stack, is_moe as _is_moe,
+    num_experts as _num_experts,
+)
 from .block_pool import Device, BlockPool, PrefixCacheStats
 from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
 from .logger import get_logger
@@ -54,13 +57,7 @@ class MemoryModel():
         self.q_dim = self.n_head * self.head_dim       # total Q projection output dim
         self.kv_dim = self.kv_head * self.head_dim     # total KV projection output dim
         self.vocab_size = self.config['vocab_size']
-        # Accept either the Mistral-style ``num_local_experts`` or the
-        # HF/Qwen-style ``num_experts`` key — profiler configs track
-        # upstream HF naming which varies per family.
-        self.is_moe = any(
-            k in self.config
-            for k in ('num_local_experts', 'num_experts', 'n_routed_experts')
-        )
+        self.is_moe = _is_moe(self.config)
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
 
@@ -261,18 +258,17 @@ class MemoryModel():
         """
         if self._kv_bytes_per_token_per_rank is None:
             config, kv_fp = self.config, self.kv_fp
-            stack = get_layer_stack(self.model)
-            sharded = config.get('kv_lora_rank') is None
-            if not stack:
-                per_layer = [kv_bytes_per_token_per_layer(config, kv_fp)] * self.n_layer
-            else:
-                per_layer = [
-                    kv_bytes_per_token_per_layer(config, kv_fp, spec)
-                    for spec in stack
-                ]
-            total = sum(per_layer)
+            stack = get_layer_stack(self.model) or [None] * self.n_layer
+            parts = [
+                kv_bytes_per_token_per_layer(config, kv_fp, spec)
+                for spec in stack
+            ]
+            # Sharded caches divide across every NPU of the instance; a
+            # replicated one is the same bytes on each, so it must not.
+            sharded = sum(a for a, _ in parts)
+            replicated = sum(b for _, b in parts)
             self._kv_bytes_per_token_per_rank = (
-                total // self.num_npus if sharded else total
+                sharded // self.num_npus + replicated
             )
         return self._kv_bytes_per_token_per_rank * seq
 
@@ -466,27 +462,35 @@ def build_prefix_pool(tier, capacity_bytes, npu_block_size, cluster_bytes_per_to
 
 
 def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
-    """KV cache bytes one token occupies in one decoder layer, cluster-wide.
+    """KV bytes one token occupies in one decoder layer, as ``(sharded, replicated)``.
 
-    Three shapes, and they are not interchangeable:
+    Two numbers rather than one because a layer can hold both, and they divide
+    differently: a cache with ``num_kv_heads > 1`` splits across TP ranks while
+    one with ``num_kv_heads = 1`` is the same bytes on every rank. MiniMax-M3's
+    sparse layers hold one of each.
+
+    The shapes, all read off the ``get_kv_cache_spec`` each layer publishes:
 
     * **Grouped-query attention** — ``2 * kv_head * head_dim`` elements, K and
-      V, sharded across TP ranks. What every family here had until now.
-    * **MLA** (DeepSeek-V3.2, GLM-5) — one latent vector of
+      V, sharded. What every family here had until now.
+    * **MLA** (DeepSeek-V3.2, GLM-5) — one latent of
       ``kv_lora_rank + qk_rope_head_dim``, no separate V
-      (``MLAAttentionSpec.head_size_v = 0``), and **``num_kv_heads = 1``**, so
-      it is *replicated* across TP ranks rather than sharded. 1152 bytes per
-      token per layer on DeepSeek-V3.2 in bf16, against 28672 for the GQA
-      formula read off the same config -- a 25x difference, and the whole
-      point of MLA.
-    * **Sparse-attention indexer** (the ``sparse`` axis on those two) — a
-      *second* cache beside the latent, ``index_head_dim`` fp8 values plus one
-      fp32 scale per ``quant_block_size`` (128) elements, so literal bytes
-      independent of ``kv_fp``. 132 more per token per layer.
+      (``MLAAttentionSpec.head_size_v = 0``), ``num_kv_heads = 1``, so
+      replicated. 1152 bytes/token/layer on DeepSeek-V3.2 in bf16 against
+      28672 for the GQA formula read off the same config.
+    * **DeepSeek's sparse indexer** — a second cache beside the latent:
+      ``index_head_dim`` fp8 keys plus one fp32 scale per 128 elements, stored
+      as uint8, so literal bytes independent of ``kv_fp``. Replicated.
+    * **MiniMax-M3's block-sparse indexer** — a third shape again: key-only,
+      one ``sparse_index_dim`` vector per token at the indexer's own dtype
+      (bf16 by default, *not* the main cache's), replicated, and **beside** an
+      ordinary GQA cache rather than instead of one. Its top-k caps what
+      attention *reads*, not what is *stored*.
+    * **Linear attention** (gated DeltaNet) — nothing per token; the state is
+      fixed per sequence.
 
     ``spec`` is the layer's :class:`LayerSpec`; ``None`` answers for a uniform
-    stack. Cluster-wide, i.e. before the per-rank division, so callers can do
-    that once and keep the roundoff in one place.
+    stack.
     """
     n_embd = config['hidden_size']
     n_head = config['num_attention_heads']
@@ -494,22 +498,25 @@ def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
     kv_head = config.get('num_key_value_heads', n_head)
 
     kv_lora_rank = config.get('kv_lora_rank')
-    if kv_lora_rank is None:
-        # GQA: K and V, sharded.
-        return 2 * kv_head * head_dim * kv_fp
+    if kv_lora_rank is not None:
+        # MLA: one replicated latent, and no GQA cache at all.
+        replicated = (kv_lora_rank + (config.get('qk_rope_head_dim') or 0)) * kv_fp
+        idx_head_dim = config.get('index_head_dim') or 0
+        sparse = True if spec is None else spec.sparse
+        if sparse and idx_head_dim and 'index_topk' in config:
+            # fp8 keys + one fp32 scale per 128-element block, as uint8.
+            replicated += idx_head_dim + (idx_head_dim // 128) * 4
+        return 0, replicated
 
-    # MLA: one replicated latent. Reported cluster-wide as num_npus copies of
-    # itself would be wrong -- it is the same bytes on every rank -- so the
-    # caller divides and this returns the per-rank figure directly. See
-    # ``MemoryModel.get_kv``.
-    latent = (kv_lora_rank + (config.get('qk_rope_head_dim') or 0)) * kv_fp
-    if spec is not None and not spec.sparse:
-        return latent
-    idx_head_dim = config.get('index_head_dim') or 0
-    if not idx_head_dim or 'index_topk' not in config:
-        return latent
-    # fp8 keys + one fp32 scale per 128-element block, stored as uint8.
-    return latent + idx_head_dim + (idx_head_dim // 128) * 4
+    sharded = 2 * kv_head * head_dim * kv_fp
+    sparse_cfg = config.get('sparse_attention_config') or {}
+    idx_dim = sparse_cfg.get('sparse_index_dim') or 0
+    sparse = bool(sparse_cfg.get('use_sparse_attention')) if spec is None else spec.sparse
+    if sparse and idx_dim:
+        # Key-only side cache at the indexer's own dtype, which mirrors
+        # ``--kv-cache-dtype`` for the main cache but defaults to bf16.
+        return sharded, idx_dim * kv_fp
+    return sharded, 0
 
 
 def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
@@ -522,11 +529,9 @@ def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
     """
     config = get_config(model)
     kv_fp = 1 if kv_cache_dtype == 'fp8' else fp // 8
-    stack = get_layer_stack(model)
-    if not stack:
-        return kv_bytes_per_token_per_layer(config, kv_fp) * config['num_hidden_layers']
+    stack = get_layer_stack(model) or [None] * config['num_hidden_layers']
     return sum(
-        kv_bytes_per_token_per_layer(config, kv_fp, spec) for spec in stack
+        sum(kv_bytes_per_token_per_layer(config, kv_fp, spec)) for spec in stack
     )
 
 
@@ -546,16 +551,21 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     kv_head = config.get("num_key_value_heads", n_head)  # fallback to n_head if not defined
     q_dim = n_head * head_dim       # total Q projection output dim
     kv_dim = kv_head * head_dim     # total KV projection output dim
-    ffn_dim = config.get("intermediate_size", config.get("ffn_dim"))  # dense FFN dim
-    moe_ffn_dim = config.get("moe_intermediate_size", ffn_dim)  # per-expert FFN dim (may differ from dense)
-    # Same both-name fallback as MemoryModel.__init__ — HF / Qwen use
-    # ``num_experts``, Mistral ``num_local_experts``, DeepSeek and GLM
-    # ``n_routed_experts``. Missing the third made a DeepSeek MoE block weigh
-    # one expert instead of 256.
-    num_local_experts = config.get(
-        "num_local_experts",
-        config.get("num_experts", config.get("n_routed_experts", 1)),
+    # Dense FFN width. MiniMax-M3 inverts the usual convention -- its
+    # ``intermediate_size`` is the *per-expert* width (3072) and the dense
+    # layers' is ``dense_intermediate_size`` (12288) -- so read that first
+    # where it exists, or the three dense layers come out 4x narrow.
+    ffn_dim = config.get(
+        "dense_intermediate_size",
+        config.get("intermediate_size", config.get("ffn_dim")),
     )
+    # Per-expert FFN width, which may differ from the dense one.
+    moe_ffn_dim = config.get(
+        "moe_intermediate_size", config.get("intermediate_size", ffn_dim)
+    )
+    # ``utils.num_experts`` knows every spelling; missing one made a DeepSeek
+    # MoE block weigh a single expert instead of 256.
+    num_local_experts = _num_experts(config) or 1
     # Shared experts run on every token beside the routed ones, so their
     # weights are resident like any other expert.
     num_shared_experts = int(config.get("n_shared_experts") or 0)
@@ -579,6 +589,22 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     idx_heads = config.get("index_n_heads") or 0
     idx_head_dim = config.get("index_head_dim") or 0
     idx_topk = config.get("index_topk") or 0
+
+    # --- MiniMax-M3 block-sparse attention --------------------------------
+    # A different sparse shape from DeepSeek's: block-level top-k over plain
+    # GQA rather than token-level top-k over MLA, and the index branch rides
+    # the KV-head sharding path (vLLM asserts
+    # ``total_num_index_heads == total_num_kv_heads``).
+    sparse_cfg = config.get("sparse_attention_config") or {}
+    m3_idx_dim = sparse_cfg.get("sparse_index_dim") or 0
+    m3_idx_heads = sparse_cfg.get("sparse_num_index_heads") or 0
+    m3_topk_blocks = sparse_cfg.get("sparse_topk_blocks") or 0
+    m3_block = sparse_cfg.get("sparse_block_size") or 0
+    # ``rotary_dim`` = head_dim * partial_rotary_factor; only that slice is
+    # rotated.
+    m3_rope_dim = config.get("rotary_dim") or head_dim
+    # The shared expert has its own width on M3.
+    shared_ffn_dim = config.get("shared_intermediate_size", moe_ffn_dim)
 
     p = max(int(parallel), 1)
 
@@ -621,7 +647,20 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = 0
 
     elif layer_name == "attention":
-        if not pim:
+        if is_mla and not pim:
+            # MLA reads a single latent per cached token rather than K and V
+            # per KV head, and that latent is replicated across ranks, so the
+            # KV term does not divide by ``p``. Q is ``qk_head_dim`` wide
+            # (nope + rope) and the output is ``v_head_dim``, which is a
+            # different width again -- 192 in, 128 out on DeepSeek-V3.2.
+            latent = kv_lora_rank + qk_rope_dim
+            input_size = (
+                (n_head // p) * length * qk_head_dim * fp
+                + (kv_len or 0) * latent * fp
+            )
+            weight_size = 0
+            output_size = (n_head // p) * length * v_head_dim * fp
+        elif not pim:
             input_size = (
                 (n_head // p) * length * head_dim * fp +
                 (kv_head // p) * kv_len * head_dim * fp * 2
@@ -768,6 +807,77 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = 0
         output_size = length * idx_q * fp
 
+    # ----------------- MiniMax-M3 block-sparse attention -----------------
+    # Shapes read off vLLM's ``models/minimax_m3/nvidia/model.py`` and
+    # ``MinimaxM3QKVParallelLinearWithIndexer``.
+    elif layer_name == "qk_norm_rope":
+        # One fused kernel: per-head Gemma QK-norm, partial rope and the
+        # KV-cache write. The q_norm / k_norm modules launch no kernel of their
+        # own, so this entry is where their parameters live -- ``head_dim``
+        # each, per-head norms shared across heads.
+        input_size = length * ((q_dim + 2 * kv_dim) // p) * fp
+        weight_size = 2 * head_dim * fp
+        output_size = input_size
+
+    elif layer_name == "sparse_qkv_proj":
+        # A single column-parallel GEMM emitting [q | k | v | index_q |
+        # index_k]. ``index_q`` has the KV head count and shares ``head_dim``,
+        # so it shards exactly like K and V; ``index_k`` is one shared head,
+        # **replicated** to every rank.
+        fused = ((n_head // p) * head_dim
+                 + 2 * (kv_head // p) * head_dim
+                 + (kv_head // p) * m3_idx_dim
+                 + m3_idx_dim)
+        input_size = length * n_embd * fp
+        weight_size = n_embd * fused * fp
+        output_size = length * fused * fp
+
+    elif layer_name == "sparse_qk_norm_rope":
+        # The same fused kernel on a sparse layer, where it norms four things
+        # rather than two: q, k, index_q and index_k. All four are
+        # ``MiniMAXGemmaRMSNorm`` over ``head_dim`` (``sparse_index_dim`` is
+        # equal to it, which the fused projection asserts), which is why the
+        # profiler reports them as one node.
+        fused = ((n_head // p) * head_dim
+                 + 2 * (kv_head // p) * head_dim
+                 + (kv_head // p) * m3_idx_dim
+                 + m3_idx_dim)
+        input_size = length * fused * fp
+        weight_size = (2 * head_dim + 2 * m3_idx_dim) * fp
+        output_size = input_size
+
+    elif layer_name == "sparse_o_proj":
+        # Same shape as ``o_proj``; a separate canonical name only because the
+        # profiler must not merge the sparse layers' timing with the others'.
+        input_size = length * (q_dim // p) * fp
+        weight_size = (q_dim // p) * n_embd * fp
+        output_size = length * n_embd * fp
+
+    elif layer_name == "indexer":
+        # M3's lightning indexer scores **blocks**, not tokens: it reads its
+        # own key-only side cache over the whole KV and returns the top
+        # ``sparse_topk_blocks`` block ids. The side cache is one vector per
+        # token (``MLAAttentionSpec`` with ``num_kv_heads = 1``), so it is
+        # replicated across ranks rather than sharded.
+        kv = kv_len if kv_len is not None else length
+        input_size = (length * (kv_head // p) * m3_idx_dim * fp
+                      + kv * m3_idx_dim * fp)
+        weight_size = 0
+        output_size = length * m3_topk_blocks * 4  # int32 block ids
+
+    elif layer_name == "sparse_attention":
+        # Attention over the selected blocks only, which is what caps the work:
+        # at most ``sparse_topk_blocks * sparse_block_size`` keys are read
+        # however long the sequence is. The KV *capacity* is unchanged -- every
+        # token is still cached -- so this bound belongs to the read, not to
+        # ``kv_bytes_per_token_per_layer``.
+        kv = kv_len if kv_len is not None else length
+        read = min(kv, m3_topk_blocks * m3_block) if m3_block else kv
+        input_size = ((n_head // p) * length * head_dim * fp
+                      + (kv_head // p) * read * head_dim * fp * 2)
+        weight_size = 0
+        output_size = (n_head // p) * length * head_dim * fp
+
     elif layer_name == "sampler":
         input_size = length * (vocab_size // p) * fp
         weight_size = 0
@@ -782,7 +892,7 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         input_size = length * n_embd * fp
         weight_size = (n_embd * num_local_experts * fp  # gate (replicated)
                      + experts_per_rank * 3 * n_embd * moe_ffn_dim * fp
-                     + num_shared_experts * 3 * n_embd * moe_ffn_dim * fp)
+                     + num_shared_experts * 3 * n_embd * shared_ffn_dim * fp)
         output_size = length * n_embd * fp
 
     # ----------------- LM Head -----------------

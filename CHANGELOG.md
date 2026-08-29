@@ -6,6 +6,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Tensor sizes, block weight and KV shape for MiniMax-M3's block-sparse
+  attention.** Six new entries (`qk_norm_rope`, `sparse_qkv_proj`,
+  `sparse_qk_norm_rope`, `sparse_o_proj`, `indexer`, `sparse_attention`), read
+  off vLLM's `models/minimax_m3/` plugin.
+  - `sparse_qkv_proj` is one column-parallel GEMM emitting
+    `[q | k | v | index_q | index_k]`. `index_q` carries the KV head count and
+    shares `head_dim`, so it shards like K and V; `index_k` is a single head,
+    **replicated** to every rank
+  - `sparse_attention` reads at most `sparse_topk_blocks * sparse_block_size`
+    keys however long the sequence is — but every token is still *stored*, so
+    that bound applies to the read, not to KV capacity
+- `utils.num_experts()` / `utils.is_moe()` — one helper for a fact the families
+  spell three ways (`num_local_experts`, `num_experts`, `n_routed_experts`)
+- **DeepSeek-V3.2 now runs end to end.** Verified against a trace dump: 61 MLA
+  + indexer layers, 3 dense MLPs (`first_k_dense_replace`), 58 `EXPERT` blocks,
+  and every row's byte counts matching the formulas by hand
+
 - **Tensor sizes, block weight and KV shape for MLA + DeepSeek sparse
   attention** (DeepSeek-V3.2, GLM-5) — the first of the modern families the
   simulator can size at all. Ten new `calculate_sizes` entries
@@ -204,6 +221,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **The expert count was read four different ways, and every one of them
+  missed `n_routed_experts`.** DeepSeek and GLM therefore read as *dense* in
+  `config_builder`'s `is_moe` and expert-divisibility check, in
+  `trace_generator`'s gate construction (leaving `ctx.gate` `None`, so the MoE
+  block could not be emitted at all) and in its ALLTOALL sizing. All four go
+  through `utils.num_experts()` now
+- **`get_config()` returned the wrapper for a nested checkpoint**, so
+  `config['hidden_size']` raised on MiniMax-M3 and every helper reaching for a
+  dimension answered for a model nobody asked about. It flattens through
+  `stack.text_config` at load; a flat config is unchanged
+- **`attention` sized MLA as grouped-query attention**, with `head_dim` derived
+  as `hidden_size / num_attention_heads` (56 on DeepSeek-V3.2, a number the
+  model does not use anywhere). MLA reads Q at `qk_head_dim` (192), the cache
+  as one replicated latent per token (576), and writes `v_head_dim` (128) —
+  three different widths
+- **MiniMax-M3's dense MLP was sized 4x narrow.** M3 inverts the usual
+  convention: its `intermediate_size` (3072) is the *per-expert* width and the
+  dense layers' is `dense_intermediate_size` (12288)
 - **`get_weight()` summed a hardcoded block** —
   `layernorm + qkv_proj + o_proj + layernorm + mlp` — which is right for
   families whose blocks look like Llama's and silently wrong for the rest. It

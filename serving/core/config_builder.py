@@ -4,7 +4,7 @@ import math
 import sys
 import os
 import shutil
-from .utils import get_config
+from .utils import get_config, num_experts as _num_experts
 from .pim_model import PIMModel
 from .logger import get_logger
 
@@ -64,10 +64,9 @@ def _resolve_parallelism(instance, model_config):
         For dense models: ep_size defaults to 1
         Without dp_group: ep_size <= tp_size
     """
-    # Accept either the Mistral-style ``num_local_experts`` key or the
-    # HF/Qwen3 ``num_experts`` key — HF naming varies per model family
-    # and the profiler's configs track upstream.
-    is_moe = 'num_local_experts' in model_config or 'num_experts' in model_config
+    # ``utils.num_experts`` knows all three spellings the families use; every
+    # site that spelled out its own subset missed one.
+    is_moe = _num_experts(model_config) > 0
 
     num_npus = instance.get("num_npus")
     tp_size = instance.get("tp_size")
@@ -116,9 +115,7 @@ def _resolve_parallelism(instance, model_config):
             f"({num_hidden_layers}); a pipeline stage cannot be empty"
         )
     if is_moe:
-        num_experts = model_config.get(
-            "num_local_experts", model_config.get("num_experts", 1)
-        )
+        num_experts = _num_experts(model_config)
         if num_experts % ep_size != 0:
             raise ValueError(
                 f"ep_size ({ep_size}) must divide the model's expert count "
