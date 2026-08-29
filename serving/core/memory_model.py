@@ -508,6 +508,12 @@ def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
             replicated += idx_head_dim + (idx_head_dim // 128) * 4
         return 0, replicated
 
+    if spec is not None and spec.attn == 'linear_attention':
+        # Gated DeltaNet caches nothing per token: a fixed conv state plus a
+        # fixed recurrent state **per sequence**, which is what makes its cost
+        # independent of context length. See ``state_bytes_per_sequence``.
+        return 0, 0
+
     sharded = 2 * kv_head * head_dim * kv_fp
     sparse_cfg = config.get('sparse_attention_config') or {}
     idx_dim = sparse_cfg.get('sparse_index_dim') or 0
@@ -517,6 +523,52 @@ def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
         # ``--kv-cache-dtype`` for the main cache but defaults to bf16.
         return sharded, idx_dim * kv_fp
     return sharded, 0
+
+
+def state_bytes_per_sequence(config, fp, spec=None):
+    """Fixed per-**sequence** state bytes for one decoder layer, cluster-wide.
+
+    Linear attention keeps no per-token cache. Gated DeltaNet holds a rolling
+    convolution state and a recurrent state whose sizes do not depend on the
+    sequence length at all, which is exactly why its cost does not either --
+    but they are held for as long as the sequence is alive, so they bound
+    concurrency the way a KV cache bounds context.
+
+    Shapes from vLLM's ``MambaStateShapeCalculator.gated_delta_net_state_shape``::
+
+        conv_dim   = 2 * key_head_dim * num_key_heads + value_head_dim * num_value_heads
+        conv_state = (conv_dim, conv_kernel_dim - 1)
+        ssm_state  = (num_value_heads, value_head_dim, key_head_dim)
+
+    Both shard across TP ranks. On Qwen3.8-27B that is 1.6 MB per sequence per
+    layer at bf16, and 48 of its 64 layers are gated DeltaNet -- roughly 78 MB
+    per concurrent sequence, so it is not a rounding error on capacity.
+
+    Returns 0 for any layer that is not linear attention.
+    """
+    if spec is not None and spec.attn != 'linear_attention':
+        return 0
+    k_heads = config.get('linear_num_key_heads') or 0
+    v_heads = config.get('linear_num_value_heads') or 0
+    k_dim = config.get('linear_key_head_dim') or 0
+    v_dim = config.get('linear_value_head_dim') or 0
+    conv_kernel = config.get('linear_conv_kernel_dim') or 0
+    if not (k_heads and v_heads):
+        return 0
+    conv_dim = 2 * k_heads * k_dim + v_heads * v_dim
+    conv_state = conv_dim * max(conv_kernel - 1, 0)
+    ssm_state = v_heads * v_dim * k_dim
+    return (conv_state + ssm_state) * fp
+
+
+def full_cluster_state_bytes_per_sequence(model, fp):
+    """Per-sequence state bytes over the whole model, cluster-wide."""
+    config = get_config(model)
+    stack = get_layer_stack(model)
+    if not stack:
+        return 0
+    fp_bytes = fp // 8
+    return sum(state_bytes_per_sequence(config, fp_bytes, spec) for spec in stack)
 
 
 def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
@@ -603,6 +655,27 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # ``rotary_dim`` = head_dim * partial_rotary_factor; only that slice is
     # rotated.
     m3_rope_dim = config.get("rotary_dim") or head_dim
+
+    # --- Gated DeltaNet (Qwen3.5 / 3.6 / 3.8) -----------------------------
+    # No KV cache: a fixed conv state plus a fixed recurrent state **per
+    # sequence**. Field names from vLLM's ``gated_delta_net_state_shape``.
+    gdn_k_heads = config.get("linear_num_key_heads") or 0
+    gdn_v_heads = config.get("linear_num_value_heads") or 0
+    gdn_k_dim = config.get("linear_key_head_dim") or 0
+    gdn_v_dim = config.get("linear_value_head_dim") or 0
+    gdn_conv_kernel = config.get("linear_conv_kernel_dim") or 0
+    gdn_key_dim = gdn_k_heads * gdn_k_dim
+    gdn_value_dim = gdn_v_heads * gdn_v_dim
+    gdn_conv_dim = 2 * gdn_key_dim + gdn_value_dim
+    # Qwen3-Next / Qwen3.5 fuse an output gate into the Q half of the QKV
+    # projection, doubling its Q width
+    # (``total_num_heads * (1 + attn_output_gate)``). vLLM's class defaults the
+    # flag to True, but that default only reaches checkpoints on that code
+    # path -- which is exactly the ones with a linear-attention stack -- so it
+    # is defaulted here the same way rather than globally. Plain Qwen3 and
+    # MiniMax-M3 have no gate.
+    attn_output_gate = bool(config.get("attn_output_gate", bool(gdn_k_heads)))
+    q_out_dim = q_dim * (2 if attn_output_gate else 1)
     # The shared expert has its own width on M3.
     shared_ffn_dim = config.get("shared_intermediate_size", moe_ffn_dim)
 
@@ -678,8 +751,8 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # ----------------- QKV Projection (fused) -----------------
     elif layer_name == "qkv_proj":
         input_size = length * n_embd * fp
-        weight_size = n_embd * ((q_dim + 2 * kv_dim) // p) * fp
-        output_size = length * ((q_dim + 2 * kv_dim) // p) * fp
+        weight_size = n_embd * ((q_out_dim + 2 * kv_dim) // p) * fp
+        output_size = length * ((q_out_dim + 2 * kv_dim) // p) * fp
 
     elif layer_name == "o_proj":
         # RowParallelLinear: sharded on the input dim. That dim is
@@ -811,11 +884,13 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # Shapes read off vLLM's ``models/minimax_m3/nvidia/model.py`` and
     # ``MinimaxM3QKVParallelLinearWithIndexer``.
     elif layer_name == "qk_norm_rope":
-        # One fused kernel: per-head Gemma QK-norm, partial rope and the
-        # KV-cache write. The q_norm / k_norm modules launch no kernel of their
-        # own, so this entry is where their parameters live -- ``head_dim``
-        # each, per-head norms shared across heads.
-        input_size = length * ((q_dim + 2 * kv_dim) // p) * fp
+        # One fused kernel doing per-head QK-norm, rope, the output gate where
+        # the family has one, and the KV-cache write. Serves MiniMax-M3's
+        # non-sparse layers and Qwen3.5's full-attention ones. The q_norm and
+        # k_norm modules launch no kernel of their own, so this entry is where
+        # their parameters live -- ``head_dim`` each. The gate has none: it is
+        # fused into the Q half of ``qkv_proj``.
+        input_size = length * ((q_out_dim + 2 * kv_dim) // p) * fp
         weight_size = 2 * head_dim * fp
         output_size = input_size
 
@@ -877,6 +952,86 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
                       + (kv_head // p) * read * head_dim * fp * 2)
         weight_size = 0
         output_size = (n_head // p) * length * head_dim * fp
+
+    # ----------------- Gated DeltaNet (Qwen3.5 / 3.6 / 3.8) -----------------
+    # Shapes from vLLM's ``layers/mamba/gdn/qwen_gdn_linear_attn.py``. Each
+    # parameter is attributed to exactly one canonical name, because
+    # ``get_weight`` sums every name a block emits: the conv weights go to the
+    # prefill conv entry and the recurrence's ``dt_bias`` / ``A_log`` to the
+    # prefill recurrence, with the decode entries carrying 0 -- they read the
+    # same weights, and counting them twice would inflate the block.
+    elif layer_name == "gdn_in_proj":
+        # ``in_proj_qkvz`` (hidden -> 2*key_dim + 2*value_dim) and
+        # ``in_proj_ba`` (hidden -> 2*num_v_heads), reported by the profiler as
+        # one merged node, so this entry carries their **sum**. On Qwen3.8-27B
+        # that is 5120->16384 beside 5120->96: a large GEMM and a tiny one,
+        # which is why the merged node's mean describes neither and the sum is
+        # what the catalog models.
+        qkvz = 2 * gdn_key_dim + 2 * gdn_value_dim
+        ba = 2 * gdn_v_heads
+        input_size = length * n_embd * fp
+        weight_size = n_embd * ((qkvz + ba) // p) * fp
+        output_size = length * ((qkvz + ba) // p) * fp
+
+    elif layer_name == "gdn_conv_prefill":
+        # Depthwise causal conv over the whole chunk. vLLM stores the weight as
+        # ``ColumnParallelLinear(conv_kernel_size -> conv_dim)``.
+        input_size = length * (gdn_conv_dim // p) * fp
+        weight_size = gdn_conv_kernel * (gdn_conv_dim // p) * fp
+        output_size = length * (gdn_conv_dim // p) * fp
+
+    elif layer_name == "gdn_conv_decode":
+        # Same weights as the prefill conv, so no weight of its own here. One
+        # step against the rolling conv state.
+        input_size = length * (gdn_conv_dim // p) * fp
+        weight_size = 0
+        output_size = length * (gdn_conv_dim // p) * fp
+
+    elif layer_name in ("gdn_post_conv", "gdn_glue"):
+        # ``gdn_post_conv`` is a fused kernel splitting the conv output into
+        # q/k/v and applying the gates; ``gdn_glue`` is the block's eager
+        # reshape/copy work, bound as a group so its measured cost is not
+        # dropped. Neither has parameters; both move one conv-width activation.
+        input_size = length * (gdn_conv_dim // p) * fp
+        weight_size = 0
+        output_size = length * (gdn_conv_dim // p) * fp
+
+    elif layer_name == "gdn_norm":
+        # ``RMSNormGated(head_v_dim)`` -- one scale shared across value heads,
+        # applied to the recurrence output.
+        input_size = length * (gdn_value_dim // p) * fp
+        weight_size = gdn_v_dim * fp
+        output_size = length * (gdn_value_dim // p) * fp
+
+    elif layer_name == "gdn_out_proj":
+        input_size = length * (gdn_value_dim // p) * fp
+        weight_size = (gdn_value_dim // p) * n_embd * fp
+        output_size = length * n_embd * fp
+
+    elif layer_name == "gdn_prefill":
+        # ``ChunkGatedDeltaRule``: the chunked scan over the whole prefill.
+        # Carries the recurrence's own parameters -- ``dt_bias`` (one per value
+        # head) and ``A_log`` (one per value head, fp32) -- which the decode
+        # kernels read but must not re-count.
+        state = (gdn_v_heads // p) * gdn_v_dim * gdn_k_dim * fp
+        input_size = length * (gdn_conv_dim // p) * fp + state
+        weight_size = (gdn_v_heads // p) * fp + (gdn_v_heads // p) * 4
+        output_size = length * (gdn_value_dim // p) * fp + state
+
+    elif layer_name in ("gdn_decode", "gdn_decode_mixed"):
+        # One recurrent step per sequence. Cost is independent of sequence
+        # length -- the state is fixed size, which is the whole point of a
+        # linear-attention layer -- so ``length`` here is the decode count.
+        state = (gdn_v_heads // p) * gdn_v_dim * gdn_k_dim * fp
+        input_size = length * ((gdn_conv_dim // p) * fp + state)
+        weight_size = 0
+        output_size = length * ((gdn_value_dim // p) * fp + state)
+
+    elif layer_name in ("attn_glue",):
+        # The full-attention block's eager glue on a hybrid stack.
+        input_size = length * ((q_out_dim + 2 * kv_dim) // p) * fp
+        weight_size = 0
+        output_size = input_size
 
     elif layer_name == "sampler":
         input_size = length * (vocab_size // p) * fp

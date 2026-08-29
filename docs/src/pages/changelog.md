@@ -9,6 +9,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Tensor sizes and per-sequence state for gated DeltaNet** (Qwen3.5 / 3.6 /
+  3.8) — the last of the four modern families. Twelve new entries
+  (`gdn_in_proj`, `gdn_conv_prefill`, `gdn_conv_decode`, `gdn_post_conv`,
+  `gdn_norm`, `gdn_out_proj`, `gdn_prefill`, `gdn_decode`, `gdn_decode_mixed`,
+  `gdn_glue`, `qk_norm_rope`, `attn_glue`), shapes from vLLM's
+  `layers/mamba/gdn/`. **Every layer name in all five catalogs now has a size
+  formula** — the count was 28 missing across three families.
+  - Verified the same way as the rest: Qwen3.8-27B comes to **26.9B**
+    parameters
+- `memory_model.state_bytes_per_sequence()` /
+  `full_cluster_state_bytes_per_sequence()` — the **fourth** KV shape, which is
+  no KV at all. Gated DeltaNet holds a rolling conv state and a recurrent state
+  whose sizes do not depend on sequence length, which is why its *cost* does
+  not either — but they are held for as long as the sequence lives. On
+  Qwen3.8-27B that is 1.6 MB per sequence per layer, and 48 of its 64 layers
+  are linear attention: **78.4 MB per concurrent sequence**. Its KV per token
+  is 65,536 bytes, from the 16 full-attention layers only
+
 - **Tensor sizes, block weight and KV shape for MiniMax-M3's block-sparse
   attention.** Six new entries (`qk_norm_rope`, `sparse_qkv_proj`,
   `sparse_qk_norm_rope`, `sparse_o_proj`, `indexer`, `sparse_attention`), read
@@ -224,6 +242,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **`qkv_proj` was a third too small on Qwen3-Next / Qwen3.5.** Those fuse an
+  output gate into the Q half (`total_num_heads * (1 + attn_output_gate)`), so
+  Q is double width and the gate has no parameters of its own. Defaulted the
+  way vLLM's class does, but only for checkpoints on that code path — the ones
+  with a linear-attention stack — so plain Qwen3 and MiniMax-M3 are unaffected
+- **KV was charged for gated-DeltaNet layers**, which cache nothing per token.
+  On Qwen3.8-27B that read 4096 bytes/token for all 64 layers where only 16 of
+  them have a KV cache at all
 - **The expert count was read four different ways, and every one of them
   missed `n_routed_experts`.** DeepSeek and GLM therefore read as *dense* in
   `config_builder`'s `is_moe` and expert-divisibility check, in
