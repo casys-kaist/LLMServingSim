@@ -85,8 +85,22 @@ class TieredKVCacheManager:
         enable_caching: mirrors ``--enable-prefix-caching``.
     """
 
-    def __init__(self, block_size, npu_pool, lower_pools=(), enable_caching=True):
+    def __init__(self, block_size, npu_pool, lower_pools=(), enable_caching=True,
+                 state_blocks_per_request=0):
         self.block_size = block_size
+        # Blocks a request holds for its whole life regardless of length, for
+        # a model whose layers keep a fixed per-sequence state instead of a
+        # per-token cache. Gated DeltaNet is the case: a conv state plus a
+        # recurrent state, 78 MB per sequence on Qwen3.8-27B across its 48
+        # linear layers. They are held in a **separate** list from
+        # ``req_to_blocks``, whose index is positional -- block ``i`` covers
+        # tokens ``[i*block_size, (i+1)*block_size)`` -- so appending to it
+        # would misalign every prefix hash.
+        #
+        # Charged as whole blocks because that is the pool's unit, which is
+        # also what vLLM does: it pads the mamba page up to a KV block's page
+        # so the groups share a page size, then gives each request one.
+        self.state_blocks_per_request = max(int(state_blocks_per_request), 0)
         self.npu_pool = npu_pool
         self.lower_pools = list(lower_pools)
         self.enable_caching = enable_caching and npu_pool.enable_caching
@@ -102,6 +116,8 @@ class TieredKVCacheManager:
 
         # request id -> its NPU blocks, in sequence order
         self.req_to_blocks = {}
+        # request id -> its per-sequence state blocks, positionless
+        self.req_to_state_blocks = {}
         # request id -> how many of those blocks are already indexed
         self.num_cached_block = {}
 
@@ -203,15 +219,21 @@ class TieredKVCacheManager:
         """
         req_blocks = self.req_to_blocks.get(req.id, ())
         num_required_blocks = cdiv(num_tokens, self.block_size)
+        # The per-sequence state is taken once, on the request's first
+        # allocation, and held until it is freed.
+        state_needed = (
+            self.state_blocks_per_request
+            if req.id not in self.req_to_state_blocks else 0
+        )
         if req.id in self.num_cached_block:
             # Fast path: a running request has no new prefix hits to account for.
-            return max(num_required_blocks - len(req_blocks), 0)
+            return max(num_required_blocks - len(req_blocks), 0) + state_needed
         num_known_blocks = len(new_computed_blocks) + len(req_blocks)
         num_new_blocks = max(num_required_blocks - num_known_blocks, 0)
         # A hit block sitting in the free list leaves it when touched, so it
         # consumes free capacity too and must be counted here.
         num_evictable = sum(1 for b in new_computed_blocks if b.ref_cnt == 0)
-        return num_new_blocks + num_evictable
+        return num_new_blocks + num_evictable + state_needed
 
     def can_fit_full_sequence(self, req, new_computed_blocks=None,
                               num_new_computed_tokens=0, num_lower_tier_tokens=0):
@@ -277,6 +299,7 @@ class TieredKVCacheManager:
             if num_lower_tier_tokens:
                 self._charge_recall(req)
 
+        self._allocate_state_blocks(req)
         new_blocks = self._allocate_new_blocks(req, num_tokens_need_slot)
 
         if self.enable_caching:
@@ -284,6 +307,17 @@ class TieredKVCacheManager:
             self.cache_blocks(
                 req, min(total_computed + num_new_tokens, req.num_tokens_reached))
         return new_blocks
+
+    def _allocate_state_blocks(self, req):
+        """Take this request's per-sequence state blocks, once.
+
+        Kept out of ``req_to_blocks`` and out of the returned block list: they
+        back no tokens, so nothing may hash or index them.
+        """
+        n = self.state_blocks_per_request
+        if not n or req.id in self.req_to_state_blocks:
+            return
+        self.req_to_state_blocks[req.id] = self.npu_pool.get_new_blocks(n)
 
     def _allocate_new_blocks(self, req, num_tokens):
         req_blocks = self.req_to_blocks[req.id]
@@ -366,6 +400,12 @@ class TieredKVCacheManager:
         self.num_cached_block.pop(req.id, None)
         if blocks:
             self.npu_pool.free_blocks(reversed(blocks))
+        # The state goes back too, on preemption as well as completion: vLLM
+        # rebuilds a preempted sequence's recurrent state from the recomputed
+        # prefix, it does not keep it.
+        state = self.req_to_state_blocks.pop(req.id, [])
+        if state:
+            self.npu_pool.free_blocks(reversed(state))
 
     def preempt(self, req):
         """Release a *running* request's blocks so someone else can use them.

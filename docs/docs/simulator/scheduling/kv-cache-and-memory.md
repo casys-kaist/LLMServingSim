@@ -145,6 +145,38 @@ DeepSeek-V3.2 with the GQA formula reads 1,748,992 bytes per token where it
 actually caches 78,324, a 22x overstatement of the thing that decides how many
 requests fit.
 
+### 3. Per-sequence layer state
+
+A linear-attention layer caches nothing per token, but it does hold a fixed
+state for as long as the sequence lives — a rolling convolution state plus a
+recurrent state. Their size does not depend on the sequence length, which is
+why the layer's *cost* does not either, and it is not small:
+
+```
+conv_state = (2*key_head_dim*num_key_heads + value_head_dim*num_value_heads)
+             * (conv_kernel_dim - 1)
+ssm_state  = num_value_heads * value_head_dim * key_head_dim
+```
+
+On Qwen3.8-27B that is 1.6 MB per sequence per layer, and 48 of its 64 layers
+are gated DeltaNet: **78.4 MB per concurrent sequence**. Its KV per token is
+65,536 bytes, from the 16 full-attention layers only.
+
+So it bounds **concurrency** the way a KV cache bounds context, and the pool
+charges it: each request takes
+`ceil(state_bytes_per_rank / bytes_per_block)` extra blocks on its first
+allocation and holds them until it finishes or is preempted — 75 blocks per
+request on a 96 GB card at `--block-size 16`, out of 37,173. Rounding to whole
+blocks is what vLLM does too: it pads the mamba page up to a KV block's page so
+every cache group shares a page size, then hands each request one.
+
+Those blocks live in a separate list from the token blocks, because the token
+list is positional — block `i` backs tokens `[i*block_size, (i+1)*block_size)`
+— and a state block backs no tokens, so nothing may hash or index it.
+
+Models whose layers all cache per token charge 0 here, which is every family
+except the gated-DeltaNet hybrids.
+
 Where `kv_fp` is:
 
 - 2 bytes for `bfloat16` / `float16` — what `--kv-cache-dtype auto`

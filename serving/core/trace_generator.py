@@ -4,7 +4,7 @@ from .request import *
 from .utils import *
 from .utils import (
     _load_architecture, _stack_module, get_architecture, get_layer_stack,
-    num_experts as utils_num_experts,
+    num_experts as utils_num_experts, config_weight_dtype,
 )
 import pandas as pd
 import yaml
@@ -59,19 +59,10 @@ def resolve_variant(dtype, kv_cache_dtype, model_config=None):
     """
     weight = dtype
     if not weight and model_config is not None:
-        # Must match the profiler's ``config.model_config_weight_dtype``
-        # exactly, including the order, or we look in a variant folder the
-        # profiler never wrote.
-        #
-        # A ``quantization_config`` wins: for a quantized checkpoint the dtype
-        # fields describe the *activation* dtype, not the weights.
-        # DeepSeek-V3.2-Exp is FP8 block-quantized with
-        # ``torch_dtype: bfloat16``. And HuggingFace renamed the dtype field
-        # itself -- ``torch_dtype`` is legacy, ``dtype`` current (Qwen3.8
-        # carries only the latter) -- so both are accepted, legacy first.
-        quant = model_config.get("quantization_config")
-        weight = (quant or {}).get("quant_method") if isinstance(quant, dict) else None
-        weight = weight or model_config.get("torch_dtype") or model_config.get("dtype")
+        # ``utils.config_weight_dtype`` owns this rule, shared with the
+        # instance-dtype default in ``__main__`` so the two cannot disagree
+        # about which variant folder to read.
+        weight = config_weight_dtype(model_config)
     parts = [_short_dtype(weight) if weight else "default"]
     if kv_cache_dtype and kv_cache_dtype != "auto":
         parts.append(f"kv{_short_dtype(kv_cache_dtype)}")

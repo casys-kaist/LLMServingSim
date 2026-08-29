@@ -53,7 +53,7 @@ matching runtime knobs per `instances[i]`; see
 
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--dtype` **(per-instance)** | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | model's `torch_dtype`, fallback `bfloat16` | Model weight dtype |
+| `--dtype` **(per-instance)** | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | the model config's declared weight dtype, fallback `bfloat16` | Model weight dtype. The default reads `quantization_config.quant_method` first, then `torch_dtype` / `dtype` — on a quantized checkpoint the dtype fields describe the *activation* dtype, so DeepSeek-V3.2 (`quant_method: fp8`, `torch_dtype: bfloat16`) defaults to `fp8`. Same rule as the profiler's, because it also picks which `perf/.../<variant>/` folder is read |
 | `--kv-cache-dtype` **(per-instance)** | `auto` / `fp8` | `auto` (inherits dtype) | KV cache dtype. `fp8` halves KV memory and selects a `*-kvfp8` profile variant |
 
 ## Prefix caching and offloading
