@@ -122,7 +122,46 @@ class MemoryModel():
         self.kv = TieredKVCacheManager(
             block_size, self.npu_pool, self.lower_pools,
             enable_caching=enable_prefix_caching,
+            state_blocks_per_request=self._state_blocks_per_request(),
         )
+
+    def _state_blocks_per_request(self):
+        """Pool blocks one request holds for its per-sequence layer state.
+
+        0 for every model whose layers all cache per token, which is every
+        family here except the gated-DeltaNet hybrids. For those the state does
+        not grow with the sequence but is held for its whole life, so it bounds
+        **concurrency** the way a KV cache bounds context -- 78.4 MB per
+        sequence on Qwen3.8-27B, which at 128 concurrent requests is 10 GB that
+        would otherwise be invisible.
+
+        Rounded up to whole blocks because that is the pool's unit, and it is
+        what vLLM does too: it pads the mamba page up to a KV block's page so
+        every group shares a page size, then hands each request one.
+        """
+        per_seq = 0
+        stack = get_layer_stack(self.model)
+        if stack:
+            per_seq = sum(
+                state_bytes_per_sequence(self.config, self.fp, spec)
+                for spec in stack
+            )
+        if not per_seq:
+            return 0
+        if self._npu_bytes_per_block <= 0:
+            raise RuntimeError(
+                f"[MemoryModel] {self.model} has per-sequence layer state but "
+                f"no per-token KV at all, so there is no block size to charge "
+                f"the state against. A model with only linear-attention layers "
+                f"needs its own pool unit."
+            )
+        per_rank = per_seq // max(self.num_npus, 1)
+        blocks = -(-per_rank // self._npu_bytes_per_block)
+        self.logger.info(
+            "NPU: per-sequence layer state %dMB/rank -> %d block(s) per request",
+            per_rank // MB_TO_BYTE, blocks,
+        )
+        return blocks
 
     def _build_storage_pool(self, prefix_pool, prefix_storage):
         """The second-tier pool: shared across instances, or private.

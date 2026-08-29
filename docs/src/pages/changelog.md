@@ -9,6 +9,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Per-sequence layer state is charged against pool capacity.** A
+  linear-attention layer caches nothing per token but holds a fixed conv +
+  recurrent state for as long as the sequence lives, so it bounds *concurrency*
+  the way a KV cache bounds context. Each request now takes
+  `ceil(state_bytes_per_rank / bytes_per_block)` extra blocks on its first
+  allocation and holds them until it finishes or is preempted — **75 blocks per
+  request out of 37,173** on Qwen3.8-27B at 96 GB and `--block-size 16`.
+  Rounding to whole blocks is what vLLM does too: it pads the mamba page up to
+  a KV block's page so every cache group shares a page size, then hands each
+  request one.
+  - The state blocks live in a list **separate** from the token blocks
+    (`req_to_state_blocks`), because the token list is positional — block `i`
+    backs tokens `[i*block_size, (i+1)*block_size)` — and a state block backs
+    no tokens, so nothing may hash or index it
+  - Released on preemption as well as completion: vLLM rebuilds a preempted
+    sequence's recurrent state from the recomputed prefix rather than keeping it
+- `utils.config_weight_dtype()` — the weight dtype a checkpoint declares, in
+  the profiler's order. Shared by `--dtype`'s default and
+  `resolve_variant`, which must agree or the simulator reads a variant folder
+  the profiler never wrote
+
 - **Tensor sizes and per-sequence state for gated DeltaNet** (Qwen3.5 / 3.6 /
   3.8) — the last of the four modern families. Twelve new entries
   (`gdn_in_proj`, `gdn_conv_prefill`, `gdn_conv_decode`, `gdn_post_conv`,
@@ -242,6 +263,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **`--dtype`'s default ignored `quantization_config`**, so a quantized
+  checkpoint defaulted to its *activation* dtype. DeepSeek-V3.2-Exp
+  (`quant_method: fp8`, `torch_dtype: bfloat16`) defaulted to `bfloat16` and
+  looked for a `bf16/` bundle the profiler had written to `fp8/`, while
+  `resolve_variant` — reading the same config — would have said `fp8`. Both go
+  through `utils.config_weight_dtype()` now, and DeepSeek runs with no `--dtype`
+  at all
 - **`qkv_proj` was a third too small on Qwen3-Next / Qwen3.5.** Those fuse an
   output gate into the Q half (`total_num_heads * (1 + attn_output_gate)`), so
   Q is double width and the gate has no parameters of its own. Defaulted the
