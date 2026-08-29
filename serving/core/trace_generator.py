@@ -2,6 +2,9 @@ import os
 import sys
 from .request import *
 from .utils import *
+from .utils import (
+    _load_architecture, _stack_module, get_architecture, get_layer_stack,
+)
 import pandas as pd
 import yaml
 from .memory_model import calculate_sizes
@@ -72,88 +75,6 @@ def resolve_variant(dtype, kv_cache_dtype, model_config=None):
     if kv_cache_dtype and kv_cache_dtype != "auto":
         parts.append(f"kv{_short_dtype(kv_cache_dtype)}")
     return "-".join(parts)
-
-
-def _arch_dirs():
-    """Candidate ``profiler/models`` directories, absolute.
-
-    Absolute because ``serving/__main__.py`` chdirs into ``astra-sim/`` early,
-    so anything relative resolves somewhere else by the time this runs.
-    """
-    base = os.path.dirname(os.path.abspath(__file__))
-    serving_dir = os.path.dirname(base)
-    repo_root = os.path.dirname(serving_dir)
-    return [
-        os.path.join(repo_root, "profiler", "models"),
-        os.path.join(serving_dir, "profiler", "models"),
-    ]
-
-
-def _profiler_core_module(name):
-    """Import a module from ``profiler.core`` by name.
-
-    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
-    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
-    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
-    any of this runs -- so by then ``profiler`` is not importable by name.
-    Derived from ``__file__`` for the same reason.
-
-    Only modules deliberately kept free of third-party imports may be reached
-    this way; the simulator container has no pydantic, so ``profiler.core.config``
-    is not importable here even though ``catalog_path`` and ``stack`` are.
-    """
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import importlib
-
-    return importlib.import_module(f"profiler.core.{name}")
-
-
-def _stack_module():
-    """Import ``profiler.core.stack``, which owns per-layer block resolution.
-
-    Shared with the profiler rather than reimplemented, and for the same
-    reason ``catalog_path`` is: the rules are read out of vLLM's source and
-    the two vendors disagree on the off-by-one (DeepSeek's MoE test is
-    ``layer_idx % moe_layer_freq``, Qwen3-MoE's is
-    ``(layer_idx + 1) % decoder_sparse_step``), so a second implementation
-    would be a second chance to get them backwards. The profiler uses it to
-    decide how many layers to instantiate; the simulator uses it to decide
-    which block each layer emits. They have to agree.
-    """
-    return _profiler_core_module("stack")
-
-
-def _catalog_path_module():
-    """Import ``profiler.core.catalog_path``, which owns the naming rule.
-
-    Shared rather than reimplemented: a catalog may serve several
-    ``model_type`` values through its ``model_types:`` list, and having two
-    implementations of that lookup is what broke every MoE scenario when
-    aliasing was added to the profiler's resolver alone.
-
-    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
-    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
-    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
-    any of this runs -- so by then ``profiler`` is not importable by name.
-    Derived from ``__file__`` for the same reason.
-    """
-    return _profiler_core_module("catalog_path")
-
-
-def _arch_yaml_path(model_type):
-    catalog_path = _catalog_path_module()
-    for arch_dir in _arch_dirs():
-        if not os.path.isdir(arch_dir):
-            continue
-        found = catalog_path.find_architecture_path(model_type, arch_dir)
-        if found is not None:
-            return found
-    # Nothing matched; return the conventional path so the caller's
-    # not-found error names the file a contributor would create.
-    return os.path.join(_arch_dirs()[0], f"{model_type}.yaml")
 
 
 def _variant_root(hardware, model, variant):
@@ -241,37 +162,6 @@ class PowerAccumulator:
 #     tp<N>/attention.csv             prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
 #     tp<N>/moe.csv                   tokens, activated_experts, time_us    (MoE only)
 #
-# Architecture structure (catalog + block order) lives in the profiler's
-# profiler/models/<model_type>.yaml and drives which canonical
-# layers the simulator emits.
-
-
-def _load_architecture(model_type):
-    """Load catalog + block order from profiler/models/<model_type>.yaml."""
-    path = _arch_yaml_path(model_type)
-    if not os.path.isfile(path):
-        # Name every catalog that *is* resolvable, including the ``model_types:``
-        # each one serves -- a bare "add this file" is unactionable when the
-        # right answer is to add the name to an existing catalog's list.
-        catalog_path = _catalog_path_module()
-        listing = catalog_path.describe_available(_arch_dirs()[0])
-        raise FileNotFoundError(
-            f"Architecture yaml not found for model_type={model_type!r} at "
-            f"{path}, and no yaml declares it under 'model_types:'.\n"
-            f"Available architectures:\n{listing}"
-        )
-    with open(path, "r") as f:
-        arch = yaml.safe_load(f)
-    if "catalog" not in arch:
-        raise KeyError(f"Architecture yaml {path} must define 'catalog'.")
-    if "blocks" not in arch:
-        raise KeyError(
-            f"Architecture yaml {path} must define 'blocks' (the layer order, "
-            f"keyed by axis) alongside 'shared' (prologue and head)."
-        )
-    return arch
-
-
 def _load_meta(variant_root):
     path = os.path.join(variant_root, "meta.yaml")
     if not os.path.isfile(path):
