@@ -592,7 +592,14 @@ they are not interchangeable:
 | GQA | `2 * kv_head * head_dim * kv_fp` (K and V) | sharded |
 | MLA | `(kv_lora_rank + qk_rope_head_dim) * kv_fp`, one latent, no separate V | **replicated** (`num_kv_heads = 1`) |
 | + sparse indexer | plus `index_head_dim + index_head_dim//128 * 4` bytes (fp8 keys + fp32 scales, uint8) | replicated |
-| linear attention | 0 — the state is per **sequence**, not per token | n/a |
+| linear attention | 0 per token — the state is per **sequence** | n/a |
+
+A per-sequence state is charged as blocks the request holds for its whole life
+(`MemoryModel._state_blocks_per_request`), in a list separate from the token
+blocks: the token list is positional, so a block backing no tokens must not
+join it. 78.4 MB per sequence on Qwen3.8-27B, i.e. 75 blocks per request out of
+37,173 on a 96 GB card — it bounds concurrency the way a KV cache bounds
+context, and leaving it out lets the simulator admit requests vLLM could not.
 
 Sizing DeepSeek-V3.2 as GQA read 1,748,992 bytes/token where MLA caches 78,324.
 

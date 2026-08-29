@@ -121,6 +121,35 @@ def get_config(model_name):
 
 
 # ======================================================================
+# Weight dtype
+# ======================================================================
+
+def config_weight_dtype(config):
+    """The weight dtype a checkpoint declares, or None.
+
+    Must match the profiler's ``config.model_config_weight_dtype`` exactly,
+    **including the order**, because that is what decides which
+    ``perf/<hw>/<model>/<variant>/`` folder the profiler wrote and which one
+    the simulator reads. Two places deriving this differently means looking in
+    a folder that was never written.
+
+    A ``quantization_config`` wins: on a quantized checkpoint the dtype fields
+    describe the *activation* dtype, not the weights. DeepSeek-V3.2-Exp is FP8
+    block-quantized with ``torch_dtype: bfloat16``, so reading the dtype fields
+    alone calls it bf16 and looks for a bundle that does not exist.
+
+    HuggingFace also renamed the field: ``torch_dtype`` is legacy, ``dtype``
+    current (Qwen3.8 carries only the latter), so both are accepted, legacy
+    first.
+    """
+    quant = config.get("quantization_config")
+    if isinstance(quant, dict) and quant.get("quant_method"):
+        return quant["quant_method"]
+    return config.get("torch_dtype") or config.get("dtype")
+
+
+
+# ======================================================================
 # MoE expert count
 # ======================================================================
 

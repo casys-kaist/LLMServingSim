@@ -17,6 +17,7 @@ from collections import defaultdict, deque
 from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
+from serving.core.utils import config_weight_dtype
 from serving.core.controller import *
 from serving.core.memory_model import *
 from serving.core.graph_generator import *
@@ -165,14 +166,20 @@ def _iter_raw_instances(cluster_config):
 
 
 def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
+    """The weight dtype for one instance: explicit, else the model's default.
+
+    The model's default comes from ``utils.config_weight_dtype``, the same rule
+    ``trace_generator.resolve_variant`` and the profiler use. It has to be: the
+    dtype picks both the bytes-per-element and the ``perf/.../<variant>/``
+    folder, and reading the dtype fields alone calls a quantized checkpoint by
+    its *activation* dtype. DeepSeek-V3.2-Exp is FP8 with
+    ``torch_dtype: bfloat16``, so that used to default to bf16 and look for a
+    bundle the profiler had written to ``fp8/``.
+    """
     dtype = instance.get("dtype", cli_dtype)
     if dtype is None:
-        config = get_config(instance["model_name"])
-        torch_dtype = config.get("torch_dtype")
-        if isinstance(torch_dtype, str) and torch_dtype in dtype_to_bits:
-            dtype = torch_dtype
-        else:
-            dtype = "bfloat16"
+        declared = config_weight_dtype(get_config(instance["model_name"]))
+        dtype = declared if declared in dtype_to_bits else "bfloat16"
     if dtype not in dtype_to_bits:
         raise ValueError(f"Unsupported dtype '{dtype}' for instance {instance.get('instance_id')}")
     return dtype
