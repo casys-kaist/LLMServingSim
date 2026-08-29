@@ -109,12 +109,6 @@ catalog:
       # so 8 decode tokens cost 390 us and 128 prefill tokens cost 440.
       vllm: MergedColumnParallelLinear
       within: QwenGatedDeltaNetAttention
-    gdn_conv_prefill:
-      vllm: _causal_conv1d_fwd_kernel
-      within: QwenGatedDeltaNetAttention
-    gdn_post_conv:
-      vllm: _fused_post_conv_kernel
-      within: QwenGatedDeltaNetAttention
     gdn_norm:
       # RMSNormGated never materialises as a module node.
       vllm: layer_norm_fwd_kernel
@@ -167,17 +161,51 @@ catalog:
       within: Qwen2MoeMLP
 
   per_sequence:
-    gdn_conv_decode:
-      # The decode-regime conv is a separate kernel from the prefill one.
-      vllm: _causal_conv1d_update_kernel
-      within: QwenGatedDeltaNetAttention
     lm_head:
       vllm: LogitsProcessor
     sampler:
       vllm: Sampler
       tp_stable: true
 
+  # Everything in this group is **regime-dependent**: which kernels a
+  # gated-DeltaNet block runs depends on whether the batch is pure prefill,
+  # pure decode or mixed, not just on how big it is. Measured, per regime:
+  #
+  #                      prefill  decode  mixed
+  #   gdn_conv_prefill      x               x
+  #   gdn_post_conv         x               x
+  #   gdn_prefill           x               x
+  #   gdn_conv_decode                x
+  #   gdn_decode                     x
+  #   gdn_decode_mixed                      x
+  #
+  # ``linear_attention`` is keyed on ``(prefill_tokens, n_decode)``, so the
+  # profile's own absence of rows for a regime is what tells the simulator the
+  # kernel does not fire there. ``dense`` and ``per_sequence`` have no such
+  # notion -- a layer filed there is emitted on every batch, which charged a
+  # decode conv on a pure prefill and a prefill conv on a pure decode.
+  #
+  # The block's other layers (in_proj, out_proj, norm, glue) fire in all three
+  # regimes and stay in ``dense``, which is the whole reason the split is per
+  # layer rather than per block.
   linear_attention:
+    gdn_conv_prefill:
+      vllm: _causal_conv1d_fwd_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_post_conv:
+      vllm: _fused_post_conv_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_conv_decode:
+      # The decode-regime conv, a separate kernel from the prefill one.
+      #
+      # This belongs here rather than in ``per_sequence`` even though its cost
+      # scales with the sequence count, because ``per_sequence`` has no notion
+      # of batch regime: it charged one decode-conv per *request* on a pure
+      # prefill batch, where the kernel does not run at all. The
+      # ``linear_attention`` key is ``(prefill_tokens, n_decode)``, so the
+      # profile's own absence of pure-prefill rows is what drops it.
+      vllm: _causal_conv1d_update_kernel
+      within: QwenGatedDeltaNetAttention
     gdn_prefill:
       # Chunked scan. Cost tracks the CHUNK COUNT, not the token count: one
       # token past a 64-boundary costs 13.5% more than the boundary itself and
