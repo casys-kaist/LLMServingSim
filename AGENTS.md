@@ -321,6 +321,26 @@ the lookup.
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
 | `moe` | moe (always profiled at tp=1; wrapped in EP ALLTOALL) | `(local_tokens, activated_experts)` |
 
+The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
+and that key is what makes it regime-aware: a gated-DeltaNet block runs a
+*different set of kernels* for a pure prefill, a pure decode and a mixed batch,
+so a kernel simply has no rows for a regime it does not fire in, and the
+simulator emits nothing for it there. Measured on Qwen3.8-27B:
+
+| kernel | prefill | decode | mixed |
+|---|---|---|---|
+| `gdn_conv_prefill`, `gdn_post_conv`, `gdn_prefill` | yes | — | yes |
+| `gdn_conv_decode`, `gdn_decode` | — | yes | — |
+| `gdn_decode_mixed` | — | — | yes |
+| `gdn_in_proj`, `gdn_out_proj`, `gdn_norm`, `gdn_glue` | yes | yes | yes |
+
+Put a regime-dependent kernel in `dense` or `per_sequence` and it is emitted on
+**every** batch, because neither has a notion of regime — that charged a decode
+conv on a pure prefill and a prefill conv on a pure decode. The always-on
+layers stay in `dense`, which is why the split is per layer rather than per
+block. Use `python -m profiler coverage` to find out which is which; it reports
+per regime.
+
 The `attention` category holds **more than one kernel** on a sparse model, and
 they are not interchangeable — the lookup takes a layer name
 (`attention_by_layer`) and so does the skew alpha. MiniMax-M3 profiles

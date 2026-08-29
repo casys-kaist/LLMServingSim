@@ -263,6 +263,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   at the hardcoded 1, a hybrid catalog can only ever see one of its block types
 
 ### Fixed
+- **The simulator had no `linear_attention` category**, so every gated-DeltaNet
+  recurrence — the defining computation of the architecture — was skipped out
+  of every trace with a one-line warning. `_layer_category` iterated four
+  categories and a fifth reads as "not in the catalog". Neither the coverage
+  check (profiler-side) nor the parameter count (weights only, and these layers
+  carry almost none) could catch it; running Qwen3.8 end to end and reading the
+  trace did
+- **Regime-dependent kernels were filed under `dense` / `per_sequence`**, which
+  emit on every batch. A gated-DeltaNet block runs a *different set* of kernels
+  for a pure prefill, a pure decode and a mixed batch, so this charged a decode
+  conv on a pure prefill (1077 ns x 48 layers) and a prefill conv on a pure
+  decode. `gdn_conv_prefill`, `gdn_post_conv` and `gdn_conv_decode` moved to
+  `linear_attention`, whose `(prefill_tokens, n_decode)` key makes the
+  profile's own absence of rows for a regime mean "does not fire here".
+  Which kernel belongs where was **measured** with
+  `python -m profiler coverage`, not inferred; DeepSeek and MiniMax-M3 have no
+  regime-dependent layers
 - **`--dtype`'s default ignored `quantization_config`**, so a quantized
   checkpoint defaulted to its *activation* dtype. DeepSeek-V3.2-Exp
   (`quant_method: fp8`, `torch_dtype: bfloat16`) defaulted to `bfloat16` and
