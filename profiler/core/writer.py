@@ -244,7 +244,7 @@ _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
     "dense": ["layer", "tokens"],
     "per_sequence": ["layer", "sequences"],
     "attention": ["layer", "prefill_chunk", "kv_prefill", "n_decode",
-                  "kv_decode"],
+                  "kv_decode", "decode_q_len"],
     "linear_attention": ["layer", "prefill_tokens", "n_decode"],
     "moe": ["tokens", "activated_experts"],
 }

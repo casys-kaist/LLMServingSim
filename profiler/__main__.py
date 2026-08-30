@@ -173,6 +173,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                    help="Cap for the kv_prefill / kv_decode axes. The "
                         "grid grows geometrically from 512 up to "
                         "min(this, max_model_len). Default: 16384.")
+    p.add_argument("--attention-decode-q-lens", type=str, default="1",
+                   dest="attention_decode_q_lens",
+                   help="Comma-separated query-token counts per decode sequence "
+                        "to sweep, e.g. '1,2,4,6'. Default '1' is ordinary "
+                        "decoding. A speculative-decoding verification step "
+                        "submits 1 + num_speculative_tokens queries per "
+                        "sequence against that sequence's own KV, which is "
+                        "neither a prefill chunk of the same size nor that many "
+                        "single-token decodes. Opt-in because it multiplies the "
+                        "attention grid.")
     p.add_argument("--attention-chunk-factor", type=float, default=2.0,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill_chunk axis. "
@@ -385,6 +395,9 @@ def _build_profile_args(
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
+        attention_decode_q_lens=tuple(
+            int(v) for v in str(ns.attention_decode_q_lens).split(",") if v.strip()
+        ) or (1,),
         attention_chunk_factor=ns.attention_chunk_factor,
         attention_kv_factor=ns.attention_kv_factor,
         measurement_iterations=ns.measurement_iterations,
