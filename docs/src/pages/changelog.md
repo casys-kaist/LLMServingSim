@@ -612,6 +612,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **Group-limited expert routing** (DeepSeek-V3/V3.2's `n_group` /
+  `topk_group`, read off the checkpoint the way `deepseek_v2.py` reads them).
+  A token's k experts are drawn only from `topk_group` of `n_group` groups, so
+  it reaches fewer EP ranks than an unrestricted gate would -- on
+  DeepSeek-V3.2 at EP=8 (`n_group: 8, topk_group: 4`) the per-rank token count
+  drops 31%, from 0.656 to 0.454 of the batch, and the ALLTOALL shrinks with
+  it. GLM-5 ships `n_group: 1`, the unrestricted case spelled out, and no
+  other family declares the fields at all.
+  - `GateRouter._hit_probs` computes P(token reaches rank r) **exactly**, by a
+    DP over which groups the token selected rather than by sampling, so the
+    simulator stays deterministic. Verified against a 400k-trial Monte Carlo
+    on seven (E, k, n_group, topk_group, ep) points: agreement within 0.0011,
+    which is the Monte Carlo's own noise.
+  - The same expression fixes the **ungrouped** case, which had used
+    `1 - ((ep-1)/ep)**k` -- k *independent* draws, where `torch.topk` selects
+    k **distinct** experts. Modelling replacement read ~1% low (Qwen3-30B at
+    EP=8: 0.6564 against the exact 0.6674). Six MoE scenarios with EP>1 move
+    by at most 0.0071% as a result; none with EP=1 moves, since every token
+    reaches the only rank either way.
 - **Every dtype is read from the model config; none is an input any more.**
   A model carries five cache dtypes -- weights, KV cache, mamba conv state,
   mamba recurrent state, sparse-indexer side cache -- and they are decided in
