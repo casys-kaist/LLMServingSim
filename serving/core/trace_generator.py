@@ -121,6 +121,7 @@ class BatchCtx:
     lm_head_len: int    # number of sequences
     decode_lens: list   # per-PIM-channel decode lengths (None if no PIM)
     channel_split: int  # PIM channel split factor
+    decode_q_len: int = 1  # query tokens per decode sequence (1 + N under spec decode)
 
 
 @dataclass
@@ -328,10 +329,29 @@ def _build_attention_tables_by_layer(df):
     neither.
     """
     if "layer" not in df.columns:
-        return {"attention": _build_attention_table(df)}
+        return {"attention": _build_attention_tables_by_q(df)}
     out = {}
     for layer in df["layer"].astype(str).unique().tolist():
-        out[layer] = _build_attention_table(df[df["layer"].astype(str) == layer])
+        out[layer] = _build_attention_tables_by_q(
+            df[df["layer"].astype(str) == layer])
+    return out
+
+
+def _build_attention_tables_by_q(df):
+    """``{decode_q_len: 4-D table}`` for one kernel.
+
+    The fifth axis is how many query tokens each decode sequence submits: 1 for
+    ordinary decoding, ``1 + num_speculative_tokens`` for a speculative
+    verification step. It wraps the 4-D table rather than joining it because
+    the other four axes mean the same thing at every q, and a bundle profiled
+    before the column existed is all q=1 -- so it comes back as ``{1: table}``
+    and every lookup against it is what it always was.
+    """
+    if "decode_q_len" not in df.columns:
+        return {1: _build_attention_table(df)}
+    out = {}
+    for q in df["decode_q_len"].astype(int).unique().tolist():
+        out[int(q)] = _build_attention_table(df[df["decode_q_len"].astype(int) == q])
     return out
 
 
@@ -881,7 +901,7 @@ def _skew_alpha(
 def _lookup_attention_with_skew(
     perf_db, tp, prefill_chunk, kv_prefill,
     n_decode, kv_decode_mean, kv_decode_max, kv_decode_min,
-    layer="attention",
+    layer="attention", decode_q_len=1,
 ):
     """Attention lookup with skew correction applied.
 
@@ -900,7 +920,7 @@ def _lookup_attention_with_skew(
     """
     t_mean = _lookup_attention(
         perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_mean,
-        layer,
+        layer, decode_q_len,
     )
     # No skew → no correction (also saves a redundant lookup).
     if n_decode <= 1 or kv_decode_max == kv_decode_mean:
@@ -918,7 +938,7 @@ def _lookup_attention_with_skew(
         return max(1, int(round(t_mean)))
     t_max = _lookup_attention(
         perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_max,
-        layer,
+        layer, decode_q_len,
     )
     # Guard against interpolation producing t_max < t_mean (can happen
     # at the axis boundary); in that case the formula would produce a
@@ -928,8 +948,34 @@ def _lookup_attention_with_skew(
     return max(1, int(round(t_mean + alpha * (t_max - t_mean))))
 
 
+def _attention_q_slice(by_q, decode_q_len, layer, tp):
+    """The 4-D table for ``decode_q_len``, exactly or the nearest profiled one.
+
+    Nearest rather than interpolated: query length changes the kernel's tile
+    shape, not just its size, so a value between two profiled ones is not
+    reliably between their costs -- and unlike the other four axes there is no
+    measurement here saying it is. Profiling exactly the ``1 + N`` you intend to
+    simulate is one extra grid value; guessing between them is a claim the data
+    does not support. Warned once per (layer, q) so a mismatch is visible.
+    """
+    q = max(1, int(decode_q_len))
+    if q in by_q:
+        return by_q[q]
+    nearest = min(by_q, key=lambda k: (abs(k - q), k))
+    key = ("attn_q", layer, q, nearest)
+    if key not in _skipped_layer_warned:
+        _skipped_layer_warned.add(key)
+        logger.warning(
+            "decode_q_len=%d was not profiled for %r at tp=%d (have %s); using "
+            "%d. A speculative-decoding step submits 1 + N queries per "
+            "sequence -- profile with --attention-decode-q-lens including %d.",
+            q, layer, tp, sorted(by_q), nearest, q,
+        )
+    return by_q[nearest]
+
+
 def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
-                      kv_decode, layer="attention"):
+                      kv_decode, layer="attention", decode_q_len=1):
     """4D interpolation on (prefill_chunk, kv_prefill, n_decode, kv_decode).
 
     Each axis is bracketed by its two nearest profiled values and blended
@@ -947,12 +993,13 @@ def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
     filed under ``attention``, so the default keeps it byte-identical.
     """
     by_layer = _tp_tables(perf_db, tp).get("attention_by_layer") or {}
-    tbl = by_layer.get(layer)
-    if tbl is None:
+    by_q = by_layer.get(layer)
+    if by_q is None:
         raise KeyError(
             f"Missing attention profile for layer={layer!r} at tp={tp}. "
             f"Profiled kernels: {sorted(by_layer) or 'none'}."
         )
+    tbl = _attention_q_slice(by_q, decode_q_len, layer, tp)
     if not tbl["pc_nd_pairs"]:
         raise KeyError(f"Missing attention profile for tp={tp}.")
 
@@ -1107,6 +1154,10 @@ def _build_batch_ctx(batch, ctx):
     prefill_chunk = sum(batch.prefill_q_list)
     kv_prefill = sum(batch.prefill_k_list)
     n_decode = len(batch.decode_k_list)
+    # Query tokens per decode sequence: 1 normally, 1 + N when a speculative
+    # step verifies N drafts. A fifth attention axis rather than folding into
+    # prefill_chunk, because these queries share one sequence's KV read.
+    decode_q_len = getattr(batch, "decode_q_len", 1) or 1
     kv_decode_mean = (sum(batch.decode_k_list) // n_decode) if n_decode > 0 else 0
     kv_decode_max = max(batch.decode_k_list) if n_decode > 0 else 0
     kv_decode_min = min(batch.decode_k_list) if n_decode > 0 else 0
@@ -1125,7 +1176,7 @@ def _build_batch_ctx(batch, ctx):
 
     return BatchCtx(batch, total_len, prefill_chunk, kv_prefill, n_decode,
                     kv_decode_mean, kv_decode_max, kv_decode_min,
-                    lm_head_len, decode_lens, channel_split)
+                    lm_head_len, decode_lens, channel_split, decode_q_len)
 
 
 # ======================================================================
@@ -1165,7 +1216,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             ctx.perf_db, ctx.tp_size,
             bctx.prefill_chunk, bctx.kv_prefill,
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
-            bctx.kv_decode_min, layer_name,
+            bctx.kv_decode_min, layer_name, bctx.decode_q_len,
         )
     elif category == "linear_attention":
         latency_ns = _lookup_linear_attention(
@@ -1595,7 +1646,7 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
             ctx.perf_db, ctx.tp_size,
             bctx.prefill_chunk, bctx.kv_prefill,
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
-            bctx.kv_decode_min, layer_name,
+            bctx.kv_decode_min, layer_name, bctx.decode_q_len,
         )
     if category == "linear_attention":
         return _lookup_linear_attention(

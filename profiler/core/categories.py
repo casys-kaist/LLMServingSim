@@ -65,6 +65,11 @@ class AttentionPoint:
     kv_prefill: int
     n_decode: int
     kv_decode: int
+    # Query tokens per decode sequence: 1 for ordinary decoding, 1 + N for a
+    # speculative-decoding verification step. Neither a prefill chunk of the
+    # same token count nor that many single-token decodes -- the k+1 queries of
+    # one sequence share that sequence's KV read.
+    decode_q_len: int
     microseconds: float
 
 
@@ -370,6 +375,13 @@ class AttentionCategory(Category):
         kv_vals = _geometric_grid(
             kv_cap, _ATTN_KV_START, factor=args.attention_kv_factor,
         )
+        # Query tokens per decode sequence. [1] by default -- the axis
+        # multiplies the whole sweep, and it only matters for speculative
+        # decoding, whose verification step submits 1 + N queries per sequence.
+        # Set --attention-decode-q-lens to the 1+N values you intend to
+        # simulate; the published N for the four modern families are 3, 4 and
+        # 5, so "1,2,4,6,8" brackets them.
+        q_vals = sorted({max(1, int(v)) for v in args.attention_decode_q_lens})
 
         for chunk in chunk_vals:
             for kv_p in kv_vals:
@@ -441,24 +453,35 @@ class AttentionCategory(Category):
                         if (prefill_block_toks + decode_block_toks
                                 > limits.num_cache_tokens):
                             continue
-                        yield Shot.attention(
-                            prefill_chunk=chunk,
-                            kv_prefill=kv_p,
-                            n_decode=n_dec,
-                            kv_decode=kv_d,
-                        )
+                        for q in q_vals:
+                            # q > 1 only makes sense where there are decodes
+                            # to widen; with none it would duplicate the
+                            # pure-prefill row.
+                            if q > 1 and n_dec == 0:
+                                continue
+                            yield Shot.attention(
+                                prefill_chunk=chunk,
+                                kv_prefill=kv_p,
+                                n_decode=n_dec,
+                                kv_decode=kv_d,
+                                decode_q_len=q,
+                            )
 
     def extract_points(self, shot, timings, arch, tp):
         # Shot.attention encodes the 4D key in its request list:
         #   requests[0] = (prefill_chunk, kv_prefill)   if chunk>0
         #   requests[k] = (1, kv_decode) for each decode, k in [1..n_decode]
         reqs = shot.requests
-        # Reconstruct the key from the shot shape.
-        if reqs and reqs[0][0] > 1:
+        q = max(1, getattr(shot, "decode_q_len", 1))
+        # Reconstruct the key from the shot shape. The decode query length has
+        # to come from the shot rather than the shapes: at q > 1 a decode
+        # request looks exactly like a prefill chunk in ``requests``, which is
+        # the ambiguity the axis exists to remove.
+        if reqs and reqs[0][0] > q:
             # First request is the prefill.
             prefill_chunk, kv_prefill = reqs[0]
             decode_reqs = reqs[1:]
-        elif reqs and reqs[0][0] == 1 and len(reqs) > 0:
+        elif reqs and reqs[0][0] == q and len(reqs) > 0:
             # No prefill; everything is a decode.
             prefill_chunk, kv_prefill = 0, 0
             decode_reqs = reqs
@@ -487,6 +510,7 @@ class AttentionCategory(Category):
                 kv_prefill=kv_prefill,
                 n_decode=n_decode,
                 kv_decode=kv_decode,
+                decode_q_len=q,
                 microseconds=sample.microseconds,
             )
 
@@ -495,7 +519,8 @@ class AttentionCategory(Category):
 
     def shot_key(self, shot):
         reqs = shot.requests
-        if reqs and reqs[0][0] > 1:
+        q = max(1, getattr(shot, "decode_q_len", 1))
+        if reqs and reqs[0][0] > q:
             pc, kp = reqs[0]
             decodes = reqs[1:]
         else:
@@ -503,7 +528,7 @@ class AttentionCategory(Category):
             decodes = reqs
         n_dec = len(decodes)
         kv_dec = decodes[0][1] if decodes else 0
-        return (pc, kp, n_dec, kv_dec)
+        return (pc, kp, n_dec, kv_dec, q)
 
 
 # ---------------------------------------------------------------------------

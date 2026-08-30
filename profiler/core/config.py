@@ -706,6 +706,17 @@ class ProfileArgs:
 
     # Attention grid
     attention_max_kv: int = 16384
+    attention_decode_q_lens: tuple[int, ...] = (1,)
+    """Query tokens per decode sequence to sweep on the attention axis.
+
+    ``(1,)`` is ordinary decoding and the default. A speculative-decoding
+    verification step submits ``1 + num_speculative_tokens`` queries per
+    sequence against that sequence's own KV -- a shape the other four axes
+    cannot express, since it is neither a prefill chunk of the same token
+    count nor that many single-token decodes. Sweeping it multiplies the
+    attention grid, so it is opt-in: pass the ``1 + N`` values you intend to
+    simulate. Published N for the four modern families are 3, 4 and 5.
+    """
     attention_chunk_factor: float = 2.0
     """Geometric factor for the prefill_chunk axis. Default 2.0
     (doubling). Override via --attention-chunk-factor."""

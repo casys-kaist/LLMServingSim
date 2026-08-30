@@ -45,6 +45,13 @@ class Request:
         # For chunked prefill
         self.chunk_len = 0  # tokens scheduled for this request in the current step
 
+        # Draft tokens scheduled for verification alongside this step's real
+        # token, mirroring vLLM's ``spec_token_ids``. Zero unless speculative
+        # decoding is on and the request is caught up -- a request still
+        # working through a prefill chunk has no draft to verify, because the
+        # drafter runs after a decode step.
+        self.num_spec_scheduled = 0
+
         # For prefix caching modeling
         self.input_hash_ids = input_hash_ids
         self.output_hash_ids = output_hash_ids
@@ -113,10 +120,22 @@ class Request:
         """
         return self.num_tokens_reached
 
+    @property
+    def num_tokens_with_spec(self):
+        """``num_tokens`` plus this step's draft tokens, vLLM's own name.
+
+        vLLM's scheduler comment states the rule this preserves: there is no
+        decoding phase nor prefill phase, each request just catches up its
+        ``num_computed_tokens`` to ``num_tokens_with_spec``, and that one rule
+        covers chunked prefill, prefix caching and speculative decoding alike.
+        So speculative decoding adds a term here rather than a branch anywhere.
+        """
+        return self.num_tokens_reached + self.num_spec_scheduled
+
 
 # class that manages batch of astra-sim
 class Batch:
-    def __init__(self, batch_id, model, total_len, kv_len, q_list, k_list, num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list, batch_time, kv_size, evict=0, load=0, pd_kv_send_tokens=0):
+    def __init__(self, batch_id, model, total_len, kv_len, q_list, k_list, num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list, batch_time, kv_size, evict=0, load=0, pd_kv_send_tokens=0, decode_q_len=1):
         self.batch_id = batch_id
         self.model = model
         self.total_len = total_len
@@ -142,6 +161,12 @@ class Batch:
         self.prefill_q_list = prefill_q_list
         self.prefill_k_list = prefill_k_list
         self.decode_k_list = decode_k_list
+        # Query tokens each decode sequence submits: 1 normally, 1 + N under
+        # speculative decoding, where the step verifies N drafts alongside the
+        # real token. It is a separate axis from ``num_new > 1`` because those
+        # queries share one sequence's KV read -- a prefill chunk of the same
+        # token count does not.
+        self.decode_q_len = decode_q_len
 
         # DP groups write every member's graph into one shared workload folder,
         # so the path cannot be re-derived from (instance_id, batch_id) the way a

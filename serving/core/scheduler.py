@@ -36,7 +36,8 @@ class Scheduler:
                  enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage,
                  enable_chunked_prefill=False,
                  long_prefill_token_threshold=0, cxl_mem=0, ep_size=1, kv_cache_dtype='auto',
-                 npu_memory_utilization=1.0, reserve_full_isl=True):
+                 npu_memory_utilization=1.0, reserve_full_isl=True,
+                 acceptance_model=None):
         self.model = model
         self.config = get_config(model)
         self.node_id = node_id
@@ -57,6 +58,10 @@ class Scheduler:
         # vLLM's scheduler_reserve_full_isl, True by default there: admit a
         # request only if its whole sequence fits, not merely its first chunk.
         self.reserve_full_isl = reserve_full_isl
+        # None when speculative decoding is off. See ``spec_decode.py``: which
+        # draft tokens the target accepts is the one thing a simulator cannot
+        # compute, so it is a policy with a per-model published default.
+        self.spec = acceptance_model
 
         # Requests admitted and still generating. Persistent across steps: this
         # is what gives the scheduler a notion of "already running", which the
@@ -68,6 +73,11 @@ class Scheduler:
         self.inflight = []
         self.done = []
         self.batch_ids = -1
+
+        # Speculative-decoding counters, reported as vLLM reports them: the
+        # acceptance rate is accepted/drafted.
+        self.spec_drafted = 0
+        self.spec_accepted = 0
 
         # Tokens recomputed because a request was preempted, and how many
         # preemptions happened. Both are reported: in the prefix-caching-off mode
@@ -243,11 +253,31 @@ class Scheduler:
         with ``num_computed_tokens`` reset to 0 it yields the whole sequence,
         chunked by the budget.
         """
-        num_new = req.num_tokens - req.num_computed_tokens
+        req.num_spec_scheduled = self._draft_tokens_for(req)
+        num_new = req.num_tokens_with_spec - req.num_computed_tokens
         threshold = self.long_prefill_token_threshold
         if 0 < threshold < num_new:
             num_new = threshold
-        return min(num_new, token_budget)
+        num_new = min(num_new, token_budget)
+        # The budget may cut the draft short. Record what actually got a slot,
+        # since that is what gets verified -- vLLM's ``num_scheduled_spec_tokens``.
+        req.num_spec_scheduled = max(0, min(req.num_spec_scheduled, num_new - 1))
+        return num_new
+
+    def _draft_tokens_for(self, req):
+        """Draft tokens to verify alongside this request's real token.
+
+        Zero unless the request is **caught up**, i.e. in steady-state decode
+        with exactly one token to compute. That is not a prefill/decode branch
+        sneaking back in: it is where a draft exists at all. vLLM's drafter runs
+        after a decode step and fills ``spec_token_ids``, so a request working
+        through a prefill chunk, or recomputing after preemption, has none.
+        """
+        if self.spec is None or self.spec.N <= 0:
+            return 0
+        if req.num_tokens_reached - req.num_computed_tokens != 1:
+            return 0
+        return self.spec.N
 
     def _preempt_request(self, req):
         """Give up a running request's blocks so someone else can use them.
@@ -263,6 +293,11 @@ class Scheduler:
         self.kv.preempt(req)
         req.status = RequestStatus.PREEMPTED
         req.num_computed_tokens = 0
+        # The draft belonged to a step that will not complete, and vLLM drops
+        # it the same way (``scheduled_spec_decode_tokens.pop(preempted_req_id)``).
+        # Leaving it set would have the request re-admitted asking to verify
+        # tokens nothing proposed.
+        req.num_spec_scheduled = 0
         req.num_preemptions += 1
         self.num_preemptions += 1
         # vLLM prepends, so a preempted request is first in line to come back.
@@ -289,6 +324,7 @@ class Scheduler:
         prefill_q_list = []
         prefill_k_list = []
         decode_k_list = []
+        decode_q_lens = []
         scheduled_tokens = {}
         pd_kv_send_tokens = 0
 
@@ -297,7 +333,17 @@ class Scheduler:
             total_len += num_new
             q_list.append(num_new)
             k_list.append(computed_before)
-            if num_new > 1:
+            # Classify by *why* the request has more than one token, not by the
+            # count. A speculative-decode step submits 1 + N queries that all
+            # read one sequence's KV; a prefill chunk of the same size reads a
+            # different amount and is a different kernel shape. Reading the
+            # count alone filed every verification step as a prefill.
+            if req.num_spec_scheduled > 0:
+                num_decode += 1
+                kv_len += computed_before
+                decode_k_list.append(computed_before)
+                decode_q_lens.append(num_new)
+            elif num_new > 1:
                 num_prefill += 1
                 prefill_q_list.append(num_new)
                 prefill_k_list.append(computed_before)
@@ -305,6 +351,7 @@ class Scheduler:
                 num_decode += 1
                 kv_len += computed_before
                 decode_k_list.append(computed_before)
+                decode_q_lens.append(1)
             if req.is_init:
                 req.set_que_delay(current)
             if self.pd_type == "prefill":
@@ -326,7 +373,11 @@ class Scheduler:
         batch = Batch(self.get_batch_id(), self.model, total_len, kv_len, q_list, k_list,
                       num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list,
                       current, self.kv.npu_used_bytes(), 0, recall_bytes,
-                      pd_kv_send_tokens=pd_kv_send_tokens)
+                      pd_kv_send_tokens=pd_kv_send_tokens,
+                      # One shot per batch, so a mixed batch takes the longest
+                      # decode query -- the kernel is launched for the whole
+                      # batch and its cost follows the widest row.
+                      decode_q_len=max(decode_q_lens) if decode_q_lens else 1)
         batch.fired.append(sys)
         batch.requests.extend(req for req, _, _ in scheduled)
         batch.scheduled_tokens = scheduled_tokens
@@ -428,8 +479,29 @@ class Scheduler:
             # length it had reached. A resumed request recomputing its history
             # has not, so it stays silent until it does.
             if req.num_computed_tokens >= req.num_tokens_reached:
-                req.num_tokens_reached += 1
-                gen_t += 1
+                # Speculative decoding commits the bonus token plus whatever
+                # prefix of the draft the target accepted, and rolls the
+                # rejected slots back -- vLLM's
+                # ``request.num_computed_tokens -= num_rejected``. The rollback
+                # comes first so the prefix cache below indexes only committed
+                # tokens; a block holding a rejected token must never be hashed,
+                # or a later request could hit on text the model never emitted.
+                accepted = 0
+                n_draft = req.num_spec_scheduled
+                if n_draft:
+                    accepted = self.spec.draw(n_draft)
+                    req.num_computed_tokens -= (n_draft - accepted)
+                    self.spec_drafted += n_draft
+                    self.spec_accepted += accepted
+                req.num_spec_scheduled = 0
+                # A verification step commits 1 + accepted tokens at once, which
+                # can run past the requested length. vLLM stops at max_tokens
+                # and discards the excess, so the overshoot is not generated
+                # output and must not be counted as throughput.
+                committed = min(1 + accepted,
+                                max(req.output - req.num_tokens_reached, 0))
+                req.num_tokens_reached += committed
+                gen_t += committed
                 if not prefill_done_now:
                     req.add_itl(finish)
                 if self.enable_prefix_caching:
