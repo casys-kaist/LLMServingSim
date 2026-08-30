@@ -50,7 +50,7 @@ LOG_DIR="${LOG_DIR:-$(mktemp -d)}"
 mkdir -p "$LOG_DIR" || { echo "cannot create LOG_DIR: $LOG_DIR" >&2; exit 2; }
 TIMEOUT="${TIMEOUT:-1800}"
 
-COMMON=(--dtype bfloat16 --block-size 16 --log-level WARNING)
+COMMON=(--block-size 16 --log-level WARNING)
 
 C=configs/cluster
 TRACE=workloads/example_trace.jsonl

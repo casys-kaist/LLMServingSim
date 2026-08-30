@@ -62,8 +62,9 @@ meta.yaml
 ```
 
 Where `<variant>` encodes the dtype combination, e.g., `bf16` or
-`bf16-kvfp8` or `fp8-kvfp8`. The simulator resolves the variant at
-runtime via `resolve_variant(dtype, kv_cache_dtype, model_config)`.
+`bf16-kvfp8` or `fp8-kvfp8`. The simulator resolves it with
+`resolve_variant(model_config)` — a pure function of the model config,
+taking no dtype argument.
 
 The CSVs hold `time_us` (microseconds). The simulator multiplies by
 1000 and rounds to ns at load time, every internal latency is in ns.
@@ -110,29 +111,37 @@ time, so lookups directly yield ns.
 
 ## Variant resolution
 
-`resolve_variant(dtype, kv_cache_dtype, model_config)` mirrors the
-profiler's `effective_variant`:
+`resolve_variant(model_config)` mirrors the profiler's
+`effective_variant`, but reads only the checkpoint — there is no dtype
+flag on the simulator to read instead:
 
 ```
-dtype           dtype-from-CLI or torch_dtype from model config
-                  (default 'bfloat16')
+dtype           config_weight_dtype(config)
+                  quantization_config.quant_method, else torch_dtype / dtype
 
-kv_cache_dtype  CLI value, default 'auto' (inherits from dtype)
+kv_cache_dtype  config_kv_cache_dtype(config)
+                  'fp8' if quantization_config declares kv_cache_scheme
+                  or kv_cache_quant_algo, else 'auto'
 
-variant         f"{short(dtype)}"                       # if kv_cache_dtype == 'auto'
+variant         f"{short(dtype)}"                            # kv_cache_dtype == 'auto'
                 f"{short(dtype)}-kv{short(kv_cache_dtype)}"  # otherwise
 ```
 
-So:
+So one model config names exactly one folder:
 
-- `--dtype bfloat16` → `bf16`
-- `--dtype bfloat16 --kv-cache-dtype fp8` → `bf16-kvfp8`
-- `--dtype fp8 --kv-cache-dtype fp8` → `fp8-kvfp8`
+- Llama-3.1-8B (`torch_dtype: bfloat16`) → `bf16`
+- DeepSeek-V3.2-Exp (`quant_method: fp8`) → `fp8`
+- a checkpoint declaring `kv_cache_scheme` → `bf16-kvfp8`
+
+The profiler can still *write* other folders for the same model — its
+`--variant`, `--dtype` and `--kv-cache-dtype` are how a deliberate
+second precision gets measured and kept beside the first. The simulator
+simply never asks for one.
 
 If the resolved folder doesn't exist under `profiler/perf/...`, the
 simulator raises a clear `FileNotFoundError` pointing at the missing
-variant. Either profile that combo with `--variant <name>` on the
-profiler, or pick a different dtype combination.
+variant. Profile that model with the profiler's defaults, which name the
+same folder.
 
 ## Heterogeneous-decode skew correction
 
@@ -284,9 +293,9 @@ Expert-to-rank assignment uses even partitioning:
 3. **First-load is slow** (perf DB parsing); subsequent loads hit
    `_perf_db_cache`. Restarting the simulator pays the parse cost
    again.
-4. **Variant folder must exist.** Mismatched dtype + KV combo →
-   `FileNotFoundError`. Either profile that combo or pick a different
-   `--dtype` / `--kv-cache-dtype` pair.
+4. **Variant folder must exist.** A model config whose bundle was never
+   profiled → `FileNotFoundError`. The profiler's defaults name the same
+   folder the simulator asks for, so profiling the model is the fix.
 5. **Skew correction only fires when the skew sweep was profiled.**
    Otherwise you get a single pooled alpha, which is correct on
    average but loses heterogeneity sensitivity.

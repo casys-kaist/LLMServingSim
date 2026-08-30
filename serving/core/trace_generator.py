@@ -4,7 +4,7 @@ from .request import *
 from .utils import *
 from .utils import (
     _load_architecture, _stack_module, get_architecture, get_layer_stack,
-    num_experts as utils_num_experts, config_weight_dtype,
+    num_experts as utils_num_experts, config_weight_dtype, config_kv_cache_dtype,
 )
 import pandas as pd
 import yaml
@@ -53,17 +53,24 @@ def _short_dtype(d):
     return _DTYPE_SHORT.get(str(d), str(d))
 
 
-def resolve_variant(dtype, kv_cache_dtype, model_config=None):
-    """Compute the profiler's variant folder name from runtime dtype
-    choices. Matches ``ProfileArgs.effective_variant`` in the profiler.
+def resolve_variant(model_config):
+    """The profiler's variant folder name for a checkpoint.
+
+    A pure function of the model config, because both dtypes it is built from
+    are. Neither is a runtime choice any more: ``config_weight_dtype`` and
+    ``config_kv_cache_dtype`` read the checkpoint, so one model config names
+    exactly one folder and there is no dtype to thread through the call.
+
+    The profiler can still *write* other folders for the same model -- its
+    ``ProfileArgs.effective_variant`` honours ``--variant``, ``--dtype`` and
+    ``--kv-cache-dtype``, which is how a deliberate second precision gets
+    measured and kept beside the first. The simulator simply never asks for
+    one: it reads the folder the checkpoint names, and says so loudly when
+    that folder is missing.
     """
-    weight = dtype
-    if not weight and model_config is not None:
-        # ``utils.config_weight_dtype`` owns this rule, shared with the
-        # instance-dtype default in ``__main__`` so the two cannot disagree
-        # about which variant folder to read.
-        weight = config_weight_dtype(model_config)
+    weight = config_weight_dtype(model_config)
     parts = [_short_dtype(weight) if weight else "default"]
+    kv_cache_dtype = config_kv_cache_dtype(model_config)
     if kv_cache_dtype and kv_cache_dtype != "auto":
         parts.append(f"kv{_short_dtype(kv_cache_dtype)}")
     return "-".join(parts)
@@ -482,6 +489,46 @@ def _check_tp_coverage(perf_db, tp_needed, hardware, model, variant):
             f"perf/{hardware}/{model}/{variant}/. Re-run the profiler with "
             f"TP_DEGREES including {','.join(str(t) for t in missing)}."
         )
+
+
+def profiled_block_size(hardware, model, variant):
+    """KV block size the engine settled on when this bundle was profiled.
+
+    ``None`` when the bundle predates the field or cannot be read. vLLM derives
+    the block size rather than taking it: the backend declares what it supports
+    (MiniMax-M3's sparse attention accepts only 128, one sparse block per KV
+    page) and a hybrid stack enlarges the attention block until an attention
+    page costs at least as many bytes as a mamba state page -- 784 on
+    Qwen3.8-27B against the 16 typically requested. Reading it back from the
+    profile is how the simulator gets the same answer without reimplementing
+    vLLM's backend selection, and it is model-and-backend specific, which is
+    exactly what determines it.
+    """
+    # Both the cwd-relative root (the simulator chdirs into astra-sim/ before
+    # this normally runs) and one derived from __file__. A silent miss here
+    # would hand back the fallback block size with no signal, which is the
+    # failure this function exists to prevent.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    roots = [
+        _variant_root(hardware, model, variant),
+        os.path.join(repo_root, "profiler", "perf", hardware, model, variant),
+    ]
+    meta = None
+    for root in roots:
+        try:
+            meta = _load_meta(root)
+            break
+        except (FileNotFoundError, OSError):
+            continue
+    if meta is None:
+        return None
+    resolved = (meta or {}).get("engine_resolved") or {}
+    try:
+        bs = int(resolved.get("block_size"))
+    except (TypeError, ValueError):
+        return None
+    return bs if bs > 0 else None
 
 
 def warn_if_runtime_exceeds_profiled(perf_db, runtime_max_num_batched_tokens,
@@ -1933,7 +1980,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     config = get_config(model)
     fp = fp // 8  # bit -> byte of floating point
     max_len = min(max_num_batched_tokens, config['max_position_embeddings'])
-    variant = resolve_variant(dtype, kv_cache_dtype, config)
+    variant = resolve_variant(config)
 
     # vllm: add load or eviction in the txt file
     load_size = batch.load

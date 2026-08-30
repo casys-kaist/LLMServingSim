@@ -543,8 +543,10 @@ def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
         idx_head_dim = config.get('index_head_dim') or 0
         sparse = True if spec is None else spec.sparse
         if sparse and idx_head_dim and 'index_topk' in config:
-            # fp8 keys + one fp32 scale per 128-element block, as uint8.
-            replicated += idx_head_dim + (idx_head_dim // 128) * 4
+            # fp8 keys + one fp32 scale per 128-element block, as uint8. The
+            # scales are whole fp32s regardless of the key dtype.
+            idx_b = cache_dtype_bytes(config, kv_fp, kv_fp)["indexer"]
+            replicated += idx_head_dim * idx_b + (idx_head_dim // 128) * 4
         return 0, replicated
 
     if spec is not None and spec.attn == 'linear_attention':
@@ -558,10 +560,76 @@ def kv_bytes_per_token_per_layer(config, kv_fp, spec=None):
     idx_dim = sparse_cfg.get('sparse_index_dim') or 0
     sparse = bool(sparse_cfg.get('use_sparse_attention')) if spec is None else spec.sparse
     if sparse and idx_dim:
-        # Key-only side cache at the indexer's own dtype, which mirrors
-        # ``--kv-cache-dtype`` for the main cache but defaults to bf16.
-        return sharded, idx_dim * kv_fp
+        # Key-only side cache at the **indexer's own** dtype, which does not
+        # follow --kv-cache-dtype: vLLM's M3 indexer asks for
+        # ``resolve_indexer_kv_dtype("bf16")``, so an fp8 KV run leaves it bf16.
+        return sharded, idx_dim * cache_dtype_bytes(config, kv_fp, kv_fp)["indexer"]
     return sharded, 0
+
+
+_STATE_DTYPE_BYTES = {
+    "float32": 4, "float": 4, "fp32": 4,
+    "bfloat16": 2, "float16": 2, "half": 2, "bf16": 2, "fp16": 2,
+    "float8_e4m3fn": 1, "fp8": 1, "int8": 1, "uint8": 1,
+}
+
+
+def _dtype_bytes(name, default):
+    """Bytes per element for a dtype name, or ``default`` for auto/unknown."""
+    if isinstance(name, str) and name.lower() not in ("auto", ""):
+        return _STATE_DTYPE_BYTES.get(name.lower(), default)
+    return default
+
+
+def cache_dtype_bytes(config, fp, kv_fp):
+    """Every cache dtype a model uses, in bytes per element.
+
+    There is no single "the dtype" any more, and the five do not come from the
+    same place. Reading one CLI value for all of them is how the recurrent
+    state came out half size.
+
+    ==================  ==========================================  ==========
+    cache               source                                      overridable
+    ==================  ==========================================  ==========
+    weight              config: quantization_config, then            --dtype
+                        torch_dtype / dtype
+    main KV             a serving choice, inheriting the weight      --kv-cache-dtype
+                        dtype under "auto"
+    mamba conv state    config: ``mamba_cache_dtype``, "auto" ->      no
+                        the model dtype
+    mamba SSM state     config: ``mamba_ssm_dtype``, "auto" ->        no
+                        the conv dtype
+    indexer side cache  fixed by the model, not by either            no
+    ==================  ==========================================  ==========
+
+    The last row is the one that looks like a serving knob and is not.
+    DeepSeek's ``DeepseekV32IndexerCache`` is constructed with
+    ``dtype=torch.uint8`` outright -- fp8 keys plus fp32 scales, packed -- and
+    MiniMax-M3's indexer asks vLLM for ``resolve_indexer_kv_dtype("bf16")``,
+    which returns bf16 unless a *separate* attention-config knob says
+    otherwise. Neither follows ``--kv-cache-dtype``, so an fp8 KV run must not
+    shrink them.
+    """
+    conv = _dtype_bytes(config.get("mamba_cache_dtype"), fp)
+    ssm = _dtype_bytes(config.get("mamba_ssm_dtype"), conv)
+    # Indexer side cache, per family, both fixed by the model:
+    #   M3            MiniMaxM3IndexerCache(indexer_kv_dtype="bf16") -> bf16
+    #   DeepSeek/GLM  DeepseekV32IndexerCache(dtype=torch.uint8)     -> 1 byte
+    # Neither is --kv-cache-dtype. Both models do expose a separate knob for it
+    # (M3's --attention-config indexer_kv_dtype), which this simulator does not,
+    # so the model default is the only value either can take here.
+    if config.get("sparse_attention_config"):
+        indexer = _dtype_bytes("bfloat16", 2)
+    else:
+        indexer = _dtype_bytes("uint8", 1)
+    return {"weight": fp, "kv": kv_fp, "mamba_conv": conv,
+            "mamba_ssm": ssm, "indexer": indexer}
+
+
+def _ssm_state_bytes(config, fp):
+    """Bytes per element of the recurrent (SSM) state. See
+    :func:`cache_dtype_bytes` for where each cache's dtype comes from."""
+    return cache_dtype_bytes(config, fp, fp)["mamba_ssm"]
 
 
 def state_bytes_per_sequence(config, fp, spec=None):
@@ -579,9 +647,11 @@ def state_bytes_per_sequence(config, fp, spec=None):
         conv_state = (conv_dim, conv_kernel_dim - 1)
         ssm_state  = (num_value_heads, value_head_dim, key_head_dim)
 
-    Both shard across TP ranks. On Qwen3.8-27B that is 1.6 MB per sequence per
-    layer at bf16, and 48 of its 64 layers are gated DeltaNet -- roughly 78 MB
-    per concurrent sequence, so it is not a rounding error on capacity.
+    Both shard across TP ranks, and they do **not** share a dtype -- see
+    :func:`_ssm_state_bytes`. On Qwen3.8-27B that is 3.06 MB per sequence per
+    layer (60 KB of conv state at bf16 plus 3 MB of recurrent state at fp32),
+    and 48 of its 64 layers are gated DeltaNet -- roughly 154 MB per concurrent
+    sequence, so it is not a rounding error on capacity.
 
     Returns 0 for any layer that is not linear attention.
     """
@@ -597,7 +667,11 @@ def state_bytes_per_sequence(config, fp, spec=None):
     conv_dim = 2 * k_heads * k_dim + v_heads * v_dim
     conv_state = conv_dim * max(conv_kernel - 1, 0)
     ssm_state = v_heads * v_dim * k_dim
-    return (conv_state + ssm_state) * fp
+    # Two dtypes, not one: the conv state follows the model dtype and the
+    # recurrent state follows ``mamba_ssm_dtype``. Charging both at the model
+    # dtype halved Qwen3.8's state, and the recurrent half is 96% of it.
+    dt = cache_dtype_bytes(config, fp, fp)
+    return conv_state * dt["mamba_conv"] + ssm_state * dt["mamba_ssm"]
 
 
 def full_cluster_state_bytes_per_sequence(model, fp):

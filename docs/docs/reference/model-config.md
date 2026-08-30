@@ -70,7 +70,7 @@ or `num_experts` and treats them equivalently.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `torch_dtype` | string | Default weight dtype. Used when `--dtype` isn't passed. e.g. `bfloat16`, `float16`, `float32` |
+| `torch_dtype` | string | Weight dtype, and the only source for it — there is no `--dtype` flag. `quantization_config.quant_method` wins when present. e.g. `bfloat16`, `float16`, `float32` |
 | `architectures` | array | First entry's class name is informational; the simulator dispatches via `model_type` |
 
 ### Per-layer stack fields
