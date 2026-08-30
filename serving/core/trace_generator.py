@@ -2005,6 +2005,13 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
             routing_policy=expert_routing_policy,
             seed=42,
             block_copy=enable_block_copy,
+            # Group-limited routing, read straight off the checkpoint the way
+            # ``deepseek_v2.py`` does (``num_expert_group=config.n_group``,
+            # ``topk_group=config.topk_group``, both defaulting to 1). Only
+            # DeepSeek-V3.2 actually restricts here -- GLM-5 ships
+            # ``n_group: 1``, which is the unrestricted case spelled out.
+            n_group=config.get('n_group', 1),
+            topk_group=config.get('topk_group', 1),
         )
     else:
         gate = None

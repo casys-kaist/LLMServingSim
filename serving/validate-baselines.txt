@@ -41,12 +41,12 @@ moe_pp 1801188850
 moe_dp_ep 1479062704
 moe_dp_tp 2605716536
 moe_dp_pp 1435561517
-moe_dp_tp_pp 1642858815
-dual_node_moe_dp_ep 1850687236
+moe_dp_tp_pp 1642849959
+dual_node_moe_dp_ep 1850641444
 dp_pp_uneven 14403280459
-moe_dp_pp_uneven 6225124056
-moe_dp_tp_pp_uneven 9595091395
-moe_dp_ep_uneven 9991090353
+moe_dp_pp_uneven 6225142536
+moe_dp_tp_pp_uneven 9595775539
+moe_dp_ep_uneven 9991150497
 pd 1661784496
 pd_per_instance_config 1661784496
 pd_sharegpt 12851061128
@@ -56,7 +56,7 @@ pim 1643150716
 pim_sub_batch 2634096516
 power 1663996645
 agentic_single 55330378613
-agentic_moe_dp_ep 36551191391
+agentic_moe_dp_ep 36551316191
 rtx4090_single 20107668060
 rtx4090_multi 17757249475
 accuracy:RTX4090/Llama-3.1-8B b14a11d0ff5f1b297b7d0cb5886c53af

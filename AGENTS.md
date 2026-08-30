@@ -793,6 +793,23 @@ The `system.json` collective implementations must have one entry per topology di
 (e.g., `"all-to-all-implementation": ["ring", "ring"]` for 2D, three entries for 3D).
 `config_builder.py` generates this automatically from the topology it emitted.
 
+### Group-limited expert routing
+DeepSeek-V3/V3.2 and GLM restrict a token's experts to `topk_group` of
+`n_group` groups (`deepseek_v2.py` passes `num_expert_group=config.n_group`,
+`topk_group=config.topk_group`, both defaulting to 1). `GateRouter` reads both
+off the checkpoint. It matters because it changes how many EP ranks one token
+reaches, and therefore the per-rank MoE token count and the ALLTOALL size:
+DeepSeek-V3.2 at EP=8 sends a token to 45.4% of ranks against 65.6%
+unrestricted. **Only DeepSeek-V3.2 actually restricts** — GLM-5 ships
+`n_group: 1` and no other family declares the fields.
+
+`_hit_probs` is exact and deterministic: a DP over which groups the token
+selected, not sampling. It draws **without replacement**, matching
+`torch.topk`; the older `1 - ((ep-1)/ep)**k` modelled independent draws and
+read ~1% low even with no grouping. Don't "simplify" it back — the difference
+is measurable, and the grouped and ungrouped cases must not have two different
+answers to one question.
+
 ### MoE expert blocks
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank
 gets a per-rank latency from profiled data based on its local token count and activated
