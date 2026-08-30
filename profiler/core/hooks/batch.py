@@ -45,6 +45,11 @@ class Shot:
 
     requests: list[tuple[int, int]]
     experts: dict[str, Any] | None = None
+    # Query tokens per decode request. Carried rather than re-derived from
+    # ``requests``, because with more than one query token a decode is
+    # indistinguishable by shape from a prefill chunk -- which is exactly the
+    # confusion this axis exists to remove.
+    decode_q_len: int = 1
 
     # Serialization roundtrip: these helpers keep cross-process
     # transport simple. collective_rpc serializes args as pickle, so
@@ -57,6 +62,7 @@ class Shot:
         return cls(
             requests=[tuple(r) for r in raw.get("requests", [])],
             experts=raw.get("experts"),
+            decode_q_len=int(raw.get("decode_q_len") or 1),
         )
 
     # -----------------------------------------------------------------
@@ -84,20 +90,31 @@ class Shot:
         kv_prefill: int,
         n_decode: int,
         kv_decode: int,
+        decode_q_len: int = 1,
     ) -> "Shot":
         """Mixed prefill+decode batch for unified attention profiling.
 
         At most one prefill + ``n_decode`` decode requests. Either
         component can be absent (``prefill_chunk=0`` or ``n_decode=0``).
+
+        ``decode_q_len`` is how many query tokens each decode request submits.
+        It is 1 for ordinary decoding and ``1 + num_speculative_tokens`` for a
+        speculative-decoding verification step, which is a shape the other four
+        axes cannot express: *n* sequences each submitting *k+1* queries against
+        **their own** KV is neither one prefill chunk of ``n*(k+1)`` tokens nor
+        ``n*(k+1)`` single-token decodes, because the k+1 queries of one
+        sequence share that sequence's KV read. FlashAttention runs it as a
+        varlen batch of uniform query length, which is a different tile shape
+        again.
         """
         reqs: list[tuple[int, int]] = []
         if prefill_chunk > 0:
             reqs.append((prefill_chunk, kv_prefill))
         if n_decode > 0:
-            reqs.extend([(1, kv_decode)] * n_decode)
+            reqs.extend([(max(1, decode_q_len), kv_decode)] * n_decode)
         if not reqs:
             raise ValueError("attention Shot must have at least one request")
-        return cls(requests=reqs)
+        return cls(requests=reqs, decode_q_len=max(1, decode_q_len))
 
     # History given to a linear-attention shot's decode requests. The value is
     # arbitrary as far as cost goes -- a gated-DeltaNet state is fixed-size

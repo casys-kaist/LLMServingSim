@@ -572,6 +572,54 @@ arrival time to avoid busy-looping.
   every mode — eviction from the NPU costs nothing, because the data is either a finished
   request's cache or already written down off the critical path
 
+### Speculative decoding
+`--num-speculative-tokens N` turns it on. Which draft tokens the target accepts
+is the one thing a simulator cannot compute -- it needs the draft's and the
+target's distributions over real tokens -- so acceptance is a **policy** chosen
+the way MoE expert routing is, with the default taken from what the model's own
+authors published (`configs/spec_decode.json`, one entry per model, each
+carrying its source).
+
+**The rate is `accepted / drafted`, and it is marginal**, so
+
+    mean_accept_length = 1 + rate * N
+
+That identity reproduces all nine published (rate, length) pairs to within 0.01
+tokens. It is deliberately **not** Leviathan's per-position alpha (ICML 2023),
+which is *conditional* -- position i is reached only if 1..i-1 were accepted --
+and gives the capped geometric `(1 - a^(N+1))/(1 - a)`. Passing a published
+rate to that formula under-predicts the published accept length by 25-30%,
+because real acceptance is front-loaded rather than i.i.d. The check that
+settles the reading: Qwen's published per-position decline of 95% at p1 to 60%
+at p5 averages 0.775 read as marginals against a published 0.779, and 0.621
+read as conditionals. **Don't reintroduce the capped-geometric formula.**
+
+A model with no published figure gets no default -- rates run from 0.39 to 0.78
+across the four modern families, so there is nothing defensible to guess.
+
+Scheduling follows vLLM exactly, including its framing: `num_tokens_with_spec =
+num_tokens + spec_tokens`, a request just catches up to it, and rejection rolls
+back with `num_computed_tokens -= num_rejected`. Three details that are easy to
+get wrong:
+
+- **Roll back before caching the prefix.** A block holding a rejected token
+  must never be hashed, or a later request hits on text the model never emitted
+- **Classify a spec step by why it has many tokens, not by the count.**
+  `num_new > 1` files a verification step as a prefill chunk; the `1 + N`
+  queries of one sequence share that sequence's KV read, a prefill chunk of the
+  same size does not
+- **Clamp the overshoot.** A step commits `1 + accepted` at once and can run
+  past `output`; vLLM stops at max_tokens and discards the excess, so the
+  overshoot is not throughput
+
+The verification forward needs the **fifth attention axis**, `decode_q_len`
+(query tokens per decode sequence, `1 + N`). It is opt-in in the profiler
+(`--attention-decode-q-lens`, default `1`) because it multiplies the grid. An
+unprofiled value falls back to the nearest with a one-shot warning rather than
+interpolating: query length changes the kernel's tile shape, not just its size,
+and unlike the other four axes there is no measurement saying a value between
+two profiled ones lies between their costs.
+
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
 - `--dtype` (`float16`, `bfloat16`, `float32`, `int8`) — model weight precision

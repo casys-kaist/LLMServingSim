@@ -9,6 +9,36 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Speculative decoding.** `--num-speculative-tokens N`,
+  `--spec-acceptance-rate`, `--spec-acceptance-policy {FIXED,DECAY,CUSTOM}`,
+  all overridable per instance. Scheduling follows vLLM's own framing --
+  `num_tokens_with_spec = num_tokens + spec_tokens`, a request catches up to
+  it, and rejection rolls back with `num_computed_tokens -= num_rejected`.
+  - **Defaults come from each model's own published measurement**
+    (`configs/spec_decode.json`, one entry per model with its source):
+    DeepSeek-V3.2 accept length 2.55 at N=4 and GLM-5 2.76 at N=4 (GLM-5
+    technical report Table 2), MiniMax-M3 ~3.0 at 67% with N=3 (vLLM's day-0
+    serving guide), Qwen3.8-27B 4.89 at 77.9% with N=5 (vLLM's measurement on
+    Qwen3.5-27B, same family and size). A model with no published figure gets
+    **no** default — the four range from 0.39 to 0.78, so there is nothing
+    defensible to guess
+  - The rate is `accepted / drafted` and **marginal**, so
+    `mean_accept_length = 1 + rate * N` — an identity that reproduces all nine
+    published (rate, length) pairs to within 0.01 tokens. Deliberately not
+    Leviathan's conditional per-position alpha (ICML 2023): passing a published
+    rate to that capped-geometric formula under-predicts the published accept
+    length by 25-30%, because real acceptance is front-loaded rather than
+    i.i.d. Qwen's published decline from 95% at p1 to 60% at p5 averages 0.775
+    read as marginals against a published 0.779, and 0.621 read as conditionals
+- **A fifth attention axis, `decode_q_len`** — query tokens per decode
+  sequence, 1 normally and `1 + N` for a speculative verification step. That
+  shape is expressible by none of the other four: *n* sequences each submitting
+  *k+1* queries against **their own** KV is neither one prefill chunk of
+  `n*(k+1)` tokens nor `n*(k+1)` single-token decodes, because the k+1 queries
+  of one sequence share that sequence's KV read. Opt-in in the profiler
+  (`--attention-decode-q-lens`, default `1`) since it multiplies the grid; a
+  bundle without the column reads as `q=1` and is unchanged
+
 - **Per-sequence layer state is charged against pool capacity.** A
   linear-attention layer caches nothing per token but holds a fixed conv +
   recurrent state for as long as the sequence lives, so it bounds *concurrency*

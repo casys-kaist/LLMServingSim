@@ -63,6 +63,22 @@ on a single GPU by dividing the model's per-rank shapes via
 
 ## Attention grid
 
+:::note[The `decode_q_len` axis is opt-in]
+`--attention-decode-q-lens` (default `1`) sweeps how many query tokens each
+decode sequence submits. Ordinary decoding is 1; a **speculative-decoding**
+verification step is `1 + num_speculative_tokens`, which none of the other four
+axes can express — *n* sequences each submitting *k+1* queries against their own
+KV is neither one prefill chunk of `n*(k+1)` tokens nor that many single-token
+decodes, because the k+1 queries of one sequence share that sequence's KV read.
+
+It multiplies the whole grid, so pass only the `1 + N` values you intend to
+simulate; the published N for the four modern families are 3, 4 and 5. The
+simulator falls back to the nearest profiled value with a warning rather than
+interpolating, because query length changes the kernel's tile shape rather than
+just its size.
+:::
+
+
 The 4D attention sweep covers `(prefill_chunk, kv_prefill, n_decode,
 kv_decode)`. Three knobs control its shape:
 

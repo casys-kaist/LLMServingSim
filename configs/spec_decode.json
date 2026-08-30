@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Published speculative-decoding measurements, one entry per model.",
+    "",
+    "These are the model authors' or the serving stack's own numbers, not this",
+    "repo's estimates, and each carries its source so it can be checked. The",
+    "simulator reads a model's entry as the default when speculative decoding is",
+    "enabled; --num-speculative-tokens and --spec-acceptance-rate override it.",
+    "A model absent from this file has no published figure we could find, and",
+    "must be given --spec-acceptance-rate explicitly.",
+    "",
+    "acceptance_rate is accepted/drafted -- what every one of these sources",
+    "reports -- and it is a MARGINAL rate: the fraction of draft steps in which a",
+    "given position was accepted, already including the probability of reaching",
+    "it. So the mean accepted length is",
+    "",
+    "    mean_accept_length = 1 + sum(per-position marginals)",
+    "                       = 1 + acceptance_rate * num_speculative_tokens",
+    "",
+    "which reproduces all nine published (rate, length) pairs collected here to",
+    "within 0.01 tokens.",
+    "",
+    "This is NOT Leviathan's per-position alpha (ICML 2023, arXiv:2211.17192),",
+    "which is CONDITIONAL -- position i is reached only if 1..i-1 were accepted --",
+    "and yields the capped-geometric (1 - a^(N+1))/(1 - a). Feeding one of these",
+    "rates into that formula under-predicts the published accept length by 25-30%",
+    "(MiniMax-M3 2.42 against a published 3.0; Qwen 3.51 against 4.89). The",
+    "check that settles the reading: Qwen's published per-position decline of",
+    "95% at p1 to 60% at p5 gives 0.775 read as marginals against a published",
+    "0.779, and 0.621 read as conditionals.",
+    "",
+    "position_acceptance is those marginals per draft position, used by the DECAY",
+    "policy. Only Qwen publishes them; the endpoints are the source's, the",
+    "interior is a linear ramp between them, and its mean reproduces the source's",
+    "own aggregate."
+  ],
+  "models": {
+    "deepseek-ai/DeepSeek-V3.2-Exp": {
+      "method": "mtp",
+      "num_speculative_tokens": 4,
+      "mean_accept_length": 2.55,
+      "acceptance_rate": 0.3875,
+      "source": "GLM-5 technical report (arXiv:2602.15763) Table 2, 'Comparison of accept lengths of DeepSeek-V3.2 and GLM-5', at 4 speculative steps. DeepSeek-V3.2's own report (arXiv:2512.02556) does not discuss speculative decoding; DeepSeek-V3's (arXiv:2412.19437 sec 5.4.3) reports 85-90% for the second token, i.e. the first draft position only."
+    },
+    "zai-org/GLM-5": {
+      "method": "mtp",
+      "num_speculative_tokens": 4,
+      "mean_accept_length": 2.76,
+      "acceptance_rate": 0.44,
+      "source": "GLM-5 technical report (arXiv:2602.15763) Table 2, at 4 speculative steps on the authors' prompt set. GLM-5 shares 3 MTP layers during training to close the training-inference gap DeepSeek-V3's single MTP layer leaves."
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      "method": "eagle3",
+      "num_speculative_tokens": 3,
+      "mean_accept_length": 3.0,
+      "acceptance_rate": 0.67,
+      "source": "vLLM day-0 serving guide for MiniMax-M3 (vllm.ai/blog/2026-06-12-minimax-m3-vllm): 'Speculative acceptance on Sonnet ~67%, mean accept length ~3.0', draft model Inferact/MiniMax-M3-EAGLE3, num_speculative_tokens 3, on B300."
+    },
+    "Qwen/Qwen3.8-27B": {
+      "method": "mtp",
+      "num_speculative_tokens": 5,
+      "mean_accept_length": 4.89,
+      "acceptance_rate": 0.779,
+      "position_acceptance": [
+        0.95,
+        0.8625,
+        0.775,
+        0.6875,
+        0.6
+      ],
+      "source": "vLLM 'Exploring Speculative Decoding in vLLM on AMD GPUs' (vllm.ai/blog/2026-08-23-speculative-decoding-amd-gpus), native MTP on Qwen3.5-27B, GSM8K, N=5: 4.89 mean accept length, 77.9% acceptance, 1.63x. Same family and size as Qwen3.8-27B, which publishes no figure of its own. position_acceptance takes the source's reported decline from 95% at p1 to 60% at p5 and ramps linearly between; read as marginals its mean is 0.775 against the source's own 0.779.",
+      "measured_on": "Qwen/Qwen3.5-27B"
+    }
+  }
+}

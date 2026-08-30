@@ -18,6 +18,7 @@ from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
 from serving.core.utils import config_weight_dtype
+from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
 from serving.core.graph_generator import *
@@ -251,8 +252,58 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
             "enable_attn_offloading": enable_attn_offloading,
             "enable_sub_batch_interleaving": enable_sub_batch_interleaving,
             "enable_block_copy": instance.get("enable_block_copy", args.enable_block_copy),
+            "num_speculative_tokens": instance.get(
+                "num_speculative_tokens", args.num_speculative_tokens),
+            "spec_acceptance_rate": instance.get(
+                "spec_acceptance_rate", args.spec_acceptance_rate),
+            "spec_acceptance_policy": instance.get(
+                "spec_acceptance_policy", args.spec_acceptance_policy),
         })
     return runtime_configs
+
+
+def _build_acceptance_model(model_name, inst_cfg, node_id, instance_id):
+    """The instance's speculative-decoding acceptance model, or None.
+
+    Defaults come from the model's own published measurement
+    (``configs/spec_decode.json``), which is why a model with no published
+    figure has to be given a rate rather than being handed a plausible one:
+    acceptance varies from 0.39 to 0.78 across the four modern families, so
+    there is no defensible generic default.
+    """
+    n = inst_cfg["num_speculative_tokens"]
+    rate = inst_cfg["spec_acceptance_rate"]
+    if not n and rate is None:
+        return None
+
+    published = published_defaults(model_name) or {}
+    if n in (None, 0, -1):
+        n = published.get("num_speculative_tokens", 0)
+    if rate is None:
+        rate = published.get("acceptance_rate")
+    if not n:
+        return None
+    if rate is None:
+        raise ValueError(
+            f"speculative decoding requested for {model_name!r}, which has no "
+            f"published acceptance rate in configs/spec_decode.json. Pass "
+            f"--spec-acceptance-rate (accepted/drafted) rather than letting the "
+            f"simulator invent one."
+        )
+    model = AcceptanceModel(
+        num_speculative_tokens=n,
+        acceptance_rate=rate,
+        position_acceptance=published.get("position_acceptance"),
+        policy=inst_cfg["spec_acceptance_policy"],
+        node_id=node_id,
+        instance_id=instance_id,
+    )
+    model.logger.info(
+        "Speculative decoding: N=%d, acceptance %.3f (%s), mean accept length %.2f%s",
+        model.N, model.rate, model.policy, model.mean_accept_length(),
+        "" if inst_cfg["spec_acceptance_rate"] is not None else " [published]",
+    )
+    return model
 
 
 def main():
@@ -284,6 +335,25 @@ def main():
                         help='model weight data type (vLLM-style). When omitted, defaults to the model config\'s '
                         '``torch_dtype`` (falling back to bfloat16). Overrides only take effect if the profiler '
                         'produced matching data under perf/<hw>/<model>/<variant>/tp<N>/')
+    parser.add_argument('--num-speculative-tokens', type=int, default=0,
+                        dest='num_speculative_tokens',
+                        help='speculative decoding draft length N (vLLM\'s num_speculative_tokens). '
+                        '0 (default) disables it. Omit --spec-acceptance-rate to take the model\'s '
+                        'own published N and acceptance from configs/spec_decode.json; pass -1 to '
+                        'use that N explicitly. Override per instance with "num_speculative_tokens"')
+    parser.add_argument('--spec-acceptance-rate', type=float, default=None,
+                        dest='spec_acceptance_rate',
+                        help='fraction of drafted tokens the target model accepts, so the mean '
+                        'accepted length is 1 + rate * N. This is the marginal rate every '
+                        'published source reports, not Leviathan\'s conditional alpha -- see '
+                        'serving/core/spec_decode.py. Defaults to the model\'s published value; '
+                        'a model with no published value must be given one')
+    parser.add_argument('--spec-acceptance-policy', type=str,
+                        choices=['FIXED', 'DECAY', 'CUSTOM'], default='FIXED',
+                        dest='spec_acceptance_policy',
+                        help='how the accepted count is drawn: FIXED (default, every draft '
+                        'position at the pooled rate), DECAY (per-position rates, which fall with '
+                        'draft position -- same mean, different spread), CUSTOM (user-defined)')
     parser.add_argument('--request-routing-policy', type=str, choices=['LOAD', 'RR', 'RAND', 'CUSTOM'], default='LOAD',
                         help='request routing policy across instances: LOAD (vLLM-style weighted least-loaded, default), '
                         'RR (round-robin), RAND (random), CUSTOM (user-defined)')
@@ -547,6 +617,8 @@ def main():
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
             npu_memory_utilization=inst_cfg["npu_memory_utilization"],
             reserve_full_isl=inst_cfg["reserve_full_isl"],
+            acceptance_model=_build_acceptance_model(
+                instance["model_name"], inst_cfg, instance["node_id"], instance_id),
         ))
 
     # The derived KV capacity, not the utilization fraction, is what decides
