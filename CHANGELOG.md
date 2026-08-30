@@ -609,6 +609,39 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **Every dtype is read from the model config; none is an input any more.**
+  A model carries five cache dtypes -- weights, KV cache, mamba conv state,
+  mamba recurrent state, sparse-indexer side cache -- and they are decided in
+  four different places, so a flag per dtype is both unusable and unfaithful:
+  the checkpoint already says what it is, and overriding it describes a model
+  nobody can serve. `memory_model.cache_dtype_bytes()` is the single table.
+  Four of the five rules are vLLM's verbatim, checked against its source:
+  - **KV cache** -- `quantization_config.kv_cache_scheme` (compressed-tensors)
+    or `kv_cache_quant_algo` (ModelOpt) promotes the cache to fp8, which is
+    exactly what `attention.py:281` does when the flag is `auto`, its default.
+    vLLM's own source states the direction: *"kv cache dtype should be
+    specified in the FP8 checkpoint config and become the 'auto' behavior"*
+  - **mamba recurrent state** falls back to the **conv** dtype, not the model
+    dtype (`mamba_utils.py::_mamba_state_dtype`), and picks up the HF field via
+    `models/config.py::Qwen3_5ForConditionalGenerationConfig`. Qwen3.8-27B
+    declares `mamba_ssm_dtype: float32`, so its recurrent state is 4 bytes
+    against the conv state's 2 -- and it is the large half, 786,432 elements
+    per layer against 30,720. Sizing it at the model dtype understated state
+    memory by nearly half: 78.4 -> 153.9 MB per sequence, 75 -> 147 state
+    blocks per request
+  - **sparse-indexer side cache** is fixed by the model and follows neither:
+    DeepSeek/GLM build `DeepseekV32IndexerCache` with `dtype=torch.uint8`, and
+    MiniMax-M3's indexer asks for `resolve_indexer_kv_dtype("bf16")`. M3's had
+    been following the main KV dtype, which understated an fp8-KV run's cache
+    by 10% (68,736 against 76,032 bytes/token over 60 layers)
+  - the **weight** row is deliberately *not* vLLM's `model_config.dtype`: it is
+    the profiler's variant folder name, which has to encode quantization or a
+    bf16 and an fp8 bundle collide. vLLM calls DeepSeek-V3.2 bfloat16 and keeps
+    fp8 in the quant method
+  `resolve_variant(model_config)` is now a pure function of the config and
+  takes no dtype argument. To simulate another precision, profile it: the
+  profiler's `--variant` / `--dtype` / `--kv-cache-dtype` still write a
+  separate bundle, and the simulator reads the one the checkpoint names
 - **The profiler works out how many layers to instantiate**, instead of always
   shrinking to one. `profiler/core/stack.py` resolves the per-layer block
   composition from the checkpoint's config and shrinks to the smallest
@@ -804,6 +837,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   it; and `LOAD` scoring (`waiting * 4 + running`) is documented
 
 ### Removed
+- **`--dtype` and `--kv-cache-dtype` on `python -m serving`**, along with the
+  cluster-config `dtype` / `kv_cache_dtype` per-instance overrides. Both are
+  read from the model config now (see Changed). `python -m bench` keeps its own
+  flags: those drive real vLLM, which does have them. No committed scenario or
+  bench example changes -- vLLM recorded `bfloat16` / `auto` for all four
+  examples, which is what the configs derive
 - `bench/bench-rtx4090.sh` -- a copy of `bench/bench.sh` differing only in defaults that
   are already environment overrides there. Now an example in that script's header
 - `host_metadata.txt` and `scripts/capture-host-metadata.sh`. The script wrote three

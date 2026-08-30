@@ -148,6 +148,33 @@ def config_weight_dtype(config):
     return config.get("torch_dtype") or config.get("dtype")
 
 
+def config_kv_cache_dtype(config):
+    """The KV cache dtype a checkpoint declares: ``"fp8"`` or ``"auto"``.
+
+    Read from the checkpoint rather than taken as a flag, which is the
+    direction vLLM states for itself -- ``attention.py`` carries the TODO "kv
+    cache dtype should be specified in the FP8 checkpoint config and become the
+    'auto' behavior" -- and already half-implements: at
+    ``attention.py:281`` a declared ``kv_cache_scheme`` promotes the cache to
+    fp8 whenever the flag is ``auto``, which is its default.
+
+    Two spellings, because the quantizers disagree. Compressed-tensors writes
+    ``kv_cache_scheme``, a dict; ModelOpt writes ``kv_cache_quant_algo``, a
+    string (``modelopt.py:287`` and ``:300``, which maps a
+    ``type: float, num_bits: 8`` scheme onto the string form). A weight-only
+    quantized checkpoint -- DeepSeek-V3.2-Exp is one -- declares neither and
+    keeps an unquantized KV cache, so fp8 *weights* do not imply an fp8 cache.
+    """
+    quant = config.get("quantization_config")
+    if not isinstance(quant, dict):
+        return "auto"
+    if isinstance(quant.get("kv_cache_scheme"), dict):
+        return "fp8"
+    if isinstance(quant.get("kv_cache_quant_algo"), str):
+        return "fp8"
+    return "auto"
+
+
 
 # ======================================================================
 # MoE expert count

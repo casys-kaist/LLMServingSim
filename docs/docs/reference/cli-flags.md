@@ -51,13 +51,29 @@ matching runtime knobs per `instances[i]`; see
 
 ## Precision
 
+**There are no precision flags.** Every dtype is read from the model config,
+because that is where each one is actually decided:
+
+| Cache | Config field | Rule |
+| --- | --- | --- |
+| Weights | `quantization_config.quant_method`, then `torch_dtype` / `dtype` | On a quantized checkpoint the dtype fields describe the *activation* dtype, so DeepSeek-V3.2 (`quant_method: fp8`, `torch_dtype: bfloat16`) is fp8, not bf16. Same rule as the profiler's, because it also picks which `perf/.../<variant>/` folder is read |
+| KV cache | `quantization_config.kv_cache_scheme` (compressed-tensors) or `kv_cache_quant_algo` (ModelOpt) | Either one present means fp8, otherwise the weight dtype. This is vLLM's own promotion at `attention.py:281`, and the direction its source states for itself: *"kv cache dtype should be specified in the FP8 checkpoint config and become the 'auto' behavior"* |
+| Mamba conv state | `mamba_cache_dtype` | `auto` falls back to the weight dtype |
+| Mamba recurrent state | `mamba_ssm_dtype` | `auto` falls back to the conv dtype. Qwen3.8-27B declares `float32`, so its recurrent state is 4 bytes where its conv state is 2 |
+| Sparse-indexer side cache | none — fixed by the model | DeepSeek/GLM store fp8 keys plus fp32 scales as uint8; MiniMax-M3 stores bf16. Neither follows the KV cache dtype |
+
+A dtype is a property of the checkpoint, and once a model carries five of
+them a flag per dtype is both unusable and unfaithful — it describes a model
+nobody can serve. To simulate a different precision, profile it: the
+profiler's `--dtype` / `--kv-cache-dtype` / `--variant` write a separate
+`perf/.../<variant>/` bundle, and the simulator reads the one the checkpoint
+names.
+
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--dtype` **(per-instance)** | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | the model config's declared weight dtype, fallback `bfloat16` | Model weight dtype. The default reads `quantization_config.quant_method` first, then `torch_dtype` / `dtype` — on a quantized checkpoint the dtype fields describe the *activation* dtype, so DeepSeek-V3.2 (`quant_method: fp8`, `torch_dtype: bfloat16`) defaults to `fp8`. Same rule as the profiler's, because it also picks which `perf/.../<variant>/` folder is read |
 | `--num-speculative-tokens` **(per-instance)** | int | `0` (off) | Draft length N, vLLM's own flag name. Omit `--spec-acceptance-rate` to take the model's published N and acceptance from `configs/spec_decode.json` |
 | `--spec-acceptance-rate` **(per-instance)** | float | the model's published value | Fraction of drafted tokens the target accepts, so the mean accept length is `1 + rate * N`. **Marginal**, which is what every published source reports — not Leviathan's conditional per-position alpha. A model with no published figure must be given one |
 | `--spec-acceptance-policy` **(per-instance)** | `FIXED` / `DECAY` / `CUSTOM` | `FIXED` | How the accepted count is drawn. `DECAY` uses per-position rates, which fall with draft position — same mean, different spread |
-| `--kv-cache-dtype` **(per-instance)** | `auto` / `fp8` | `auto` (inherits dtype) | KV cache dtype. `fp8` halves KV memory and selects a `*-kvfp8` profile variant |
 
 ## Prefix caching and offloading
 
@@ -111,7 +127,7 @@ removed after a successful simulation by default.
 | Prefix caching | `--enable-prefix-caching` (default on), `--enable-prefix-sharing`, `--prefix-storage` |
 | Chunked prefill | `--enable-chunked-prefill` (default on), `--long-prefill-token-threshold` |
 | PIM attention offload | `--enable-attn-offloading` (cluster config sets `pim_config`) |
-| FP8 KV cache | `--kv-cache-dtype fp8` |
+| FP8 KV cache | (model config `quantization_config.kv_cache_scheme`) |
 | ns3 backend | `--network-backend ns3` |
 | Heterogeneous instances in one run | (cluster config per-instance overrides; see the tip above) |
 

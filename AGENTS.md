@@ -473,17 +473,17 @@ Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as
 `../profiler/perf/...` from the `astra-sim/` working directory).
 
-Variant resolution: `trace_generator.resolve_variant(dtype, kv_cache_dtype,
-model_config)` mirrors the profiler's `effective_variant` — weight dtype is
-the CLI value or `torch_dtype` from the model config (default `bfloat16`),
-KV dtype appends a `-kv<short>` suffix when not `auto`. Runtime lookups verify
-the resulting folder exists; a mismatch raises a clear `FileNotFoundError`
-pointing at the missing variant.
-
-FP8 KV cache (`--kv-cache-dtype fp8`) resolves to a `<dtype>-kvfp8` variant
-folder (e.g. `bf16-kvfp8`). The `kv_cache_dtype` parameter is threaded through
-`generate_trace` → `resolve_variant` → `_load_perf_db`. In `memory_model.py`,
-`kv_fp` is 1 byte for fp8 (vs `fp` for others), halving KV cache memory usage.
+Variant resolution: `trace_generator.resolve_variant(model_config)` mirrors
+the profiler's `effective_variant`, and is a **pure function of the model
+config** — it takes no dtype argument, because the simulator has no dtype
+input. Weight dtype is `utils.config_weight_dtype` (`quantization_config`
+first, then `torch_dtype` / `dtype`), KV dtype is `utils.config_kv_cache_dtype`
+and appends a `-kv<short>` suffix when not `auto`. Runtime lookups verify the
+resulting folder exists; a miss raises a clear `FileNotFoundError` pointing at
+the missing variant. The profiler can still *write* other variants for the same
+model (`--variant`, `--dtype`, `--kv-cache-dtype`), which is how a deliberate
+second precision is measured and kept beside the first; the simulator just
+never asks for one.
 
 Runtime vs. profiled warnings: on first load of a `(hardware, model, variant)`,
 the simulator compares the CLI's `--max-num-batched-tokens` and `--max-num-seqs`
@@ -620,9 +620,32 @@ interpolating: query length changes the kernel's tile shape, not just its size,
 and unlike the other four axes there is no measurement saying a value between
 two profiled ones lies between their costs.
 
+### Dtypes come from the model config, never from an input
+There is no `--dtype` and no `--kv-cache-dtype`, and no cluster-config
+`dtype` / `kv_cache_dtype` either. A model carries **five** cache dtypes and
+they are decided in four different places, so a flag per dtype is both
+unusable and unfaithful — the checkpoint already says what it is, and saying
+otherwise describes a model nobody can serve. `memory_model.cache_dtype_bytes`
+holds the whole table; every rule below is vLLM's, verified against its source:
+
+| Cache | Source | vLLM |
+|-------|--------|------|
+| weights | `quantization_config.quant_method`, then `torch_dtype` / `dtype` | on a quantized checkpoint the dtype fields are the *activation* dtype |
+| KV cache | `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` → fp8 | `attention.py:281` promotes exactly this when the flag is `auto` |
+| mamba conv state | `mamba_cache_dtype`, `auto` → weight dtype | `mamba_utils.py::_mamba_state_dtype` |
+| mamba recurrent state | `mamba_ssm_dtype`, `auto` → **conv** dtype (not the weight dtype) | same, plus `models/config.py::Qwen3_5ForConditionalGenerationConfig` bridging the HF field |
+| sparse-indexer side cache | fixed by the model | DeepSeek/GLM `torch.uint8`, M3 `resolve_indexer_kv_dtype("bf16")` — neither follows the KV dtype |
+
+Note the weight row is the profiler's **variant folder name**, not vLLM's
+`model_config.dtype`: vLLM calls DeepSeek-V3.2 bfloat16 and keeps fp8 in the
+quant method, while the folder has to encode the quantization or two bundles
+collide. That divergence is deliberate; the other four match vLLM exactly.
+
+To simulate a different precision, **profile it** — the profiler's flags write
+a separate bundle and the simulator reads the one the checkpoint names.
+
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
-- `--dtype` (`float16`, `bfloat16`, `float32`, `int8`) — model weight precision
 - `--skip-prefill` — skip the prefill phase (decode only)
 - `--request-routing-policy` (`LOAD`, `RR`, `RAND`, `CUSTOM`) — request routing across instances
 - `--expert-routing-policy` (`BALANCED`, `RR`, `RAND`, `CUSTOM`) — expert token routing for MoE

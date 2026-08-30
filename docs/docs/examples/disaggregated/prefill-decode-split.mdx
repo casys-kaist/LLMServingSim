@@ -73,7 +73,7 @@ token. The KV-cache transfer cost is modeled through the inter-link.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_pd_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/pd_split_run.csv' \
   --log-interval 1.0

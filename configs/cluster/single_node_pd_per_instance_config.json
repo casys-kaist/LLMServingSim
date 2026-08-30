@@ -25,9 +25,7 @@
                     "max_num_batched_tokens": 8192,
                     "long_prefill_token_threshold": 2048,
                     "enable_chunked_prefill": true,
-                    "block_size": 16,
-                    "dtype": "bfloat16",
-                    "kv_cache_dtype": "auto"
+                    "block_size": 16
                 },
                 {
                     "model_name": "meta-llama/Llama-3.1-8B",
@@ -42,9 +40,7 @@
                     "max_num_seqs": 256,
                     "max_num_batched_tokens": 256,
                     "enable_chunked_prefill": true,
-                    "block_size": 16,
-                    "dtype": "bfloat16",
-                    "kv_cache_dtype": "auto"
+                    "block_size": 16
                 }
             ]
         }
