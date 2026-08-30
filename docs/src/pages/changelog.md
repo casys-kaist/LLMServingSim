@@ -612,6 +612,36 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **Linear-attention state is counted in pages, and prefix caching doubles
+  it.** vLLM sizes the attention block so one attention page covers one mamba
+  page and then pads the mamba page up to it, so a layer's whole recurrent
+  state is exactly one page (Qwen3.8-27B: 3,207,168 B against 3,211,264 at
+  `block_size 784`, which is how 784 gets chosen). How many pages per layer is
+  `MambaSpec.max_memory_usage_bytes`: `1 + N` with prefix caching off,
+  `2 + N` with it on -- one page for the state being written this step, one for
+  the last checkpoint at a block boundary. The simulator had been charging one
+  page per layer, i.e. the prefix-caching-off figure, understating the default
+  configuration by exactly 2x: Qwen3.8-27B goes from 3 to 6 pool blocks per
+  request. `N = num_speculative_tokens` adds a page each, and also widens the
+  conv state itself (`conv_kernel_size - 1 + N`).
+- **Prefill chunks are block-aligned on a hybrid with prefix caching**, which
+  is vLLM's `Scheduler._mamba_block_aligned_split`. A mamba state slot holds
+  the state after exactly `(p + 1) * block_size` tokens and state is written at
+  chunk ends, so a chunk floors to a block boundary (the prompt's last chunk
+  exempted), a mid-block chunk stops at the next boundary, and no chunk runs
+  past the last cacheable position. With `block_size 784` and a 2048 budget a
+  chunk is 784 or 1568, never 2048. A zero-token result is vLLM's "insufficient
+  budget for a block-aligned chunk", not the scheduler deadlock the
+  `num_new <= 0` guard catches. Differential-tested against vLLM's rule over
+  14,310 (block size, budget, threshold, prompt, position, chunk)
+  combinations: 0 mismatches.
+- **The drafter's KV cache is charged.** An MTP module wraps a real decoder
+  layer, so it publishes a KV cache spec and vLLM allocates for it: +1.6%
+  bytes/token on DeepSeek-V3.2's one module, +11.7% on MiniMax-M3's seven,
+  +6.2% on Qwen3.8-27B. Its attention is full attention whatever the target's
+  layers are, which is explicit in Qwen3.5's MTP
+  (`layer_type="full_attention"`), so a hybrid's drafter carries no recurrent
+  state.
 - **Group-limited expert routing** (DeepSeek-V3/V3.2's `n_group` /
   `topk_group`, read off the checkpoint the way `deepseek_v2.py` reads them).
   A token's k experts are drawn only from `topk_group` of `n_group` groups, so
@@ -859,6 +889,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   it; and `LOAD` scoring (`waiting * 4 + running`) is documented
 
 ### Removed
+- **Speculative decoding on a model with MTP modules now refuses** until its
+  architecture catalog has an `mtp:` block to price the drafter from. vLLM runs
+  the drafter N times per step (once, then `num_speculative_tokens - 1` more),
+  each a decode-shaped forward over a norm pair, an `eh_proj`, a full decoder
+  layer, `lm_head` and the sampler. Charging zero for that reports a speedup no
+  engine can deliver, so it is refused the way `calculate_sizes` refuses a
+  layer name it has no formula for. The catalog block has to be written from a
+  live profile dump, so it lands with the profiling work. A model with **no**
+  MTP modules drafts externally and is warned about rather than refused: the
+  drafter is a serving choice there, not a checkpoint property.
 - **`--dtype` and `--kv-cache-dtype` on `python -m serving`**, along with the
   cluster-config `dtype` / `kv_cache_dtype` per-instance overrides. Both are
   read from the model config now (see Changed). `python -m bench` keeps its own

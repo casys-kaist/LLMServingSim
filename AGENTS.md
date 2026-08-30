@@ -620,6 +620,63 @@ interpolating: query length changes the kernel's tile shape, not just its size,
 and unlike the other four axes there is no measurement saying a value between
 two profiled ones lies between their costs.
 
+### Linear-attention state, prefix caching and the drafter
+Three things a hybrid or speculative run costs that a per-token KV model does
+not see. All three are vLLM's rules, and none is guesswork.
+
+**State pages, not state bytes.** vLLM picks the attention block size so one
+attention page covers one mamba page — `platforms/interface.py`:
+`attn_block_size = alignment * cdiv(mamba_page_size, alignment *
+attn_page_size_1_token)` — then sets `mamba_page_size_padded = attn_page_size`,
+so a layer's whole recurrent state occupies exactly one page and the padding is
+really allocated. Qwen3.8-27B: mamba page 3,207,168 B against an attention page
+of 3,211,264 at `block_size 784`, which is how 784 gets chosen. How many pages
+per layer is `MambaSpec.max_memory_usage_bytes`:
+
+| cache mode | pages per mamba layer | when |
+|---|---|---|
+| `none` | `1 + N` | prefix caching off |
+| `align` | `2 + N` | prefix caching on — **the default** |
+| `all` | `cdiv(max_model_len, block_size)` | opt-in, not modelled |
+
+`align` holds two because one page carries the state being written this step
+and the other the last checkpoint at a block boundary, which is what a later
+prefix hit resumes from. `N` is `num_speculative_tokens`. Charging one page per
+layer understates a prefix-caching run by exactly 2x. Speculative decoding also
+**widens the conv state itself** (`conv_kernel_size - 1 + N`), which is the
+small half and moves ~2% at N=4.
+
+**Chunk ends must be block-aligned under `align`.** State slot *p* holds the
+state after exactly `(p + 1) * block_size` tokens and state is written at chunk
+ends, so `Scheduler._mamba_block_aligned_split` floors a prefill chunk to a
+block boundary (exempting the prompt's last chunk), stops a mid-block chunk at
+the next boundary, and never runs past the last block-aligned position. It can
+legitimately return **0** — vLLM's "insufficient budget for a block-aligned
+chunk" — and that is not the scheduler deadlock the `num_new <= 0` guard
+catches: the split only floors to zero when `block_size <= max_prefill_tokens`,
+so a fresh step's budget does cover a block. With `block_size 784` and a 2048
+budget a chunk is 784 or 1568, never 2048, so this changes batch composition on
+every hybrid run.
+
+**The drafter is not free.** vLLM runs it **N times per step** — once, then
+`num_speculative_tokens - 1` more in `llm_base_proposer.py`'s loop — each a
+decode-shaped forward at `max_query_len = 1`. A model that drafts with itself
+runs an MTP module per pass: two norms, an `eh_proj`, one full decoder layer of
+its own family (`DeepseekV2DecoderLayer`, `Glm4DecoderLayer`,
+`MiniMaxM3DecoderLayer`, `Qwen3_5DecoderLayer`), then a norm, `lm_head` and the
+sampler. The block is **full attention** whatever the target's layers are —
+Qwen3.5's MTP passes `layer_type="full_attention"` explicitly — so a hybrid's
+drafter carries no recurrent state, but it does carry a KV cache: `+1.6%`
+bytes/token on DeepSeek-V3.2's one module, `+11.7%` on MiniMax-M3's seven,
+`+6.2%` on Qwen3.8 (one more full-attention layer out of its 16).
+
+Draft **time** is not charged yet, and `_require_drafter_cost` **refuses** a
+speculative run on a model with MTP modules until its catalog has an `mtp:`
+block, rather than reporting a speedup no engine can deliver. That block has to
+come from a live profile dump like every other one. A model with no MTP modules
+drafts externally (a second model, or n-gram); that is a serving choice rather
+than a checkpoint property, so it warns instead of refusing.
+
 ### Dtypes come from the model config, never from an input
 There is no `--dtype` and no `--kv-cache-dtype`, and no cluster-config
 `dtype` / `kv_cache_dtype` either. A model carries **five** cache dtypes and

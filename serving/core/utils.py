@@ -148,6 +148,35 @@ def config_weight_dtype(config):
     return config.get("torch_dtype") or config.get("dtype")
 
 
+# ======================================================================
+# Multi-token prediction (the drafter)
+# ======================================================================
+
+# One fact under three names again: DeepSeek and GLM write
+# ``num_nextn_predict_layers``, MiniMax-M3 ``num_mtp_modules`` (and *also* the
+# DeepSeek name, set to 1, which is not the module count), Qwen3.5/3.8
+# ``mtp_num_hidden_layers``. Most specific spelling first, so M3's 7 wins over
+# its own vestigial 1.
+_MTP_LAYER_KEYS = ("num_mtp_modules", "mtp_num_hidden_layers",
+                   "num_nextn_predict_layers")
+
+
+def num_mtp_layers(config):
+    """Decoder layers the model's own drafter runs, or 0 if it has none.
+
+    A model with MTP modules drafts with itself; one without drafts with a
+    separate model or with n-gram, which is a serving choice rather than a
+    property of the checkpoint and is not described here.
+    """
+    for key in _MTP_LAYER_KEYS:
+        if key in config:
+            try:
+                return max(int(config[key] or 0), 0)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
 def config_kv_cache_dtype(config):
     """The KV cache dtype a checkpoint declares: ``"fp8"`` or ``"auto"``.
 
