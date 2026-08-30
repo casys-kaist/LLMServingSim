@@ -512,6 +512,7 @@ def persist_meta(
     arch_path: Path,
     engine_kwargs_used: dict[str, Any],
     variant_root: Path,
+    limits: Any = None,
 ) -> None:
     """Write ``variant_root/meta.yaml`` describing the profile session.
 
@@ -556,6 +557,21 @@ def persist_meta(
         "variant": args.effective_variant,
         "tp_degrees": args.tp_degrees,
         "engine_effective": _stringify(engine_effective),
+        # What the engine actually SETTLED ON, which is not always what was
+        # asked for. vLLM derives the KV block size from the backend's
+        # ``get_supported_kernel_block_sizes`` and from hybrid page
+        # unification: MiniMax-M3's sparse backend accepts only 128, and a
+        # gated-DeltaNet stack enlarges the attention block until an attention
+        # page costs at least as many bytes as a mamba state page (784 on
+        # Qwen3.8-27B, against the 16 requested). The simulator reads this
+        # rather than reimplementing vLLM's backend selection, and a run whose
+        # --block-size disagrees is simulating a configuration vLLM cannot
+        # serve.
+        "engine_resolved": _stringify({
+            "block_size": getattr(limits, "block_size", None),
+            "max_model_len": getattr(limits, "max_model_len", None),
+            "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
+        }) if limits is not None else None,
         # Attention-grid shape knobs + compact spec of the values the
         # sweep actually visited. Simulator uses the knobs to recognise
         # which density produced the CSVs; humans get the axes too.
