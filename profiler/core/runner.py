@@ -166,6 +166,7 @@ def run_full(
     log.banner(args, variant_root)
 
     last_engine_kwargs: dict[str, Any] | None = None
+    last_limits = None
 
     for tp in args.tp_degrees:
         # Skip TPs with nothing non-tp_stable to do. The post-pass
@@ -179,6 +180,7 @@ def run_full(
             llm, engine_kwargs, tmpdir = spin_up(args, tp)
             last_engine_kwargs = engine_kwargs
             limits = probe_limits(llm, args)
+            last_limits = limits
 
         # Visibility: what the live engine actually allocated for
         # this (tp, 1-layer-shrunk) configuration. Drives every
@@ -227,7 +229,7 @@ def run_full(
 
     if last_engine_kwargs is None:
         last_engine_kwargs = {}
-    persist_meta(args, arch_path, last_engine_kwargs, variant_root)
+    persist_meta(args, arch_path, last_engine_kwargs, variant_root, last_limits)
 
     log.done(variant_root)
 
@@ -288,7 +290,7 @@ def run_slice(
         with log.stage("replicating tp_stable layers"):
             replicate_tp_stable(variant_root, arch, args.tp_degrees)
 
-    persist_meta(args, arch_path, engine_kwargs, variant_root)
+    persist_meta(args, arch_path, engine_kwargs, variant_root, limits)
 
     log.done(variant_root)
 
