@@ -1,8 +1,9 @@
 import os
 from .utils import (
     get_architecture, get_config, get_layer_stack, is_moe as _is_moe,
-    num_experts as _num_experts,
+    num_experts as _num_experts, num_mtp_layers,
 )
+from profiler.core.stack import LayerSpec
 from .block_pool import Device, BlockPool, PrefixCacheStats
 from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
 from .logger import get_logger
@@ -29,7 +30,7 @@ class MemoryModel():
     an allocation that cannot be satisfied says so in the call that asks.
     """
 
-    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', npu_memory_utilization=1.0):
+    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', npu_memory_utilization=1.0, num_speculative_tokens=0):
         self.model = model
         self.node_id = node_id
         self.instance_id = instance_id
@@ -47,6 +48,7 @@ class MemoryModel():
         self.enable_prefix_sharing = enable_prefix_sharing
         self.prefix_storage = prefix_storage
         self.npu_memory_utilization = npu_memory_utilization
+        self.num_speculative_tokens = int(num_speculative_tokens or 0)
 
         self.config = get_config(model)
         self.n_embd = self.config['hidden_size']
@@ -131,22 +133,46 @@ class MemoryModel():
         0 for every model whose layers all cache per token, which is every
         family here except the gated-DeltaNet hybrids. For those the state does
         not grow with the sequence but is held for its whole life, so it bounds
-        **concurrency** the way a KV cache bounds context -- 78.4 MB per
-        sequence on Qwen3.8-27B, which at 128 concurrent requests is 10 GB that
-        would otherwise be invisible.
+        **concurrency** the way a KV cache bounds context.
 
-        Rounded up to whole blocks because that is the pool's unit, and it is
-        what vLLM does too: it pads the mamba page up to a KV block's page so
-        every group shares a page size, then hands each request one.
+        Counted in **pages**, not in bytes, because that is what vLLM
+        allocates. It picks the attention block size so that one attention page
+        is the smallest aligned multiple that covers one mamba page
+        (``platforms/interface.py``: ``attn_block_size = alignment *
+        cdiv(mamba_page_size, alignment * attn_page_size_1_token)``), then sets
+        ``mamba_page_size_padded = attn_page_size`` -- so a layer's whole state
+        occupies exactly one page and the padding is really allocated. On
+        Qwen3.8-27B the mamba page is 3,207,168 bytes against an attention page
+        of 3,211,264 at ``block_size 784``, which is how 784 gets chosen.
+
+        How many pages per layer is ``MambaSpec.max_memory_usage_bytes``:
+
+        ============  =====================  ===================================
+        cache mode    pages per mamba layer  when
+        ============  =====================  ===================================
+        ``none``      ``1 + N``              prefix caching off
+        ``align``     ``2 + N``              prefix caching on -- **the default**
+        ``all``       ``cdiv(max_len, bs)``  opt-in, not modelled
+        ============  =====================  ===================================
+
+        ``align`` holds two because one page carries the state being written
+        this step and the other the last checkpoint committed at a block
+        boundary, which is what a later prefix hit resumes from. ``N`` is
+        ``num_speculative_tokens`` (``MambaSpec.num_speculative_blocks``), one
+        extra page per draft token.
+
+        Charging one page per layer -- the ``none`` figure -- understated a
+        prefix-caching run by exactly 2x.
         """
-        per_seq = 0
         stack = get_layer_stack(self.model)
-        if stack:
-            per_seq = sum(
-                state_bytes_per_sequence(self.config, self.fp, spec)
-                for spec in stack
-            )
-        if not per_seq:
+        if not stack:
+            return 0
+        mamba_layers = sum(
+            1 for spec in stack
+            if state_bytes_per_sequence(
+                self.config, self.fp, spec, self.num_speculative_tokens)
+        )
+        if not mamba_layers:
             return 0
         if self._npu_bytes_per_block <= 0:
             raise RuntimeError(
@@ -155,11 +181,20 @@ class MemoryModel():
                 f"the state against. A model with only linear-attention layers "
                 f"needs its own pool unit."
             )
-        per_rank = per_seq // max(self.num_npus, 1)
-        blocks = -(-per_rank // self._npu_bytes_per_block)
+        # One pool block is one block-worth of KV for **every** layer this rank
+        # holds, so it is that many attention pages -- and a mamba page is one
+        # of them.
+        attn_layers = len(stack) - mamba_layers
+        pages_per_block = max(attn_layers, 1)
+        pages_per_layer = (2 if self.enable_prefix_caching else 1) \
+            + self.num_speculative_tokens
+        pages = mamba_layers * pages_per_layer
+        blocks = -(-pages // (pages_per_block * max(self.pp_size, 1)))
         self.logger.info(
-            "NPU: per-sequence layer state %dMB/rank -> %d block(s) per request",
-            per_rank // MB_TO_BYTE, blocks,
+            "NPU: %d mamba layer(s) x %d page(s) = %d page(s) per request "
+            "(%s mode) -> %d block(s)",
+            mamba_layers, pages_per_layer, pages,
+            "align" if self.enable_prefix_caching else "none", blocks,
         )
         return blocks
 
@@ -302,6 +337,7 @@ class MemoryModel():
                 kv_bytes_per_token_per_layer(config, kv_fp, spec)
                 for spec in stack
             ]
+            parts += self._drafter_kv_parts(stack)
             # Sharded caches divide across every NPU of the instance; a
             # replicated one is the same bytes on each, so it must not.
             sharded = sum(a for a, _ in parts)
@@ -310,6 +346,40 @@ class MemoryModel():
                 sharded // self.num_npus + replicated
             )
         return self._kv_bytes_per_token_per_rank * seq
+
+    def _drafter_kv_parts(self, stack):
+        """KV the model's own drafter layers cache, one entry per layer.
+
+        An MTP module wraps a real decoder layer -- ``DeepseekV2DecoderLayer``,
+        ``Glm4DecoderLayer``, ``MiniMaxM3DecoderLayer``, ``Qwen3_5DecoderLayer``
+        are the four -- so it publishes a KV cache spec of its own and vLLM
+        allocates for it. Ignoring that undercounts by
+        ``num_mtp_layers / num_hidden_layers``: 1.6% on DeepSeek-V3.2's one
+        module, 11.7% on MiniMax-M3's seven.
+
+        The drafter's attention is **full attention** whatever the target's
+        layer is -- Qwen3.5's MTP builds its block with
+        ``layer_type="full_attention"`` explicitly, which is what stops a
+        hybrid's drafter from carrying a recurrent state. Everything else about
+        the block follows the target's last layer, which is the only layer
+        whose composition the MTP module is documented to mirror.
+
+        Empty unless speculative decoding is on: with no drafts to propose the
+        module is never built.
+        """
+        if not self.num_speculative_tokens:
+            return []
+        mtp_layers = num_mtp_layers(self.config)
+        if not mtp_layers or not stack:
+            return []
+        base = stack[-1]
+        drafter = (
+            LayerSpec(attn='full_attention', mlp=base.mlp, sparse=base.sparse)
+            if base is not None else None
+        )
+        return [
+            kv_bytes_per_token_per_layer(self.config, self.kv_fp, drafter)
+        ] * mtp_layers
 
     def get_total_kv(self, req):
         """Bytes of KV a request's whole computed context occupies, per rank.
@@ -632,7 +702,7 @@ def _ssm_state_bytes(config, fp):
     return cache_dtype_bytes(config, fp, fp)["mamba_ssm"]
 
 
-def state_bytes_per_sequence(config, fp, spec=None):
+def state_bytes_per_sequence(config, fp, spec=None, num_spec_tokens=0):
     """Fixed per-**sequence** state bytes for one decoder layer, cluster-wide.
 
     Linear attention keeps no per-token cache. Gated DeltaNet holds a rolling
@@ -644,8 +714,13 @@ def state_bytes_per_sequence(config, fp, spec=None):
     Shapes from vLLM's ``MambaStateShapeCalculator.gated_delta_net_state_shape``::
 
         conv_dim   = 2 * key_head_dim * num_key_heads + value_head_dim * num_value_heads
-        conv_state = (conv_dim, conv_kernel_dim - 1)
+        conv_state = (conv_dim, conv_kernel_dim - 1 + num_spec)
         ssm_state  = (num_value_heads, value_head_dim, key_head_dim)
+
+    ``num_spec`` widens the **conv** state only -- a verification step needs
+    the last ``conv_kernel - 1 + N`` inputs to replay any accepted prefix --
+    while the recurrent state stays one checkpoint. It is the smaller half, so
+    this moves ~2% at N=4, but it is vLLM's shape and costs one term.
 
     Both shard across TP ranks, and they do **not** share a dtype -- see
     :func:`_ssm_state_bytes`. On Qwen3.8-27B that is 3.06 MB per sequence per
@@ -665,7 +740,7 @@ def state_bytes_per_sequence(config, fp, spec=None):
     if not (k_heads and v_heads):
         return 0
     conv_dim = 2 * k_heads * k_dim + v_heads * v_dim
-    conv_state = conv_dim * max(conv_kernel - 1, 0)
+    conv_state = conv_dim * max(conv_kernel - 1 + int(num_spec_tokens), 0)
     ssm_state = v_heads * v_dim * k_dim
     # Two dtypes, not one: the conv state follows the model dtype and the
     # recurrent state follows ``mamba_ssm_dtype``. Charging both at the model
