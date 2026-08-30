@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
-from serving.core.utils import config_weight_dtype
+from serving.core.utils import config_weight_dtype, config_kv_cache_dtype
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
@@ -166,24 +166,61 @@ def _iter_raw_instances(cluster_config):
             yield instance
 
 
-def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
-    """The weight dtype for one instance: explicit, else the model's default.
+def _resolve_instance_dtypes(instance, dtype_to_bits):
+    """This instance's ``(weight_dtype, kv_cache_dtype)``, both from the model
+    config.
 
-    The model's default comes from ``utils.config_weight_dtype``, the same rule
-    ``trace_generator.resolve_variant`` and the profiler use. It has to be: the
-    dtype picks both the bytes-per-element and the ``perf/.../<variant>/``
-    folder, and reading the dtype fields alone calls a quantized checkpoint by
-    its *activation* dtype. DeepSeek-V3.2-Exp is FP8 with
-    ``torch_dtype: bfloat16``, so that used to default to bf16 and look for a
-    bundle the profiler had written to ``fp8/``.
+    Neither is an input any more. A dtype is a property of the checkpoint, and
+    once a model carries five of them -- weights, KV cache, mamba conv state,
+    mamba recurrent state, sparse-indexer side cache -- a flag per dtype is
+    both unusable and unfaithful: the checkpoint already says what it is, and
+    saying otherwise describes a model nobody can serve. The three cache dtypes
+    were never flags; these two used to be, and are now read the same way. See
+    ``memory_model.cache_dtype_bytes`` for the whole table.
+
+    Both rules are the profiler's and vLLM's, not ours. ``config_weight_dtype``
+    is what decides which ``perf/.../<variant>/`` folder the profiler *wrote*,
+    so the simulator has to derive it identically or it reads a folder that
+    does not exist -- and it prefers ``quantization_config`` over the dtype
+    fields, which on a quantized checkpoint describe the activations rather
+    than the weights (DeepSeek-V3.2-Exp is FP8 with ``torch_dtype: bfloat16``).
+    ``config_kv_cache_dtype`` follows vLLM's own promotion at
+    ``attention.py:281``.
     """
-    dtype = instance.get("dtype", cli_dtype)
-    if dtype is None:
-        declared = config_weight_dtype(get_config(instance["model_name"]))
-        dtype = declared if declared in dtype_to_bits else "bfloat16"
-    if dtype not in dtype_to_bits:
-        raise ValueError(f"Unsupported dtype '{dtype}' for instance {instance.get('instance_id')}")
-    return dtype
+    config = get_config(instance["model_name"])
+    declared = config_weight_dtype(config)
+    dtype = declared if declared in dtype_to_bits else "bfloat16"
+    return dtype, config_kv_cache_dtype(config)
+
+
+_DEFAULT_BLOCK_SIZE = 16
+
+
+def _resolve_block_size(instance, args):
+    """This instance's KV block size: explicit, else the profiled one, else 16.
+
+    vLLM does not accept a block size, it *derives* one -- from the attention
+    backend's ``get_supported_kernel_block_sizes`` and from hybrid page
+    unification. The profile bundle records what the engine settled on, so
+    reading it back gets the same answer without reimplementing that logic.
+    An explicit value that disagrees is not wrong to allow -- studying a
+    hypothetical block size is a legitimate thing to simulate -- but it is a
+    configuration vLLM cannot serve, so it is said out loud.
+    """
+    explicit = instance.get("block_size", args.block_size)
+    variant = resolve_variant(get_config(instance["model_name"]))
+    profiled = profiled_block_size(instance["hardware"], instance["model_name"], variant)
+    if explicit is None:
+        return profiled or _DEFAULT_BLOCK_SIZE
+    if profiled is not None and explicit != profiled:
+        get_logger("main").warning(
+            "--block-size %d for %s, but the profile records vLLM settling on %d. "
+            "vLLM derives the block size from the attention backend and hybrid page "
+            "unification rather than accepting one, so this simulates a configuration "
+            "it cannot serve.",
+            explicit, instance["model_name"], profiled,
+        )
+    return explicit
 
 
 def _resolve_mem_util(instance, cli_default):
@@ -212,10 +249,7 @@ def _resolve_mem_util(instance, cli_default):
 def _build_instance_runtime_configs(instances, args, dtype_to_bits):
     runtime_configs = []
     for instance_id, instance in enumerate(instances):
-        dtype = _resolve_instance_dtype(instance, args.dtype, dtype_to_bits)
-        kv_cache_dtype = instance.get("kv_cache_dtype", args.kv_cache_dtype)
-        if kv_cache_dtype not in ("auto", "fp8"):
-            raise ValueError(f"Unsupported kv_cache_dtype '{kv_cache_dtype}' for instance {instance_id}")
+        dtype, kv_cache_dtype = _resolve_instance_dtypes(instance, dtype_to_bits)
 
         enable_attn_offloading = instance.get("enable_attn_offloading", args.enable_attn_offloading)
         enable_sub_batch_interleaving = instance.get(
@@ -236,7 +270,7 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
                 instance.get("max_num_batched_tokens", args.max_num_batched_tokens)),
             "long_prefill_token_threshold": instance.get(
                 "long_prefill_token_threshold", args.long_prefill_token_threshold),
-            "block_size": instance.get("block_size", args.block_size),
+            "block_size": _resolve_block_size(instance, args),
             "dtype": dtype,
             "fp": dtype_to_bits[dtype],
             "kv_cache_dtype": kv_cache_dtype,
@@ -331,10 +365,6 @@ def main():
                         'Limits how many tokens a single prefill request consumes per iteration, '
                         'preventing long prompts from monopolizing the token budget. '
                         'When 0, a single prefill can consume the entire budget')
-    parser.add_argument('--dtype', type=str, choices=['float16', 'bfloat16', 'float32', 'fp8', 'int8'], default=None,
-                        help='model weight data type (vLLM-style). When omitted, defaults to the model config\'s '
-                        '``torch_dtype`` (falling back to bfloat16). Overrides only take effect if the profiler '
-                        'produced matching data under perf/<hw>/<model>/<variant>/tp<N>/')
     parser.add_argument('--num-speculative-tokens', type=int, default=0,
                         dest='num_speculative_tokens',
                         help='speculative decoding draft length N (vLLM\'s num_speculative_tokens). '
@@ -405,8 +435,14 @@ def main():
                         '(npu_mem * this - model weight); the activation peak and CUDA '
                         'context that vLLM also subtracts are not modelled, so the '
                         'resulting capacity is an upper bound on vLLM\'s at the same value')
-    parser.add_argument('--block-size', type=int, default=16,
-                        help='KV cache block size in tokens (number of tokens per block)')
+    parser.add_argument('--block-size', type=int, default=None,
+                        help='KV cache block size in tokens. When omitted, taken from the '
+                        'profile bundle\'s recorded engine_resolved.block_size -- vLLM derives '
+                        'this from the backend rather than accepting what it is given, so a '
+                        'MiniMax-M3 run is 128 and a Qwen3.8 hybrid is 784 whatever you ask for. '
+                        'An explicit value that disagrees is simulating a configuration vLLM '
+                        'cannot serve, and says so. Falls back to 16 when the bundle predates '
+                        'the field. Override per instance with "block_size"')
     parser.add_argument('--dataset', type=str, default=None,
                         help='path to .jsonl dataset file with request traces. '
                         'If None, requests must be added manually in serving/__main__.py')
@@ -442,10 +478,6 @@ def main():
                         help='interval in seconds between throughput/memory usage log messages')
     parser.add_argument('--log-level', type=str, choices=['WARNING', 'INFO', 'DEBUG'], default='WARNING',
                         help='logging verbosity: WARNING (minimal), INFO (per-iteration details), DEBUG (per-layer memory)')
-    parser.add_argument('--kv-cache-dtype', type=str, choices=['auto', 'fp8'], default='auto',
-                        help='KV cache data type: auto (inherit --dtype) or fp8. Selects the profile '
-                        'variant folder -- fp8 resolves to <dtype>-kvfp8, e.g. bf16-kvfp8 -- and '
-                        'halves KV cache memory. Override per instance with "kv_cache_dtype"')
     parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3'], default='analytical',
                         help='network simulation backend: analytical (fast, default) or ns3 (detailed, WIP)')
 

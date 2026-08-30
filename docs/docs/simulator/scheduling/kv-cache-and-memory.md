@@ -179,9 +179,12 @@ except the gated-DeltaNet hybrids.
 
 Where `kv_fp` is:
 
-- 2 bytes for `bfloat16` / `float16` — what `--kv-cache-dtype auto`
-  inherits from `--dtype`; 4 for `float32`.
-- **1 byte for `--kv-cache-dtype fp8`**, which halves KV memory against
+- 2 bytes for `bfloat16` / `float16` — the checkpoint's weight dtype,
+  which the KV cache inherits unless the config says otherwise; 4 for
+  `float32`.
+- **1 byte when the checkpoint declares an fp8 KV cache**
+  (`quantization_config.kv_cache_scheme` or `kv_cache_quant_algo`),
+  which halves KV memory against
   a 16-bit weight dtype.
 
 How many blocks exist is fixed at startup, the way vLLM sizes its cache:

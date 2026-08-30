@@ -91,8 +91,6 @@ run_example() {
     local dataset_cli
     local dataset
     local num_reqs
-    local dtype
-    local kv_cache_dtype
     local max_num_seqs
     local max_num_batched_tokens
 
@@ -100,8 +98,10 @@ run_example() {
     dataset_cli="$(repo_relative_path "$dataset_rel")"
     dataset="$(resolve_repo_path "$dataset_rel")"
     num_reqs="$(json_get "$meta" "num_requests")"
-    dtype="$(json_get "$meta" "engine_kwargs.dtype")"
-    kv_cache_dtype="$(json_get "$meta" "engine_kwargs.kv_cache_dtype")"
+    # dtype and kv_cache_dtype are deliberately not read back: the simulator
+    # derives both from the model config now, so passing vLLM's recorded
+    # values would be an input it no longer has. They agree on every bundled
+    # example (bfloat16 / auto).
     max_num_seqs="$(json_get "$meta" "engine_kwargs.max_num_seqs")"
     max_num_batched_tokens="$(json_get "$meta" "engine_kwargs.max_num_batched_tokens")"
     config_rel="$(repo_relative_path "$config")"
@@ -116,8 +116,6 @@ run_example() {
         --dataset "$dataset_cli"
         --output "$output_dir_rel/sim.csv"
         --num-reqs "$num_reqs"
-        --dtype "$dtype"
-        --kv-cache-dtype "$kv_cache_dtype"
         --block-size "$BLOCK_SIZE"
         --max-num-seqs "$max_num_seqs"
         --max-num-batched-tokens "$max_num_batched_tokens"
