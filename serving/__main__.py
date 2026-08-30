@@ -17,7 +17,8 @@ from collections import defaultdict, deque
 from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
-from serving.core.utils import config_weight_dtype, config_kv_cache_dtype
+from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
+                                num_mtp_layers, get_architecture)
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
@@ -296,6 +297,54 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
     return runtime_configs
 
 
+def _require_drafter_cost(model_name, n, node_id, instance_id):
+    """Refuse a speculative run whose drafter time cannot be charged.
+
+    Acceptance is only half of speculative decoding. The other half is what the
+    drafts cost to produce, and vLLM runs the drafter **N times per step** --
+    once before the loop and ``num_speculative_tokens - 1`` inside it
+    (``llm_base_proposer.py``), each a decode-shaped forward at
+    ``max_query_len = 1``. A model that drafts with itself runs an MTP module
+    for each: two norms, an ``eh_proj``, one full decoder layer of its own
+    family, then a norm, ``lm_head`` and the sampler. That is not free, and
+    charging zero for it would report a speedup no engine can deliver.
+
+    So a model with MTP modules needs an ``mtp:`` block in its architecture
+    catalog, and the catalog has to be written from a live profile dump like
+    every other block -- the module tree and the profile tree differ both ways,
+    so writing one from vLLM's source binds names that measure nothing. Until
+    that profiling happens the honest answer is to refuse, exactly as
+    ``calculate_sizes`` refuses a layer name it has no formula for.
+
+    A model with **no** MTP modules drafts with a separate model or with
+    n-gram. That is a serving choice rather than a property of the checkpoint,
+    so it is warned about rather than refused: the simulator has no second
+    model to charge.
+    """
+    logger = get_logger("main", node_id=node_id, instance_id=instance_id)
+    mtp = num_mtp_layers(get_config(model_name))
+    if not mtp:
+        logger.warning(
+            "Speculative decoding with N=%d on %s, which declares no MTP "
+            "modules -- it drafts with a separate model or with n-gram, and "
+            "the simulator has no second model to charge. Draft *time* is not "
+            "counted; acceptance still is, so the reported speedup is an upper "
+            "bound.",
+            n, model_name,
+        )
+        return
+    if not (get_architecture(model_name) or {}).get("mtp"):
+        raise NotImplementedError(
+            f"speculative decoding on {model_name!r} needs the cost of its "
+            f"{mtp} MTP module(s), which run {n} time(s) per step, and "
+            f"profiler/models/<model_type>.yaml has no 'mtp:' block to price "
+            f"them from. Charging zero would report a speedup no engine can "
+            f"deliver. Add the block from a live profile dump (python -m "
+            f"profiler coverage) and profile the model, or drop "
+            f"--num-speculative-tokens."
+        )
+
+
 def _build_acceptance_model(model_name, inst_cfg, node_id, instance_id):
     """The instance's speculative-decoding acceptance model, or None.
 
@@ -317,6 +366,7 @@ def _build_acceptance_model(model_name, inst_cfg, node_id, instance_id):
         rate = published.get("acceptance_rate")
     if not n:
         return None
+    _require_drafter_cost(model_name, n, node_id, instance_id)
     if rate is None:
         raise ValueError(
             f"speculative decoding requested for {model_name!r}, which has no "

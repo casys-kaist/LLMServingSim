@@ -58,6 +58,13 @@ class Scheduler:
         # vLLM's scheduler_reserve_full_isl, True by default there: admit a
         # request only if its whole sequence fits, not merely its first chunk.
         self.reserve_full_isl = reserve_full_isl
+        # vLLM's ``need_mamba_block_aligned_split``:
+        # ``has_mamba_layers and mamba_cache_mode == "align"``, and "align" is
+        # what prefix caching selects. See ``_mamba_block_aligned_split``.
+        self._needs_mamba_aligned_split = bool(enable_prefix_caching) and any(
+            spec.attn == 'linear_attention'
+            for spec in (get_layer_stack(model) or [])
+        )
         # None when speculative decoding is off. See ``spec_decode.py``: which
         # draft tokens the target accepts is the one thing a simulator cannot
         # compute, so it is a policy with a per-model published default.
@@ -90,7 +97,9 @@ class Scheduler:
                                   block_size, fp, enable_prefix_caching, enable_prefix_sharing,
                                   prefix_pool, prefix_storage, cxl_mem, ep_size=ep_size,
                                   pp_size=pp_size, kv_cache_dtype=kv_cache_dtype,
-                                  npu_memory_utilization=npu_memory_utilization)
+                                  npu_memory_utilization=npu_memory_utilization,
+                                  num_speculative_tokens=(
+                                      acceptance_model.N if acceptance_model else 0))
         self.kv = self.memory.kv
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
@@ -146,6 +155,18 @@ class Scheduler:
         while i < len(self.running) and token_budget > 0:
             req = self.running[i]
             num_new = self._num_new_tokens(req, token_budget)
+            if num_new > 0 and self._needs_mamba_aligned_split:
+                aligned = self._mamba_block_aligned_split(
+                    req, num_new, req.num_computed_tokens)
+                if aligned <= 0:
+                    # This step's budget cannot cover a whole block for a chunk
+                    # that has to end block-aligned. Not the deadlock the guard
+                    # below catches: the split only floors to zero when
+                    # ``block_size <= max_prefill_tokens``, so a fresh step's
+                    # budget does cover one and the request moves next step.
+                    i += 1
+                    continue
+                num_new = aligned
             if num_new <= 0:
                 # Nothing left to compute for this request yet. vLLM continues
                 # rather than breaking here, so a later request is not blocked.
@@ -216,6 +237,14 @@ class Scheduler:
             num_new = min(num_new, token_budget)
             if num_new <= 0:
                 break
+            if self._needs_mamba_aligned_split:
+                # After the budget clamp, as vLLM applies it. A zero here means
+                # this step's budget cannot cover a whole block, so the queue
+                # stops -- FCFS, same as the branch above.
+                num_new = self._mamba_block_aligned_split(
+                    req, num_new, num_computed)
+                if num_new <= 0:
+                    break
 
             if self.reserve_full_isl and not self.kv.can_fit_full_sequence(
                     req, hit_blocks, num_npu_hit, num_lower_hit):
@@ -263,6 +292,61 @@ class Scheduler:
         # since that is what gets verified -- vLLM's ``num_scheduled_spec_tokens``.
         req.num_spec_scheduled = max(0, min(req.num_spec_scheduled, num_new - 1))
         return num_new
+
+    def _mamba_block_aligned_split(self, req, num_new, start):
+        """Clip a prefill chunk so it ends where the mamba state can be cached.
+
+        vLLM's ``Scheduler._mamba_block_aligned_split``, which runs whenever a
+        model has mamba layers and prefix caching is on -- that pair is what
+        selects ``mamba_cache_mode "align"``. The invariant it protects: state
+        slot *p* holds the state after exactly ``(p + 1) * block_size`` tokens,
+        and state is only written at a chunk end, so **a chunk end must be
+        block aligned** or the slot holds a state no position can name.
+
+        Three rules, in vLLM's order:
+
+        * A chunk that is not the prompt's last is floored to a block boundary
+          -- unless flooring would leave nothing *and* the block is wider than
+          one chunk's budget, in which case it advances sub-block and realigns
+          at the next boundary instead.
+        * A chunk starting mid-block stops at the next boundary.
+        * No chunk runs past ``last_cache_position``, the last block-aligned
+          position in the sequence, mid-chunk.
+
+        Returning 0 is a real answer, not a failure: it is vLLM's "insufficient
+        budget for a block-aligned chunk", and the request simply waits for a
+        step whose budget covers a whole block.
+
+        Deliberately not modelled: the Eagle backoff, the partial-tail hash
+        boundary and the Marconi shared-prefix junction. Each adds a further
+        early stop, so leaving them out can only make a chunk longer than
+        vLLM's, never shorter.
+        """
+        prefill_end = max(req.original_input, req.num_tokens_reached - 1)
+        if start >= prefill_end:
+            return num_new                      # decoding: nothing to align
+
+        block_size = self.block_size
+        last_cache_position = (
+            req.num_tokens_reached - req.num_tokens_reached % block_size
+        )
+
+        end = start + num_new
+        if end < prefill_end:
+            max_prefill_tokens = self.max_num_batched_tokens
+            if self.long_prefill_token_threshold > 0:
+                max_prefill_tokens = min(
+                    max_prefill_tokens, self.long_prefill_token_threshold)
+            aligned_end = end // block_size * block_size
+            if aligned_end > start or block_size <= max_prefill_tokens:
+                end = aligned_end
+
+        stops = (
+            (start // block_size + 1) * block_size if start % block_size else 0,
+            last_cache_position,
+        )
+        end = min((s for s in stops if start < s < end), default=end)
+        return max(end - start, 0)
 
     def _draft_tokens_for(self, req):
         """Draft tokens to verify alongside this request's real token.
