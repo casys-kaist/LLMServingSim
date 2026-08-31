@@ -179,7 +179,8 @@ decode instance.
 
 ### Parallelism rules:
 - `num_npus = tp_size * pp_size`
-- TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP (ALLTOALL)
+- TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP
+  (an all-to-all, emitted as ALLGATHER + REDUCESCATTER — vLLM's default backend)
 - DP is achieved via multiple instances with the same `dp_group`
 - Without `dp_group`: `ep_size <= tp_size`
 - For MoE models: `ep_size` must divide `num_local_experts`

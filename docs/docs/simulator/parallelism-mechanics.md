@@ -17,8 +17,8 @@ of these on) is on
 | --- | --- | --- | --- |
 | **TP** (tensor) | Linear weights split along head dim | ALLREDUCE | After `o_proj` and `down_proj` |
 | **PP** (pipeline) | Decoder layers split across GPU groups | (point-to-point in `inflight` queue) | At stage boundaries |
-| **EP** (expert) | MoE experts split across ranks | ALLTOALL | Around the MoE block |
-| **DP+EP** | EP across multiple instances | ALLTOALL | Same, but across instance boundaries with wave-sync |
+| **EP** (expert) | MoE experts split across ranks | all-to-all, as ALLGATHER + REDUCESCATTER | Around the MoE block |
+| **DP+EP** | EP across multiple instances | the same pair | Same, but across instance boundaries with wave-sync |
 
 TP and EP can share the same GPUs. DP requires a `dp_group`
 identifier on the cluster config — for a dense model that is plain data
@@ -115,11 +115,11 @@ therefore part of the reported iteration time, and pipeline overlap
 between in-flight batches falls out from each NPU's independent `.et`
 schedule.
 
-## EP, ALLTOALL around the MoE block
+## EP, the all-to-all around the MoE block
 
 ```mermaid
 flowchart LR
-    INPUT[Input residue] --> DISP["Dispatch<br/>ALLTOALL"]
+    INPUT[Input residue] --> DISP["Dispatch<br/>ALLGATHER"]
     subgraph EXP["Expert compute (parallel ranks)"]
         direction TB
         E0["Rank 0<br/>experts 0..N/2"]
@@ -127,27 +127,51 @@ flowchart LR
     end
     DISP --> E0
     DISP --> E1
-    E0 --> COMB["Combine<br/>ALLTOALL"]
+    E0 --> COMB["Combine<br/>REDUCESCATTER"]
     E1 --> COMB
     COMB --> OUTPUT[Output residue]
 ```
 
-For MoE models, `trace_generator` wraps the MoE block with two
-ALLTOALL collectives:
+For MoE models, `trace_generator` wraps the MoE block with the EP
+all-to-all: dispatch routes each token to its assigned expert's rank,
+combine brings the expert outputs back. Both are scoped to the EP
+dimension.
+
+:::info[The all-to-all is emitted as AllGather + ReduceScatter]
+An MoE all-to-all is a *logical* operation with several possible
+implementations, and vLLM picks one with `--all2all-backend`. Its
+default is `allgather_reducescatter` — literally "all2all based on
+allgather and reducescatter" in vLLM's own option list — so that is
+what the simulator emits, because ASTRA-Sim models the collective it
+is actually given:
 
 ```
-... → MoE dispatch ALLTOALL → expert compute → MoE combine ALLTOALL → ...
+EXPERT 0 ALLGATHER:0,1 21760
+expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
+EXPERT END REDUCESCATTER:0,1 40960
 ```
 
-The dispatch ALLTOALL routes each token to its assigned expert's
-rank. The combine ALLTOALL gathers expert outputs back to the
-originating ranks. Both are scoped to the EP dimension.
+The two halves are sized differently, because the collectives are:
+
+| | `comm_size` | Why |
+| --- | --- | --- |
+| Dispatch (`EXPERT 0`) | `(total_len / ep_total) * (hidden + num_experts) * fp` | ASTRA-Sim's AllGather `data_size` is the **per-rank local chunk**, and the dispatch carries the router logits alongside the hidden state |
+| Combine (`EXPERT END`) | `total_len * hidden * fp` | ASTRA-Sim's ReduceScatter `data_size` is the **pre-scatter total buffer**, hidden state only |
+
+The example above is a real trace line: Qwen3-30B-A3B (`hidden 2048`,
+128 experts, bf16) with 10 tokens at `ep_total 2` gives
+`5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
+
+Other vLLM backends (`deepep_*`, `mori_*`, `flashinfer_*`) implement
+the same all-to-all with different kernels and would emit a different
+collective. Only the default is modelled.
+:::
 
 Each EP rank gets a per-rank latency from
 `profiler/perf/<hw>/<model>/<variant>/tp1/moe.csv` keyed on its
 **local** token count (after dispatch) and the **activated experts**
-per token. Ranks execute in parallel and synchronize at the ALLTOALL
-barrier, slower ranks gate the others.
+per token. Ranks execute in parallel and synchronize at the collective,
+slower ranks gate the others.
 
 Token routing decisions come from `gate_function.py`. See
 **[MoE expert routing](./moe-expert-routing)** for the policies.
@@ -164,7 +188,7 @@ flowchart TB
         subgraph I2["Instance 2"]
             G2["GPU 0<br/>experts 64..127"]
         end
-        G1 <-->|"EP-ALLTOALL<br/>(involved_dim = [F, T])"| G2
+        G1 <-->|"EP all-to-all<br/>(involved_dim = [F, T])"| G2
     end
 ```
 
@@ -185,7 +209,7 @@ sequenceDiagram
     DPB->>I2: emit trace (comm_size = max)
     I1->>A: workload_dp_A.et
     I2->>A: workload_dp_A.et
-    Note over A: Matching stream IDs<br/>block at ALLTOALL
+    Note over A: Matching stream IDs<br/>block at the EP collective
     A-->>I1: cycle count
     A-->>I2: cycle count
 ```
@@ -228,11 +252,11 @@ next poll, ahead of anything the scheduler would otherwise start. That
 keeps each NPU running its batches in the order they were opened, which
 is what the completion bookkeeping assumes.
 
-### 2. ASTRA-Sim ALLTOALL barrier
+### 2. ASTRA-Sim collective barrier
 
 All DP-group instances' `.et` files share the same workload folder
 (`dp_<group>_batch<bid>/llm.et`) and use **matching stream IDs** on
-the ALLTOALL collectives. ASTRA-Sim's runtime sees the matching IDs
+the EP collectives. ASTRA-Sim's runtime sees the matching IDs
 and blocks until both NPUs reach the collective, naturally
 implementing the wave-sync at the network layer.
 
@@ -265,7 +289,7 @@ a `:dim0,dim1` suffix:
 
 ```
 ALLREDUCE:1,0     # TP only
-ALLTOALL:0,1      # EP across DP only
+ALLGATHER:0,1     # EP dispatch across DP only
 ```
 
 The Chakra converter parses this via `_parse_comm_type` and writes
@@ -286,7 +310,10 @@ So:
 
 - ALLREDUCE on `o_proj`: pass the **full output tensor size**
   (`total_len * hidden_size * fp_size`).
-- ALLTOALL for MoE: pass the **full activation tensor size**
+- MoE: the dispatch AllGather takes the **per-rank chunk**
+  (`total_len / ep_total * (hidden + num_experts) * fp`) and the combine
+  ReduceScatter the **pre-scatter total** (`total_len * hidden * fp`),
+  matching ASTRA-Sim's `data_size` convention for each
   (`total_len * hidden_size * fp_size`).
 
 If you see surprisingly fast collectives in your trace logs, check
@@ -304,7 +331,7 @@ A rough decision tree (the *configuration* angle is on
 - **Multiple replicas for throughput:** add `num_instances` (no
   `dp_group`). Independent instances behind a router.
 - **MoE model, single instance:** add `ep_size = tp_size`. Same GPUs,
-  EP-ALLTOALL replaces TP-ALLREDUCE on the MoE block.
+  the EP all-to-all replaces TP-ALLREDUCE on the MoE block.
 - **MoE, want to scale experts past one instance's GPUs:** DP+EP
   with `dp_group` set. EP spans instances via wave-sync.
 - **Dense model, want data-parallel replicas:** `dp_group` set and no
@@ -316,10 +343,10 @@ A rough decision tree (the *configuration* angle is on
    config builder rejects the spec. EP needs the DP dimension of the
    topology to scale beyond a single instance's GPU count.
 2. **Dummy batches are real ASTRA-Sim work.** A DP group with one
-   idle instance still pays the ALLTOALL cost on the dummy batch.
+   idle instance still pays the collective's cost on the dummy batch.
    This is what production looks like, wave-sync is wave-sync.
 3. **`comm_size` is synchronized to the max.** Even if one DP
-   member's batch is much smaller, the ALLTOALL message size matches
+   member's batch is much smaller, the message size matches
    the largest member's. This is *correct* (matches production
    padding) but worth knowing.
 4. **PP models inter-stage forwarding via send/recv, not via
@@ -334,6 +361,6 @@ A rough decision tree (the *configuration* angle is on
 ## What's next
 
 - **[MoE expert routing](./moe-expert-routing)**: how tokens get
-  distributed across EP ranks before the dispatch ALLTOALL.
+  distributed across EP ranks before the dispatch AllGather.
 - **[Examples → DP+EP MoE](/docs/examples/parallelism/dp-ep-moe)** -
   a worked-out config that exercises this whole machinery.
