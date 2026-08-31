@@ -65,6 +65,23 @@ class Scheduler:
             spec.attn == 'linear_attention'
             for spec in (get_layer_stack(model) or [])
         )
+        if self._needs_mamba_aligned_split and not enable_chunked_prefill:
+            # vLLM asserts this, in the same block that picks "align"
+            # (models/config.py: `assert enable_chunked_prefill, "Chunked
+            # prefill is required for mamba cache mode 'align'."`). The reason
+            # is structural rather than incidental: "align" exists so a state
+            # checkpoint lands on a block boundary, and the only lever for that
+            # is where a chunk ends -- with no chunking there is no lever, and
+            # the invariant the split protects cannot hold.
+            raise ValueError(
+                f"instance {instance_id}: {model} has linear-attention layers "
+                f"and prefix caching is on, which selects vLLM's mamba cache "
+                f"mode 'align' -- and that requires chunked prefill, because "
+                f"aligning a chunk end to a block boundary is what makes a "
+                f"state checkpoint addressable. vLLM refuses to start this "
+                f"combination. Enable chunked prefill, or turn prefix caching "
+                f"off (which selects 'none' and checkpoints nothing)."
+            )
         # None when speculative decoding is off. See ``spec_decode.py``: which
         # draft tokens the target accepts is the one thing a simulator cannot
         # compute, so it is a policy with a per-model published default.
@@ -326,7 +343,7 @@ class Scheduler:
         if start >= prefill_end:
             return num_new                      # decoding: nothing to align
 
-        block_size = self.block_size
+        block_size = self.memory.block_size
         last_cache_position = (
             req.num_tokens_reached - req.num_tokens_reached % block_size
         )
