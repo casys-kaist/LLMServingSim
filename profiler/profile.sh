@@ -93,6 +93,14 @@ ATTENTION_CHUNK_FACTOR=2.0
 # Geometric factor for kv_prefill / kv_decode axes. 2.0 is doubling;
 # lower for denser long-context coverage.
 ATTENTION_KV_FACTOR=2.0
+# Query tokens per decode sequence. "1" is ordinary decoding. A
+# speculative-decoding verification step submits 1 + num_speculative_tokens
+# queries per sequence against that sequence's own KV, which is a different
+# kernel tile shape rather than a bigger one -- so the simulator falls back to
+# the nearest profiled value with a warning instead of interpolating. Profile
+# the values you intend to simulate: "1,5" for N=4, "1,4" for N=3. Each extra
+# value multiplies the attention grid.
+# ATTENTION_DECODE_Q_LENS="1,5"
 
 # --- Measurement averaging --------------------------------------------------
 # Timed forwards per shot (averaged by vLLM's layerwise_profile via
@@ -165,6 +173,7 @@ done
 [[ -n "${ATTENTION_MAX_KV:-}" ]]       && cmd+=(--attention-max-kv "$ATTENTION_MAX_KV")
 [[ -n "${ATTENTION_CHUNK_FACTOR:-}" ]] && cmd+=(--attention-chunk-factor "$ATTENTION_CHUNK_FACTOR")
 [[ -n "${ATTENTION_KV_FACTOR:-}" ]]    && cmd+=(--attention-kv-factor "$ATTENTION_KV_FACTOR")
+[[ -n "${ATTENTION_DECODE_Q_LENS:-}" ]] && cmd+=(--attention-decode-q-lens "$ATTENTION_DECODE_Q_LENS")
 [[ -n "${MEASUREMENT_ITERATIONS:-}" ]] && cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
 [[ -n "${SKIP_SKEW:-}" ]]              && cmd+=(--skip-skew)
 [[ -n "${SKEW_N_FACTOR:-}" ]]          && cmd+=(--skew-n-factor "$SKEW_N_FACTOR")
