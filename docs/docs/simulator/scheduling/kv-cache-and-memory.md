@@ -158,17 +158,56 @@ conv_state = (2*key_head_dim*num_key_heads + value_head_dim*num_value_heads)
 ssm_state  = num_value_heads * value_head_dim * key_head_dim
 ```
 
-On Qwen3.8-27B that is 1.6 MB per sequence per layer, and 48 of its 64 layers
-are gated DeltaNet: **78.4 MB per concurrent sequence**. Its KV per token is
-65,536 bytes, from the 16 full-attention layers only.
+The two do **not** share a dtype. The conv state follows
+`mamba_cache_dtype` (`auto` → the weight dtype) and the recurrent state
+follows `mamba_ssm_dtype` (`auto` → the *conv* dtype, not the weight dtype),
+which is vLLM's `MambaStateDtypeCalculator._mamba_state_dtype`. Qwen3.8-27B
+declares `mamba_ssm_dtype: float32`, so its recurrent state is 4 bytes per
+element against the conv state's 2 — and it is the large half, 786,432 elements
+per layer against 30,720. That comes to 3.21 MB per sequence per layer, and 48
+of its 64 layers are gated DeltaNet: **153.9 MB per concurrent sequence**. Its
+KV per token is 65,536 bytes, from the 16 full-attention layers only.
 
-So it bounds **concurrency** the way a KV cache bounds context, and the pool
-charges it: each request takes
-`ceil(state_bytes_per_rank / bytes_per_block)` extra blocks on its first
-allocation and holds them until it finishes or is preempted — 75 blocks per
-request on a 96 GB card at `--block-size 16`, out of 37,173. Rounding to whole
-blocks is what vLLM does too: it pads the mamba page up to a KV block's page so
-every cache group shares a page size, then hands each request one.
+So it bounds **concurrency** the way a KV cache bounds context.
+
+#### It is counted in pages, not in bytes
+
+vLLM picks the attention block size so that one attention page covers one mamba
+page, then pads the mamba page up to it:
+
+```
+attn_block_size       = alignment * cdiv(mamba_page_size,
+                                         alignment * attn_page_size_1_token)
+mamba_page_size_padded = attn_page_size
+```
+
+so a layer's whole state occupies **exactly one page** and the padding is
+really allocated. On Qwen3.8-27B the mamba page is 3,207,168 bytes against an
+attention page of 3,211,264 at `block_size 784` — and that is where 784 comes
+from: `16 * cdiv(3,207,168, 16 * 4,096) = 784`. That is why the block size is
+read out of the profile bundle rather than defaulted, though the four bundles
+shipped in this repo predate the `engine_resolved` field and still fall back to
+16.
+
+How many pages per layer is `MambaSpec.max_memory_usage_bytes`, and it depends
+on the cache mode:
+
+| `mamba_cache_mode` | Pages per mamba layer | When |
+| --- | --- | --- |
+| `none` | `1 + N` | prefix caching **off** |
+| `align` | `2 + N` | prefix caching **on** — the default |
+| `all` | `cdiv(max_model_len, block_size)` | opt-in, not modelled |
+
+`align` holds two because one page carries the state being written this step
+and the other the last checkpoint committed at a block boundary — which is what
+a later prefix hit resumes from. `N` is `--num-speculative-tokens`, one extra
+page per draft token, and it also **widens the conv state itself**
+(`conv_kernel_size - 1 + N`).
+
+On Qwen3.8-27B at `block_size 784` that is 48 layers × 2 pages = 96 pages, or
+**6 pool blocks per request** with prefix caching on against 3 with it off.
+Charging one page per layer — the caching-off figure — understated the default
+configuration by exactly 2x.
 
 Those blocks live in a separate list from the token blocks, because the token
 list is positional — block `i` backs tokens `[i*block_size, (i+1)*block_size)`
@@ -176,6 +215,26 @@ list is positional — block `i` backs tokens `[i*block_size, (i+1)*block_size)`
 
 Models whose layers all cache per token charge 0 here, which is every family
 except the gated-DeltaNet hybrids.
+
+### 4. The drafter's own KV cache
+
+With `--num-speculative-tokens` on, a model that drafts with itself runs MTP
+modules, and an MTP module wraps a **real decoder layer**
+(`DeepseekV2DecoderLayer`, `Glm4DecoderLayer`, `MiniMaxM3DecoderLayer`,
+`Qwen3_5DecoderLayer`), so it publishes a KV cache spec of its own and vLLM
+allocates for it:
+
+| Model | MTP modules | Extra bytes per token |
+| --- | --- | --- |
+| DeepSeek-V3.2-Exp | 1 | +1.6% |
+| MiniMax-M3 | 7 | +11.7% |
+| Qwen3.8-27B | 1 | +6.2% |
+
+The drafter's attention is **full attention** whatever the target's layers are
+— Qwen3.5's MTP builds its block with `layer_type="full_attention"` explicitly
+— so a hybrid's drafter carries a KV cache but no recurrent state. That is why
+Qwen3.8's 6.2% is larger than DeepSeek's 1.6% despite both having one module:
+only 16 of Qwen3.8's 64 layers cache per token, so one more is 1/16.
 
 Where `kv_fp` is:
 
@@ -247,7 +306,7 @@ The scheduler takes `ceil(tokens / block_size)` blocks per active request
 from the pool's free list, and returns them when the request finishes or is
 preempted.
 
-### 3. NPU prefix cache
+### 5. NPU prefix cache
 
 Not a separate allocation. A block that becomes full is indexed under a
 **chained hash** of its tokens, and it keeps that index entry after its

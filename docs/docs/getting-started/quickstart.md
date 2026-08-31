@@ -16,7 +16,7 @@ inside the simulator container at `/app/LLMServingSim`.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/example_single_run.csv' \
   --log-interval 1.0
@@ -50,11 +50,14 @@ shows the per-request output. The columns are `instance id`,
 | Flag | What it does |
 | --- | --- |
 | `--cluster-config` | Cluster topology + hardware. Generates ASTRA-Sim input files automatically. |
-| `--dtype` | Model weight precision (`float16`, `bfloat16`, `float32`, `fp8`, `int8`). Picks the matching profile bundle. Omit it and the model config's `torch_dtype` is used. |
-| `--block-size` | KV-cache block size in tokens. Default `16`. |
+| `--block-size` | KV-cache block size in tokens. Omit it and the simulator uses whatever the profile bundle records vLLM settling on, which is what vLLM does — it derives a block size rather than accepting one. |
 | `--dataset` | JSONL file of requests (or agentic sessions). |
 | `--output` | Where to write per-request metrics. |
 | `--log-interval` | How often to print the throughput / memory / power summary line (seconds). |
+
+There is no dtype flag. Weight and KV-cache precision are read from the
+model config, along with three more cache dtypes a modern checkpoint
+carries — see **[CLI flags → Precision](/docs/reference/cli-flags)**.
 
 The full flag list lives at
 [Reference → CLI flags](/docs/reference/cli-flags).

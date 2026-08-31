@@ -91,7 +91,7 @@ Run it with the bundled DP+EP MoE config:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_moe_dp_ep_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' \
   --output 'outputs/swebench_run.csv' \
   --num-reqs 1

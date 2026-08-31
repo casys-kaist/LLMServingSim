@@ -64,7 +64,7 @@ The two pieces:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/multi_instance_run.csv' \
   --request-routing-policy LOAD \

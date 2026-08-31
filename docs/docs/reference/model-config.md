@@ -61,17 +61,38 @@ to `hidden_size // num_attention_heads`. This is wrong for Qwen3
 | `num_local_experts` | int | Total experts (Mistral-style: e.g., `num_local_experts: 8` for Mixtral 8x7B) |
 | `num_experts` | int | Alternative naming (HF / Qwen-style: e.g., `num_experts: 128` for Qwen3-30B-A3B) |
 | `num_experts_per_tok` | int | top-K activations per token. Typical values: 2 (Mixtral), 8 (Qwen3 MoE) |
+| `n_routed_experts` | int | A third spelling (DeepSeek / GLM: `n_routed_experts: 256`) |
 | `moe_intermediate_size` | int | Per-expert MLP intermediate dim. Often smaller than the dense `intermediate_size` |
+| `n_group`, `topk_group` | int | **Group-limited routing.** A token's experts come only from `topk_group` of `n_group` groups, so it reaches fewer EP ranks. DeepSeek-V3.2 is `8` / `4`; GLM-5 ships `1` / `1`, the unrestricted case spelled out |
 
-The simulator's `config_builder.py` accepts either `num_local_experts`
-or `num_experts` and treats them equivalently.
+`utils.num_experts()` accepts all three spellings and is the single
+place that knows them. Every call site used to spell out its own
+subset, and each missed the third — so DeepSeek read as a *dense*
+model in four separate places.
+
+Group-limited routing is not a detail: at EP=8, DeepSeek-V3.2 sends a
+token to 45.4% of ranks against 66.2% unrestricted at the same `E`
+and top-`k` (GLM-5's figure), a 31% cut in
+per-rank MoE work and ALLTOALL size. See
+**[MoE expert routing](/docs/simulator/moe-expert-routing)**.
 
 ## Optional fields the simulator may consume
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `torch_dtype` | string | Weight dtype, and the only source for it — there is no `--dtype` flag. `quantization_config.quant_method` wins when present. e.g. `bfloat16`, `float16`, `float32` |
+| `quantization_config.kv_cache_scheme` / `.kv_cache_quant_algo` | dict / string | Declares an **fp8 KV cache**. The only way to get one, since there is no `--kv-cache-dtype`. Mirrors vLLM's promotion at `attention.py:281` |
+| `mamba_cache_dtype` | string | Conv-state dtype. `auto` (the default) means the weight dtype |
+| `mamba_ssm_dtype` | string | Recurrent-state dtype. `auto` means the **conv** dtype, not the weight dtype. Qwen3.8-27B declares `float32`, and the recurrent state is 98% of the per-sequence state, so reading this wrong halves it |
+| `linear_num_key_heads`, `linear_num_value_heads`, `linear_key_head_dim`, `linear_value_head_dim`, `linear_conv_kernel_dim` | int | Gated-DeltaNet state shape. Per **sequence**, not per token |
+| `kv_lora_rank`, `qk_rope_head_dim` | int | MLA latent shape (DeepSeek, GLM). One latent, no separate V, and **replicated** across TP rather than sharded |
+| `index_head_dim`, `sparse_attention_config.sparse_index_dim` | int | Sparse-indexer side-cache width. Its dtype is fixed by the model — `uint8` for DeepSeek/GLM, bf16 for M3 — and does **not** follow the KV dtype |
+| `num_nextn_predict_layers` / `num_mtp_modules` / `mtp_num_hidden_layers` | int | MTP module count: the model's own drafter. Each wraps a real decoder layer, so it carries a KV cache of its own |
 | `architectures` | array | First entry's class name is informational; the simulator dispatches via `model_type` |
+
+There are **five** cache dtypes above and they are decided in four
+different places, which is why none of them is a flag. The full table
+is in **[CLI flags → Precision](./cli-flags)**.
 
 ### Per-layer stack fields
 

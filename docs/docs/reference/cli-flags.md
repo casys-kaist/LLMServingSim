@@ -38,7 +38,7 @@ matching runtime knobs per `instances[i]`; see
 | `--enable-chunked-prefill` **(per-instance)** | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
 | `--npu-memory-utilization` **(per-instance,** as `npu_mem.mem_util`**)** | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
 | `--reserve-full-isl` / `--no-reserve-full-isl` **(per-instance)** | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
-| `--block-size` **(per-instance)** | int | `16` | KV cache block size in tokens |
+| `--block-size` **(per-instance)** | int | the profiled value, else `16` | KV cache block size in tokens. vLLM does not accept one, it *derives* one — from the attention backend's `get_supported_kernel_block_sizes` and from hybrid page unification — so the profiler records what the engine settled on in `meta.yaml::engine_resolved.block_size` and the simulator reads it back. An explicit value that disagrees is allowed but warned about: it simulates a configuration vLLM cannot serve. **Bundles profiled before `engine_resolved` existed do not carry it** — including all four shipped in this repo — so those fall back to `16` until they are re-profiled |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 
 ## Routing
@@ -74,6 +74,27 @@ names.
 | `--num-speculative-tokens` **(per-instance)** | int | `0` (off) | Draft length N, vLLM's own flag name. Omit `--spec-acceptance-rate` to take the model's published N and acceptance from `configs/spec_decode.json` |
 | `--spec-acceptance-rate` **(per-instance)** | float | the model's published value | Fraction of drafted tokens the target accepts, so the mean accept length is `1 + rate * N`. **Marginal**, which is what every published source reports — not Leviathan's conditional per-position alpha. A model with no published figure must be given one |
 | `--spec-acceptance-policy` **(per-instance)** | `FIXED` / `DECAY` / `CUSTOM` | `FIXED` | How the accepted count is drawn. `DECAY` uses per-position rates, which fall with draft position — same mean, different spread |
+
+**The drafter's time is not charged yet, and a model that drafts with
+itself refuses to run.** vLLM runs the drafter **N times per step** —
+once, then `num_speculative_tokens - 1` more — each a decode-shaped
+forward over a norm pair, an `eh_proj`, a full decoder layer, `lm_head`
+and the sampler. Reporting that as free would claim a speedup no engine
+can deliver, so a model with MTP modules (`num_nextn_predict_layers`,
+`num_mtp_modules`, `mtp_num_hidden_layers`) raises until its
+architecture catalog has an `mtp:` block to price them from. That block
+has to be written from a live profile dump, so it arrives with the
+profiling work for those families.
+
+A model with **no** MTP modules drafts with a separate model or with
+n-gram — a serving choice rather than a checkpoint property, and the
+simulator has no second model to charge. That case warns instead of
+refusing, and says plainly that the reported speedup is an upper bound.
+
+The drafter's **KV cache** is charged either way: an MTP module wraps a
+real decoder layer, so it publishes a cache spec of its own. That is
++1.6% bytes/token on DeepSeek-V3.2's one module, +11.7% on
+MiniMax-M3's seven, +6.2% on Qwen3.8-27B.
 
 ## Prefix caching and offloading
 

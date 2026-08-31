@@ -73,8 +73,6 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `max_num_batched_tokens` | Integer | No | Per-instance override for `--max-num-batched-tokens` (`0` = capped at the model's `max_position_embeddings`, see below) |
 | `long_prefill_token_threshold` | Integer | No | Per-instance override for `--long-prefill-token-threshold` |
 | `block_size` | Integer | No | Per-instance override for `--block-size` |
-| `dtype` | String | No | Per-instance override for `--dtype` |
-| `kv_cache_dtype` | String | No | Per-instance override for `--kv-cache-dtype` |
 | `enable_chunked_prefill` | Boolean | No | Per-instance override for `--enable-chunked-prefill` |
 | `enable_prefix_caching` | Boolean | No | Per-instance override for `--enable-prefix-caching` |
 | `npu_mem.mem_util` | Float | No | Fraction of `npu_mem.mem_size` an instance may use for weights plus KV cache. Per-instance override for `--npu-memory-utilization` (default `0.9`) |
@@ -108,12 +106,13 @@ Setting either batching limit to `0` maps it to infinity via the `_runtime_limit
 `long_prefill_token_threshold: 0` means *disabled* (no per-request cap), matching the CLI
 flag — it is not an "unlimited" sentinel.
 
-**`dtype` has a third fallback level:**
-```
-instances[i].dtype  >  --dtype  >  model config torch_dtype  >  bfloat16
-```
-The resolved value picks the profile variant folder, so
-`profiler/perf/{hardware}/{model}/{variant}/tp{N}/` must exist for it.
+**Dtypes are not overridable.** There is no `dtype` or `kv_cache_dtype` field
+and no CLI flag below it: a modern checkpoint carries five cache dtypes decided
+in four different places, so every one is read from the model config. The
+weight dtype still picks the profile variant folder, so
+`profiler/perf/{hardware}/{model}/{variant}/tp{N}/` must exist — but the folder
+name follows from the config alone, so a missing bundle means *profile this
+model*. Serving two precisions of one model is two **model configs**.
 
 > **Calibrate `mem_util` when the KV cache saturates.** It sizes the KV cache,
 > and that only affects results once a run actually fills it — below the

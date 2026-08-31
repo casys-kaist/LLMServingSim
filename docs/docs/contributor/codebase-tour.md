@@ -41,7 +41,8 @@ serving/
     ├── graph_generator.py   Text trace -> Chakra protobuf
     ├── controller.py        ASTRA-Sim subprocess IPC
     ├── router.py            Request routing across instances
-    ├── gate_function.py     MoE expert routing
+    ├── gate_function.py     MoE expert routing (incl. group-limited)
+    ├── spec_decode.py       Speculative-decoding acceptance model
     ├── config_builder.py    Cluster config -> ASTRA-Sim inputs
     ├── power_model.py       Power / energy estimation
     ├── pim_model.py         PIM device model
@@ -62,6 +63,7 @@ serving/
 | Change inter-instance routing | `router.py` |
 | Add a new CLI flag | `__main__.py` (argparse), then thread through |
 | Change MoE expert distribution | `gate_function.py` |
+| Change speculative acceptance | `spec_decode.py`, and `configs/spec_decode.json` for the published defaults |
 | Change ASTRA-Sim input generation | `config_builder.py` |
 | Add a new power component | `power_model.py` |
 

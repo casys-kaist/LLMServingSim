@@ -125,7 +125,8 @@ section:
 | `memory_model.py` | KV cache and weight memory accounting | [KV cache & memory](./scheduling/kv-cache-and-memory) |
 | `trace_generator.py` | Per-layer trace from profile CSVs | [Trace generation](./trace-generation) |
 | `graph_generator.py` | Chakra `.et` emitter | [Trace generation](./trace-generation) |
-| `gate_function.py` | MoE expert routing | [MoE expert routing](./moe-expert-routing) |
+| `gate_function.py` | MoE expert routing, including group-limited (`n_group` / `topk_group`) | [MoE expert routing](./moe-expert-routing) |
+| `spec_decode.py` | Speculative-decoding acceptance model, defaulting to each model's published rate | [CLI flags → Speculative decoding](/docs/reference/cli-flags) |
 | `pim_model.py` | PIM device latency model | [PIM offload](./specialized/pim-offload) |
 | `power_model.py` | Power and energy accounting | [Power model](./specialized/power-model) |
 | `controller.py` | ASTRA-Sim subprocess IPC | [Below](#python--c-boundary) |

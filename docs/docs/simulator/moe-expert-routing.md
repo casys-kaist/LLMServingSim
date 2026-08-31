@@ -80,6 +80,15 @@ because:
 2. It's deterministic, so simulations are reproducible.
 3. It enables the **block copy** optimization (see below).
 
+The number it actually needs is not "tokens per expert" but **how many
+EP ranks one token reaches**, since that is what sets each rank's local
+token count and the ALLTOALL size. `_hit_probs` computes it exactly, by
+a DP over which groups the token selected rather than by sampling, so
+the simulator stays deterministic. It draws **without replacement**,
+matching `torch.topk`: a token picks `k` *distinct* experts. An earlier
+closed form, `1 - ((ep-1)/ep)**k`, modelled `k` independent draws and
+read about 1% low (Qwen3-30B at EP=8: 0.6564 against the exact 0.6674).
+
 ### RR, round-robin
 
 Token *t* goes to expert `t % num_local_experts`. Same expert each
@@ -101,6 +110,42 @@ Edit `gate_function.py::GateRouter._custom_routing`. The hook
 receives the token list and returns expert assignments per token.
 Use this if you want to drive routing from real trained gate weights
 or a learned-from-trace model.
+
+## Group-limited routing
+
+DeepSeek-V3/V3.2 and GLM restrict a token's experts to `topk_group` of
+`n_group` groups. `deepseek_v2.py` passes `num_expert_group=config.n_group`
+and `topk_group=config.topk_group`, both defaulting to 1, and `GateRouter`
+reads the same two fields off the checkpoint.
+
+It matters because it narrows the set of ranks one token can reach, and
+so the per-rank MoE token count and the ALLTOALL that surrounds the
+block:
+
+| Model | `E` / top-`k` | `n_group` / `topk_group` | P(token reaches a given rank) at EP=8 |
+| --- | --- | --- | --- |
+| DeepSeek-V3.2-Exp | 256 / 8 | **8 / 4** | **0.454** — against GLM-5's 0.662 at the same `E` and `k`, a 31% cut |
+| GLM-5 | 256 / 8 | 1 / 1 | 0.662 |
+| Qwen3-30B-A3B | 128 / 8 | — | 0.667 |
+| Mixtral-8x7B | 8 / 2 | — | 0.250 |
+| Phi-mini-MoE | 16 / 2 | — | 0.242 |
+
+Only DeepSeek-V3.2 actually restricts. GLM-5 ships `n_group: 1`, which
+is the unrestricted case spelled out, and the other three do not
+declare the fields at all — their spread comes from `E` and `k`, not
+from grouping. The expression is verified
+against a 400k-trial Monte Carlo on seven
+`(E, k, n_group, topk_group, ep)` points and agrees within 0.0011,
+which is the Monte Carlo's own noise.
+
+The grouped and ungrouped cases go through the **same** expression on
+purpose. Keeping the old approximation for `n_group == 1` would have
+left two answers to one question.
+
+Grouping changes the reachable set, not the batch's total work: a
+balanced gate still spreads `T * K` expert-token pairs over every
+expert, so the **activated experts per rank** is unchanged. Only
+`local_tokens` moves.
 
 ## Expert-to-rank assignment
 
