@@ -73,7 +73,7 @@ model in four separate places.
 Group-limited routing is not a detail: at EP=8, DeepSeek-V3.2 sends a
 token to 45.4% of ranks against 66.2% unrestricted at the same `E`
 and top-`k` (GLM-5's figure), a 31% cut in
-per-rank MoE work and ALLTOALL size. See
+per-rank MoE work and EP collective size. See
 **[MoE expert routing](/docs/simulator/moe-expert-routing)**.
 
 ## Optional fields the simulator may consume

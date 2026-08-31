@@ -319,7 +319,7 @@ the lookup.
 | `final_layernorm` | dense (tp_stable) | `tokens = total_len` |
 | `lm_head` | per_sequence | `sequences = num_requests` |
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
-| `moe` | moe (always profiled at tp=1; wrapped in EP ALLTOALL) | `(local_tokens, activated_experts)` |
+| `moe` | moe (always profiled at tp=1; wrapped in the EP all-to-all) | `(local_tokens, activated_experts)` |
 
 The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
 and that key is what makes it regime-aware: a gated-DeltaNet block runs a
@@ -418,8 +418,8 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
   `lm_head`
 - `comp_time`: latency in nanoseconds (from the per-category CSVs, whose `time_us` is converted at load time)
 - `input_loc`/`weight_loc`/`output_loc`: `LOCAL` (NPU), `REMOTE:{node_id}` (CPU), `CXL:{id}`
-- `comm_type`: `NONE`, `ALLREDUCE`, `ALLTOALL`, `ALLGATHER`, `REDUCESCATTER`, or with
-  dimension scoping `ALLREDUCE:1,0`, `ALLTOALL:0,1`, `ALLREDUCE:1,0,0` (the
+- `comm_type`: `NONE`, `ALLREDUCE`, `ALLGATHER`, `REDUCESCATTER`, or with
+  dimension scoping `ALLREDUCE:1,0`, `ALLGATHER:0,1`, `ALLREDUCE:1,0,0` (the
   `:dim0,...` suffix maps to ASTRA-Sim's `involved_dim` BoolList for
   multi-dimensional topologies, one entry per topology dimension)
 - `comm_size` on `qkv_proj` carries the **P/D KV transfer amount** (per layer, per rank,
@@ -799,7 +799,8 @@ the group, so it must be divisible by `dp_group_size` and
 there are no experts to shard, so neither check applies.
 
 TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP
-(ALLTOALL). DP is achieved via multiple instances with the same `dp_group`.
+(an all-to-all -- see the MoE section for how it is emitted). DP is achieved via
+multiple instances with the same `dp_group`.
 
 `config_builder.py` reads the cluster config and generates three ASTRA-Sim input files:
 - `astra-sim/inputs/network/network.yml` — topology and bandwidth
@@ -815,7 +816,9 @@ are relative to the repo root and prefixed with `../` in code.
 ASTRA-Sim expects the **total** data size for collectives (not per-NPU). It divides by N
 internally (`msg_size = data_size / nodes_in_ring`).
 - ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
-- ALLTOALL for MoE: pass full activation tensor size
+- MoE: **not** one size. The EP all-to-all is emitted as two collectives with
+  different `data_size` conventions -- AllGather takes the per-rank chunk,
+  ReduceScatter the pre-scatter total. See the MoE section.
 
 ### Multi-dimensional topology and `involved_dim`
 For DP configurations the network topology is multi-dimensional, innermost dimension
@@ -844,7 +847,7 @@ NPU fall through to `_schedule_existing` when the pipeline is full for exactly t
 reason, and a DP batch is not servable to any NPU until the barrier has stamped its
 `workload_name`.
 
-The `involved_dim` is encoded in the trace `comm_type` field as `ALLTOALL:0,1` (parsed by
+The `involved_dim` is encoded in the trace `comm_type` field as `ALLGATHER:0,1` (parsed by
 the Chakra converter's `_parse_comm_type`). ASTRA-Sim's `Workload::issue_comm()` reads this
 and passes it to `generate_all_to_all()`, which skips dimensions where `involved_dim` is false.
 
@@ -857,7 +860,7 @@ DeepSeek-V3/V3.2 and GLM restrict a token's experts to `topk_group` of
 `n_group` groups (`deepseek_v2.py` passes `num_expert_group=config.n_group`,
 `topk_group=config.topk_group`, both defaulting to 1). `GateRouter` reads both
 off the checkpoint. It matters because it changes how many EP ranks one token
-reaches, and therefore the per-rank MoE token count and the ALLTOALL size:
+reaches, and therefore the per-rank MoE token count and the EP collective size:
 DeepSeek-V3.2 at EP=8 sends a token to 45.4% of ranks against 66.2%
 unrestricted (GLM-5's figure, same `E` and top-`k`). **Only DeepSeek-V3.2 actually restricts** — GLM-5 ships
 `n_group: 1` and no other family declares the fields.
@@ -869,24 +872,54 @@ read ~1% low even with no grouping. Don't "simplify" it back — the difference
 is measurable, and the grouped and ungrouped cases must not have two different
 answers to one question.
 
+### The EP all-to-all is emitted as AllGather + ReduceScatter
+An MoE dispatch/combine **is** an all-to-all, but it has several
+implementations and vLLM picks one with `--all2all-backend`. Its default is
+`allgather_reducescatter` -- "all2all based on allgather and reducescatter" in
+vLLM's own option list (`config/parallel.py:188`) -- so that is the pair the
+simulator emits, because ASTRA-Sim costs the collective it is handed. Nothing
+emits `ALLTOALL`; the converter still parses it.
+
+The two halves ride on the markers, not the expert rows, and are sized by
+ASTRA-Sim's `data_size` convention for each collective:
+
+| Half | Marker | `comm_size` |
+|------|--------|-------------|
+| dispatch | `EXPERT 0` | `total_len / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
+| combine | `EXPERT END` | `total_len * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+
+Real lines (Qwen3-30B-A3B, `hidden 2048`, 128 experts, bf16, 10 tokens at
+`ep_total 2`), where `5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`:
+
+```
+EXPERT 0 ALLGATHER:0,1 21760
+expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
+EXPERT END REDUCESCATTER:0,1 40960
+```
+
+The other backends (`deepep_*`, `mori_*`, `flashinfer_*`) would emit a
+different collective and are not modelled. Don't "fix" the docs back to a
+single ALLTOALL: the sizes differ between the two halves, so one collective
+cannot describe it.
+
 ### MoE expert blocks
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank
 gets a per-rank latency from profiled data based on its local token count and activated
 experts (`key_0=local_tokens, key_1=activated_experts`, profiled at tp=1). Ranks execute
-in parallel and sync at the ALLTOALL barrier. Expert-to-rank assignment uses even
+in parallel and sync at the dispatch/combine collectives. Expert-to-rank assignment uses even
 partitioning: `expert_id * ep_size // num_experts`.
 
 ### DP+EP wave synchronization
 For DP groups (instances with the same `dp_group`), wave synchronization is achieved
 through two mechanisms:
 1. **Python-side dp_pending barrier**: trace generation is deferred until all DP group
-   members have scheduled their batches. The ALLTOALL `comm_size` is synchronized to
-   `max(total_len) * hidden_size * fp` across the group. `dp_pending[dg][inst]` is a
+   members have scheduled their batches. The EP collectives' `comm_size` is
+   synchronized to the group-wide `max(total_len)`. `dp_pending[dg][inst]` is a
    **FIFO**, not one slot: at `pp_size > 1` a member can have up to `pp_size` batches
    waiting, and a round pairs the members' *j*-th batches, mirroring vLLM, where DP
    rank A's *j*-th forward joins the same collective as rank B's *j*-th
-2. **ASTRA-Sim ALLTOALL barrier**: all DP group instances' `.et` files are placed in a
-   shared workload folder. The ALLTOALL collectives in both files have matching stream
+2. **ASTRA-Sim collective barrier**: all DP group instances' `.et` files are placed in a
+   shared workload folder. The EP collectives in both files have matching stream
    IDs, causing ASTRA-Sim to block until both NPUs reach the collective.
 
 When one DP instance is idle (no requests), a dummy batch (1 decode token) is created
@@ -920,10 +953,11 @@ transforms text traces into protobuf `.et` files. It creates:
 - `MEM_LOAD_NODE` for the first layer's input (from REMOTE/CPU memory)
 - `COMP_NODE` for each computation layer
 - `MEM_STORE_NODE` for the last layer's output (to REMOTE/CPU memory)
-- `COMM_COLL_NODE` for ALLREDUCE/ALLTOALL (with optional `involved_dim` BoolList attribute)
+- `COMM_COLL_NODE` for ALLREDUCE / ALLGATHER / REDUCESCATTER (with optional `involved_dim` BoolList attribute)
 
-The converter parses `comm_type` strings like `ALLTOALL:0,1` via `_parse_comm_type()`,
-splitting into `comm_type="ALLTOALL"` and `involved_dim=[False, True]`.
+The converter parses `comm_type` strings like `ALLGATHER:0,1` via `_parse_comm_type()`,
+splitting into `comm_type="ALLGATHER"` and `involved_dim=[False, True]`. It also accepts
+`ALLTOALL`, which nothing emits -- see the MoE section.
 
 The MEM_STORE node uses the **last layer's** `output_memory_loc` and
 `output_memory_size`. This is why the sampler (not lm_head) must have

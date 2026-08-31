@@ -182,7 +182,7 @@ The Chakra converter creates:
 - `MEM_LOAD_NODE` for the first layer's input (CPU → NPU).
 - `COMP_NODE` for each computation layer.
 - `MEM_STORE_NODE` for the last layer's output (NPU → CPU).
-- `COMM_COLL_NODE` for ALLREDUCE / ALLTOALL collectives, with
+- `COMM_COLL_NODE` for ALLREDUCE / ALLGATHER / REDUCESCATTER collectives, with
   optional `involved_dim` BoolList for multi-dimensional topologies.
 
 ## Stage 8, Submitted to ASTRA-Sim
@@ -198,7 +198,7 @@ Waiting <sys=0> id=42 cycle=178654321
 `controller.read_wait` blocks until that line appears.
 
 For **DP groups**, both instances' `.et` files share the same workload
-folder and matching stream IDs on the ALLTOALL collectives. ASTRA-Sim
+folder and matching stream IDs on the EP collectives. ASTRA-Sim
 blocks until both NPUs reach the collective, naturally
 wave-synchronizing them.
 

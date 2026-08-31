@@ -161,7 +161,7 @@ gets inferred. So:
 - `num_npus == tp_size * pp_size` (always)
 - `pp_size <= num_hidden_layers`: stages are cut on transformer-block
   boundaries, so a stage cannot be empty
-- TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do EP-ALLTOALL
+- TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do the EP all-to-all
 - Without `dp_group`: `ep_size <= tp_size`
 - With `dp_group`: EP can scale beyond a single instance's GPUs (see DP+EP example)
 - For MoE models: `ep_size` must divide `num_local_experts`
@@ -318,7 +318,7 @@ wave-synchronized scheduling. MoE expert weights are sharded by
 
 Concrete example: Qwen3-30B-A3B has 128 experts. With
 `tp_size=1, ep_size=2, dp_group="A"` and two instances, each holds
-64 experts. Per-token activation crosses the DP group via ALLTOALL.
+64 experts. Per-token activation crosses the DP group via the EP all-to-all.
 
 This is the [DP+EP MoE](./parallelism/dp-ep-moe) example.
 

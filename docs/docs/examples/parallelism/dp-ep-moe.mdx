@@ -11,8 +11,8 @@ sidebar_position: 4
 
 This is the most interesting topology LLMServingSim can model. Two
 serving instances each run their own TP group, but they **share
-experts** via cross-instance ALLTOALL. The 2D ASTRA-Sim network mesh
-routes TP-ALLREDUCE on dim 0 and EP-ALLTOALL on dim 1.
+experts** via a cross-instance all-to-all. The 2D ASTRA-Sim network
+mesh routes TP-ALLREDUCE on dim 0 and the EP collectives on dim 1.
 
 ## Prerequisites
 
@@ -70,7 +70,7 @@ Collectives are scoped per dimension via the `involved_dim` BoolList:
 
 - TP-ALLREDUCE: `[True, False]`: dim 0 only (within instance, no-op
   here since `tp_size=1`)
-- EP-ALLTOALL: `[False, True]`: dim 1 only (across the two instances)
+- EP dispatch / combine: `[False, True]`: dim 1 only (across the two instances)
 
 ## Run
 
@@ -107,14 +107,15 @@ Notes on the flags:
 Those two lines are copied from
 [`bench/examples/RTXPRO6000/Qwen3-30B-A3B-Instruct-2507/outputs/sim.log`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples),
 the committed DP+EP validation run. Nothing in the heartbeat names the
-ALLTOALL or the DP group: wave synchronisation shows up only as the two
-instances advancing in lockstep, which is why their `Running` counts
-stay within one of each other.
+EP collectives or the DP group: wave synchronisation shows up only as
+the two instances advancing in lockstep, which is why their `Running`
+counts stay within one of each other — one `Running Instance[i]` line
+per member, and nothing else about the wave.
 
-The `batch=4+4` notation reflects per-instance batch (instance 0 +
-instance 1). The `alltoall` field shows the wave-synchronized
-ALLTOALL message size, which equals
-`max(total_len_per_instance) * hidden_size * fp_size`.
+To see the synchronized message size you have to read the trace, not
+the log: run with `--save-trace-text` and look at the `EXPERT 0` /
+`EXPERT END` markers, whose `comm_size` is computed from
+`max(total_len_per_instance)` across the group.
 
 ## What's interesting
 
@@ -123,17 +124,16 @@ ALLTOALL message size, which equals
   weight memory is roughly halved compared to single-instance EP=1.
 - **One ASTRA-Sim process for both instances.** Wave-synchronized
   scheduling across the DP group means the simulator generates `.et`
-  files for both instances that share stream IDs on the ALLTOALL,
-  forcing ASTRA-Sim to block until both NPUs reach the collective.
+  files for both instances that share stream IDs on the EP
+  collectives, forcing ASTRA-Sim to block until both NPUs reach them.
 - **Idle instance gets a dummy batch.** When one instance has no
   pending work, the scheduler synthesizes a 1-decode-token batch so
-  it can still participate in the wave's ALLTOALL. Same when one
+  it can still participate in the wave's collective. Same when one
   instance finishes early, it keeps generating dummies until the
   group does.
 - **`comm_size` is synchronized.** Even if instance A has a much
-  bigger batch than instance B, both pass the same ALLTOALL size to
-  ASTRA-Sim, set to the max, so the network model sees the heavier
-  side.
+  bigger batch than instance B, both pass the same size to ASTRA-Sim,
+  set to the max, so the network model sees the heavier side.
 
 ## Related examples
 
