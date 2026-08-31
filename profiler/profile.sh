@@ -141,6 +141,13 @@ SKEW_KVS_FACTOR=2.0
 # setting anything. Override VARIANT only for named runs (awq, gptq, ...).
 # VARIANT="my_experiment"
 
+# --- Paths ------------------------------------------------------------------
+# Where the bundle lands, and where model configs are read from. Only useful
+# for writing a throwaway bundle somewhere else, or pointing at a second
+# configs/model tree.
+# OUT_ROOT="profiler/perf"
+# MODEL_CONFIG_ROOT="configs/model"
+
 # --- Verbosity --------------------------------------------------------------
 # Default is INFO (progress + TP limits). Uncomment one to change:
 # VERBOSITY="--silent"             # warnings only
@@ -183,6 +190,8 @@ done
 [[ -n "${ONLY_SKEW:-}" ]]              && cmd+=(--only-skew)
 [[ -n "${FORCE:-}" ]]                  && cmd+=(--force)
 [[ -n "${VARIANT:-}" ]]                && cmd+=(--variant "$VARIANT")
+[[ -n "${OUT_ROOT:-}" ]]               && cmd+=(--out-root "$OUT_ROOT")
+[[ -n "${MODEL_CONFIG_ROOT:-}" ]]      && cmd+=(--model-config-root "$MODEL_CONFIG_ROOT")
 [[ -n "${VERBOSITY:-}" ]]              && cmd+=($VERBOSITY)
 
 "${cmd[@]}"

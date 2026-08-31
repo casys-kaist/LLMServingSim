@@ -208,7 +208,7 @@ scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
 
 | Field | Scope | Type | Description |
 | --- | --- | --- | --- |
-| `placement` | instance | Object | Per-layer placement rules for weights and KV cache location |
+| `placement` | instance | Object | Per-layer placement rules. `default` / `blocks[]` / `layers{}`, each taking `weights`, `kv_loc`, `kv_evict_loc` — one of `npu` / `cpu` / `cxl:<id>`. Full schema on the [website](https://llmservingsim.ai/docs/reference/cluster-config) |
 | `power` | node | Object | Power model config (NPU idle/standby/active, CPU, DRAM, link, NIC, storage) |
 | `cxl_mem` | top-level | Object | CXL memory expansion parameters (`mem_size`, `mem_bw`, `mem_latency`, `num_devices`) |
 | `pim_config` | node cpu_mem | String | Name of a PIM device config in `configs/pim/` |
@@ -225,6 +225,7 @@ scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
 | `single_node_moe_single_instance.json` | Single node, Qwen3-MoE with TP=2 EP=2 |
 | `single_node_moe_dp_ep_instance.json` | Single node, two MoE instances in one DP group sharing experts over EP=2 |
 | `single_node_dp_instance.json` | Single node, DP=2 x TP=2 dense model (4 GPUs) |
+| `single_node_dp_pp_instance.json` | Single node, DP=2 x PP=2 dense model (4 GPUs, `tp_size=1`). The dense counterpart to `single_node_moe_dp_pp_instance.json`, and the `dp_pp` validate scenario |
 | `rtx4090_single_instance.json` | RTX 4090 (24 GB), Llama-3.1-8B TP=1. `mem_util` calibrated to the validated bench run |
 | `rtx4090_tp2_instance.json` | Two RTX 4090s as TP=2, Llama-3.1-8B. A template, not runnable as shipped: only `tp1` is profiled for RTX4090, so it raises `FileNotFoundError` until you profile the card with `TP_DEGREES=2`. `mem_util` is left at the default because there is no validated run |
 | `rtx4090_multi_instance.json` | Two independent TP=1 RTX 4090 instances behind the router |

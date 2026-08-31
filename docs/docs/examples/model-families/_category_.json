@@ -1,0 +1,8 @@
+{
+  "label": "Model families",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Beyond dense transformers: hybrid linear attention and sparse attention. What each family changes about the trace, the memory model and the scheduler."
+  }
+}

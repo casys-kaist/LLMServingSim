@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   Split,
   HardDrive,
+  Boxes,
   Wrench,
 } from 'lucide-react';
 
@@ -52,9 +53,15 @@ experiments are 80% one of these and 20% your own tweak.
     to: '/docs/examples/memory-tiers/prefix-caching',
   },
   {
+    Icon: Boxes,
+    title: 'Model families',
+    description: 'Beyond dense transformers: hybrid linear attention (gated DeltaNet) and sparse attention (DSA, block-sparse MSA). What each changes about the trace, the memory model and the scheduler.',
+    to: '/docs/examples/model-families/hybrid-linear-attention',
+  },
+  {
     Icon: Wrench,
     title: 'Advanced',
-    description: 'Power modeling and sub-batch interleaving, niche features that pay off in specific scenarios.',
+    description: 'Power modeling, sub-batch interleaving and speculative decoding, niche features that pay off in specific scenarios.',
     to: '/docs/examples/advanced/power-modeling',
   },
 ]} />
