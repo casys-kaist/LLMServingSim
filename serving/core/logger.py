@@ -437,6 +437,13 @@ def print_input_config(args: Any) -> None:
             return "xPU + CXL"
         return "None"
 
+    def _derived(x: Any) -> str:
+        # ``--block-size`` defaults to None, meaning "whatever the profile
+        # bundle records vLLM settling on". That is resolved per instance, so
+        # the banner cannot name one number -- but it must not print "None"
+        # either, which reads as "unset" rather than "derived".
+        return "derived per instance" if x is None else x
+
     items: list[tuple[str, Any]] = []
 
     def add(attr: str, label: str, conv=lambda v: v) -> None:
@@ -451,7 +458,7 @@ def print_input_config(args: Any) -> None:
     add("num_req", "Num requests")
     add("max_num_seqs", "Max num seqs", _inf0)
     add("max_num_batched_tokens", "Max batched tokens", _inf0)
-    add("block_size", "Block size (tokens)")
+    add("block_size", "Block size (tokens)", _derived)
     add("fp", "FP precision", _bits)
     add("request_routing_policy", "Request routing", _na)
     add("expert_routing_policy", "Expert routing", _na)
