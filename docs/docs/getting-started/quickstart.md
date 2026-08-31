@@ -50,7 +50,7 @@ shows the per-request output. The columns are `instance id`,
 | Flag | What it does |
 | --- | --- |
 | `--cluster-config` | Cluster topology + hardware. Generates ASTRA-Sim input files automatically. |
-| `--block-size` | KV-cache block size in tokens. Omit it and the simulator uses whatever the profile bundle records vLLM settling on, which is what vLLM does — it derives a block size rather than accepting one. |
+| `--block-size` | KV-cache block size in tokens. vLLM treats it as a floor and raises it until one attention page covers one mamba page, so omit it and the simulator uses whatever the profile bundle records the engine settling on. |
 | `--dataset` | JSONL file of requests (or agentic sessions). |
 | `--output` | Where to write per-request metrics. |
 | `--log-interval` | How often to print the throughput / memory / power summary line (seconds). |

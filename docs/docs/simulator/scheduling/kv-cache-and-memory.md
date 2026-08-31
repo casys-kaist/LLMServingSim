@@ -172,10 +172,13 @@ So it bounds **concurrency** the way a KV cache bounds context.
 
 #### It is counted in pages, not in bytes
 
-vLLM picks the attention block size so that one attention page covers one mamba
-page, then pads the mamba page up to it:
+vLLM raises the attention block size until one attention page covers one mamba
+page, then pads the mamba page up to it. The block size you pass is the
+**floor and the alignment unit**, not the answer:
 
 ```
+alignment             = max(min(backend supported block sizes),
+                            cache_config.block_size)
 attn_block_size       = alignment * cdiv(mamba_page_size,
                                          alignment * attn_page_size_1_token)
 mamba_page_size_padded = attn_page_size
@@ -184,10 +187,12 @@ mamba_page_size_padded = attn_page_size
 so a layer's whole state occupies **exactly one page** and the padding is
 really allocated. On Qwen3.8-27B the mamba page is 3,207,168 bytes against an
 attention page of 3,211,264 at `block_size 784` — and that is where 784 comes
-from: `16 * cdiv(3,207,168, 16 * 4,096) = 784`. That is why the block size is
-read out of the profile bundle rather than defaulted, though the four bundles
-shipped in this repo predate the `engine_resolved` field and still fall back to
-16.
+from: `16 * cdiv(3,207,168, 16 * 4,096) = 784`, starting from vLLM's default
+`--block-size 16`. Start from 64 instead and the answer is 832, because the
+alignment is `max(backend minimum, your value)`. That is why the block size is
+read out of the profile bundle rather than recomputed — the bundle records the
+value the latencies were actually measured at. The four bundles shipped in this
+repo predate the `engine_resolved` field and still fall back to 16.
 
 How many pages per layer is `MambaSpec.max_memory_usage_bytes`, and it depends
 on the cache mode:

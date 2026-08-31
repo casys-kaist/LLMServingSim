@@ -53,8 +53,9 @@ arbitrary; each has bitten the project at least once.
   vLLM has `--dtype` and `--kv-cache-dtype`; this simulator does not,
   because a modern checkpoint carries five cache dtypes decided in four
   places and overriding one describes a model nobody can serve. The
-  same reasoning removed `--block-size`'s default: vLLM *derives* a
-  block size, and the profile bundle records what it derived.
+  same reasoning removed `--block-size`'s hardcoded default: vLLM treats
+  a block size as a floor and raises it, so the profile bundle records
+  what the engine settled on and the simulator reads that back.
 
 ## File and config naming
 

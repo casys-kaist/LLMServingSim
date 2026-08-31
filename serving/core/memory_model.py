@@ -658,19 +658,26 @@ def cache_dtype_bytes(config, fp, kv_fp):
     same place. Reading one CLI value for all of them is how the recurrent
     state came out half size.
 
-    ==================  ==========================================  ==========
-    cache               source                                      overridable
-    ==================  ==========================================  ==========
-    weight              config: quantization_config, then            --dtype
-                        torch_dtype / dtype
-    main KV             a serving choice, inheriting the weight      --kv-cache-dtype
-                        dtype under "auto"
-    mamba conv state    config: ``mamba_cache_dtype``, "auto" ->      no
-                        the model dtype
-    mamba SSM state     config: ``mamba_ssm_dtype``, "auto" ->        no
-                        the conv dtype
-    indexer side cache  fixed by the model, not by either            no
-    ==================  ==========================================  ==========
+    ==================  =============================================
+    cache               source (all five are the checkpoint's; none
+                        is an input to this simulator)
+    ==================  =============================================
+    weight              ``quantization_config.quant_method``, then
+                        ``torch_dtype`` / ``dtype``
+    main KV             ``quantization_config.kv_cache_scheme`` or
+                        ``kv_cache_quant_algo`` -> fp8, else the
+                        weight dtype
+    mamba conv state    ``mamba_cache_dtype``, "auto" -> the weight
+                        dtype
+    mamba SSM state     ``mamba_ssm_dtype``, "auto" -> the **conv**
+                        dtype, not the weight dtype
+    indexer side cache  fixed by the model, following neither
+    ==================  =============================================
+
+    vLLM does expose a flag for the first two, and this simulator
+    deliberately does not: five dtypes decided in four places make a flag
+    per dtype both unusable and unfaithful, and the checkpoint already
+    says what it is. To simulate another precision, profile it.
 
     The last row is the one that looks like a serving knob and is not.
     DeepSeek's ``DeepseekV32IndexerCache`` is constructed with
