@@ -9,6 +9,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **Three example pages for the features this cycle added**, under a new
+  "Model families" section plus one in Advanced: hybrid linear attention
+  (gated DeltaNet), sparse attention (DSA and block-sparse MSA), and
+  speculative decoding. Each carries the setup, the per-family requirements
+  that fail loudly if missed (MiniMax-M3 needs `--block-size 128`; its config
+  must stay nested), and the caveats -- including, plainly, that no bundle is
+  shipped for any of these models and no end-to-end validation has happened.
+- **`profile.sh` and `profile-all.sh` now reach every profiler flag.**
+  `profile.sh` gained `ATTENTION_DECODE_Q_LENS` (the speculative-decoding
+  axis, which existed on the CLI but not in the editable template),
+  `OUT_ROOT` and `MODEL_CONFIG_ROOT`.
+- **A complete "everything you can set" index in `profiler/README.md` and
+  `serving/README.md`**, checked against the live argparse surface: 22 of 30
+  profiler flags and 27 of 31 simulator flags had never been mentioned in
+  either file. The semantics stay on the website (which was already complete
+  bar one row) so there is one description to keep correct, not two.
 - **The KV block size is read back from the profile bundle, not defaulted to
   16.** vLLM treats a block size as a *floor and an alignment unit* rather than
   the answer: `platforms/interface.py` takes
@@ -639,6 +655,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **`profile-all.sh` could not profile MiniMax-M3 at all.** It applied one
+  global flag set to every model in its list, and M3 *requires*
+  `--block-size 128` -- its sparse selection works in 128-token blocks and the
+  platform default of 16 fails outright with "No common block size for 16" --
+  while passing 128 globally would describe a paging regime the other models
+  are not simulated under. Entries are now `"<model>|<extra flags>"` with the
+  extras appended last, the model list covers all seven families, and a
+  failing model no longer aborts the rest of an overnight sweep (it is
+  reported and the exit code is non-zero).
+  - TP is per job for the same reason it is not uniform: expert weights are
+    ~98% of a big MoE model and they shard by **EP**, so a max-DP layout runs
+    every instance at `tp_size 1` and only `tp1/` is ever read. Sweeping TP
+    there costs hours and buys nothing. The dense models keep `--tp 1,2`.
 - **The docs said the MoE block was wrapped in `ALLTOALL`; the trace has said
   `ALLGATHER` + `REDUCESCATTER` since v1.1.0.** Both are true, which is why the
   drift survived: an MoE dispatch/combine *is* an all-to-all, but it has
