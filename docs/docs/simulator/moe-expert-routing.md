@@ -82,7 +82,8 @@ because:
 
 The number it actually needs is not "tokens per expert" but **how many
 EP ranks one token reaches**, since that is what sets each rank's local
-token count and the ALLTOALL size. `_hit_probs` computes it exactly, by
+token count and the size of the EP collective. `_hit_probs` computes it
+exactly, by
 a DP over which groups the token selected rather than by sampling, so
 the simulator stays deterministic. It draws **without replacement**,
 matching `torch.topk`: a token picks `k` *distinct* experts. An earlier
@@ -119,7 +120,7 @@ and `topk_group=config.topk_group`, both defaulting to 1, and `GateRouter`
 reads the same two fields off the checkpoint.
 
 It matters because it narrows the set of ranks one token can reach, and
-so the per-rank MoE token count and the ALLTOALL that surrounds the
+so the per-rank MoE token count and the collective that surrounds the
 block:
 
 | Model | `E` / top-`k` | `n_group` / `topk_group` | P(token reaches a given rank) at EP=8 |
@@ -219,25 +220,47 @@ already small). Simulator does 2D linear interpolation across the
 two axes.
 
 The full MoE block latency is then **max(rank_latencies)** because
-ranks execute in parallel and synchronize at the ALLTOALL barrier.
-Whichever rank gets the most tokens × experts dominates.
+ranks execute in parallel and synchronize at the surrounding
+collectives. Whichever rank gets the most tokens × experts dominates.
 
-## What ALLTOALL costs surround the MoE block
+## What the EP all-to-all costs
 
-Each MoE block in the trace is sandwiched between two
-ALLTOALL collectives:
+Each MoE block in the trace is sandwiched between the two halves of an
+all-to-all:
 
 ```
-input_residue → dispatch ALLTOALL → expert compute → combine ALLTOALL → output_residue
+input_residue → dispatch → expert compute → combine → output_residue
 ```
 
-- **Dispatch ALLTOALL**: routes input activations from each rank's
-  TP shard to the rank holding their assigned expert.
-- **Combine ALLTOALL**: gathers expert outputs back to the
-  originating ranks.
+- **Dispatch**: routes input activations from each rank's TP shard to
+  the rank holding their assigned expert.
+- **Combine**: gathers expert outputs back to the originating ranks.
 
-Both have `comm_size = total_len * hidden_size * fp_size` (full
-activation tensor; ASTRA-Sim divides per rank).
+**In the trace these are `ALLGATHER` and `REDUCESCATTER`, not
+`ALLTOALL`.** An MoE all-to-all is a logical operation with several
+implementations, and vLLM picks one with `--all2all-backend`; its
+default is `allgather_reducescatter`, described in vLLM's own option
+list as "all2all based on allgather and reducescatter". The simulator
+emits that pair, because ASTRA-Sim costs the collective it is handed.
+
+They are sized differently, following ASTRA-Sim's `data_size`
+convention for each collective:
+
+| Half | Marker | `comm_size` |
+| --- | --- | --- |
+| Dispatch | `EXPERT 0` | `total_len / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits alongside the hidden state |
+| Combine | `EXPERT END` | `total_len * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+
+Real lines from Qwen3-30B-A3B (`hidden 2048`, 128 experts, bf16) with
+10 tokens at `ep_total 2`:
+
+```
+EXPERT 0 ALLGATHER:0,1 21760
+expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
+EXPERT END REDUCESCATTER:0,1 40960
+```
+
+`5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
 
 For **DP+EP** topologies, the `comm_size` is synchronized to the max
 across the DP group, see
@@ -268,7 +291,7 @@ across the DP group, see
 ## What's next
 
 - **[Parallelism mechanics](./parallelism-mechanics)**: what the
-  ALLTOALLs around the MoE block look like at the network level.
+  collectives around the MoE block look like at the network level.
 - **[Examples → Expert parallel](/docs/examples/parallelism/expert-parallel)** -
   the configuration angle (when to use which `ep_size`).
 - **[Examples → DP+EP MoE](/docs/examples/parallelism/dp-ep-moe)** -

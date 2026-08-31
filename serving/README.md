@@ -68,7 +68,7 @@ shared.prologue (embedding)
   → [attn.<type>.pre_attn  (layernorm → qkv_proj → [qk_norm] → rotary_emb → attention)
      → attn.<type>.post_attn (o_proj[ALLREDUCE] → layernorm)
      → mlp.dense (gate_up_proj → act_fn → down_proj[ALLREDUCE])
-        or mlp.moe (moe[ALLTOALL])
+        or mlp.moe (moe[EP all-to-all])
     ] × N_layers
   → shared.head (final_layernorm → lm_head → sampler)
 ```
@@ -208,7 +208,7 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 Handles tensor parallelism (ALLREDUCE placement), MoE expert routing with
 `involved_dim` dimension scoping for DP+EP, PIM attention offloading, and
 sub-batch interleaving. The `comm_type` field supports dimension scoping
-(e.g., `ALLTOALL:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a
+(e.g., `ALLGATHER:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a
 new model architecture, add a `profiler/models/<model_type>.yaml` with a
 matching `blocks:` / `shared:` rather than editing this file.
 

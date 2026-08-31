@@ -305,7 +305,7 @@ rope modules of the same class: `rotary_emb` scopes to
 nested inside it, so the indexer's copy lands on the inner entry.
 
 There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
-`o_proj` / `down_proj` and EP ALLTOALL around `moe` are attached by the
+`o_proj` / `down_proj` and the EP all-to-all around `moe` are attached by the
 simulator from the **cluster config**, not declared here.
 
 ### Section reference
@@ -317,7 +317,7 @@ simulator from the **cluster config**, not declared here.
 | `blocks.attn.<type>.post_attn` | Once per decoder layer of that type | o_proj + post-attention layernorm |
 | `blocks.sparse_attn.<type>` | Instead of `attn.<type>`, on layers whose sparse flag is set | Same `pre_attn` / `post_attn` shape. Optional; falls through to `attn` |
 | `blocks.mlp.dense` | On layers running a dense MLP | gate_up_proj + act_fn + down_proj |
-| `blocks.mlp.moe` | On layers running MoE | `moe`, with the EP ALLTOALL surround added by the simulator |
+| `blocks.mlp.moe` | On layers running MoE | `moe`, with the EP all-to-all surround added by the simulator |
 | `shared.head` | Once at the end of each iteration | final_layernorm + lm_head + sampler |
 
 `attention` is **listed explicitly** in `pre_attn`; it is not implicit.

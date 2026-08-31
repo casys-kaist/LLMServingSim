@@ -6,19 +6,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
-- **The KV block size is derived, not defaulted.** vLLM does not accept a
-  block size, it *derives* one -- from the attention backend's
-  `get_supported_kernel_block_sizes` and from hybrid page unification -- so
-  the profiler now records what the engine settled on in
-  `meta.yaml::engine_resolved` (`block_size`, `max_model_len`,
-  `num_cache_tokens`), and `--block-size` defaults to reading it back rather
-  than to 16. An explicit value that disagrees is still allowed, because
-  studying a hypothetical block size is a legitimate thing to simulate, but it
-  is warned about: it is a configuration vLLM cannot serve. Qwen3.8-27B
-  resolves to **784** -- `16 * cdiv(3,207,168, 16 * 4,096)`, its gated-DeltaNet
-  page divided by one token's attention page -- against the platform default of
-  16. The four bundles shipped in this repo predate the field and still fall
-  back to 16 until they are re-profiled.
+- **The KV block size is read back from the profile bundle, not defaulted to
+  16.** vLLM treats a block size as a *floor and an alignment unit* rather than
+  the answer: `platforms/interface.py` takes
+  `alignment = max(min(backend.get_supported_kernel_block_sizes()),
+  cache_config.block_size)`, derives the smallest multiple of it whose
+  attention page covers one mamba page, and raises the block size to that --
+  never lowering it. So the resolved value depends on what was asked for:
+  Qwen3.8-27B gives **784** from `--block-size 16`
+  (`16 * cdiv(3,207,168, 16 * 4,096)`) and **832** from 64. The profiler now
+  records what the engine settled on in `meta.yaml::engine_resolved`
+  (`block_size`, `max_model_len`, `num_cache_tokens`) and the simulator reads
+  it back, so lookups match the block size the latencies were measured at. An
+  explicit value that disagrees is still allowed -- studying a hypothetical
+  block size is a legitimate thing to simulate -- but it is warned about. The
+  four bundles shipped in this repo predate the field and still fall back to 16
+  until they are re-profiled.
 - **Speculative decoding.** `--num-speculative-tokens N`,
   `--spec-acceptance-rate`, `--spec-acceptance-policy {FIXED,DECAY,CUSTOM}`,
   all overridable per instance. Scheduling follows vLLM's own framing --
@@ -633,6 +636,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **The docs said the MoE block was wrapped in `ALLTOALL`; the trace has said
+  `ALLGATHER` + `REDUCESCATTER` since v1.1.0.** Both are true, which is why the
+  drift survived: an MoE dispatch/combine *is* an all-to-all, but it has
+  several implementations and vLLM picks one with `--all2all-backend`. Its
+  default is `allgather_reducescatter` -- "all2all based on allgather and
+  reducescatter" in vLLM's own option list -- and the simulator emits that
+  pair, because ASTRA-Sim costs the collective it is handed. The pages say so
+  now, and carry the two sizes, which are *not* the same: AllGather's
+  `data_size` is the per-rank chunk
+  (`total_len / ep_total * (hidden + num_experts) * fp`, router logits
+  included), ReduceScatter's the pre-scatter total (`total_len * hidden * fp`).
+  "Pass the full activation tensor size" described neither.
+  - The trace-format page's MoE example was **invented**: a
+    `moe_expert_local_3_rank0` layer name that is emitted as `expert`, an
+    `EXPERT END` per rank where there is one for the whole block, and
+    `ALLTOALL` in a `comm_type` column that is always `NONE` there. Replaced
+    with real lines.
+  - `examples/parallelism/dp-ep-moe.mdx` claimed the heartbeat carries an
+    `alltoall` field and a `batch=4+4` notation. Neither exists in any log the
+    repo ships. Replaced with what the heartbeat actually shows, plus a pointer
+    to `--save-trace-text` for the message size.
 - **Prefill chunks are block-aligned on a hybrid with prefix caching**, which
   is vLLM's `Scheduler._mamba_block_aligned_split`. A mamba state slot holds
   the state after exactly `(p + 1) * block_size` tokens and state is written at

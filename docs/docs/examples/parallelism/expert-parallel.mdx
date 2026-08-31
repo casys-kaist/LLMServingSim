@@ -6,7 +6,7 @@ sidebar_position: 3
 # Expert parallel (MoE)
 
 > **What this demonstrates:** sharding MoE experts across GPUs within
-> a single instance, and adding ALLTOALL collectives around the MoE
+> a single instance, and adding the EP all-to-all around the MoE
 > block.
 
 For mixture-of-experts models, you have two options for spreading work
@@ -57,7 +57,7 @@ The MoE-specific knob:
 
 - `ep_size: 2`: experts split across the 2 GPUs in this instance.
 - TP=2 + EP=2 share the same 2 GPUs. Dense layers run TP-ALLREDUCE on
-  the same pair, MoE layers run EP-ALLTOALL.
+  the same pair, MoE layers run the EP all-to-all.
 
 Qwen3-30B-A3B has **128 experts**, so each GPU holds **64**. The
 constraint `ep_size` divides `num_local_experts` is checked at startup.
@@ -93,9 +93,9 @@ python -m serving \
 ```
 
 Compared to a hypothetical TP=2 EP=1 run on the same model: each
-forward pass now adds two ALLTOALL phases (dispatch tokens to expert
-GPUs and gather them back) instead of TP-ALLREDUCE on every dense
-linear. With only 8 active experts per token, the per-token compute
+forward pass now adds the two all-to-all phases (dispatch tokens to
+expert GPUs and gather them back) instead of TP-ALLREDUCE on every
+dense linear. With only 8 active experts per token, the per-token compute
 shrinks substantially.
 
 ## What's interesting
@@ -103,10 +103,12 @@ shrinks substantially.
 - **Expert weight memory halves** vs. EP=1: each GPU holds 64 of the
   128 experts. With Qwen3-30B-A3B's expert size, that's a multi-GB
   saving per GPU.
-- **ALLTOALL replaces TP-ALLREDUCE** in the MoE block. The
-  per-iteration `comm_size` for ALLTOALL is `local_tokens *
-  hidden_size * fp`: proportional to *active* tokens, not weights -
-  so latency scales with batch size, not model size.
+- **The EP all-to-all replaces TP-ALLREDUCE** in the MoE block, and
+  appears in the trace as `ALLGATHER` (dispatch, on `EXPERT 0`) plus
+  `REDUCESCATTER` (combine, on `EXPERT END`) — vLLM's default
+  `allgather_reducescatter` backend. Both sizes are proportional to
+  *active* tokens rather than weights, so latency scales with batch
+  size, not model size.
 - **Activated experts per token** matters more than total experts.
   Qwen3-30B-A3B activates 8 of 128, that's the load on the inner
   expert kernels, regardless of EP degree.

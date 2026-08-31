@@ -80,7 +80,7 @@ the next batch takes:
 9. **DP-group sync** *(optional)*: instances in the same `dp_group`
    defer trace generation until **all** group members have scheduled
    for this iteration, then submit together with a synchronized
-   ALLTOALL `comm_size`.
+   EP collective `comm_size`.
 10. **Mark requests done** when ASTRA-Sim reports completion via
     `scheduler.add_done(...)`. The loop exits when every instance is
     idle and there are no pending or deferred requests.

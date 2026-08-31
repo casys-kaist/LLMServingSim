@@ -218,8 +218,9 @@ one trace row per layer. It also:
 
 - Attaches **TP-ALLREDUCE** after `o_proj` and `down_proj` when
   `tp_size > 1`.
-- Wraps the MoE block with **EP-ALLTOALL** markers when MoE is
-  active.
+- Wraps the MoE block with the **EP all-to-all** markers when MoE is
+  active — emitted as `ALLGATHER` (dispatch) and `REDUCESCATTER`
+  (combine), matching vLLM's default `allgather_reducescatter` backend.
 - Swaps in PIM attention before the NPU attention kernel when
   `--enable-attn-offloading` is on.
 - One-shot-warns when a sequence layer is missing from the profile
@@ -230,15 +231,17 @@ one trace row per layer. It also:
 When instances are in a `dp_group`, trace generation is **deferred**
 until all DP members have scheduled their batches for the current
 iteration. The simulator collects each member's `total_len`, takes
-the **max** across the group, and uses that for the EP-ALLTOALL
-`comm_size`:
+the **max** across the group, and uses that for both halves of the EP
+all-to-all:
 
 ```
-comm_size_alltoall = max(total_len_per_member) * hidden_size * fp_size
+dispatch (ALLGATHER)    = max(total_len) / ep_total * (hidden + n_experts) * fp
+combine  (REDUCESCATTER) = max(total_len) * hidden * fp
 ```
 
 Each member's trace still uses its own per-instance `total_len` for
-the dense and attention kernels, only the ALLTOALL is synchronized.
+the dense and attention kernels, only the EP collectives are
+synchronized.
 This matches what production MoE serving does (vLLM CUDA-graph
 padding to the max in the wave).
 
@@ -276,8 +279,8 @@ via `block_copy=False` in the gate router constructor.
 MoE uses `EXPERT {i}` / `EXPERT END` markers in the trace, with one
 `COMP_NODE` per EP rank. Each rank's latency comes from the MoE CSV
 keyed on its **local** token count and activated experts (profiled
-at TP=1). Ranks execute in parallel and synchronize at the
-ALLTOALL barrier.
+at TP=1). Ranks execute in parallel and synchronize at the dispatch
+and combine collectives.
 
 Expert-to-rank assignment uses even partitioning:
 `expert_id * ep_size // num_experts`.
@@ -303,6 +306,6 @@ Expert-to-rank assignment uses even partitioning:
 ## What's next
 
 - **[Parallelism mechanics](./parallelism-mechanics)**: what
-  TP-ALLREDUCE / EP-ALLTOALL actually look like in the trace.
+  TP-ALLREDUCE and the EP all-to-all actually look like in the trace.
 - **[Reference → Trace file format](/docs/reference/trace-format)**
   the field-by-field spec of the text trace this page produces.
