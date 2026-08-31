@@ -315,7 +315,13 @@ def _sync_system_collective_dims(system_config_path, instances):
 
 # parse cluster configuration from JSON file and build config file for astra-sim
 def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading=False, enable_attn_offloading=False, inputs_root=None):
-    cluster_config_path = f'../{cluster_config_path}' # move out from astra-sim folder
+    # Relative paths are read from the repo root, one level out of astra-sim,
+    # which is the cwd by now. An absolute path is already complete --
+    # ``__main__._cluster_config_path`` has always honoured that, and this
+    # second reader of the same argument did not, so an absolute
+    # ``--cluster-config`` got past the override pass and failed here.
+    if not os.path.isabs(cluster_config_path):
+        cluster_config_path = os.path.join('..', cluster_config_path)
     
     try:
         with open(cluster_config_path, 'r') as f:
