@@ -201,6 +201,7 @@ file is an error.
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
+| `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
 | `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
 | `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |
 | `--measurement-iterations` | `3` | `MEASUREMENT_ITERATIONS` |
@@ -211,13 +212,12 @@ file is an error.
 | `--skew-kp-factor` | `2.0` | `SKEW_KP_FACTOR` |
 | `--skew-kvs-factor` | `2.0` | `SKEW_KVS_FACTOR` |
 | `--force` | off (resume) | `FORCE=1` |
-| `--out-root` | `profiler/perf` | — |
-| `--model-config-root` | `configs/model` | — |
+| `--out-root` | `profiler/perf` | `OUT_ROOT` |
+| `--model-config-root` | `configs/model` | `MODEL_CONFIG_ROOT` |
 | `--log-level` | `INFO` | `VERBOSITY` |
 | `--silent` | — | `VERBOSITY="--silent"` |
 | `--verbose` | — | `VERBOSITY="--verbose"` |
 
-`--out-root` and `--model-config-root` have no `profile.sh` equivalent.
 Use `--out-root` to write a bundle somewhere other than
 `profiler/perf/`, and `--model-config-root` to point at a different
 tree of HF configs — useful for profiling hypothetical shapes without

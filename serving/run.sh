@@ -74,6 +74,38 @@ python -m serving --cluster-config 'configs/cluster/single_node_single_instance.
 #     --output 'outputs/example_agentic_run.csv' \
 #     --num-reqs 1   # session count, not request count
 
+# Speculative decoding. --num-speculative-tokens is vLLM's own flag name, and
+# the acceptance rate defaults to the model's own published measurement
+# (configs/spec_decode.json). Llama-3.1-8B has no published figure, so it has
+# to be given one -- and since it declares no MTP modules it drafts with a
+# separate model or n-gram, which this simulator has nothing to charge for, so
+# the run warns that draft *time* is not counted and the speedup is an upper
+# bound. On a model with MTP modules (DeepSeek-V3.2, GLM-5, MiniMax-M3,
+# Qwen3.8) the run instead **refuses** until its catalog has an `mtp:` block.
+# python -m serving --cluster-config 'configs/cluster/single_node_single_instance.json' \
+#     --block-size 16 --num-speculative-tokens 4 --spec-acceptance-rate 0.6 \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_spec_run.csv' \
+#     --num-reqs 10
+
+# Hybrid linear-attention model (gated DeltaNet). Needs a profiled bundle for
+# the model, which the repo does not ship yet -- profile it first with
+# MODEL="Qwen/Qwen3.8-27B" ./profiler/profile.sh. Omitting --block-size is
+# deliberate here: vLLM raises the block size until one attention page covers
+# one mamba state page (784 on this model), and the bundle records what it
+# settled on.
+# python -m serving --cluster-config 'configs/cluster/single_node_single_instance.json' \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_hybrid_run.csv' \
+#     --num-reqs 10
+
+# Inspect what was emitted: --save-trace-text writes the human-readable trace
+# next to the .et files and implies --keep-inputs, so the run's ASTRA-Sim
+# inputs survive under astra-sim/inputs/runs/<run-id>/. Both can leave
+# gigabytes behind.
+# python -m serving --cluster-config 'configs/cluster/single_node_single_instance.json' \
+#     --block-size 16 --save-trace-text --run-id 'inspect_me' \
+#     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_trace_run.csv' \
+#     --num-reqs 4
+
 # -----------------------------------------------------------------------------------------------
 
 # NS-3 network backend. Work in progress: needs the ns-3 submodule built, and
