@@ -443,9 +443,12 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
     root = _variant_root(hardware, model, variant)
     if not os.path.isdir(root):
         raise FileNotFoundError(
-            f"Profile variant folder not found: {root}. Run the profiler "
-            f"with matching --dtype / --kv-cache-dtype, or pick an existing "
-            f"variant under {os.path.dirname(root)}."
+            f"Profile variant folder not found: {root}. The variant name is "
+            f"derived from the checkpoint (weight dtype, plus a -kv<dtype> "
+            f"suffix when it declares a quantized KV cache), so the simulator "
+            f"cannot be pointed at a different one -- profile this model with "
+            f"the profiler's defaults, which name the same folder. Existing "
+            f"variants: {os.path.dirname(root)}."
         )
 
     meta = _load_meta(root)
