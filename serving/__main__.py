@@ -200,13 +200,22 @@ _DEFAULT_BLOCK_SIZE = 16
 def _resolve_block_size(instance, args):
     """This instance's KV block size: explicit, else the profiled one, else 16.
 
-    vLLM does not accept a block size, it *derives* one -- from the attention
-    backend's ``get_supported_kernel_block_sizes`` and from hybrid page
-    unification. The profile bundle records what the engine settled on, so
-    reading it back gets the same answer without reimplementing that logic.
-    An explicit value that disagrees is not wrong to allow -- studying a
-    hypothetical block size is a legitimate thing to simulate -- but it is a
-    configuration vLLM cannot serve, so it is said out loud.
+    vLLM takes a block size as a **floor and an alignment unit**, not as the
+    answer. ``platforms/interface.py`` computes
+    ``alignment = max(min(backend.get_supported_kernel_block_sizes()),
+    cache_config.block_size)``, derives the smallest multiple of it whose
+    attention page covers one mamba page, and raises ``block_size`` to that if
+    it is larger -- never lowering it. So the resolved value is a function of
+    what you asked for, and on Qwen3.8-27B asking for 16 gives 784 while asking
+    for 64 gives 832.
+
+    That is why this reads the number back out of the profile bundle rather
+    than recomputing it: the bundle records what the engine settled on for the
+    block size the *profiler* was run with, which is the configuration the
+    latencies were measured under. An explicit value that disagrees is not
+    wrong to allow -- studying a hypothetical block size is a legitimate thing
+    to simulate -- but it no longer matches the measurement, so it is said out
+    loud.
     """
     explicit = instance.get("block_size", args.block_size)
     variant = resolve_variant(get_config(instance["model_name"]))
@@ -215,10 +224,10 @@ def _resolve_block_size(instance, args):
         return profiled or _DEFAULT_BLOCK_SIZE
     if profiled is not None and explicit != profiled:
         get_logger("main").warning(
-            "--block-size %d for %s, but the profile records vLLM settling on %d. "
-            "vLLM derives the block size from the attention backend and hybrid page "
-            "unification rather than accepting one, so this simulates a configuration "
-            "it cannot serve.",
+            "--block-size %d for %s, but the profile bundle was measured at %d -- "
+            "the value vLLM raised it to, so that one attention page covers one "
+            "mamba page. Latency lookups will use measurements taken at a "
+            "different block size.",
             explicit, instance["model_name"], profiled,
         )
     return explicit
