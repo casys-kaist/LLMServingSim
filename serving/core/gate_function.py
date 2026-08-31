@@ -279,7 +279,26 @@ class GateRouter:
         if ep_size <= 1:
             local_tokens = [total_len] * ep_size
         else:
+            # Floored at one whenever the batch has tokens at all. A token's k
+            # experts are owned by *some* ranks, so at least one rank runs it,
+            # but this model gives every rank the same count and cannot say
+            # "some" -- and ``round`` drops it to zero on every rank as soon as
+            # ``total_len * p < 0.5``. That is a single-token decode step on
+            # anything with a low hit probability: DeepSeek-V3.2 at EP=8
+            # (0.454, grouped), Mixtral at EP=8 (0.250), any model at EP=16.
+            # The MoE block would then be priced at zero tokens on every rank.
+            #
+            # Rounding up is the right error direction because the ranks run in
+            # parallel behind the ALLTOALL barrier, so what the trace needs is
+            # the **critical path**, i.e. the max over ranks -- and that is
+            # ``latency(1 token)`` whether one rank holds the token or all of
+            # them do. Rounding down loses it; rounding up only over-states
+            # ranks that are off the critical path anyway. The ALLTOALL size is
+            # computed separately from the group-wide padded total, so nothing
+            # else reads this as a sum.
+            floor = 1 if total_len > 0 else 0
             local_tokens = [
-                int(round(total_len * p)) for p in self._hit_probs(ep_size)
+                max(floor, int(round(total_len * p)))
+                for p in self._hit_probs(ep_size)
             ]
         return local_tokens, activated_counts
