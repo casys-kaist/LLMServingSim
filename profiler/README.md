@@ -48,6 +48,57 @@ scripts/                      shared environment / build entry points (top-level
   install-vllm.sh             local (non-Docker) uv venv setup
 ```
 
+## Everything you can set
+
+`python -m profiler` has three subcommands, and every flag below is a
+`profile.sh` variable of the same name in caps unless noted.
+**[Profiler → Running](https://llmservingsim.ai/docs/profiler/running)**
+carries the semantics; this is the index, so a flag missing from one list is
+visible against the other.
+
+```
+python -m profiler profile   <model> --hardware <hw> [flags]   full sweep
+python -m profiler slice     <model> --hardware <hw> --tp-refresh N --group G
+python -m profiler coverage  <model> --hardware <hw>            catalog check
+```
+
+| Group | Flags |
+|-------|-------|
+| **required** | `--hardware` |
+| **sharding** | `--tp` (must include 1) |
+| **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
+| **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
+| **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
+| **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
+| **linear attention** | `--linear-attn-chunk` |
+| **measurement** | `--measurement-iterations` |
+| **skew** | `--skip-skew`, `--only-skew`, `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor`, `--skew-kvs-factor` |
+| **resume** | `--force` (default is resume) |
+| **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
+| **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
+| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe}` |
+
+The five that decide how long a run takes, in rough order of effect:
+
+1. `--measurement-iterations` (default 3) — a straight multiplier. 1 is 3x
+   faster and 15-25% noisier per shot.
+2. `--attention-chunk-factor` / `--attention-kv-factor` (2.0) — coarsen the
+   two biggest axes geometrically.
+3. `--attention-decode-q-lens` (`1`) — each extra value **doubles** the
+   attention sweep. Only needed for speculative decoding.
+4. `--skip-skew` — drops the whole second sweep.
+5. `--num-hidden-layers` — normally auto-resolved and best left alone, but it
+   is why a hybrid costs ~4x a uniform stack: every shot's forward runs all
+   the layers the stack needs to expose each block type.
+
+The four that must match what you intend to **simulate**, or the profile
+describes a different machine: `--block-size`,
+`--gpu-memory-utilization`, `--max-num-batched-tokens`, `--max-num-seqs`.
+The last two additionally bound the sweep's axes, and
+`--gpu-memory-utilization` sets the KV block count that every
+shot-feasibility filter is measured against — so all four change *which*
+shots exist, not just the numbers in them.
+
 ## Quick start
 
 ### 1. Launch the Docker container
@@ -257,24 +308,68 @@ profiled TP degree:
 tp<N>/
   dense.csv              layer, tokens, time_us
   per_sequence.csv       layer, sequences, time_us
-  attention.csv          prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
+  attention.csv          layer, prefill_chunk, kv_prefill, n_decode,
+                         kv_decode, decode_q_len, time_us
+  linear_attention.csv   layer, prefill_tokens, n_decode, time_us
+                                                     (mamba / gated-DeltaNet only)
   moe.csv                tokens, activated_experts, time_us          (MoE only)
-  skew.csv               raw heterogeneous-decode shots (regime, n, nb, ratio,
-                         skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
+  skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
+                         ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
                          t_max_us, t_skew_us, alpha)                  (skew-enabled runs)
   skew_fit.csv           fitted per-bucket alpha table (pc, n_label,
                          skew_rate_label, kv_big_label, kp_label,
                          alpha, n_samples)                            (skew-enabled runs)
 ```
 
-Times are in microseconds. Attention is a single 4D table covering
-pure-prefill, pure-decode, and mixed kernel shapes (what vLLM's
-chunked-prefill scheduler actually produces each step). The axes grow
-geometrically — `prefill_chunk` and the kv axes by `ATTENTION_CHUNK_FACTOR`
-and `ATTENTION_KV_FACTOR` respectively (both default 2.0), and
-`n_decode` always on doubling.
+Times are in microseconds.
 
-`meta.yaml` contains three groups of sweep metadata:
+**Every category is keyed by `layer` except `moe`.** That is not cosmetic:
+the `attention` category holds **more than one kernel** on a sparse model and
+they share neither a latency curve nor a skew alpha. MiniMax-M3 profiles
+`attention` (its non-sparse layers), `sparse_attention` and `indexer`;
+DeepSeek-V3.2 / GLM-5 profile `attention` (MLA) and `indexer`. Reading a
+pooled table would give a sparse layer the dense kernel's latency — 2.1x per
+layer on M3.
+
+Attention is a single **5D** table covering pure-prefill, pure-decode and
+mixed kernel shapes (what vLLM's chunked-prefill scheduler actually produces
+each step). The axes grow geometrically — `prefill_chunk` and the kv axes by
+`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default 2.0),
+`n_decode` always on doubling. `decode_q_len` is the fifth axis and defaults
+to just `[1]`, because it only matters for speculative decoding and each extra
+value multiplies the whole sweep; see `ATTENTION_DECODE_Q_LENS`.
+
+`linear_attention.csv` has only two axes because there is no kv axis at all:
+a gated-DeltaNet state is fixed-size per sequence, so cost is independent of
+sequence position (measured: 1.1% over a 64x kv spread) and no skew
+correction applies. It has *two* rather than one because **which kernel runs
+depends on the batch mix** — a pure decode runs a recurrent kernel, add a
+prefill chunk and vLLM switches to a fused-gating one. A kernel that does not
+fire in a regime simply has **no rows** for it, and the simulator reads that
+absence as "does not run here" rather than interpolating across the gap.
+Measured on Qwen3.8-27B:
+
+| kernel | prefill | decode | mixed |
+|---|---|---|---|
+| `gdn_conv_prefill`, `gdn_post_conv`, `gdn_prefill` | yes | — | yes |
+| `gdn_conv_decode`, `gdn_decode` | — | yes | — |
+| `gdn_decode_mixed` | — | — | yes |
+| `gdn_in_proj`, `gdn_out_proj`, `gdn_norm`, `gdn_glue` | \* | \* | \* |
+
+\* the always-on four live in `dense`, not here — `dense` has no notion of
+regime, so a regime-dependent kernel placed there would be charged on every
+batch.
+
+`meta.yaml` contains the resolved engine state plus three groups of sweep
+metadata:
+
+- `engine_resolved` — what the engine *settled on*, as opposed to what was
+  asked for: `block_size`, `max_model_len`, `num_cache_tokens`. The block
+  size is the one that matters, because vLLM treats `--block-size` as a floor
+  and an alignment unit and raises it until one attention page covers one
+  mamba page. Qwen3.8-27B resolves to **784** from a requested 16. The
+  simulator reads this back so its lookups match the block size the latencies
+  were measured at.
 
 - `attention_grid` — the 4D attention sweep's caps (`max_kv`),
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec

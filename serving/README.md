@@ -15,7 +15,8 @@ serving/                        Python package
 │   ├── graph_generator.py      Chakra protobuf graph generation
 │   ├── controller.py           IPC with ASTRA-Sim subprocess
 │   ├── router.py               request routing across instances
-│   ├── gate_function.py        MoE expert token routing
+│   ├── gate_function.py        MoE expert token routing (incl. group-limited)
+│   ├── spec_decode.py          speculative-decoding acceptance model
 │   ├── config_builder.py       cluster config -> ASTRA-Sim input files
 │   ├── power_model.py          power / energy estimation
 │   ├── pim_model.py            PIM device model
@@ -28,6 +29,47 @@ serving/                        Python package
 ├── validate.sh                 every scenario vs recorded clocks + bench/examples digests
 └── validate-baselines.txt      the recorded values; refresh with validate.sh --update
 ```
+
+## Everything you can set
+
+Every flag is also a **per-instance** cluster-config field of the same name
+with underscores, unless marked *run-wide*.
+**[Reference → CLI flags](https://llmservingsim.ai/docs/reference/cli-flags)**
+carries the semantics and the defaults; this is the index, so a flag missing
+from one list is visible against the other.
+
+| Group | Flags |
+|-------|-------|
+| **required** *(run-wide)* | `--cluster-config` |
+| **workload** *(run-wide)* | `--dataset`, `--num-reqs`, `--skip-prefill` |
+| **batching** | `--max-num-batched-tokens`, `--max-num-seqs`, `--enable-chunked-prefill`, `--long-prefill-token-threshold`, `--reserve-full-isl` |
+| **memory** | `--block-size`, `--npu-memory-utilization` |
+| **prefix caching** | `--enable-prefix-caching`, `--enable-prefix-sharing`, `--prefix-storage` |
+| **routing** *(run-wide)* | `--request-routing-policy`, `--expert-routing-policy` |
+| **speculative decoding** | `--num-speculative-tokens`, `--spec-acceptance-rate`, `--spec-acceptance-policy` |
+| **offloading** | `--enable-attn-offloading`, `--enable-sub-batch-interleaving`, `--enable-local-offloading` |
+| **trace / graph** *(run-wide)* | `--enable-block-copy`, `--save-trace-text`, `--keep-inputs` |
+| **backend** *(run-wide)* | `--network-backend` |
+| **output** *(run-wide)* | `--output`, `--run-id`, `--inputs-root`, `--log-interval`, `--log-level` |
+
+Boolean flags use `argparse.BooleanOptionalAction`, so each has a
+`--no-` form (`--no-enable-prefix-caching`).
+
+**There is no dtype flag, and no `dtype` cluster-config field.** A modern
+checkpoint carries five cache dtypes decided in four different places —
+weights, KV cache, mamba conv state, mamba recurrent state, sparse-indexer
+side cache — so all five are read from the model config.
+`memory_model.cache_dtype_bytes()` is the single table. To simulate another
+precision, profile it: the *profiler* still takes `--dtype` /
+`--kv-cache-dtype` and writes a separate bundle, and the simulator reads the
+one the checkpoint names.
+
+`--block-size` is the other input that is really a derived value. vLLM
+treats a block size as a floor and an alignment unit, raising it until one
+attention page covers one mamba page, so the profiler records what the
+engine settled on in `meta.yaml::engine_resolved.block_size` and omitting
+the flag reads that back. Qwen3.8-27B resolves to **784** from a requested
+16. An explicit value that disagrees is allowed but warned about.
 
 ## Validating a change
 
