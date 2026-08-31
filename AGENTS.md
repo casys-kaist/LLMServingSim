@@ -745,9 +745,11 @@ they are not interchangeable:
 A per-sequence state is charged as blocks the request holds for its whole life
 (`MemoryModel._state_blocks_per_request`), in a list separate from the token
 blocks: the token list is positional, so a block backing no tokens must not
-join it. 78.4 MB per sequence on Qwen3.8-27B, i.e. 75 blocks per request out of
-37,173 on a 96 GB card — it bounds concurrency the way a KV cache bounds
-context, and leaving it out lets the simulator admit requests vLLM could not.
+join it. It is counted in **pages**, not bytes — see the linear-attention
+section above for why, and for the `none`/`align` page counts. 153.9 MB per
+sequence on Qwen3.8-27B, i.e. 6 blocks per request with prefix caching on at
+`block_size 784` — it bounds concurrency the way a KV cache bounds context, and
+leaving it out lets the simulator admit requests vLLM could not.
 
 Sizing DeepSeek-V3.2 as GQA read 1,748,992 bytes/token where MLA caches 78,324.
 
@@ -856,8 +858,8 @@ DeepSeek-V3/V3.2 and GLM restrict a token's experts to `topk_group` of
 `topk_group=config.topk_group`, both defaulting to 1). `GateRouter` reads both
 off the checkpoint. It matters because it changes how many EP ranks one token
 reaches, and therefore the per-rank MoE token count and the ALLTOALL size:
-DeepSeek-V3.2 at EP=8 sends a token to 45.4% of ranks against 65.6%
-unrestricted. **Only DeepSeek-V3.2 actually restricts** — GLM-5 ships
+DeepSeek-V3.2 at EP=8 sends a token to 45.4% of ranks against 66.2%
+unrestricted (GLM-5's figure, same `E` and top-`k`). **Only DeepSeek-V3.2 actually restricts** — GLM-5 ships
 `n_group: 1` and no other family declares the fields.
 
 `_hit_probs` is exact and deterministic: a DP over which groups the token

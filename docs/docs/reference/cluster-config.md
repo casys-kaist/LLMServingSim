@@ -278,19 +278,23 @@ No other numeric override treats `0` specially:
 `long_prefill_token_threshold: 0` means *disabled* (no per-request
 cap), matching the CLI flag, and `block_size: 0` is simply invalid.
 
-#### `dtype` resolution is three levels, not two
+#### Dtypes are not overridable at all
 
-`dtype` is the one override with a fallback below the CLI:
+There is no `dtype` or `kv_cache_dtype` instance field, and no CLI flag
+below it. Both are read from the model config, because a modern
+checkpoint carries five cache dtypes decided in four different places
+and the checkpoint is the only thing that knows which. See
+**[Reference → CLI flags → Precision](./cli-flags)** for the table.
 
-```
-instances[i].dtype   >   --dtype   >   model config torch_dtype   >   bfloat16
-```
-
-The resolved value must be one of `float16` / `bfloat16` / `float32` /
-`fp8` / `int8`, and it selects the profile **variant folder**, so the
+The weight dtype still selects the profile **variant folder**, so the
 matching `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` bundle has
-to exist. `kv_cache_dtype` is validated per instance too — only `auto`
-or `fp8`.
+to exist — but the folder name now follows from the config alone
+(`resolve_variant(model_config)`), so a missing bundle means *profile
+this model*, not *pass a different flag*.
+
+Serving two precisions of one model in a heterogeneous cluster is
+therefore two **model configs**, one per checkpoint, not one config with
+two `dtype` overrides.
 
 #### Validation gates
 
@@ -391,8 +395,6 @@ already sharded by `tp_size` / `ep_size`):
 
 Runtime, per instance, in `serving/__main__.py`:
 
-- `dtype` must be one of the five supported values and
-  `kv_cache_dtype` one of `auto` / `fp8`.
 - `npu_mem.mem_util` must be a number in `(0, 1]`.
 - The two sub-batch-interleaving gates above.
 

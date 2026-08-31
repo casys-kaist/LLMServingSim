@@ -74,7 +74,7 @@ The fields that matter:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_pp_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/example_pp_run.csv' \
   --num-reqs 10

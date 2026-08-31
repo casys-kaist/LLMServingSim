@@ -6,6 +6,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **The KV block size is derived, not defaulted.** vLLM does not accept a
+  block size, it *derives* one -- from the attention backend's
+  `get_supported_kernel_block_sizes` and from hybrid page unification -- so
+  the profiler now records what the engine settled on in
+  `meta.yaml::engine_resolved` (`block_size`, `max_model_len`,
+  `num_cache_tokens`), and `--block-size` defaults to reading it back rather
+  than to 16. An explicit value that disagrees is still allowed, because
+  studying a hypothetical block size is a legitimate thing to simulate, but it
+  is warned about: it is a configuration vLLM cannot serve. Qwen3.8-27B
+  resolves to **784** -- `16 * cdiv(3,207,168, 16 * 4,096)`, its gated-DeltaNet
+  page divided by one token's attention page -- against the platform default of
+  16. The four bundles shipped in this repo predate the field and still fall
+  back to 16 until they are re-profiled.
 - **Speculative decoding.** `--num-speculative-tokens N`,
   `--spec-acceptance-rate`, `--spec-acceptance-policy {FIXED,DECAY,CUSTOM}`,
   all overridable per instance. Scheduling follows vLLM's own framing --
@@ -39,13 +52,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 - **Per-sequence layer state is charged against pool capacity.** A
   linear-attention layer caches nothing per token but holds a fixed conv +
   recurrent state for as long as the sequence lives, so it bounds *concurrency*
-  the way a KV cache bounds context. Each request now takes
-  `ceil(state_bytes_per_rank / bytes_per_block)` extra blocks on its first
-  allocation and holds them until it finishes or is preempted — **75 blocks per
-  request out of 37,173** on Qwen3.8-27B at 96 GB and `--block-size 16`.
-  Rounding to whole blocks is what vLLM does too: it pads the mamba page up to
-  a KV block's page so every cache group shares a page size, then hands each
-  request one.
+  the way a KV cache bounds context. It is counted in **pages**, because that
+  is what vLLM allocates: it sizes the attention block so one attention page
+  covers one mamba page (`attn_block_size = alignment * cdiv(mamba_page_size,
+  alignment * attn_page_size_1_token)`) and then pads the mamba page up to it,
+  so a layer's whole state occupies exactly one page. On Qwen3.8-27B the mamba
+  page is 3,207,168 bytes against an attention page of 3,211,264 at
+  `block_size 784` — which is where 784 comes from.
+  `MambaSpec.max_memory_usage_bytes` then gives `1 + N` pages per mamba layer
+  with prefix caching off and `2 + N` with it on (`mamba_cache_mode` `none` vs
+  `align`): one page for the state being written this step, one for the last
+  checkpoint at a block boundary that a later prefix hit resumes from. On
+  Qwen3.8-27B that is 48 layers x 2 pages = **6 pool blocks per request** with
+  caching on, 3 with it off. `N` is `--num-speculative-tokens`, which also
+  widens the conv state itself (`conv_kernel_size - 1 + N`).
   - The state blocks live in a list **separate** from the token blocks
     (`req_to_state_blocks`), because the token list is positional — block `i`
     backs tokens `[i*block_size, (i+1)*block_size)` — and a state block backs
@@ -71,9 +91,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   no KV at all. Gated DeltaNet holds a rolling conv state and a recurrent state
   whose sizes do not depend on sequence length, which is why its *cost* does
   not either — but they are held for as long as the sequence lives. On
-  Qwen3.8-27B that is 1.6 MB per sequence per layer, and 48 of its 64 layers
-  are linear attention: **78.4 MB per concurrent sequence**. Its KV per token
-  is 65,536 bytes, from the 16 full-attention layers only
+  Qwen3.8-27B that is 3.21 MB per sequence per layer, and 48 of its 64 layers
+  are linear attention: **153.9 MB per concurrent sequence**. Its KV per token
+  is 65,536 bytes, from the 16 full-attention layers only. The two states do
+  not share a dtype: the conv state follows `mamba_cache_dtype` and the
+  recurrent state `mamba_ssm_dtype`, which `auto` resolves to the **conv**
+  dtype rather than the weight dtype (`MambaStateDtypeCalculator`). Qwen3.8
+  declares `float32` there, and the recurrent state is 98% of the total
 
 - **Tensor sizes, block weight and KV shape for MiniMax-M3's block-sparse
   attention.** Six new entries (`qk_norm_rope`, `sparse_qkv_proj`,
@@ -609,18 +633,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
-- **Linear-attention state is counted in pages, and prefix caching doubles
-  it.** vLLM sizes the attention block so one attention page covers one mamba
-  page and then pads the mamba page up to it, so a layer's whole recurrent
-  state is exactly one page (Qwen3.8-27B: 3,207,168 B against 3,211,264 at
-  `block_size 784`, which is how 784 gets chosen). How many pages per layer is
-  `MambaSpec.max_memory_usage_bytes`: `1 + N` with prefix caching off,
-  `2 + N` with it on -- one page for the state being written this step, one for
-  the last checkpoint at a block boundary. The simulator had been charging one
-  page per layer, i.e. the prefix-caching-off figure, understating the default
-  configuration by exactly 2x: Qwen3.8-27B goes from 3 to 6 pool blocks per
-  request. `N = num_speculative_tokens` adds a page each, and also widens the
-  conv state itself (`conv_kernel_size - 1 + N`).
 - **Prefill chunks are block-aligned on a hybrid with prefix caching**, which
   is vLLM's `Scheduler._mamba_block_aligned_split`. A mamba state slot holds
   the state after exactly `(p + 1) * block_size` tokens and state is written at
@@ -644,7 +656,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   A token's k experts are drawn only from `topk_group` of `n_group` groups, so
   it reaches fewer EP ranks than an unrestricted gate would -- on
   DeepSeek-V3.2 at EP=8 (`n_group: 8, topk_group: 4`) the per-rank token count
-  drops 31%, from 0.656 to 0.454 of the batch, and the ALLTOALL shrinks with
+  drops 31%, from 0.662 to 0.454 of the batch -- 0.662 being GLM-5's
+  figure at the same `E` and top-`k` -- and the ALLTOALL shrinks with
   it. GLM-5 ships `n_group: 1`, the unrestricted case spelled out, and no
   other family declares the fields at all.
   - `GateRouter._hit_probs` computes P(token reaches rank r) **exactly**, by a

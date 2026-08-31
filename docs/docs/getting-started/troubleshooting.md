@@ -169,21 +169,28 @@ combination that doesn't have profile data:
 
 ```text
 FileNotFoundError: Profile variant folder not found:
-../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B/bf16-kvfp8. Run the
-profiler with matching --dtype / --kv-cache-dtype, or pick an existing
-variant under ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B
+../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B/bf16-kvfp8. The
+variant name is derived from the checkpoint (weight dtype, plus a
+-kv<dtype> suffix when it declares a quantized KV cache), so the
+simulator cannot be pointed at a different one -- profile this model
+with the profiler's defaults, which name the same folder. Existing
+variants: ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B
 ```
 
-**Cause:** The `(hardware, model, dtype, kv_cache_dtype)` tuple has no
-profiled bundle. The check is on the **variant folder**, so the message
-names the directory rather than a specific CSV. `ls` the parent path it
-prints to see which variants you do have.
+**Cause:** The `(hardware, model, variant)` triple has no profiled
+bundle. The check is on the **variant folder**, so the message names the
+directory rather than a specific CSV. `ls` the parent path it prints to
+see which variants you do have.
 
-Note that the variant is *derived*, not chosen: `--kv-cache-dtype fp8`
-appends `-kvfp8`, and `--dtype` (or the model config's `torch_dtype`
-when you omit it) supplies the prefix. So this fires when you flip a
-precision flag without a matching profile run, not only when the
-hardware is new.
+The variant is *derived*, and there is no flag to change it: the weight
+dtype comes from `quantization_config.quant_method` or `torch_dtype`,
+and a `-kvfp8` suffix appears when the checkpoint declares a quantized
+KV cache. So the fix is always to profile the model rather than to pass
+something different — and the profiler's defaults name exactly the
+folder the simulator asks for. (The profiler's own `--variant`,
+`--dtype` and `--kv-cache-dtype` write *additional* bundles beside it,
+which is how a deliberate second precision gets measured; the simulator
+never reads those.)
 
 Two neighbouring errors with different fixes:
 
