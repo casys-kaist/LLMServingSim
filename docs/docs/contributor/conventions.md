@@ -46,8 +46,15 @@ arbitrary; each has bitten the project at least once.
                       default=True)
   ```
 - **Match vLLM naming where applicable**
-  (`--max-num-batched-tokens`, `--block-size`, `--kv-cache-dtype`).
-  Users coming from vLLM should not have to relearn.
+  (`--max-num-batched-tokens`, `--block-size`,
+  `--num-speculative-tokens`). Users coming from vLLM should not have
+  to relearn.
+- **Don't add a flag for something the checkpoint already states.**
+  vLLM has `--dtype` and `--kv-cache-dtype`; this simulator does not,
+  because a modern checkpoint carries five cache dtypes decided in four
+  places and overriding one describes a model nobody can serve. The
+  same reasoning removed `--block-size`'s default: vLLM *derives* a
+  block size, and the profile bundle records what it derived.
 
 ## File and config naming
 

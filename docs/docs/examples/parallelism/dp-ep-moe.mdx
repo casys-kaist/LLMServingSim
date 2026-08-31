@@ -77,7 +77,7 @@ Collectives are scoped per dimension via the `involved_dim` BoolList:
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_moe_dp_ep_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' \
   --output 'outputs/dp_ep_moe_run.csv' \
   --num-reqs 1

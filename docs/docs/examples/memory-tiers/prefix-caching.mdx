@@ -70,7 +70,7 @@ can grow.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/prefix_default_run.csv'
 ```
@@ -84,7 +84,7 @@ that prefixes-into a cached block on instance B, no reuse happens.
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --enable-prefix-caching --enable-prefix-sharing --prefix-storage CPU \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/prefix_cpu_pool_run.csv'

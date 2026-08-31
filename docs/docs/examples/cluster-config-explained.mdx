@@ -199,8 +199,6 @@ inheritance between instances.
 | `max_num_batched_tokens` | `--max-num-batched-tokens` | Big prefill chunks, small decode steps |
 | `long_prefill_token_threshold` | `--long-prefill-token-threshold` | Stop one long prompt monopolising a prefill instance |
 | `block_size` | `--block-size` | Coarser blocks where fragmentation matters less |
-| `dtype` | `--dtype` | Serve the same model at two precisions |
-| `kv_cache_dtype` | `--kv-cache-dtype` | FP8 KV on the decode instance only |
 | `enable_chunked_prefill` | `--enable-chunked-prefill` | Chunk on prefill, never on decode |
 | `enable_prefix_caching` | `--enable-prefix-caching` | Cache where prefixes repeat, skip where they don't |
 | `npu_mem.mem_util` | `--npu-memory-utilization` | Leave headroom on one instance only |
@@ -260,8 +258,12 @@ step contributes one token per sequence.
 
 `configs/cluster/single_node_pd_per_instance_config.json` is the
 Llama-3.1-8B version of the same idea, and additionally overrides
-`long_prefill_token_threshold`, `block_size`, `dtype`, and
-`kv_cache_dtype`.
+`long_prefill_token_threshold` and `block_size`.
+
+There is deliberately no `dtype` or `kv_cache_dtype` field: every dtype
+comes from the model config now, so serving two precisions of one model
+means two **model configs**, one per checkpoint. See
+**[Cluster config → Dtypes are not overridable](/docs/reference/cluster-config)**.
 
 :::caution[`max_num_batched_tokens: 0` is not infinity]
 `0` maps to "unlimited", but the scheduler then applies
@@ -294,7 +296,7 @@ config-load time:
   trace leaves both sub-batches mid-block at every stage edge, so a
   pipeline stage has no single hidden state to hand on.
 
-Full semantics, including `dtype`'s three-level fallback and the
+Full semantics, including why dtypes are not overridable and the
 `mem_util` range check, are in
 **[Reference → Cluster config](/docs/reference/cluster-config#runtime-overrides-optional)**.
 

@@ -84,11 +84,16 @@ layer.
 
 Latencies come from the profiler's per-category CSVs under
 `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` — `dense.csv` (keyed on
-`tokens`), `per_sequence.csv` (`sequences`), `attention.csv` (4D grid on
-`prefill_chunk, kv_prefill, n_decode, kv_decode`), and `moe.csv`
-(`tokens, activated_experts`). The simulator resolves the `<variant>` folder
-name from `--dtype` + `--kv-cache-dtype` (or the model config's `torch_dtype`
-when `--dtype` is omitted) so it matches the folder the profiler wrote.
+`tokens`), `per_sequence.csv` (`sequences`), `attention.csv` (a 5D grid on
+`prefill_chunk, kv_prefill, n_decode, kv_decode, decode_q_len`),
+`linear_attention.csv` (`prefill_tokens, n_decode`, mamba/gated-DeltaNet only),
+and `moe.csv` (`tokens, activated_experts`). `resolve_variant(model_config)`
+names the `<variant>` folder as a **pure function of the checkpoint** — weight
+dtype from `quantization_config.quant_method` or `torch_dtype`, plus a
+`-kv<dtype>` suffix when the config declares a quantized KV cache. There is no
+dtype flag on the simulator; the profiler's `--variant` / `--dtype` /
+`--kv-cache-dtype` still write other bundles beside it, which the simulator
+never asks for.
 
 `meta.yaml` next to each variant records the engine flags the profiler swept
 (notably `max_num_batched_tokens` and `max_num_seqs`); the simulator warns at
