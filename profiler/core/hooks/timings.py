@@ -188,6 +188,7 @@ def _match_slice(
 def extract_samples(
     tree: list[dict[str, Any]],
     slice_: dict[str, dict[str, Any]],
+    iterations: int = 1,
 ) -> list[TimingSample]:
     """Walk the profiler tree; emit samples for nodes matching the slice.
 
@@ -199,6 +200,15 @@ def extract_samples(
     profile nodes bind to the same name their normalized costs are **summed**,
     because a canonical name is one trace node and each matched profile node
     is one of its parts — see the module docstring.
+
+    ``iterations`` is how many timed forwards ran inside the one
+    ``layerwise_profile`` context, and it is the **top level's** invocation
+    count: every node divides by its parent's invocations to get a per-call
+    figure, and the top level has no parent node to read that from. Passing 1
+    where 3 forwards ran inflates every top-level binding 3x -- which is
+    exactly what happened to ``embedding``, ``lm_head``, ``sampler`` and
+    Qwen3.5's whole drafter under vLLM 0.28, where a top-level node is
+    reported per forward rather than merged into one wrapper.
     """
     totals: dict[str, float] = {}
 
@@ -207,10 +217,26 @@ def extract_samples(
         ancestors: list[str],
         parent_invocations: int,
     ) -> None:
+        # vLLM merges same-class siblings into one node whose ``cuda_time_us``
+        # is their sum and whose ``invocations`` counts them all. Under a
+        # parent that is itself a node it then reports that merged node
+        # **once**; at the top level, where the owning module launched no
+        # kernel of its own and so was flattened away, it reports the same
+        # merged node once **per sibling module**. Qwen3.5's drafter holds
+        # three GemmaRMSNorms under a wrapper that launches nothing, and they
+        # arrive as three identical top-level entries -- summing them charged
+        # the drafter's norms 3x. Two entries identical in class, time and
+        # invocation count cannot be distinct work, so the repeats are dropped.
+        seen: set[tuple[str, float, int]] = set()
         for node in nodes:
             raw_name = str(node["entry"]["name"])
             cls = _strip_class_name(raw_name)
             invocations = max(1, int(node["entry"]["invocations"]))
+            fingerprint = (cls, float(node["entry"]["cuda_time_us"]),
+                           invocations)
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
 
             # Try to match this node against the requested slice.
             canonical = _match_slice(cls, ancestors, slice_)
@@ -229,7 +255,7 @@ def extract_samples(
             children = node.get("children") or []
             walk(children, ancestors + [cls], invocations)
 
-    walk(tree, ancestors=[], parent_invocations=1)
+    walk(tree, ancestors=[], parent_invocations=max(1, int(iterations)))
     return [
         TimingSample(layer=name, microseconds=us) for name, us in totals.items()
     ]
