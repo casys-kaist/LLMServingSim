@@ -295,6 +295,10 @@ class Catalog(BaseModel):
     attention: dict[str, LayerEntry] = Field(default_factory=dict)
     linear_attention: dict[str, LayerEntry] = Field(default_factory=dict)
     moe: dict[str, LayerEntry] = Field(default_factory=dict)
+    # The model's own drafter. A separate group rather than entries in `dense`
+    # because it only exists when the engine boots with speculative_config, and
+    # because it is emitted N times per step rather than once per layer.
+    mtp: dict[str, LayerEntry] = Field(default_factory=dict)
 
     def all_entries(self) -> list[tuple[str, str, LayerEntry]]:
         """Flatten to ``[(profile_kind, layer_name, entry), ...]``."""
@@ -400,6 +404,19 @@ class Shared(BaseModel):
         return counts
 
 
+class MtpSection(BaseModel):
+    """``mtp:`` -- what one drafter pass emits, outside the decoder block.
+
+    vLLM runs the drafter **N times per step** for N speculative tokens: once,
+    then ``num_speculative_tokens - 1`` more inside
+    ``llm_base_proposer.py``'s loop, each a decode-shaped forward at
+    ``max_query_len = 1``.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    block: list[str] = Field(default_factory=list)
+
+
 class Architecture(BaseModel):
     """Parsed architecture yaml.
 
@@ -426,6 +443,11 @@ class Architecture(BaseModel):
     model_types: list[str] = Field(default_factory=list)
     blocks: Blocks | None = None
     shared: Shared | None = None
+    # What one drafter pass emits, in order. Present only for a model with MTP
+    # modules; `mtp_block` is deliberately not listed, because it is the same
+    # class as a target decoder layer and the simulator replays the target's
+    # own block sequence for it.
+    mtp: MtpSection | None = None
 
     # ------------------------------------------------------------------
     # Validation

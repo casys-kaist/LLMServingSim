@@ -86,7 +86,56 @@ shared:
   head:      [final_layernorm, lm_head, sampler]
 
 
+# The model's own drafter, built only when the engine boots with
+# speculative_config (``--profile-mtp N``). One MTP module per
+# ``num_nextn_predict_layers``, and vLLM runs it **N times per step** -- once,
+# then num_speculative_tokens - 1 more.
+#
+# Every entry needs ``within: DeepSeekMultiTokenPredictorLayer``, because
+# ``mtp_block`` is a ``DeepseekV2DecoderLayer`` -- the *same class* as a target
+# decoder layer. Without the guard the two merge into one profile node and the
+# drafter reads as free while the target reads as slower than it is.
+#
+# Read off ``profiler coverage --profile-mtp 1``, which reports exactly these
+# as unbound with their ancestor paths. Measured on DeepSeek-V3.2 at 4 target
+# layers, prefill / decode / mixed: eh_proj 161.0 / 143.2 / 166.4 us dominates,
+# the merged norms 5.6 / 5.4 / 5.7, shared_head 2.8 / 2.8 / 2.9, and the glue
+# 1-3 us apiece. GLM-5 reports the identical eight nodes -- it shares
+# DeepSeekMTP -- at 115.9 / 111.0 for eh_proj.
+mtp:
+  block: [mtp_enorm_hnorm, mtp_eh_proj, mtp_glue, mtp_shared_head]
+  # mtp_block is deliberately absent: it is a DeepseekV2DecoderLayer, so the
+  # simulator emits the target's own block sequence for it rather than a second
+  # set of names. Only the wrapper around it is new.
+
+
 catalog:
+  mtp:
+    mtp_eh_proj:
+      # 2h -> h, and a plain nn.Linear rather than a TP-parallel one, so it is
+      # NOT sharded. The dominant cost of a drafter pass by two orders of
+      # magnitude.
+      vllm: Linear
+      within: DeepSeekMultiTokenPredictorLayer
+    mtp_enorm_hnorm:
+      # enorm + hnorm, reported as one merged node -- both RMSNorm at the same
+      # width under the same parent, so their sum is coherent. Same situation
+      # as mla_a_layernorm in the target.
+      vllm: RMSNorm
+      within: DeepSeekMultiTokenPredictorLayer
+      tp_stable: true
+    mtp_shared_head:
+      # norm + lm_head. Reported under the SharedHead wrapper itself rather
+      # than as its children.
+      vllm: SharedHead
+      within: DeepSeekMultiTokenPredictorLayer
+    mtp_glue:
+      # The eager elementwise work around the projection -- five distinct
+      # at::native instantiations, taken as a group by prefix and summed into
+      # one trace node, the same way indexer_glue is.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: DeepSeekMultiTokenPredictorLayer
+
   dense:
     embedding:
       vllm: VocabParallelEmbedding

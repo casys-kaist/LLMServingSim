@@ -336,10 +336,15 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     # The whole catalog as one slice. Coverage is a property of the catalog,
     # not of a category, and a layer filed under the wrong category still
     # binds its node -- that is a different (and much more visible) bug.
+    # Groups come from the Catalog model, not a literal list: a hardcoded one
+    # silently omits any group added later, and coverage reporting a node as
+    # unbound when the catalog does bind it is worse than useless -- it sends
+    # you looking for a binding that is already there.
     whole_catalog: dict[str, dict[str, Any]] = {}
-    for group in ("dense", "per_sequence", "attention", "linear_attention",
-                  "moe"):
-        whole_catalog.update(_entry_dict(getattr(arch.catalog, group), arch))
+    for group in type(arch.catalog).model_fields:
+        entries = getattr(arch.catalog, group, None)
+        if isinstance(entries, dict):
+            whole_catalog.update(_entry_dict(entries, arch))
 
     log.info(
         "Coverage check: %s (%d catalog entries, %d regimes)",
