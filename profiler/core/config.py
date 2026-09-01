@@ -38,11 +38,28 @@ from profiler.core.catalog_path import resolve_architecture_path
 # multi-TP deployment (see engine.fuse_engine_kwargs). The same list
 # covers every common dense + MoE architecture, so it's a module
 # constant rather than per-architecture data.
+# Config fields divided by the TP degree to emulate one rank's shapes on a
+# single GPU. Every field vLLM shards has to appear here, or that part of the
+# model is measured at full size while the rest is measured per-rank -- and a
+# mixed measurement is worse than either.
+#
+# The linear-attention pair is here because vLLM's
+# ``MambaStateShapeCalculator.gated_delta_net_state_shape`` shards the
+# recurrent state: ``divide(conv_dim, tp)`` where
+# ``conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads``, and
+# ``divide(num_v_heads, tp)``. Dividing the two head counts reproduces both,
+# and keeps their ratio (Qwen3.8-27B is 16 / 48) so the kernel's grouping is
+# unchanged. Without them, TP>1 on a hybrid measured a rank holding the
+# **full** GDN state while its attention was already per-rank: the engine then
+# resolved ``block_size`` 1568 instead of 784 on Qwen3.8-27B, because only the
+# attention page had halved.
 SHARD_FIELDS: list[str] = [
     "intermediate_size",
     "num_attention_heads",
     "num_key_value_heads",
     "vocab_size",
+    "linear_num_key_heads",
+    "linear_num_value_heads",
 ]
 
 

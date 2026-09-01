@@ -494,8 +494,9 @@ def _check_tp_coverage(perf_db, tp_needed, hardware, model, variant):
         )
 
 
-def profiled_block_size(hardware, model, variant):
-    """KV block size the engine settled on when this bundle was profiled.
+def profiled_block_size(hardware, model, variant, tp=1):
+    """KV block size the engine settled on when this bundle was profiled at
+    ``tp``.
 
     ``None`` when the bundle predates the field or cannot be read. vLLM derives
     the block size rather than taking it: the backend declares what it supports
@@ -527,8 +528,20 @@ def profiled_block_size(hardware, model, variant):
     if meta is None:
         return None
     resolved = (meta or {}).get("engine_resolved") or {}
+    # Per-TP since the resolved size is a per-rank fact: both the mamba page
+    # and the attention page scale with the shard. A bundle written before the
+    # split carries one flat value, which is whichever TP ran last -- read it
+    # as a fallback rather than ignoring it, but only after the exact key.
+    per_tp = resolved.get("per_tp") or {}
+    raw = None
+    if isinstance(per_tp, dict):
+        raw = per_tp.get(tp, per_tp.get(str(tp)))
+    if isinstance(raw, dict):
+        raw = raw.get("block_size")
+    elif raw is None:
+        raw = resolved.get("block_size")
     try:
-        bs = int(resolved.get("block_size"))
+        bs = int(raw)
     except (TypeError, ValueError):
         return None
     return bs if bs > 0 else None
