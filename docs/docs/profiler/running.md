@@ -315,22 +315,46 @@ not treated as a stable CLI.
 
 ## Expected runtime
 
-Rough numbers for a single model + single TP on RTXPRO6000-class
-hardware (`MAX_NUM_BATCHED_TOKENS=2048`, `MAX_NUM_SEQS=256`, default
-factors):
+**Measured**, one TP degree per row, on an RTX PRO 6000 Blackwell with
+`MAX_NUM_BATCHED_TOKENS=2048`, `MAX_NUM_SEQS=256`,
+`MEASUREMENT_ITERATIONS=3` and default grid factors:
 
-| Step | Time |
-| --- | --- |
-| `dense` | seconds |
-| `per_sequence` | seconds |
-| `attention` (uniform 4D grid) | 5–15 minutes |
-| `moe` (MoE only) | 10–30 minutes |
-| `skew` sweep | 10–25 minutes |
-| `skew_fit` (post-process) | seconds |
+| Model | dense | per_seq | attention | linear_attn / moe | total |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3.8-27B (hybrid) | 3:05 | 0:39 | **3:55:15** | 3:14 | ~4 h |
+| DeepSeek-V3.2-Exp (MLA + DSA) | 3:08 | 0:59 | **2:59:27** | 1:02 | ~3 h |
+| GLM-5 (MLA + DSA) | 2:38 | 0:51 | **2:51:39** | 0:58 | ~3 h |
+| MiniMax-M3 (block-sparse) | 2:01 | 0:45 | **2:06:37** | 0:37 | ~2 h |
 
-A full multi-TP, multi-model sweep with `profile-all.sh` typically
-runs **1–4 hours**. Use `SKIP_SKEW=1` for a much faster pass when
-you don't need varlen-skew correction.
+:::caution[`attention` dominates, and it is hours, not minutes]
+Every other category finishes in minutes. The attention sweep is
+8,643 shots at these limits — measured, not estimated — and at
+`MEASUREMENT_ITERATIONS=3` that is ~26,000 timed forwards.
+
+The bottleneck is **not the GPU**. `VLLM::EngineCore` sits at ~100% of
+one core for the whole sweep while GPU utilisation samples in the
+low tens of percent: the cost is `layerwise_profile`'s single-threaded
+attribution of every CUDA kernel to a node in the profile tree.
+
+That is why a hybrid or sparse model costs more than a dense one even
+at the same shot count. Two multipliers stack:
+
+- **Layers instantiated.** A uniform stack shrinks to 1; a hybrid needs
+  the smallest prefix reaching every block type — 4 for Qwen3.8-27B,
+  and 4 for the three MoE families (3 dense MLP + 1 MoE).
+- **Nodes attributed per forward.** Catalog entries: Llama 12, Qwen3
+  14, MiniMax-M3 18, DeepSeek/GLM 22, Qwen3.5/3.8 **24**.
+:::
+
+To cut it, in order of effect: `MEASUREMENT_ITERATIONS=1` (a straight
+3x, at 15–25% per-shot noise), then
+`ATTENTION_CHUNK_FACTOR` / `ATTENTION_KV_FACTOR` above 2.0 to coarsen
+the two biggest axes. `SKIP_SKEW=1` removes the skew sweep entirely —
+every number above was measured with it off.
+
+Adding TP degrees multiplies by roughly one more pass each: Qwen3.8-27B
+at `--tp 1,2` spent a further **207 minutes** on the TP=2 pass, with
+TP=1 resumed from its existing CSVs in seconds.
 
 The Rich-based logger renders per-step progress bars; redirect
 stdout with `--silent` for a quieter run.

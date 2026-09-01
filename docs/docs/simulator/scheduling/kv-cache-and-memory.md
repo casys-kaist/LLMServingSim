@@ -191,8 +191,9 @@ from: `16 * cdiv(3,207,168, 16 * 4,096) = 784`, starting from vLLM's default
 `--block-size 16`. Start from 64 instead and the answer is 832, because the
 alignment is `max(backend minimum, your value)`. That is why the block size is
 read out of the profile bundle rather than recomputed — the bundle records the
-value the latencies were actually measured at. The four bundles shipped in this
-repo predate the `engine_resolved` field and still fall back to 16.
+value the latencies were actually measured at, per TP degree
+(`engine_resolved.per_tp[tp]`). The older dense bundles predate the field and
+fall back to 16.
 
 How many pages per layer is `MambaSpec.max_memory_usage_bytes`, and it depends
 on the cache mode:
