@@ -80,8 +80,9 @@ Three things happen automatically and are worth knowing about:
   `-> profiling 4 layers to reach every block type`.
 - **The engine overrides your block size.** Pass 16 and the log reports
   `block_size=784`. The bundle records it in
-  `meta.yaml::engine_resolved.block_size`, and the simulator reads it
-  back so lookups match the block size the latencies were measured at.
+  `meta.yaml::engine_resolved.per_tp[tp]` — per TP degree, because both
+  pages scale with the rank's shard — and the simulator reads back the
+  entry for the instance's `tp_size`.
 - **`linear_attention.csv` appears**, keyed `(prefill_tokens, n_decode)`.
 
 :::caution[A hybrid costs roughly 4x a uniform stack to profile]

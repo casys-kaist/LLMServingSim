@@ -67,7 +67,7 @@ one the checkpoint names.
 `--block-size` is the other input that is really a derived value. vLLM
 treats a block size as a floor and an alignment unit, raising it until one
 attention page covers one mamba page, so the profiler records what the
-engine settled on in `meta.yaml::engine_resolved.block_size` and omitting
+engine settled on in `meta.yaml::engine_resolved.per_tp[tp]` and omitting
 the flag reads that back. Qwen3.8-27B resolves to **784** from a requested
 16. An explicit value that disagrees is allowed but warned about.
 

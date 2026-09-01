@@ -363,13 +363,18 @@ batch.
 `meta.yaml` contains the resolved engine state plus three groups of sweep
 metadata:
 
-- `engine_resolved` — what the engine *settled on*, as opposed to what was
-  asked for: `block_size`, `max_model_len`, `num_cache_tokens`. The block
-  size is the one that matters, because vLLM treats `--block-size` as a floor
-  and an alignment unit and raises it until one attention page covers one
-  mamba page. Qwen3.8-27B resolves to **784** from a requested 16. The
-  simulator reads this back so its lookups match the block size the latencies
-  were measured at.
+- `engine_resolved.per_tp[tp]` — what the engine *settled on* at each TP
+  degree, as opposed to what was asked for: `block_size`, `max_model_len`,
+  `num_cache_tokens`. The block size is the one that matters, because vLLM
+  treats `--block-size` as a floor and an alignment unit and raises it until
+  one attention page covers one mamba page. Qwen3.8-27B resolves to **784**
+  from a requested 16. The simulator reads back the entry for its instance's
+  `tp_size`, so lookups match the block size the latencies were measured at.
+
+  Keyed by TP because the resolved size is a per-rank fact — both pages scale
+  with the shard. A `slice` refresh of one TP **merges** into what is already
+  there rather than replacing it. A bundle written before the split carries a
+  flat `block_size`, which is still read as a fallback.
 
 - `attention_grid` — the 4D attention sweep's caps (`max_kv`),
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec

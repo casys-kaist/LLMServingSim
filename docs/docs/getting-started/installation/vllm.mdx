@@ -74,8 +74,16 @@ This:
 - Mounts `~/.cache/huggingface` to share the model cache with the
   host
 - Sets `--shm-size=16g` (vLLM needs this for inter-process tensors)
-- Pre-installs `datasets` and `matplotlib` (extra deps the profiler
-  and bench plots need)
+- Pre-installs `pandas`, `matplotlib` and `datasets` (the alpha fit,
+  the bench plots, and the workload generators), and pins
+  `nvidia-nccl-cu13` — installing `datasets` otherwise pulls a newer
+  one than the image's torch declares, and pip reports the conflict
+  but installs it anyway
+- Applies everything in `scripts/patches/`. Today that is one line
+  backporting [vLLM PR #51395](https://github.com/vllm-project/vllm/pull/51395):
+  without it, DeepSeek-V3.2 and GLM-5 crash partway through a profile
+  run on any Blackwell card. Each patch is idempotent and a no-op on a
+  vLLM that already carries the fix
 - Drops you into `bash` at `/workspace`
 
 The container is named `vllm_docker`. Re-attach later with:
