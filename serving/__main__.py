@@ -316,18 +316,22 @@ def _require_drafter_cost(model_name, n, node_id, instance_id):
     Acceptance is only half of speculative decoding. The other half is what the
     drafts cost to produce, and vLLM runs the drafter **N times per step** --
     once before the loop and ``num_speculative_tokens - 1`` inside it
-    (``llm_base_proposer.py``), each a decode-shaped forward at
-    ``max_query_len = 1``. A model that drafts with itself runs an MTP module
-    for each: two norms, an ``eh_proj``, one full decoder layer of its own
-    family, then a norm, ``lm_head`` and the sampler. That is not free, and
-    charging zero for it would report a speedup no engine can deliver.
+    (``llm_base_proposer.py``). The first pass reuses the target's own token
+    layout; the loop pins ``max_query_len = 1``, so the rest are pure decode.
+    A model that drafts with itself runs an MTP module for each: two norms, an
+    ``eh_proj``, **one full decoder layer of its own family**, then (DeepSeek
+    and GLM) a norm and ``lm_head``. The decoder layer is the dominant term by
+    two orders of magnitude over the wrapper, and charging zero for any of it
+    would report a speedup no engine can deliver.
 
-    So a model with MTP modules needs an ``mtp:`` block in its architecture
-    catalog, and the catalog has to be written from a live profile dump like
-    every other block -- the module tree and the profile tree differ both ways,
-    so writing one from vLLM's source binds names that measure nothing. Until
-    that profiling happens the honest answer is to refuse, exactly as
-    ``calculate_sizes`` refuses a layer name it has no formula for.
+    So a model with MTP modules needs an ``mtp:`` section in its architecture
+    catalog naming both halves -- the wrapper layers and which block the
+    drafter's decoder layer is -- and the wrapper has to be written from a live
+    profile dump like every other block, since the module tree and the profile
+    tree differ both ways and writing one from vLLM's source binds names that
+    measure nothing. Until that profiling happens the honest answer is to
+    refuse, exactly as ``calculate_sizes`` refuses a layer name it has no
+    formula for.
 
     A model with **no** MTP modules drafts with a separate model or with
     n-gram. That is a serving choice rather than a property of the checkpoint,
@@ -346,15 +350,21 @@ def _require_drafter_cost(model_name, n, node_id, instance_id):
             n, model_name,
         )
         return
-    if not (get_architecture(model_name) or {}).get("mtp"):
+    section = (get_architecture(model_name) or {}).get("mtp") or {}
+    missing = [
+        key for key in ("prologue", "decoder_block") if not section.get(key)
+    ]
+    if missing:
         raise NotImplementedError(
             f"speculative decoding on {model_name!r} needs the cost of its "
             f"{mtp} MTP module(s), which run {n} time(s) per step, and "
-            f"profiler/models/<model_type>.yaml has no 'mtp:' block to price "
-            f"them from. Charging zero would report a speedup no engine can "
-            f"deliver. Add the block from a live profile dump (python -m "
-            f"profiler coverage) and profile the model, or drop "
-            f"--num-speculative-tokens."
+            f"profiler/models/<model_type>.yaml's 'mtp:' section is missing "
+            f"{', '.join(missing)}. Charging zero would report a speedup no "
+            f"engine can deliver -- and 'decoder_block' is the dominant term, "
+            f"since one drafter pass wraps a whole decoder layer. Add them "
+            f"from a live profile dump (python -m profiler coverage "
+            f"--profile-mtp) and profile the model with --profile-mtp, or "
+            f"drop --num-speculative-tokens."
         )
 
 
@@ -987,7 +997,10 @@ def main():
                                        tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                        dp_sum_total_len=sum_total_len,
                                        enable_block_copy=inst_cfg["enable_block_copy"],
-                                       inputs_root=run_paths.inputs_root)
+                                       inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0))
                         generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                        inst_id, inst2npu_mapping[inst_id],
                                        inst_cfg["enable_local_offloading"],
@@ -1075,7 +1088,10 @@ def main():
                                            tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                            dp_sum_total_len=sum_total_len,
                                            enable_block_copy=inst_cfg["enable_block_copy"],
-                                           inputs_root=run_paths.inputs_root)
+                                           inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0))
                             generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                            inst_id, inst2npu_mapping[inst_id],
                                            inst_cfg["enable_local_offloading"],
@@ -1118,7 +1134,10 @@ def main():
                                    dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                    tp_dim=instance["tp_dim"], ep_dim=instance["ep_dim"],
                                    enable_block_copy=inst_cfg["enable_block_copy"],
-                                   inputs_root=run_paths.inputs_root)
+                                   inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0))
                     generate_graph(new_req, instance["hardware"], instance["num_npus"], node_id,
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],

@@ -16,7 +16,7 @@ from .pim_model import PIMModel
 from .logger import get_logger
 from .run_paths import input_path
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # ----------------------------------------------------------------------
 # Global in-memory cache for the profiler's per-category performance DB.
@@ -111,6 +111,8 @@ class TraceCtx:
     ep_total: int      # total EP degree across DP group
     tp_dim: list       # involved_dim for TP collectives (ALLREDUCE), None = all dims
     ep_dim: list       # involved_dim for EP collectives (ALLTOALL), None = all dims
+    num_speculative_tokens: int  # draft length N; the drafter runs N times per
+                                 # step, so this is how many passes to emit
     dp_sum_total_len: int  # sum of total_len across DP group (0 = DP inactive). Captures the post-AG gathered size for MoE compute; dummy batches are pre-padded to max by serving/__main__.py so the sum reflects vLLM's CUDA-graph padding.
 
 
@@ -628,6 +630,10 @@ def _build_tp_tables(tp_dir):
     if per_seq_df is not None:
         tables["per_sequence"] = _build_1d_table(per_seq_df, "layer", "sequences")
 
+    mtp_df = _read_category_csv(os.path.join(tp_dir, "mtp.csv"), None)
+    if mtp_df is not None:
+        tables["mtp"] = _build_1d_table(mtp_df, "layer", "sequences")
+
     attn_df = _read_category_csv(os.path.join(tp_dir, "attention.csv"), None)
     if attn_df is not None:
         # A sparse-attention profile carries more than one kernel here -- the
@@ -721,6 +727,25 @@ def _lookup_per_sequence(perf_db, name, tp, sequences):
     if tbl is None:
         raise KeyError(
             f"Missing per-sequence profile for layer={name} on tp={tp_eff}."
+        )
+    return max(1, int(_lookup_1d(tbl["keys"], tbl["values"], max(int(sequences), 1))))
+
+
+def _lookup_mtp(perf_db, name, tp, sequences):
+    """1-D lookup over the decode batch size, the drafter's only axis.
+
+    Every drafter pass is decode-shaped at ``max_query_len = 1``
+    (``llm_base_proposer.py``), so batch cardinality is all that varies --
+    the same shape as ``per_sequence``. Measured flat to within 2% across
+    batch 1-8 on Qwen3.8-27B, which is why one axis is enough.
+    """
+    tp_eff = _effective_tp(perf_db, "mtp", name, tp)
+    tbl = _tp_tables(perf_db, tp_eff).get("mtp", {}).get(name)
+    if tbl is None:
+        raise KeyError(
+            f"Missing mtp profile for layer={name} on tp={tp_eff}. Profile it "
+            f"with `python -m profiler slice <model> --tp-refresh {tp_eff} "
+            f"--group mtp --profile-mtp <N>`."
         )
     return max(1, int(_lookup_1d(tbl["keys"], tbl["values"], max(int(sequences), 1))))
 
@@ -1160,7 +1185,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
                      placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                      variant, kv_cache_dtype='auto',
                      runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                     tp_dim=None, ep_dim=None, dp_sum_total_len=0):
+                     tp_dim=None, ep_dim=None, dp_sum_total_len=0, num_speculative_tokens=0):
     model_type = config.get('model_type')
     if not model_type:
         raise KeyError(
@@ -1195,6 +1220,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+        num_speculative_tokens=num_speculative_tokens,
     )
 
 
@@ -1255,7 +1281,8 @@ def _layer_category(perf_db, layer_name):
     gated-DeltaNet recurrence -- the defining computation of the architecture --
     was skipped out of every trace with a one-line warning.
     """
-    for cat in ("per_sequence", "attention", "linear_attention", "moe", "dense"):
+    for cat in ("per_sequence", "attention", "linear_attention", "moe", "mtp",
+                "dense"):
         if _catalog_has(perf_db, cat, layer_name):
             return cat
     return None
@@ -1281,6 +1308,16 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
         )
+    elif category == "mtp":
+        # Keyed on the pass's token count. The profiler sweeps this category on
+        # decode-shaped shots, where tokens and sequences are the same number,
+        # so one axis serves both -- but the drafter's dominant layer
+        # (``eh_proj``, two orders above the rest) is per token, so that is the
+        # reading to preserve when the two diverge. They diverge only on the
+        # drafter's first pass, which reuses the target's token layout; the
+        # loop's passes are one token per sequence by construction.
+        latency_ns = _lookup_mtp(
+            ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
     elif category == "linear_attention":
         latency_ns = _lookup_linear_attention(
             ctx.perf_db, ctx.tp_size, layer_name,
@@ -1508,7 +1545,16 @@ def _layer_spec(perf_db, layer_num):
 
 def _block_layers(perf_db, layer_num, part):
     """The canonical layer names decoder layer ``layer_num`` emits for ``part``
-    (``pre_attn`` / ``post_attn`` / ``mlp``).
+    (``pre_attn`` / ``post_attn`` / ``mlp``)."""
+    return _spec_block_layers(perf_db, _layer_spec(perf_db, layer_num), part,
+                              f"layer {layer_num}")
+
+
+def _spec_block_layers(perf_db, spec, part, where):
+    """The layer names a block of composition ``spec`` emits for ``part``.
+
+    ``where`` names the caller in the error message -- a decoder layer index,
+    or the drafter, which has a spec but no index in the target's stack.
 
     This is where a heterogeneous stack stops being uniform. ``blocks`` is
     keyed by **axis** -- ``attn.<layer_types value>``, ``mlp.dense|moe``, and
@@ -1523,14 +1569,13 @@ def _block_layers(perf_db, layer_num, part):
     apart and one ``attn`` block serves them all.
     """
     blocks = perf_db["architecture"].get("blocks") or {}
-    spec = _layer_spec(perf_db, layer_num)
 
     if part == "mlp":
         by_type = blocks.get("mlp") or {}
         if spec.mlp not in by_type:
             raise KeyError(
                 f"Architecture {perf_db['variant']} declares no "
-                f"'blocks.mlp.{spec.mlp}', but layer {layer_num} of "
+                f"'blocks.mlp.{spec.mlp}', but {where} of "
                 f"{perf_db['model']} runs a {spec.mlp} MLP. Declared: "
                 f"{sorted(by_type) or 'none'}."
             )
@@ -1545,7 +1590,7 @@ def _block_layers(perf_db, layer_num, part):
         declared = sorted((blocks.get("attn") or {}))
         raise KeyError(
             f"Architecture {perf_db['variant']} declares no "
-            f"'blocks.attn.{spec.attn}', but layer {layer_num} of "
+            f"'blocks.attn.{spec.attn}', but {where} of "
             f"{perf_db['model']} runs {spec.attn}. Declared: "
             f"{declared or 'none'}."
         )
@@ -1582,6 +1627,8 @@ def _layer_available(perf_db, tp, layer_name):
         return layer_name in (tables.get("linear_attention_by_layer") or {})
     if category == "moe":
         return bool(tables.get("moe"))
+    if category == "mtp":
+        return layer_name in (tables.get("mtp") or {})
     return False
 
 
@@ -1719,6 +1766,169 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
     return _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
 
+def _drafter_spec(perf_db):
+    """The composition of the decoder block one drafter pass wraps.
+
+    Declared in the catalog's ``mtp.decoder_block`` rather than resolved from
+    the checkpoint, because vLLM's MTP modules **force** it per family and the
+    forcing lives in each family's ``*_mtp.py``: DeepSeek/GLM build the block
+    at layer index ``num_hidden_layers`` (past ``first_k_dense_replace``,
+    inheriting ``index_topk``), Qwen3.5 passes ``layer_type="full_attention"``
+    explicitly, MiniMax-M3 passes ``force_sparse_attn=True, force_moe=True``.
+    Indexing the resolved stack gets all three wrong -- it has exactly
+    ``num_hidden_layers`` entries, so the drafter's index wraps to layer 0.
+
+    An axis the catalog leaves unset is inherited from the target's stack, and
+    only when the stack agrees on it: with no single value there is nothing to
+    inherit, so the catalog has to name one.
+    """
+    mod = _stack_module()
+    declared = (perf_db["architecture"].get("mtp") or {}).get("decoder_block")
+    if declared is None:
+        return None
+    stack = perf_db.get("layer_stack") or []
+    resolved = {}
+    for axis, default in (("attn", mod.FULL_ATTENTION),
+                          ("mlp", mod.MLP_DENSE), ("sparse", False)):
+        value = declared.get(axis)
+        if value is not None:
+            resolved[axis] = value
+            continue
+        seen = {getattr(spec, axis) for spec in stack}
+        if len(seen) > 1:
+            raise KeyError(
+                f"{perf_db['model']}'s catalog leaves mtp.decoder_block.{axis} "
+                f"unset, but its stack is not uniform on that axis "
+                f"({sorted(map(str, seen))}), so there is no value to inherit. "
+                f"Name the drafter's own in profiler/models/*.yaml -- vLLM's "
+                f"MTP module forces it, so reading it off the checkpoint would "
+                f"be a guess."
+            )
+        resolved[axis] = seen.pop() if seen else default
+    return mod.LayerSpec(attn=resolved["attn"], mlp=resolved["mlp"],
+                         sparse=bool(resolved["sparse"]))
+
+
+def _drafter_loop_bctx(bctx):
+    """The batch shape of drafter passes 1..N-1: one query token per sequence.
+
+    vLLM's first drafter pass reuses the target's own token layout (minus
+    rejected tokens), then the loop pins ``max_query_len = 1`` and
+    ``num_actual_tokens = batch_size`` (``llm_base_proposer.py``), so every
+    later pass is a pure decode over the batch's sequences however the target
+    step was shaped. Reusing the target's shape for all N charges a prefill
+    chunk N times over.
+    """
+    n = bctx.lm_head_len
+    # Sequences still prefilling draft too, and their kv is the history the
+    # target just read plus this step's chunk. With no decode requests at all
+    # that is the only kv figure available.
+    if bctx.n_decode > 0:
+        kv_mean, kv_max, kv_min = (bctx.kv_decode_mean, bctx.kv_decode_max,
+                                   bctx.kv_decode_min)
+    else:
+        per_seq = (bctx.kv_prefill + bctx.prefill_chunk) // max(n, 1)
+        kv_mean = kv_max = kv_min = per_seq
+    return replace(
+        bctx, total_len=n, prefill_chunk=0, kv_prefill=0, n_decode=n,
+        kv_decode_mean=kv_mean, kv_decode_max=kv_max, kv_decode_min=kv_min,
+        lm_head_len=n, decode_q_len=1,
+    )
+
+
+def _emit_drafter(ctx, bctx, rows, batch_id_str, batch_tag='NONE'):
+    """Emit the drafter's passes, after the target's head.
+
+    vLLM runs the drafter **N times per step** -- once, then
+    ``num_speculative_tokens - 1`` more inside ``llm_base_proposer.py``'s loop.
+    It runs from ``sample_tokens()``, i.e. after the target has sampled, which
+    is why this comes after the head rather than inside the block walk.
+
+    One pass is ``mtp.prologue`` (the norms and the 2h->h combine), then a
+    **whole decoder block**, then ``mtp.head``. The block is not in the
+    prologue list because it is the *same class* as a target decoder layer, so
+    its cost is the target's own block replayed -- and it is the dominant term:
+    charging only the wrapper reads a drafter pass at a few percent of its real
+    cost, which is the speedup-from-nowhere the refusal in ``__main__`` exists
+    to prevent.
+
+    Emits nothing when speculative decoding is off, or when the architecture
+    declares no ``mtp:`` section, or when no sequence sampled this step: with
+    nothing to draft *for*, vLLM does not call the drafter either.
+    """
+    n = int(ctx.num_speculative_tokens or 0)
+    if n <= 0 or bctx.lm_head_len <= 0:
+        return
+    mtp = ctx.perf_db["architecture"].get("mtp") or {}
+    prologue = list(mtp.get("prologue") or [])
+    head = list(mtp.get("head") or [])
+    spec = _drafter_spec(ctx.perf_db)
+    if not prologue and not head and spec is None:
+        return
+
+    # Pass 0 runs over the target's own token layout; the loop's passes are
+    # pure decode at one query per sequence.
+    loop_bctx = _drafter_loop_bctx(bctx)
+    emitted_before = len(rows)
+    for pass_idx in range(n):
+        pass_bctx = bctx if pass_idx == 0 else loop_bctx
+        power_acc = PowerAccumulator([], [], 0, 0)
+        _emit_sequence(ctx, pass_bctx, 0, prologue, rows, power_acc, batch_tag)
+        if spec is not None:
+            _emit_drafter_block(ctx, pass_bctx, spec, rows, power_acc,
+                                batch_tag, f"{batch_id_str}.mtp{pass_idx}")
+        _emit_sequence(ctx, pass_bctx, 0, head, rows, power_acc, batch_tag)
+        power_acc.flush(ctx, ctx.enable_attn_offloading)
+
+    # The drafter now holds the trace's last row, and the Chakra converter
+    # takes its MEM_STORE node from *that* row's output location -- so it has
+    # to route to REMOTE or the store lands on LOCAL, which crashes ASTRA-Sim
+    # unless local_mem is configured. It is also what happens: the draft token
+    # ids go back to the host, the same way the sampler's do.
+    # ``_emit_final_layers`` already marked the head's last row, and a
+    # mid-trace REMOTE output is fine -- only the last row's is read.
+    #
+    # It also has to be a **layer** row. A drafter whose block ends in MoE
+    # closes with an ``EXPERT END`` marker, and the converter reads the last
+    # entry's attributes unconditionally -- MiniMax-M3 hit that as
+    # ``'Layer' object has no attribute 'output_memory_loc'`` from inside the
+    # converter. So the catalog has to name something for ``mtp.head``, and
+    # both families whose block ends in MoE have one to name: their wrapper's
+    # norms are a single merged profile node spanning **both** sides of the
+    # block, so charging it after is as accurate as charging it before.
+    if len(rows) > emitted_before and len(rows[-1]) != _TRACE_ROW_FIELDS:
+        raise ValueError(
+            f"{ctx.model}'s drafter emission ends on a marker row "
+            f"({rows[-1]!r}), not a layer. The Chakra converter takes the "
+            f"trace's MEM_STORE node from the last entry's output location, so "
+            f"the last row has to be a layer routing to REMOTE. Name a layer "
+            f"in the catalog's 'mtp.head' -- the wrapper's post-block norm is "
+            f"the one every family has."
+        )
+    if len(rows) > emitted_before:
+        row = list(rows[-1])
+        row[6] = f'REMOTE:{ctx.node_id}'
+        rows[-1] = tuple(row)
+
+
+def _emit_drafter_block(ctx, bctx, spec, rows, power_acc, batch_tag,
+                        batch_id_str):
+    """One drafter decoder block: the target's own block, at ``spec``."""
+    for part in ("pre_attn", "post_attn"):
+        _emit_sequence(ctx, bctx, 0,
+                       _spec_block_layers(ctx.perf_db, spec, part,
+                                          "the drafter's block"),
+                       rows, power_acc, batch_tag)
+    for layer_name in _spec_block_layers(ctx.perf_db, spec, "mlp",
+                                         "the drafter's block"):
+        if layer_name == "moe":
+            _emit_moe_block(ctx, bctx, rows, power_acc, 0, batch_id_str,
+                            batch_tag)
+        else:
+            _emit_sequence(ctx, bctx, 0, [layer_name], rows, power_acc,
+                           batch_tag)
+
+
 def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
     """Emit the architecture's head layers (final_layernorm, lm_head,
     sampler — ordered per the yaml) and feed them into the power model.
@@ -1784,13 +1994,15 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                       enable_attn_offloading, power_model, pim_model, fp,
                       variant, kv_cache_dtype='auto',
                       runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                      tp_dim=None, ep_dim=None, dp_sum_total_len=0):
+                      tp_dim=None, ep_dim=None, dp_sum_total_len=0,
+                      num_speculative_tokens=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
                            runtime_max_num_batched_tokens=runtime_max_num_batched_tokens,
                            runtime_max_num_seqs=runtime_max_num_seqs,
-                           tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len)
+                           tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                           num_speculative_tokens=num_speculative_tokens)
     bctx = _build_batch_ctx(batch, ctx)
 
     logger.info(
@@ -1831,6 +2043,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
 
     # Final layers
     _emit_final_layers(ctx, bctx, rows)
+    _emit_drafter(ctx, bctx, rows, str(batch.batch_id))
     _emit_pp_pd_power(ctx, bctx)
 
     return rows, block_starts
@@ -1845,13 +2058,15 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                                   enable_attn_offloading, power_model, pim_model, fp,
                                   variant, kv_cache_dtype='auto',
                                   runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                                  tp_dim=None, ep_dim=None, dp_sum_total_len=0):
+                                  tp_dim=None, ep_dim=None, dp_sum_total_len=0,
+                                  num_speculative_tokens=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
                            runtime_max_num_batched_tokens=runtime_max_num_batched_tokens,
                            runtime_max_num_seqs=runtime_max_num_seqs,
-                           tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len)
+                           tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                           num_speculative_tokens=num_speculative_tokens)
     bctx1 = _build_batch_ctx(batches[0], ctx)
     bctx2 = _build_batch_ctx(batches[1], ctx)
 
@@ -1919,11 +2134,13 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
     _emit_post_attn_layers(ctx, bctx1, num_layers - 1, rows, last_power, f"{batches[0].batch_id}.0", 'BATCH_1')
     last_power.flush(ctx, enable_attn_offloading)
     _emit_final_layers(ctx, bctx1, rows, 'BATCH_1')
+    _emit_drafter(ctx, bctx1, rows, f"{batches[0].batch_id}.0", 'BATCH_1')
 
     last_power2 = PowerAccumulator([], [], 0, 0)
     _emit_post_attn_layers(ctx, bctx2, num_layers - 1, rows, last_power2, f"{batches[1].batch_id}.1", 'BATCH_2')
     last_power2.flush(ctx, enable_attn_offloading)
     _emit_final_layers(ctx, bctx2, rows, 'BATCH_2')
+    _emit_drafter(ctx, bctx2, rows, f"{batches[1].batch_id}.1", 'BATCH_2')
 
     _emit_pp_pd_power(ctx, bctx1)
 
@@ -1990,7 +2207,8 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                    placement={}, block_mode_on=False, expert_routing_policy="BALANCED",
                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None,
                    enable_sub_batch_interleaving=False, fp=16, dtype=None, kv_cache_dtype='auto',
-                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, enable_block_copy=True, inputs_root=None):
+                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, enable_block_copy=True, inputs_root=None,
+                   num_speculative_tokens=0):
 
     model = batch.model
     config = get_config(model)
@@ -2048,7 +2266,8 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         variant=variant, kv_cache_dtype=kv_cache_dtype,
                         runtime_max_num_batched_tokens=max_num_batched_tokens,
                         runtime_max_num_seqs=max_num_seqs,
-                        tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len)
+                        tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                           num_speculative_tokens=num_speculative_tokens)
     if not enable_sub_batch_interleaving:
         rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)
     else:
