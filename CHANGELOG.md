@@ -678,6 +678,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   under-predicting, still within ~2.5% on TTFT / TPOT / latency means
 
 ### Changed
+- **`coverage` iterated a hardcoded list of catalog groups**, so a group added
+  later was silently skipped -- the drafter kept reporting as unbound after the
+  catalog already bound it, which sends you looking for a binding that is
+  already there. The list comes from the `Catalog` model's fields now.
 - **`profile-all.sh` could not profile MiniMax-M3 at all.** It applied one
   global flag set to every model in its list, and M3 *requires*
   `--block-size 128` -- its sparse selection works in 128-token blocks and the

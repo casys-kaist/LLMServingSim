@@ -252,6 +252,50 @@ restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
 `FusedMoEFactory` returning a `MoERunner` that owns a `router` (`BaseRouter`)
 and a `RoutedExperts`.
 
+### Profiling the drafter (MTP)
+A model that drafts with itself keeps its MTP module outside the ordinary
+model, and it **cannot be loaded standalone**: the MTP config's `model_type`
+(`deepseek_mtp` / `qwen3_5_mtp` / `minimax_m3_mtp`) is produced by
+`SpeculativeConfig.hf_config_override` and HF Transformers does not know it.
+`--profile-mtp N` boots with `speculative_config` so vLLM builds the drafter
+alongside the target.
+
+The kernels then arrive without new tooling, because the drafter runs inside
+`sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`) and the fire
+path already calls `execute_model` then `sample_tokens(None)` inside one
+`layerwise_profile` context. **`profiler coverage --profile-mtp 1` is how the
+`mtp:` blocks were written** — it names the unbound nodes with their ancestor
+paths, so the profile tree is the source, as for every other block.
+
+The `mtp` category has **one** axis, the decode batch size: every drafter pass
+is decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`). 40 shots in
+38 seconds against attention's 8,643 in four hours. Measured on Qwen3.8-27B at
+N=5, `mtp_fc` is 662-678 us flat across batch 1-8.
+
+Three things a catalog here must get right:
+
+- **`within` (or `not_within`) on every entry.** The drafter's decoder block is
+  the *same class* as a target layer (`DeepseekV2DecoderLayer`,
+  `Qwen3_5DecoderLayer`, `MiniMaxM3DecoderLayer`), so without a guard the two
+  merge into one profile node: the drafter reads as free and the target as
+  slower than it is. DeepSeek and M3 have their predictor classes in the
+  ancestor chain; **Qwen's MTP nodes arrive with an empty chain**, so its norms
+  are separated by `not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]`.
+- **The block itself is not listed** in `mtp.block`. Being the same class, the
+  simulator replays the target's own block sequence for it; only the wrapper is
+  new.
+- **The families do not share names or TP behaviour.** All three combine
+  projections are 2h→h and all dominate a pass, but DeepSeek/GLM use a plain
+  `nn.Linear` (unsharded, 161 us), Qwen a `ColumnParallelLinear` (TP-sharded,
+  80 us), M3 a `ReplicatedLinear` (replicated, 112 us). Qwen's drafter block is
+  built `layer_type="full_attention"` and never runs gated DeltaNet; M3's keeps
+  sparse attention and the indexer.
+
+`num_mtp_modules` is capped to 1 in the config **file**, not via
+`hf_overrides`: the drafter reads `speculative_config.draft_model_config.hf_config`,
+built from disk. M3's 7 modules are ~103 GB otherwise. M3 additionally needs
+`scripts/patches/vllm_m3_mtp_layer_name.py` to start at all.
+
 ### Skew profiling & alpha fit
 FlashAttention's varlen kernel pays tile-padding + SM-imbalance costs when a
 decode batch has non-uniform kv lengths. The uniform attention grid can't see
@@ -330,6 +374,7 @@ the lookup.
 | `lm_head` | per_sequence | `sequences = num_requests` |
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
 | `moe` | moe (always profiled at tp=1; wrapped in the EP all-to-all) | `(local_tokens, activated_experts)` |
+| `mtp_*` | mtp (only with `--profile-mtp`; emitted N times per step) | `sequences = num_decode` |
 
 The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
 and that key is what makes it regime-aware: a gated-DeltaNet block runs a
