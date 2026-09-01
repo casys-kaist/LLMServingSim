@@ -69,6 +69,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
+| **drafter (MTP)** | `--profile-mtp N` |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
 | **measurement** | `--measurement-iterations` |
@@ -76,7 +77,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **resume** | `--force` (default is resume) |
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
-| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe}` |
+| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}` |
 
 The five that decide how long a run takes, in rough order of effect:
 
@@ -313,6 +314,8 @@ tp<N>/
   linear_attention.csv   layer, prefill_tokens, n_decode, time_us
                                                      (mamba / gated-DeltaNet only)
   moe.csv                tokens, activated_experts, time_us          (MoE only)
+  mtp.csv                layer, sequences, time_us
+                                             (only with --profile-mtp)
   skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
                          ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
                          t_max_us, t_skew_us, alpha)                  (skew-enabled runs)

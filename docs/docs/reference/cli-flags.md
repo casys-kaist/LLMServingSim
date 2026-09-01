@@ -82,9 +82,10 @@ forward over a norm pair, an `eh_proj`, a full decoder layer, `lm_head`
 and the sampler. Reporting that as free would claim a speedup no engine
 can deliver, so a model with MTP modules (`num_nextn_predict_layers`,
 `num_mtp_modules`, `mtp_num_hidden_layers`) raises until its
-architecture catalog has an `mtp:` block to price them from. That block
-has to be written from a live profile dump, so it arrives with the
-profiling work for those families.
+architecture catalog has an `mtp:` block to price them from — and then
+until a profiled `mtp.csv` exists to read. **All four modern families
+now have the catalog block**; what is still missing is the measurement,
+which needs a profile run with `--profile-mtp N`.
 
 A model with **no** MTP modules drafts with a separate model or with
 n-gram — a serving choice rather than a checkpoint property, and the

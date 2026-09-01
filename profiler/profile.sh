@@ -82,6 +82,16 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # count, so the grid samples boundaries and the points just past them.
 # LINEAR_ATTN_CHUNK=64
 
+# --- Drafter (MTP) ----------------------------------------------------------
+# Boot with speculative decoding at N draft tokens so vLLM also builds the
+# model's own MTP module, and profile it. Only models declaring MTP modules
+# support this (num_nextn_predict_layers / num_mtp_modules /
+# mtp_num_hidden_layers). The sweep is cheap -- one axis, ~40 shots -- but run
+# `python -m profiler coverage <model> --profile-mtp 1` first if the catalog
+# has no `mtp:` block yet. MiniMax-M3 additionally needs MAX_MODEL_LEN lowered
+# and a smaller GPU_MEMORY_UTILIZATION.
+# PROFILE_MTP=5
+
 # --- Attention grid ---------------------------------------------------------
 # Upper bound for kv_prefill / kv_decode axes. The grid grows
 # geometrically from 512 up to min(this, max_model_len).
@@ -172,6 +182,7 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
+[[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp "$PROFILE_MTP")
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.
 for _ovr in "${HF_OVERRIDES[@]:-}"; do
