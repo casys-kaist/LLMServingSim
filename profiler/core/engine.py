@@ -311,16 +311,52 @@ def spin_up(
     )
     tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
     config_path = tmpdir / "config.json"
-    config_path.write_text(
-        json.dumps(_materialize_config(args.model_config, kwargs), indent=2)
-    )
+    materialized = _materialize_config(args.model_config, kwargs)
+    if args.profile_mtp:
+        materialized = _cap_mtp_modules(materialized)
+    config_path.write_text(json.dumps(materialized, indent=2))
     log.debug("model config written to %s", config_path)
 
     kwargs["model"] = str(tmpdir)
+    if args.profile_mtp:
+        # Same directory for both: MTP drafts with the target's own
+        # checkpoint, and vLLM rewrites the config into the MTP one itself
+        # (SpeculativeConfig.hf_config_override).
+        kwargs["speculative_config"] = {
+            "model": str(tmpdir),
+            "num_speculative_tokens": int(args.profile_mtp),
+        }
 
     with log.capture_stdio():
         llm = LLM(**kwargs)
     return llm, kwargs, tmpdir
+
+
+def _cap_mtp_modules(config: dict[str, Any], cap: int = 1) -> dict[str, Any]:
+    """Cap ``num_mtp_modules`` in the config **file**, for MTP profiling.
+
+    Not an ``hf_overrides`` entry, because the drafter reads
+    ``speculative_config.draft_model_config.hf_config`` -- built from the
+    config on disk -- rather than the target's overridden one. Unlike
+    ``num_hidden_layers`` the field has no cross-field validation, so writing
+    it is safe.
+
+    MiniMax-M3 declares 7 modules, each a full MoE decoder layer at ~14.8 GB,
+    which is ~103 GB and does not fit one card. They are all the same class and
+    the simulator multiplies by the declared count, so profiling one is enough.
+    """
+    out = dict(config)
+    for holder in (out, out.get("text_config")):
+        if isinstance(holder, dict) and "num_mtp_modules" in holder:
+            if int(holder["num_mtp_modules"] or 0) > cap:
+                log.info(
+                    "capping num_mtp_modules %s -> %d for MTP profiling; the "
+                    "modules are identical and the simulator multiplies by the "
+                    "declared count",
+                    holder["num_mtp_modules"], cap,
+                )
+                holder["num_mtp_modules"] = cap
+    return out
 
 
 def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
