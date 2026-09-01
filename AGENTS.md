@@ -195,8 +195,18 @@ a single shot binds the wrong kernel for the others.
 
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
-(e.g. `hidden_size`, `num_attention_heads`) by TP via `hf_overrides`. Collective
-timings are left to ASTRA-Sim. The model's full `config.json` (read from
+by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
+
+**Every field vLLM shards has to be in that list**, or one part of the model is
+measured per-rank while the rest is measured at full size, and a mixed
+measurement is worse than either. `linear_num_key_heads` /
+`linear_num_value_heads` are there because
+`MambaStateShapeCalculator.gated_delta_net_state_shape` divides both `conv_dim`
+and `num_v_heads` by the TP world size; without them, Qwen3.8-27B at TP=2 had a
+halved attention page against a full-size mamba page and the engine resolved
+`block_size` 1568 instead of 784 — a rank that exists in no deployment. The
+tell is the per-TP `block_size` the run logs: on a hybrid it should be the
+*same* at every degree, since both pages scale together. The model's full `config.json` (read from
 `configs/model/<org>/<name>.json`, or auto-fetched from the HF Hub on first run)
 is written to a tmpdir at spin-up so vLLM never needs Hub access.
 

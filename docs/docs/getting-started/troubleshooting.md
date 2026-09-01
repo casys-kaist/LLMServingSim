@@ -271,6 +271,44 @@ especially with MoE + EP or large prefix caches.
 - **`--log-interval` too small.** Setting it to `0.1` makes the
   logger run every 100 ms; raise to `1.0` (default) or higher.
 
+## `masked_mha_available` crash partway through a profile run
+
+**Symptom:** profiling DeepSeek-V3.2 or GLM-5 dies after some minutes,
+with the sweep's progress bar part-way through a category:
+
+```text
+Exception: Call to collective_rpc method failed:
+'FlashInferMLASparseSM120Impl' object has no attribute 'masked_mha_available'
+```
+
+**Cause:** a vLLM 0.28.0 bug on Blackwell. `FlashInferMLASparseSM120Impl`
+is the only sparse-MLA backend whose `supports_compute_capability`
+accepts `major == 12`, so every Blackwell card uses it, and in 0.28.0 it
+does not override `supports_dense_mha_prefill` (which
+`attention/backend.py` defaults to `True`). `mla_attention.py` then
+builds a prefill backend and reads `self.impl.masked_mha_available`, an
+attribute only `SparseMLACommonImpl` sets — and that class is not in
+this impl's MRO.
+
+**Fix:** run the backport, which `scripts/docker-vllm.sh` now does
+automatically at container start:
+
+```bash
+python3 scripts/patches/vllm_sm120_sparse_mla.py
+```
+
+It applies the same one line as upstream's
+[PR #51395](https://github.com/vllm-project/vllm/pull/51395), is
+idempotent, and is a no-op on a vLLM that already has the fix. If your
+container predates that change to `docker-vllm.sh`, run it by hand.
+
+:::note[`profiler coverage` does not catch this one]
+Coverage fires three fixed shots. The failure needs a batch that takes
+the dense-MHA prefill path, which first appeared at shot 89 of 152 in
+the dense category — so a clean coverage report is not evidence that a
+full sweep will finish.
+:::
+
 ## Out of memory inside the vLLM container
 
 **Symptom:** Profiler crashes with CUDA OOM partway through the
