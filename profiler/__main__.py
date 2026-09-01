@@ -507,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_slice.add_argument(
         "--group",
         choices=["dense", "per_sequence", "attention", "linear_attention",
-                 "moe"],
+                 "moe", "mtp"],
         required=True,
         help="Which profile category to refresh.",
     )

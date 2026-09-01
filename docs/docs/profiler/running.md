@@ -199,6 +199,7 @@ file is an error.
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
 | `--num-hidden-layers` | `1` | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
+| `--profile-mtp N` | off | — |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
@@ -217,6 +218,56 @@ file is an error.
 | `--log-level` | `INFO` | `VERBOSITY` |
 | `--silent` | — | `VERBOSITY="--silent"` |
 | `--verbose` | — | `VERBOSITY="--verbose"` |
+
+### `--profile-mtp N` — profiling the drafter
+
+A model that drafts with itself keeps its MTP module out of the ordinary
+model: vLLM only builds it when the engine boots with a
+`speculative_config`, and the MTP config's `model_type`
+(`deepseek_mtp` / `qwen3_5_mtp` / `minimax_m3_mtp`) is produced by
+`SpeculativeConfig.hf_config_override` and is unknown to HF
+Transformers, so it cannot be loaded on its own. `--profile-mtp N` boots
+with speculative decoding at N draft tokens so the drafter exists.
+
+Its kernels then arrive for free. The drafter runs inside
+`sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`), and
+the fire path already calls `execute_model` then `sample_tokens(None)`
+inside the same `layerwise_profile` context.
+
+**Run `coverage` with it first.** The drafter's kernels report as
+unbound until the catalog binds them, with their ancestor paths — which
+is how the `mtp:` blocks in `profiler/models/` were written:
+
+```bash
+python -m profiler coverage <model> --hardware <hw> --profile-mtp 1
+```
+
+The sweep itself is cheap. Every drafter pass is decode-shaped at
+`max_query_len = 1`, so the `mtp` category has **one** axis (the decode
+batch size) rather than attention's four: 40 shots in under a minute.
+Refresh just that category with
+`slice --group mtp --profile-mtp N`.
+
+Two per-model requirements, both of which the profiler handles or
+reports:
+
+- `num_mtp_modules` is capped to 1 in the config **file**. The drafter
+  reads `speculative_config.draft_model_config.hf_config`, built from
+  the config on disk, so an `hf_overrides` entry never reaches it.
+  MiniMax-M3 declares 7 modules, each a full MoE decoder layer at
+  ~14.8 GB — ~103 GB, which does not fit one card. They are identical
+  and the simulator multiplies by the declared count.
+- MiniMax-M3 also needs `--max-model-len` lowered (its declared
+  1,048,576 asks for 10.5 GiB of KV before the drafter is built) and
+  benefits from a lower `--gpu-memory-utilization`.
+
+:::caution[MiniMax-M3 needs a patch to start at all]
+`scripts/patches/vllm_m3_mtp_layer_name.py`, applied by
+`docker-vllm.sh`. Without it M3 fails with `Duplicate layer name:
+model.layers.0.self_attn.attn` — it is the one MTP family that neither
+offsets its layer index nor separates its prefix, so its drafter
+collides with the target in vLLM's layer-name registry.
+:::
 
 Use `--out-root` to write a bundle somewhere other than
 `profiler/perf/`, and `--model-config-root` to point at a different

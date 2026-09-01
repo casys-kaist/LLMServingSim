@@ -54,6 +54,13 @@ class SequencePoint:
 
 
 @dataclass(frozen=True)
+class MtpPoint:
+    layer: str
+    sequences: int
+    microseconds: float
+
+
+@dataclass(frozen=True)
 class AttentionPoint:
     # 4D keyed, one column per axis, plus microseconds -- and a layer name,
     # because the group can legitimately hold more than one kernel now. A
@@ -94,7 +101,7 @@ class ExpertPoint:
 
 # Union alias for writer.py's benefit.
 Point = (
-    DensePoint | SequencePoint | AttentionPoint | LinearAttentionPoint
+    DensePoint | SequencePoint | MtpPoint | AttentionPoint | LinearAttentionPoint
     | ExpertPoint
 )
 
@@ -291,6 +298,56 @@ class SequenceCategory(Category):
 
     def catalog_slice(self, arch):
         return _entry_dict(arch.catalog.per_sequence, arch)
+
+    def shot_key(self, shot):
+        return (len(shot.requests),)
+
+
+class MtpCategory(Category):
+    """The model's own drafter (MTP), keyed on the decode batch size.
+
+    One axis, not four. vLLM runs the drafter N times per step and every pass
+    is decode-shaped at a fixed query length: ``llm_base_proposer.py`` sets
+    ``common_attn_metadata.max_query_len = 1`` and
+    ``num_actual_tokens = batch_size``. So the only thing that varies is how
+    many sequences are drafting, which makes this the same shape as
+    ``per_sequence`` and costs tens of shots rather than the attention grid's
+    thousands.
+
+    The kernels arrive for free: the drafter runs inside ``sample_tokens()``
+    (``propose_draft_token_ids`` -> ``drafter.propose``), which the fire path
+    already calls inside ``layerwise_profile``. What this category adds is the
+    *axis* -- without it the drafter's time would be measured once, at whatever
+    batch the other categories happened to use.
+
+    Only runs when the engine was booted with ``--profile-mtp``; without it the
+    module does not exist and the catalog slice matches nothing.
+    """
+
+    name = "mtp"
+    sink_filename = "mtp.csv"
+    label = "mtp"
+
+    def compose_shots(self, arch, args, limits, tp):
+        for n in _token_grid(limits.max_num_seqs):
+            # N single-token decode requests, the shape a drafter pass sees.
+            if n > limits.max_num_batched_tokens:
+                continue
+            if n * limits.block_size > limits.num_cache_tokens:
+                continue
+            yield Shot.per_sequence(num_sequences=n)
+
+    def extract_points(self, shot, timings, arch, tp):
+        num_sequences = len(shot.requests)
+        for sample in timings:
+            yield MtpPoint(
+                layer=sample.layer,
+                sequences=num_sequences,
+                microseconds=sample.microseconds,
+            )
+
+    def catalog_slice(self, arch):
+        return _entry_dict(arch.catalog.mtp, arch)
 
     def shot_key(self, shot):
         return (len(shot.requests),)
@@ -769,6 +826,7 @@ def categories_for(arch: Architecture, tp: int) -> list[Category]:
         (AttentionCategory(), arch.catalog.attention),
         (LinearAttentionCategory(), arch.catalog.linear_attention),
         (ExpertCategory(), arch.catalog.moe),
+        (MtpCategory(), arch.catalog.mtp),
     ]
     for cat, entries in registry:
         if not entries:
@@ -788,4 +846,5 @@ CATEGORY_BY_NAME: dict[str, type[Category]] = {
     AttentionCategory.name: AttentionCategory,
     LinearAttentionCategory.name: LinearAttentionCategory,
     ExpertCategory.name: ExpertCategory,
+    MtpCategory.name: MtpCategory,
 }

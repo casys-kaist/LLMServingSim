@@ -120,10 +120,11 @@ deliver, so the simulator's behaviour splits:
 
 - **A model with MTP modules** (`num_nextn_predict_layers`,
   `num_mtp_modules`, `mtp_num_hidden_layers`) **raises** until its
-  architecture catalog has an `mtp:` block to price them from. That
-  block has to be written from a live profile dump, so it lands with
-  the profiling work for those families. All four modern families are
-  in this state today.
+  drafter can be priced. All four modern families now carry the `mtp:`
+  catalog block; what is still missing is the measurement. Profile it
+  with `--profile-mtp N`, which is cheap — the drafter's axis is the
+  decode batch size alone, 40 shots in well under a minute, because
+  every pass is decode-shaped at `max_query_len = 1`.
 - **A model with no MTP modules** drafts with a separate model or with
   n-gram. That is a serving choice rather than a checkpoint property,
   and the simulator has no second model to charge, so it warns:
