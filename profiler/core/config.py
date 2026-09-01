@@ -404,17 +404,59 @@ class Shared(BaseModel):
         return counts
 
 
-class MtpSection(BaseModel):
-    """``mtp:`` -- what one drafter pass emits, outside the decoder block.
+class DrafterBlock(BaseModel):
+    """The decoder block one drafter pass wraps.
 
-    vLLM runs the drafter **N times per step** for N speculative tokens: once,
-    then ``num_speculative_tokens - 1`` more inside
-    ``llm_base_proposer.py``'s loop, each a decode-shaped forward at
-    ``max_query_len = 1``.
+    Declared rather than resolved from the checkpoint, because vLLM's MTP
+    modules **force** it per family and the forcing lives in each family's
+    ``*_mtp.py`` rather than in the config:
+
+    * DeepSeek/GLM (``deepseek_mtp.py``) build the block at layer index
+      ``num_hidden_layers``, which is past ``first_k_dense_replace`` (MoE) and
+      inherits the model-wide ``index_topk`` (sparse).
+    * Qwen3.5 (``qwen3_5_mtp.py``) passes ``layer_type="full_attention"``
+      explicitly, overriding whatever ``layer_types`` says.
+    * MiniMax-M3 (``minimax_m3/*/mtp.py``) passes ``force_sparse_attn=True,
+      force_moe=True``.
+
+    Indexing the checkpoint's own stack gets all three wrong: the stack has
+    exactly ``num_hidden_layers`` entries, so index ``num_hidden_layers`` wraps
+    to layer 0 -- dense for DeepSeek/GLM, non-sparse for M3, linear attention
+    for Qwen3.8. The values here name axes of ``blocks:``, exactly as
+    ``stack.LayerSpec`` does.
+
+    An axis left **unset** means "whatever the checkpoint says", and the
+    simulator then requires that axis to be uniform across the target's stack
+    -- otherwise there is no single answer to inherit and the catalog has to
+    name one. Qwen3.5 is the case that needs it: ``qwen3_5.py`` picks the MLP
+    off ``model_type`` rather than per layer, so the drafter's MLP is the
+    model's, whichever that is.
     """
     model_config = ConfigDict(extra="forbid")
 
-    block: list[str] = Field(default_factory=list)
+    attn: str | None = None
+    mlp: str | None = None
+    sparse: bool | None = None
+
+
+class MtpSection(BaseModel):
+    """``mtp:`` -- what one drafter pass emits.
+
+    vLLM runs the drafter **N times per step** for N speculative tokens: once,
+    then ``num_speculative_tokens - 1`` more inside
+    ``llm_base_proposer.py``'s loop. The first pass is target-shaped; the rest
+    are decode-shaped at ``max_query_len = 1``.
+
+    Split the way ``shared:`` is, around the decoder block the wrapper holds:
+    ``prologue`` runs before it (the norms and the 2h->h combine), ``head``
+    after (DeepSeek/GLM's ``SharedHead``; Qwen and M3 keep ``lm_head`` outside
+    the predictor and so declare none).
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    prologue: list[str] = Field(default_factory=list)
+    decoder_block: DrafterBlock | None = None
+    head: list[str] = Field(default_factory=list)
 
 
 class Architecture(BaseModel):
@@ -670,11 +712,13 @@ class ProfileArgs:
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
         attention_max_kv: Cap for attention grid's KV axes. Doubles
             from 512 up to min(this, max_model_len).
-        profile_mtp: When set, boot with ``speculative_config`` at this many
-            speculative tokens so the drafter is built and its kernels land in
-            the profile tree. The drafter runs inside ``sample_tokens()``
-            (``propose_draft_token_ids`` -> ``drafter.propose``), which the
-            fire path already calls inside ``layerwise_profile``.
+        profile_mtp: When set, boot with ``speculative_config`` so the drafter
+            is built and its kernels land in the profile tree. The drafter
+            runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
+            ``drafter.propose``), which the fire path already calls inside
+            ``layerwise_profile``. Always at ``num_speculative_tokens=1``, so
+            what lands in ``mtp.csv`` is **one** drafter pass -- the unit the
+            simulator multiplies by its own N.
         hf_overrides: Extra HF config overrides, merged under the
             profiler's own (num_hidden_layers=1) + TP sharding.
     """
@@ -723,7 +767,7 @@ class ProfileArgs:
     # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
-    profile_mtp: int | None = None
+    profile_mtp: bool = False
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one
     captures the per-block cost. A **hybrid** stack needs the smallest count

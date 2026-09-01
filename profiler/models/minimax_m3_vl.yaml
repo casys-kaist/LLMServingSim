@@ -91,10 +91,10 @@ shared:
 
 
 # The model's own drafter, built only when the engine boots with
-# speculative_config (``--profile-mtp N``). ``num_mtp_modules: 7`` on this
+# speculative_config (``--profile-mtp``). ``num_mtp_modules: 7`` on this
 # checkpoint, and vLLM runs the drafter **N times per step**.
 #
-# Read off ``profiler coverage --profile-mtp 1``, which reported seven unbound
+# Read off ``profiler coverage --profile-mtp``, which reported seven unbound
 # nodes, every path rooted at
 # ``MiniMaxM3MTP > MiniMaxM3MultiTokenPredictor > MiniMaxM3MultiTokenPredictorLayer``.
 # Measured at 4 target layers, prefill / decode: eh_proj 111.5 / 110.7 us,
@@ -117,11 +117,25 @@ shared:
 # ~103 GB. The modules are identical and the simulator multiplies by the
 # declared count.
 mtp:
-  block: [mtp_norms, mtp_eh_proj, mtp_glue]
-  # transformer_layer is absent on purpose -- same class as a target layer, so
-  # the simulator replays the target's own block sequence for it. There is no
-  # separate head entry: MiniMaxM3MTP keeps lm_head outside the predictor and
-  # it is already bound as the target's.
+  prologue: [mtp_eh_proj, mtp_glue]
+  # ``mtp_norms`` is one merged profile node covering norms on **both** sides
+  # of the block -- enorm and hnorm before ``eh_proj``, ``final_layernorm``
+  # after the decoder layer -- and all three are same-class siblings under
+  # MiniMaxM3MultiTokenPredictorLayer, so the profiler cannot separate them.
+  # Charging the merged node once after the block is therefore as accurate as
+  # once before, and it leaves the trace ending on a real layer row: this
+  # family's drafter block ends in MoE, whose last emission is an
+  # ``EXPERT END`` marker, and the Chakra converter reads its MEM_STORE node
+  # from the trace's last entry.
+  # transformer_layer gets no names of its own -- same class as a target layer,
+  # so the simulator replays the target's own block sequence for it.
+  # ``minimax_m3/*/mtp.py`` builds it with ``force_sparse_attn=True,
+  # force_moe=True``, where its prefix's layer index is 0 and would resolve to
+  # the non-sparse dense block.
+  decoder_block: {attn: full_attention, mlp: moe, sparse: true}
+  head: [mtp_norms]
+  # No lm_head entry: MiniMaxM3MTP keeps it outside the predictor and it is
+  # already bound as the target's.
 
 
 catalog:
