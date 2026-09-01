@@ -322,9 +322,13 @@ def spin_up(
         # Same directory for both: MTP drafts with the target's own
         # checkpoint, and vLLM rewrites the config into the MTP one itself
         # (SpeculativeConfig.hf_config_override).
+        # Always 1, whatever N the user intends to simulate: the drafter runs
+        # once per speculative token, so booting at N records N passes in one
+        # shot and the simulator -- which emits N passes of its own -- would
+        # multiply again. One pass is the unit.
         kwargs["speculative_config"] = {
             "model": str(tmpdir),
-            "num_speculative_tokens": int(args.profile_mtp),
+            "num_speculative_tokens": 1,
         }
 
     with log.capture_stdio():

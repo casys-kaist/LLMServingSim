@@ -71,7 +71,7 @@ for job in "${JOBS[@]}"; do
     [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
     [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
     [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
-    [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp "$PROFILE_MTP")
+    [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
     [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
     [[ -n "${ATTENTION_DECODE_Q_LENS:-}" ]] && cmd+=(--attention-decode-q-lens "$ATTENTION_DECODE_Q_LENS")
     [[ -n "${SKIP_SKEW:-}" ]]              && cmd+=(--skip-skew)

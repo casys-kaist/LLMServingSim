@@ -149,19 +149,24 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "every distinct block type (4 for Qwen3.8-27B, whose "
                         "layer_types runs gated-DeltaNet x3 then full "
                         "attention) or the catalog only ever sees one.")
-    p.add_argument("--profile-mtp", type=int, default=None,
-                   dest="profile_mtp", metavar="N",
-                   help="Boot with speculative decoding at N draft tokens so "
-                        "vLLM also builds the model's own MTP module, and its "
-                        "kernels land in the profile tree. Needed because the "
-                        "MTP config model_type (deepseek_mtp / qwen3_5_mtp / "
+    p.add_argument("--profile-mtp", action="store_true",
+                   dest="profile_mtp",
+                   help="Boot with speculative decoding so vLLM also builds "
+                        "the model's own MTP module, and its kernels land in "
+                        "the profile tree. Needed because the MTP config "
+                        "model_type (deepseek_mtp / qwen3_5_mtp / "
                         "minimax_m3_mtp) is produced by vLLM's "
                         "SpeculativeConfig and is unknown to HF Transformers, "
-                        "so the module cannot be loaded on its own. Only "
-                        "models declaring MTP modules support this. Pair it "
-                        "with the coverage subcommand first: the drafter's "
-                        "kernels show up as unbound until a catalog binds "
-                        "them.")
+                        "so the module cannot be loaded on its own. Takes no "
+                        "draft count: the engine boots at "
+                        "num_speculative_tokens=1 so what is measured is "
+                        "**one** drafter pass, which is the unit the "
+                        "simulator multiplies by its own N. Booting at N "
+                        "would record N passes and the simulator would then "
+                        "multiply again. Only models declaring MTP modules "
+                        "support this. Pair it with the coverage subcommand "
+                        "first: the drafter's kernels show up as unbound "
+                        "until a catalog binds them.")
     p.add_argument("--hf-override", action="append", default=None,
                    dest="hf_override", metavar="KEY=VALUE",
                    help="Override one model-config field, repeatable. The "
@@ -406,7 +411,7 @@ def _build_profile_args(
         gpu_memory_utilization=getattr(ns, "gpu_memory_utilization", None),
         max_model_len=getattr(ns, "max_model_len", None),
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
-        profile_mtp=getattr(ns, "profile_mtp", None),
+        profile_mtp=bool(getattr(ns, "profile_mtp", False)),
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_decode_q_lens=tuple(
