@@ -1,0 +1,42 @@
+profiler_version: 1.0.0
+vllm_version: 0.28.0
+cuda_version: '13.0'
+gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
+hardware: RTXPRO6000
+profiled_at: '2026-08-31T12:30:12+00:00'
+architecture: minimax_m3_vl
+architecture_sha256: 7e788a8f7f119b657530e3f61165805fd0eb439298a8a3aa92509d092388c5be
+model: MiniMaxAI/MiniMax-M3
+variant: bf16
+tp_degrees: [1]
+engine_effective:
+  load_format: dummy
+  enforce_eager: true
+  skip_tokenizer_init: true
+  enable_prefix_caching: false
+  generation_config: vllm
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  hf_overrides:
+    num_hidden_layers: 4
+  block_size: 128
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_p5fk1ii9
+engine_resolved:
+  block_size: 128
+  max_model_len: 1048576
+  num_cache_tokens: 8120960
+attention_grid:
+  max_kv: 16384
+  chunk_factor: 2.0
+  kv_factor: 2.0
+  chunks: 0, 16-2048 x2
+  n_decode: 0, 1-256 x2
+  kv: 0, 16-16384 x2
+measurement_iterations: 3
+skew_profile:
+  enabled: false
+skew_fit:
+  enabled: false
