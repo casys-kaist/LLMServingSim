@@ -127,7 +127,7 @@ class Extension:
         stats = hook.results.convert_stats_to_dict()
         summary = stats["summary_stats"]
 
-        samples = extract_samples(summary, slice_)
+        samples = extract_samples(summary, slice_, iterations=iterations)
         return [s.as_dict() for s in samples]
 
     def coverage(
