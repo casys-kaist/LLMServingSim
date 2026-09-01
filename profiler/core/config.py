@@ -648,6 +648,11 @@ class ProfileArgs:
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
         attention_max_kv: Cap for attention grid's KV axes. Doubles
             from 512 up to min(this, max_model_len).
+        profile_mtp: When set, boot with ``speculative_config`` at this many
+            speculative tokens so the drafter is built and its kernels land in
+            the profile tree. The drafter runs inside ``sample_tokens()``
+            (``propose_draft_token_ids`` -> ``drafter.propose``), which the
+            fire path already calls inside ``layerwise_profile``.
         hf_overrides: Extra HF config overrides, merged under the
             profiler's own (num_hidden_layers=1) + TP sharding.
     """
@@ -691,6 +696,12 @@ class ProfileArgs:
     same axes from the grid side."""
 
     num_hidden_layers: int | None = None
+    # Boot the engine with a speculative_config so vLLM also builds the
+    # model's own MTP module. Needed to profile the drafter at all: the MTP
+    # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
+    # produced by SpeculativeConfig.hf_config_override and is unknown to HF
+    # Transformers, so the module cannot be loaded standalone.
+    profile_mtp: int | None = None
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one
     captures the per-block cost. A **hybrid** stack needs the smallest count
