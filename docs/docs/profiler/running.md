@@ -199,7 +199,7 @@ file is an error.
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
 | `--num-hidden-layers` | `1` | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
-| `--profile-mtp N` | off | — |
+| `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
@@ -219,15 +219,54 @@ file is an error.
 | `--silent` | — | `VERBOSITY="--silent"` |
 | `--verbose` | — | `VERBOSITY="--verbose"` |
 
-### `--profile-mtp N` — profiling the drafter
+### `--measurement-iterations` — averaging out clock jitter
+
+Each shot runs one discarded warm-up forward, then N timed forwards inside a
+single `layerwise_profile` context. A single sample can swing 15-25% on a large
+GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call
+figure comes from dividing by the invocation count.
+
+The division is **per parent**: every node divides by its parent node's
+invocation count. The top level has no parent node, so `extract_samples` is
+given `iterations` as its count — and vLLM 0.28 additionally reports a
+top-level node once per forward (and once per sibling module) where 0.19 merged
+them into one wrapper, so identical sibling entries are deduped first. Both
+matter because `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter
+bind at the top level; without them those read `iterations x repeats` too high.
+
+:::tip[Sanity-check a fresh bundle against a bandwidth bound]
+Nothing in a profiled CSV reveals a constant-factor error — the curve stays
+smooth and monotone in the sweep axis, and `coverage` passes, because coverage
+reports only what is *un*bound. What does reveal it is physics. `lm_head` reads
+the whole output embedding, so
+
+```
+vocab * hidden * dtype_bytes / mem_bw
+```
+
+is a hard floor: 128256 × 4096 × 2 B ÷ 1.8 TB/s = 583 µs for Llama-3.1-8B on
+an RTX PRO 6000, against which a measured 714 µs is 82% efficiency and 6417 µs
+is impossible. Spot-check `lm_head`, `embedding` and one decode-attention row
+this way, and against an existing bundle for the same model on other hardware
+scaled by memory bandwidth.
+:::
+
+### `--profile-mtp` — profiling the drafter
 
 A model that drafts with itself keeps its MTP module out of the ordinary
 model: vLLM only builds it when the engine boots with a
 `speculative_config`, and the MTP config's `model_type`
 (`deepseek_mtp` / `qwen3_5_mtp` / `minimax_m3_mtp`) is produced by
 `SpeculativeConfig.hf_config_override` and is unknown to HF
-Transformers, so it cannot be loaded on its own. `--profile-mtp N` boots
-with speculative decoding at N draft tokens so the drafter exists.
+Transformers, so it cannot be loaded on its own. `--profile-mtp` boots
+with speculative decoding so the drafter exists.
+
+**It takes no draft count.** The engine is pinned to
+`num_speculative_tokens=1`, so what lands in `mtp.csv` is **one**
+drafter pass — the unit the simulator multiplies by its own
+`--num-speculative-tokens`. Booting at N would record N passes in a
+single shot and the simulator would multiply again, so the cost came
+out N².
 
 Its kernels then arrive for free. The drafter runs inside
 `sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`), and
@@ -236,17 +275,30 @@ inside the same `layerwise_profile` context.
 
 **Run `coverage` with it first.** The drafter's kernels report as
 unbound until the catalog binds them, with their ancestor paths — which
-is how the `mtp:` blocks in `profiler/models/` were written:
+is how the `mtp:` sections in `profiler/models/` were written:
 
 ```bash
-python -m profiler coverage <model> --hardware <hw> --profile-mtp 1
+python -m profiler coverage <model> --hardware <hw> --profile-mtp
 ```
 
-The sweep itself is cheap. Every drafter pass is decode-shaped at
-`max_query_len = 1`, so the `mtp` category has **one** axis (the decode
-batch size) rather than attention's four: 40 shots in under a minute.
-Refresh just that category with
-`slice --group mtp --profile-mtp N`.
+Coverage catches an entry that binds *nothing*. It cannot catch the
+opposite — an entry that binds the **target's** layers as well, because
+the drafter's modules are the same classes as the target's and
+over-matching leaves nothing unbound. That one needs the tree:
+
+```bash
+python3 .claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4 RMSNorm
+```
+
+Read the ancestor chains before trusting an `mtp.csv`. Qwen3.8-27B's
+`mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms while
+its guard was wrong, and the curve stayed smooth and monotone the whole
+way.
+
+The sweep itself is cheap. The `mtp` category has **one** axis (the
+pass's token count) rather than attention's four: 40 shots in under a
+minute. Refresh just that category with
+`slice --group mtp --profile-mtp`.
 
 Two per-model requirements, both of which the profiler handles or
 reports:
@@ -295,12 +347,21 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
 | Flag | Required | Description |
 | --- | --- | --- |
 | `--tp-refresh` | ✓ | The single TP degree to refresh. Must be a member of `--tp` |
-| `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `linear_attention`, `moe` |
+| `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `linear_attention`, `moe`, `mtp` |
 
 It boots one engine at that TP, fires only that category's grid, and
 rewrites `tp<N>/<group>.csv` plus `meta.yaml`. Errors out if the
 architecture YAML has no entries in `catalog.<group>` — asking for
 `moe` on a dense model, for instance.
+
+`--tp` defaults to `1`, and `--tp-refresh` has to name one of its degrees, so
+refreshing a `tp2/` folder needs both — otherwise it exits with `tp=2 is not
+in the session's tp_degrees ([1])`:
+
+```bash
+python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000 \
+    --tp 1,2 --tp-refresh 2 --group mtp --profile-mtp
+```
 
 Note `slice` handles only the uniform categories. The skew sweep is not a
 `--group` value; refresh it with

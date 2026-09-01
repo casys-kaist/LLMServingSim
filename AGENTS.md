@@ -257,39 +257,118 @@ A model that drafts with itself keeps its MTP module outside the ordinary
 model, and it **cannot be loaded standalone**: the MTP config's `model_type`
 (`deepseek_mtp` / `qwen3_5_mtp` / `minimax_m3_mtp`) is produced by
 `SpeculativeConfig.hf_config_override` and HF Transformers does not know it.
-`--profile-mtp N` boots with `speculative_config` so vLLM builds the drafter
-alongside the target.
+`--profile-mtp` boots with `speculative_config` so vLLM builds the drafter
+alongside the target. It takes **no draft count**: the engine is pinned to
+`num_speculative_tokens=1`, so `mtp.csv` holds **one** drafter pass — the unit
+the simulator multiplies by its own `--num-speculative-tokens`. Booting at N
+recorded N passes and the simulator multiplied again, so the cost came out N²;
+that is why the flag is not a number.
 
 The kernels then arrive without new tooling, because the drafter runs inside
 `sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`) and the fire
 path already calls `execute_model` then `sample_tokens(None)` inside one
-`layerwise_profile` context. **`profiler coverage --profile-mtp 1` is how the
-`mtp:` blocks were written** — it names the unbound nodes with their ancestor
-paths, so the profile tree is the source, as for every other block.
+`layerwise_profile` context. **`profiler coverage --profile-mtp` is how the
+`mtp:` sections were written** — it names the unbound nodes with their ancestor
+paths, so the profile tree is the source, as for every other block. For the
+opposite failure — an entry that binds *too much* — dump the tree with
+`.claude/dump_mtp_tree.py <config-rel> <n_layers> [class-filter]`; coverage
+cannot see it, because over-matching leaves nothing unbound.
 
-The `mtp` category has **one** axis, the decode batch size: every drafter pass
-is decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`). 40 shots in
-38 seconds against attention's 8,643 in four hours. Measured on Qwen3.8-27B at
-N=5, `mtp_fc` is 662-678 us flat across batch 1-8.
+The `mtp` category has **one** axis, the pass's token count: the loop's passes
+are decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`), where tokens
+and sequences are the same number. 40 shots in 38 seconds against attention's
+8,643 in four hours.
 
-Three things a catalog here must get right:
+Four things a catalog here must get right:
 
-- **`within` (or `not_within`) on every entry.** The drafter's decoder block is
-  the *same class* as a target layer (`DeepseekV2DecoderLayer`,
-  `Qwen3_5DecoderLayer`, `MiniMaxM3DecoderLayer`), so without a guard the two
-  merge into one profile node: the drafter reads as free and the target as
-  slower than it is. DeepSeek and M3 have their predictor classes in the
-  ancestor chain; **Qwen's MTP nodes arrive with an empty chain**, so its norms
-  are separated by `not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]`.
-- **The block itself is not listed** in `mtp.block`. Being the same class, the
-  simulator replays the target's own block sequence for it; only the wrapper is
-  new.
+- **A guard on every entry.** The drafter's modules are the *same classes* as
+  the target's (`RMSNorm`, `ColumnParallelLinear`, `Linear`,
+  `DeepseekV2DecoderLayer` / `Qwen3_5DecoderLayer` /
+  `MiniMaxM3DecoderLayer`), so an unguarded entry claims the target's nodes
+  too. DeepSeek and M3 pin `within` to their predictor classes
+  (`DeepSeekMultiTokenPredictorLayer`, `MiniMaxM3MultiTokenPredictorLayer`);
+  **Qwen's wrapper (`Qwen3_5MultiTokenPredictor`, no `Layer` suffix) launches
+  no kernel of its own**, so it never becomes a profile node and its drafter's
+  nodes arrive at the *top level* — guarded by `not_within:
+  [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]` instead. Getting this wrong is
+  invisible in the CSV: the curve stays smooth and monotone. Qwen's `mtp_norms`
+  read **1287 us at one sequence** for two RMSNorms before the guard was right.
+- **The decoder block is declared, not listed.** `mtp.prologue` / `mtp.head`
+  hold only the wrapper; the block itself is the target's own, replayed, and
+  `mtp.decoder_block` says *which* one. **`mtp.head` must name something**:
+  the Chakra converter reads the trace's MEM_STORE node from the last entry's
+  attributes, and a drafter whose block ends in MoE closes with an
+  `EXPERT END` marker — which surfaced as `'Layer' object has no attribute
+  'output_memory_loc'` from inside the converter on MiniMax-M3. Every family
+  has one to name: the wrapper's norms are a **single merged profile node
+  spanning both sides of the block** (Qwen's `pre_fc_norm_*` before `fc` plus
+  `norm` after; M3's `enorm`/`hnorm` before `eh_proj` plus `final_layernorm`
+  after), and they are same-class siblings so the profiler cannot separate
+  them — charging the merged node once after the block is exactly as accurate
+  as once before. It cannot be read off the checkpoint:
+  vLLM's MTP modules force it per family (DeepSeek/GLM build at layer index
+  `num_hidden_layers`, Qwen passes `layer_type="full_attention"`, M3 passes
+  `force_sparse_attn=True, force_moe=True`), and the resolved stack has exactly
+  `num_hidden_layers` entries so any index into it wraps to layer 0 — dense for
+  DeepSeek/GLM, non-sparse for M3, linear attention for Qwen3.8. An axis left
+  unset is inherited from the stack, and only when the stack agrees on it.
+- **The block is the dominant term.** On Qwen3.8-27B at 4 layers, one drafter
+  pass measures 597 us for its `Qwen3_5DecoderLayer` against ~136 us for the
+  whole wrapper. Emitting only the wrapper read a pass at a fifth of its cost.
 - **The families do not share names or TP behaviour.** All three combine
-  projections are 2h→h and all dominate a pass, but DeepSeek/GLM use a plain
-  `nn.Linear` (unsharded, 161 us), Qwen a `ColumnParallelLinear` (TP-sharded,
-  80 us), M3 a `ReplicatedLinear` (replicated, 112 us). Qwen's drafter block is
-  built `layer_type="full_attention"` and never runs gated DeltaNet; M3's keeps
-  sparse attention and the indexer.
+  projections are 2h→h and all dominate the wrapper, but DeepSeek/GLM use a
+  plain `nn.Linear` (unsharded), Qwen a `ColumnParallelLinear` (TP-sharded), M3
+  a `ReplicatedLinear` (replicated).
+
+### The top-level normalization trap (vLLM 0.28)
+Worth knowing well beyond MTP: it made **every latency in a 0.28-profiled
+bundle 3x too large**, not just the top-level ones. Every profile node is
+divided by **its parent's** invocation count to get a per-call figure, and the
+top level has no parent node to read that from — so the whole subtree under it
+inherits the error. Two things go wrong at once under 0.28:
+
+- vLLM merges same-class siblings into one node (time summed, `invocations`
+  counting them all) and reports it **once** under a parent that is itself a
+  node — but once **per sibling module** at the top level, where the owning
+  module launched no kernel and was flattened away. Qwen's three drafter norms
+  arrive as three identical top-level entries, and `LogitsProcessor` arrives
+  once per timed forward. `extract_samples` now drops repeats identical in
+  (class, time, invocations), since that cannot be distinct work.
+- The root's own invocation count is the **forward count**, so
+  `extract_samples` takes `iterations` and uses it as the top level's
+  `parent_invocations`. It used to hardcode 1.
+
+Two controlled experiments, same model / hardware / flags, against the trusted
+`vllm=0.19.0` bundle for Llama-3.1-8B on RTXPRO6000:
+
+| | value | vs trusted |
+|---|---|---|
+| `lm_head@1`, before | 6416.67 us | 8.99x |
+| `lm_head@1`, dedup only | 2139.95 us | 3.00x |
+| `lm_head@1`, both fixes | **713.805 us** | **1.00x** (trusted: 714.006) |
+| whole `dense.csv`, both fixes | 1368 rows | mean abs delta 1.5-6.5% per layer, i.e. noise |
+
+The physics check that made it findable at all: `lm_head` reads the whole
+output embedding, so `vocab * hidden * bytes / mem_bw` = 583 us is a hard floor
+and 6417 us is impossible. **A profiled curve gives no other signal** — it
+stayed smooth and monotone the whole way, and `profiler coverage` passed,
+because coverage reports only what is *un*bound.
+
+**Every category** of all four `vllm=0.28.0` bundles was affected, at a factor
+of exactly `measurement_iterations`, and every one was re-profiled. Five
+categories confirm the factor independently — `dense` p50 2.9995 (2584 rows),
+`moe` 2.996 / 2.999, `linear_attention` 3.01-3.12 across all six GDN kernels,
+`per_sequence` by the controlled experiment above, and `attention` by the
+KV-bandwidth check (28.5% of spec against 84-95% for every 0.19 bundle). The
+±5% spread around 3.000 is the noise between two independent measurement runs,
+not structure.
+
+The four `vllm=0.19.0` bundles were never affected, which is what made them
+usable as the reference — and is also why nothing in `serving/validate.sh` or
+`bench/examples/` moved: every scenario and every committed accuracy figure
+uses Llama-3.1-8B/70B, Qwen3-30B-A3B or Qwen3-32B, all 0.19. After the fix
+every bundle's `lm_head` lands at 80-83% of its bandwidth floor, so an outlier
+there is a bug.
 
 `num_mtp_modules` is capped to 1 in the config **file**, not via
 `hf_overrides`: the drafter reads `speculative_config.draft_model_config.hf_config`,
@@ -374,7 +453,7 @@ the lookup.
 | `lm_head` | per_sequence | `sequences = num_requests` |
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
 | `moe` | moe (always profiled at tp=1; wrapped in the EP all-to-all) | `(local_tokens, activated_experts)` |
-| `mtp_*` | mtp (only with `--profile-mtp`; emitted N times per step) | `sequences = num_decode` |
+| `mtp_*` | mtp (only with `--profile-mtp`; emitted N times per step, each pass wrapping a replay of `mtp.decoder_block`) | `tokens = total_len` of the pass |
 
 The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
 and that key is what makes it regime-aware: a gated-DeltaNet block runs a
@@ -725,12 +804,19 @@ drafter carries no recurrent state, but it does carry a KV cache: `+1.6%`
 bytes/token on DeepSeek-V3.2's one module, `+11.7%` on MiniMax-M3's seven,
 `+6.2%` on Qwen3.8 (one more full-attention layer out of its 16).
 
-Draft **time** is not charged yet, and `_require_drafter_cost` **refuses** a
-speculative run on a model with MTP modules until its catalog has an `mtp:`
-block, rather than reporting a speedup no engine can deliver. That block has to
-come from a live profile dump like every other one. A model with no MTP modules
-drafts externally (a second model, or n-gram); that is a serving choice rather
-than a checkpoint property, so it warns instead of refusing.
+Draft **time** is charged: `_emit_drafter` emits N passes after the target's
+head (the drafter runs from `sample_tokens()`, after the target has sampled),
+each one `mtp.prologue` → a replay of `mtp.decoder_block` → `mtp.head`. The
+first pass reuses the target's own token layout and the rest are pure decode at
+one query per sequence, which is what `llm_base_proposer.py` does — reusing the
+target's shape for all N charged a prefill chunk N times over.
+
+`_require_drafter_cost` still **refuses** a speculative run on a model with MTP
+modules whose catalog is missing `mtp.prologue` or `mtp.decoder_block`, rather
+than reporting a speedup no engine can deliver; the wrapper has to come from a
+live profile dump like every other block. A model with no MTP modules drafts
+externally (a second model, or n-gram); that is a serving choice rather than a
+checkpoint property, so it warns instead of refusing.
 
 ### Dtypes come from the model config, never from an input
 There is no `--dtype` and no `--kv-cache-dtype`, and no cluster-config
