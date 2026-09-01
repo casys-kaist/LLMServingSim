@@ -9,8 +9,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
-- **`scripts/patches/`, applied by `docker-vllm.sh` at container start.** The
-  one patch backports vLLM [PR #51395](https://github.com/vllm-project/vllm/pull/51395)
+- **`scripts/patches/`, applied by `docker-vllm.sh` at container start.** Two
+  one-line fixes to the installed vLLM, both idempotent and both no-ops on a
+  vLLM that already carries them.
+  - `vllm_m3_mtp_layer_name.py` gives MiniMax-M3's MTP module its own
+    layer-name prefix (`model` -> `model.mtp`). Without it M3 cannot start with
+    speculative decoding at all: `static_forward_context` is keyed by layer
+    name and shared between target and drafter, and M3 is the one MTP family
+    that neither offsets its layer index (DeepSeek/GLM) nor separates its
+    prefix (Qwen3.5), so it collides on `model.layers.0.self_attn.attn`.
+    Parameter names are unaffected -- the prefix feeds the name registry while
+    parameter names come from the module tree -- verified on a live engine, so
+    the patch is safe for a real weight load and not only for
+    `load_format=dummy`. **No upstream fix to backport**: the file is
+    byte-identical between 0.28.0 and vLLM main as of 2026-09-01 and no issue
+    reports it.
+  - `vllm_sm120_sparse_mla.py` backports vLLM [PR #51395](https://github.com/vllm-project/vllm/pull/51395)
   onto 0.28.0: without it DeepSeek-V3.2 and GLM-5 crash partway through a
   profile run on any Blackwell card, because `FlashInferMLASparseSM120Impl` --
   the only sparse-MLA backend accepting compute capability 12 -- does not

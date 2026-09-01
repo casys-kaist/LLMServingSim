@@ -23,10 +23,11 @@
 # nvidia-nccl-cu13==2.29.7`), and pip reports the conflict but installs it
 # anyway.
 #
-# scripts/patches/ is applied after the installs. Right now that is one line
-# backporting vLLM PR #51395, without which DeepSeek-V3.2 / GLM-5 crash
-# mid-sweep on any Blackwell card. Each patch is idempotent and a no-op on a
-# vLLM that already carries the fix.
+# scripts/patches/ is applied after the installs. Two right now, each one line:
+# a backport of vLLM PR #51395, without which DeepSeek-V3.2 / GLM-5 crash
+# mid-sweep on any Blackwell card, and a separation of MiniMax-M3's MTP
+# layer-name prefix, without which it cannot start with speculative decoding at
+# all. Each is idempotent and a no-op on a vLLM that already carries the fix.
 
 set -euo pipefail
 
