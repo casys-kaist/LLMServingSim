@@ -319,6 +319,9 @@ simulator from the **cluster config**, not declared here.
 | `blocks.mlp.dense` | On layers running a dense MLP | gate_up_proj + act_fn + down_proj |
 | `blocks.mlp.moe` | On layers running MoE | `moe`, with the EP all-to-all surround added by the simulator |
 | `shared.head` | Once at the end of each iteration | final_layernorm + lm_head + sampler |
+| `mtp.prologue` | Once per drafter pass, N passes per step | The MTP wrapper's norms and its 2h→h combine projection |
+| `mtp.decoder_block` | Declares *which* block the drafter's decoder layer is | `{attn, mlp, sparse}`, naming axes of `blocks:`. Not a layer list — the block is the target's own, replayed |
+| `mtp.head` | After the drafter's block, once per pass | **Required.** DeepSeek/GLM's `SharedHead`; Qwen and M3 name their wrapper's merged norm node here |
 
 `attention` is **listed explicitly** in `pre_attn`; it is not implicit.
 Every name a section mentions has to exist in `catalog`, and every catalog
@@ -329,6 +332,27 @@ Declare only the axis values the family actually has: Llama has no
 DeepSeek) declares both and lets the checkpoint decide per layer. Layers may
 repeat inside a section or across them — `layernorm` appears in both
 `pre_attn` and `post_attn`, which is how one catalog entry covers both norms.
+
+`mtp.head` cannot be empty. The Chakra converter reads the trace's MEM_STORE
+node from the last entry's attributes, and a drafter whose block ends in MoE
+closes with an `EXPERT END` marker — which fails inside the converter as
+`'Layer' object has no attribute 'output_memory_loc'`. Every family has
+something to name there: the wrapper's norms come back as a **single merged
+profile node spanning both sides of the block** (Qwen's `pre_fc_norm_*` before
+`fc` plus `norm` after; MiniMax-M3's `enorm`/`hnorm` before `eh_proj` plus
+`final_layernorm` after) and they are same-class siblings, so the profiler
+cannot separate them — charging the merged node once after the block is exactly
+as accurate as once before.
+
+The `mtp:` section is the one place a **block** is declared rather than
+resolved from the checkpoint, and only because each family's MTP module forces
+it in vLLM's source. Indexing the resolved stack cannot substitute: the stack
+has exactly `num_hidden_layers` entries, so the drafter's index wraps to layer
+0 and gives a dense block for DeepSeek/GLM, a non-sparse one for MiniMax-M3
+and linear attention for Qwen3.8 — all three wrong. Leave an axis out and it
+is inherited from the target's stack, but only when the stack agrees on it:
+Qwen3.5 picks its MLP off `model_type` rather than per layer, so its
+`decoder_block` names only `attn`.
 
 ## Heterogeneous stacks
 

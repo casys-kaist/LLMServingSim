@@ -81,7 +81,8 @@ python -m serving --cluster-config 'configs/cluster/single_node_single_instance.
 # separate model or n-gram, which this simulator has nothing to charge for, so
 # the run warns that draft *time* is not counted and the speedup is an upper
 # bound. On a model with MTP modules (DeepSeek-V3.2, GLM-5, MiniMax-M3,
-# Qwen3.8) the run instead **refuses** until its catalog has an `mtp:` block.
+# Qwen3.8) the run instead **refuses** until its catalog names both
+# `mtp.prologue` and `mtp.decoder_block` and the bundle has an `mtp.csv`.
 # python -m serving --cluster-config 'configs/cluster/single_node_single_instance.json' \
 #     --block-size 16 --num-speculative-tokens 4 --spec-acceptance-rate 0.6 \
 #     --dataset 'workloads/example_trace.jsonl' --output 'outputs/example_spec_run.csv' \

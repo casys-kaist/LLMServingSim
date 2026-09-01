@@ -244,6 +244,20 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   when a sequence layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
   `_emit_final_layers()` — per-section wrappers over `_emit_sequence`.
+- `_emit_drafter()` / `_emit_drafter_block()` / `_drafter_spec()` /
+  `_drafter_loop_bctx()` — speculative decoding's draft passes, emitted after
+  the target's head because that is where vLLM runs them (from
+  `sample_tokens()`). N passes per step, each `mtp.prologue` → a replay of
+  `mtp.decoder_block` → `mtp.head`. `_drafter_spec` resolves which block that
+  replay is from the catalog (each family's MTP module forces it in vLLM's own
+  source, and any index into the resolved stack wraps to layer 0); axes the
+  catalog omits are inherited from the target's stack when it agrees on them.
+  `_drafter_loop_bctx` reshapes passes 1..N-1 to one query per sequence, which
+  is what `llm_base_proposer.py` pins inside its loop — pass 0 keeps the
+  target's own token layout.
+- `_spec_block_layers()` — `_block_layers()` for a bare `LayerSpec` rather than
+  a layer index, which is what lets the drafter's declared block reuse the
+  same block walk.
 - `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
   sub-batch interleaving.
 

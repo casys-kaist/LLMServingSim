@@ -1251,6 +1251,45 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = n_embd * (vocab_size // p) * fp
         output_size = length * (vocab_size // p) * fp
 
+    # ----------------- MTP (the model's own drafter) -----------------
+    # One module per declared MTP layer, run N times per speculative step.
+    # Shapes read off live module dumps of all three families -- they agree on
+    # the arithmetic and differ only in how the combine projection shards.
+    elif layer_name in ("mtp_eh_proj", "mtp_fc"):
+        # Concatenates the token embedding with the target's hidden state and
+        # projects 2h -> h. ``mtp_eh_proj`` is DeepSeek/GLM's plain nn.Linear
+        # and MiniMax-M3's ReplicatedLinear, both **unsharded**; ``mtp_fc`` is
+        # Qwen's ColumnParallelLinear, which is sharded. Same math, different
+        # divisor -- which is why they are separate names rather than one.
+        shard = p if layer_name == "mtp_fc" else 1
+        input_size = length * 2 * n_embd * fp
+        weight_size = (2 * n_embd) * (n_embd // shard) * fp
+        output_size = length * (n_embd // shard) * fp
+
+    elif layer_name in ("mtp_enorm_hnorm", "mtp_norms"):
+        # The norms in front of that projection, reported as one merged node:
+        # DeepSeek/GLM's enorm + hnorm (2), Qwen's norm + pre_fc_norm_hidden +
+        # pre_fc_norm_embedding (3). Scale-only weights, so the count barely
+        # matters, but it is the honest shape.
+        count = 2 if layer_name == "mtp_enorm_hnorm" else 3
+        input_size = length * n_embd * fp
+        weight_size = count * n_embd * fp
+        output_size = length * n_embd * fp
+
+    elif layer_name == "mtp_shared_head":
+        # DeepSeek/GLM's SharedHead: a norm plus the LM head. Reported under
+        # the wrapper, so its size is the pair's.
+        input_size = length * n_embd * fp
+        weight_size = (n_embd + n_embd * (vocab_size // p)) * fp
+        output_size = length * (vocab_size // p) * fp
+
+    elif layer_name == "mtp_glue":
+        # Eager elementwise work around the projection -- reshapes and copies,
+        # no parameters of its own.
+        input_size = length * n_embd * fp
+        weight_size = 0
+        output_size = length * n_embd * fp
+
     else:
         raise ValueError(f"No matching layer name {layer_name} found for model {model}.")
 
