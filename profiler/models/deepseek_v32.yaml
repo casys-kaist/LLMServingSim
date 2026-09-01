@@ -87,7 +87,7 @@ shared:
 
 
 # The model's own drafter, built only when the engine boots with
-# speculative_config (``--profile-mtp N``). One MTP module per
+# speculative_config (``--profile-mtp``). One MTP module per
 # ``num_nextn_predict_layers``, and vLLM runs it **N times per step** -- once,
 # then num_speculative_tokens - 1 more.
 #
@@ -96,17 +96,23 @@ shared:
 # decoder layer. Without the guard the two merge into one profile node and the
 # drafter reads as free while the target reads as slower than it is.
 #
-# Read off ``profiler coverage --profile-mtp 1``, which reports exactly these
+# Read off ``profiler coverage --profile-mtp``, which reports exactly these
 # as unbound with their ancestor paths. Measured on DeepSeek-V3.2 at 4 target
 # layers, prefill / decode / mixed: eh_proj 161.0 / 143.2 / 166.4 us dominates,
 # the merged norms 5.6 / 5.4 / 5.7, shared_head 2.8 / 2.8 / 2.9, and the glue
 # 1-3 us apiece. GLM-5 reports the identical eight nodes -- it shares
 # DeepSeekMTP -- at 115.9 / 111.0 for eh_proj.
 mtp:
-  block: [mtp_enorm_hnorm, mtp_eh_proj, mtp_glue, mtp_shared_head]
-  # mtp_block is deliberately absent: it is a DeepseekV2DecoderLayer, so the
-  # simulator emits the target's own block sequence for it rather than a second
-  # set of names. Only the wrapper around it is new.
+  prologue: [mtp_enorm_hnorm, mtp_eh_proj, mtp_glue]
+  # mtp_block gets no names of its own: it is a DeepseekV2DecoderLayer, so the
+  # simulator replays the target's own block sequence for it. What it cannot
+  # read off the checkpoint is *which* block -- ``deepseek_mtp.py`` builds it
+  # at prefix ``model.layers.<num_hidden_layers>``, i.e. past
+  # first_k_dense_replace (MoE) and inheriting the model-wide index_topk
+  # (sparse), where indexing the resolved stack would wrap to layer 0 and give
+  # a dense one.
+  decoder_block: {attn: full_attention, mlp: moe, sparse: true}
+  head: [mtp_shared_head]
 
 
 catalog:

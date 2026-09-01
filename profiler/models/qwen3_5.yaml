@@ -86,10 +86,10 @@ shared:
 
 
 # The model's own drafter, built only when the engine boots with
-# speculative_config (``--profile-mtp N``). vLLM runs it **N times per step**.
+# speculative_config (``--profile-mtp``). vLLM runs it **N times per step**.
 #
 # Qwen's MTP does NOT reuse DeepSeek's names. Read off
-# ``profiler coverage --profile-mtp 1``, which reported four unbound nodes:
+# ``profiler coverage --profile-mtp``, which reported four unbound nodes:
 # one ``ColumnParallelLinear`` (the ``fc``, 2h -> h) and three
 # ``GemmaRMSNorm`` at identical cost (``norm``, ``pre_fc_norm_hidden``,
 # ``pre_fc_norm_embedding``). Measured at 4 target layers,
@@ -104,23 +104,50 @@ shared:
 # ancestors. ``fc`` needs no guard -- ``ColumnParallelLinear`` is bound
 # nowhere else in this catalog.
 mtp:
-  block: [mtp_norms, mtp_fc]
-  # The decoder layer itself is absent on purpose: it is a
-  # Qwen3_5DecoderLayer, so the simulator replays the target's own block
-  # sequence for it. Note it is built with ``layer_type="full_attention"``,
-  # so a drafter pass runs attention and never the gated-DeltaNet path.
+  prologue: [mtp_fc]
+  # ``mtp_norms`` is one merged profile node covering norms on **both** sides
+  # of the block -- pre_fc_norm_embedding and pre_fc_norm_hidden before ``fc``,
+  # ``norm`` after the decoder layer -- and the three are same-class siblings
+  # under a parent that launches nothing, so the profiler cannot separate them.
+  # Charging the merged node once after the block is therefore as accurate as
+  # once before, and it leaves the trace ending on a real layer row rather
+  # than on a block's trailing marker, which is what the Chakra converter
+  # reads its MEM_STORE node from.
+  # The decoder layer gets no names of its own: it is a Qwen3_5DecoderLayer,
+  # so the simulator replays the target's own block sequence for it.
+  # ``qwen3_5_mtp.py`` passes ``layer_type="full_attention"`` explicitly, so a
+  # drafter pass runs attention and never the gated-DeltaNet path -- which is
+  # the opposite of what the checkpoint's own layer_types[0] says.
+  # The MLP axis is not per-layer on this family: qwen3_5.py picks it off
+  # ``model_type`` (``qwen3_5_moe_text`` -> MoE, ``qwen3_5_text`` -> dense), so
+  # the drafter's is whatever the checkpoint's is and ``mlp`` is left out.
+  decoder_block: {attn: full_attention}
+  head: [mtp_norms]
+  # No head: Qwen3_5MTP keeps lm_head outside the predictor, already bound as
+  # the target's.
 
 
 catalog:
   mtp:
+    # This family's wrapper (``Qwen3_5MultiTokenPredictor``) launches no kernel
+    # of its own, so it never becomes a profile node and there is no ancestor
+    # to pin ``within`` to -- the drafter's nodes arrive at the **top level**,
+    # siblings of the target's ``Qwen3_5ForCausalLM``. So the guards here are
+    # exclusions: ``not_within`` on the two classes that do appear. Verified
+    # against a live tree (``.claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4``),
+    # which reports the drafter as VocabParallelEmbedding, GemmaRMSNorm x3,
+    # ColumnParallelLinear, Qwen3_5DecoderLayer, GemmaRMSNorm at the root.
     mtp_fc:
       # 2h -> h, and ColumnParallelLinear rather than DeepSeek's plain
-      # nn.Linear, so this one IS sharded by TP.
+      # nn.Linear, so this one IS sharded by TP. Needs no exclusion: the
+      # target's projections are Merged/Row/QKVParallelLinear, all distinct
+      # class names, so the bare class matches only the drafter's.
       vllm: ColumnParallelLinear
     mtp_norms:
-      # norm + pre_fc_norm_hidden + pre_fc_norm_embedding: three separate
-      # nodes at the same width, summed into one trace node. Excluded from the
-      # target's two norm entries by their pinned ancestors.
+      # norm + pre_fc_norm_hidden + pre_fc_norm_embedding, reported as one
+      # merged node (their sum) -- all three are the same class at the same
+      # width under a parent that launches nothing. Excluded from the target's
+      # two norm entries by their pinned ancestors.
       vllm: GemmaRMSNorm
       not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]
       tp_stable: true
