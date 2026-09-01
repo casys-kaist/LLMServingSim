@@ -85,7 +85,46 @@ shared:
   head:     [final_layernorm, lm_head, sampler]
 
 
+# The model's own drafter, built only when the engine boots with
+# speculative_config (``--profile-mtp N``). vLLM runs it **N times per step**.
+#
+# Qwen's MTP does NOT reuse DeepSeek's names. Read off
+# ``profiler coverage --profile-mtp 1``, which reported four unbound nodes:
+# one ``ColumnParallelLinear`` (the ``fc``, 2h -> h) and three
+# ``GemmaRMSNorm`` at identical cost (``norm``, ``pre_fc_norm_hidden``,
+# ``pre_fc_norm_embedding``). Measured at 4 target layers,
+# prefill / decode / mixed: fc 79.9 / 76.4 / 81.5 us, each norm
+# 79.0 / 57.4 / 80.1.
+#
+# The MTP nodes arrive with an **empty ancestor chain** here, unlike
+# DeepSeek's, whose parent modules are tree nodes. So the norms are separated
+# from the target's by ``not_within`` rather than ``within``: the target's two
+# norm entries are pinned to ``Qwen3_5DecoderLayer`` and
+# ``Qwen3_5ForCausalLM``, and the drafter's have neither among their
+# ancestors. ``fc`` needs no guard -- ``ColumnParallelLinear`` is bound
+# nowhere else in this catalog.
+mtp:
+  block: [mtp_norms, mtp_fc]
+  # The decoder layer itself is absent on purpose: it is a
+  # Qwen3_5DecoderLayer, so the simulator replays the target's own block
+  # sequence for it. Note it is built with ``layer_type="full_attention"``,
+  # so a drafter pass runs attention and never the gated-DeltaNet path.
+
+
 catalog:
+  mtp:
+    mtp_fc:
+      # 2h -> h, and ColumnParallelLinear rather than DeepSeek's plain
+      # nn.Linear, so this one IS sharded by TP.
+      vllm: ColumnParallelLinear
+    mtp_norms:
+      # norm + pre_fc_norm_hidden + pre_fc_norm_embedding: three separate
+      # nodes at the same width, summed into one trace node. Excluded from the
+      # target's two norm entries by their pinned ancestors.
+      vllm: GemmaRMSNorm
+      not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]
+      tp_stable: true
+
   dense:
     embedding:
       vllm: VocabParallelEmbedding

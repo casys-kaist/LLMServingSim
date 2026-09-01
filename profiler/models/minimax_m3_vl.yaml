@@ -90,7 +90,58 @@ shared:
   head:     [final_layernorm, lm_head, sampler]
 
 
+# The model's own drafter, built only when the engine boots with
+# speculative_config (``--profile-mtp N``). ``num_mtp_modules: 7`` on this
+# checkpoint, and vLLM runs the drafter **N times per step**.
+#
+# Read off ``profiler coverage --profile-mtp 1``, which reported seven unbound
+# nodes, every path rooted at
+# ``MiniMaxM3MTP > MiniMaxM3MultiTokenPredictor > MiniMaxM3MultiTokenPredictorLayer``.
+# Measured at 4 target layers, prefill / decode: eh_proj 111.5 / 110.7 us,
+# the merged norms 6.0 / 6.0, glue 1-3 us apiece.
+#
+# Two things this family does differently from the other two:
+#  * ``eh_proj`` is a ``ReplicatedLinear`` -- not DeepSeek's plain nn.Linear
+#    and not Qwen's ColumnParallelLinear -- so it is replicated, not sharded.
+#  * the drafter's block keeps **sparse attention and the indexer**, where
+#    Qwen's drafter is built full-attention. So a drafter pass here also pays
+#    the block-selection branch, and its KV includes the indexer side cache.
+#
+# ``within`` is required on every entry: ``transformer_layer`` is a
+# ``MiniMaxM3DecoderLayer``, the same class as a target layer, so without the
+# guard the two merge and the drafter reads as free.
+#
+# NOTE: profiling this needs ``--max-model-len`` lowered (its declared
+# 1,048,576 asks for 10.5 GiB of KV before the drafter is even built) and the
+# profiler caps ``num_mtp_modules`` to 1, since 7 full MoE decoder layers is
+# ~103 GB. The modules are identical and the simulator multiplies by the
+# declared count.
+mtp:
+  block: [mtp_norms, mtp_eh_proj, mtp_glue]
+  # transformer_layer is absent on purpose -- same class as a target layer, so
+  # the simulator replays the target's own block sequence for it. There is no
+  # separate head entry: MiniMaxM3MTP keeps lm_head outside the predictor and
+  # it is already bound as the target's.
+
+
 catalog:
+  mtp:
+    mtp_eh_proj:
+      # 2h -> h. ReplicatedLinear, so every rank holds all of it.
+      vllm: ReplicatedLinear
+      within: MiniMaxM3MultiTokenPredictorLayer
+    mtp_norms:
+      # enorm + hnorm, reported as one merged node -- same class at the same
+      # width under the same parent, so their sum is coherent.
+      vllm: MiniMAXGemmaRMSNorm
+      within: MiniMaxM3MultiTokenPredictorLayer
+      tp_stable: true
+    mtp_glue:
+      # The eager elementwise work around the projection: five distinct
+      # at::native instantiations, taken as a group by prefix and summed.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: MiniMaxM3MultiTokenPredictorLayer
+
   dense:
     embedding:
       vllm: VocabParallelEmbedding
