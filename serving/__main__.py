@@ -219,7 +219,11 @@ def _resolve_block_size(instance, args):
     """
     explicit = instance.get("block_size", args.block_size)
     variant = resolve_variant(get_config(instance["model_name"]))
-    profiled = profiled_block_size(instance["hardware"], instance["model_name"], variant)
+    # The bundle records one resolved block size per TP degree, because both
+    # the mamba page and the attention page scale with the rank's shard.
+    tp = int(instance.get("tp_size") or 1)
+    profiled = profiled_block_size(
+        instance["hardware"], instance["model_name"], variant, tp)
     if explicit is None:
         return profiled or _DEFAULT_BLOCK_SIZE
     if profiled is not None and explicit != profiled:
