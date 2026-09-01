@@ -1,0 +1,45 @@
+profiler_version: 1.0.0
+vllm_version: 0.28.0
+cuda_version: '13.0'
+gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
+hardware: RTXPRO6000
+profiled_at: '2026-08-31T18:42:06+00:00'
+architecture: deepseek_v32
+architecture_sha256: eb5e8cf0a6f5e4b9fde6fd6a8d5fe968961c0614e4192fa3cadb6d1fdba8e24b
+model: zai-org/GLM-5
+variant: bf16
+tp_degrees: [1]
+engine_effective:
+  load_format: dummy
+  enforce_eager: true
+  skip_tokenizer_init: true
+  enable_prefix_caching: false
+  generation_config: vllm
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  hf_overrides:
+    num_hidden_layers: 4
+    intermediate_size: 12288
+    num_attention_heads: 64
+    num_key_value_heads: 64
+    vocab_size: 154880
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_e4yghqly
+engine_resolved:
+  block_size: 64
+  max_model_len: 202752
+  num_cache_tokens: 19011520
+attention_grid:
+  max_kv: 16384
+  chunk_factor: 2.0
+  kv_factor: 2.0
+  chunks: 0, 16-2048 x2
+  n_decode: 0, 1-256 x2
+  kv: 0, 16-16384 x2
+measurement_iterations: 3
+skew_profile:
+  enabled: false
+skew_fit:
+  enabled: false
