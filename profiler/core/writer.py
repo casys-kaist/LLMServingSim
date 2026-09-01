@@ -567,11 +567,10 @@ def persist_meta(
         # rather than reimplementing vLLM's backend selection, and a run whose
         # --block-size disagrees is simulating a configuration vLLM cannot
         # serve.
-        "engine_resolved": _stringify({
-            "block_size": getattr(limits, "block_size", None),
-            "max_model_len": getattr(limits, "max_model_len", None),
-            "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
-        }) if limits is not None else None,
+        # Keyed by TP under ``per_tp``: on a hybrid stack the resolved block
+        # size is per-rank, so it is a per-TP fact, and a single value would be
+        # whichever TP happened to run last.
+        "engine_resolved": _engine_resolved_block(variant_root, limits),
         # Attention-grid shape knobs + compact spec of the values the
         # sweep actually visited. Simulator uses the knobs to recognise
         # which density produced the CSVs; humans get the axes too.
@@ -761,6 +760,54 @@ def _utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds"
     )
+
+
+def _engine_resolved_block(
+    variant_root: Path,
+    limits_by_tp: Any,
+) -> dict[str, Any] | None:
+    """``{"per_tp": {tp: {block_size, max_model_len, num_cache_tokens}}}``.
+
+    What the engine actually **settled on**, which is not always what was asked
+    for: vLLM derives the KV block size from the backend's
+    ``get_supported_kernel_block_sizes`` and from hybrid page unification --
+    MiniMax-M3's sparse backend accepts only 128, and a gated-DeltaNet stack
+    raises the attention block until an attention page costs at least as many
+    bytes as a mamba state page (784 on Qwen3.8-27B, against the 16
+    requested). The simulator reads this rather than reimplementing vLLM's
+    backend selection, and a run whose ``--block-size`` disagrees is
+    simulating a configuration vLLM cannot serve.
+
+    Keyed by TP because the mamba and attention pages both scale with the
+    rank's shard, so the resolved size is a per-rank fact. Entries already in
+    the file are **kept**: a ``slice`` refresh boots one TP and must not erase
+    what the other TPs resolved.
+    """
+    if not limits_by_tp:
+        return None
+
+    merged: dict[str, Any] = {}
+    existing = variant_root / "meta.yaml"
+    if existing.is_file():
+        try:
+            with existing.open("r", encoding="utf-8") as f:
+                prior = yaml.safe_load(f) or {}
+            prior_per_tp = ((prior.get("engine_resolved") or {}).get("per_tp")
+                            or {})
+            if isinstance(prior_per_tp, dict):
+                merged.update({str(k): v for k, v in prior_per_tp.items()})
+        except Exception:
+            pass
+
+    for tp, limits in limits_by_tp.items():
+        if limits is None:
+            continue
+        merged[str(tp)] = _stringify({
+            "block_size": getattr(limits, "block_size", None),
+            "max_model_len": getattr(limits, "max_model_len", None),
+            "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
+        })
+    return {"per_tp": dict(sorted(merged.items(), key=lambda kv: int(kv[0])))} if merged else None
 
 
 def _stringify(obj: Any) -> Any:
