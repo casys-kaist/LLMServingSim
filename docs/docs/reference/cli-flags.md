@@ -77,15 +77,17 @@ names.
 
 **The drafter's time is not charged yet, and a model that drafts with
 itself refuses to run.** vLLM runs the drafter **N times per step** —
-once, then `num_speculative_tokens - 1` more — each a decode-shaped
-forward over a norm pair, an `eh_proj`, a full decoder layer, `lm_head`
-and the sampler. Reporting that as free would claim a speedup no engine
+once, then `num_speculative_tokens - 1` more. Each pass is a norm pair,
+an `eh_proj`, **a full decoder layer**, and (DeepSeek/GLM) a norm plus
+`lm_head` — the decoder layer dominating by roughly 4:1 over the
+wrapper. Reporting any of it as free would claim a speedup no engine
 can deliver, so a model with MTP modules (`num_nextn_predict_layers`,
-`num_mtp_modules`, `mtp_num_hidden_layers`) raises until its
-architecture catalog has an `mtp:` block to price them from — and then
-until a profiled `mtp.csv` exists to read. **All four modern families
-now have the catalog block**; what is still missing is the measurement,
-which needs a profile run with `--profile-mtp N`.
+`num_mtp_modules`, `mtp_num_hidden_layers`) is charged for all N
+passes, emitted after the target's head — which is where vLLM runs
+them, from `sample_tokens()`. It raises if the architecture catalog is
+missing `mtp.prologue` or `mtp.decoder_block`, or if the bundle has no
+profiled `mtp.csv`. All four modern families ship both; a new family
+needs a profile run with `--profile-mtp`.
 
 A model with **no** MTP modules drafts with a separate model or with
 n-gram — a serving choice rather than a checkpoint property, and the

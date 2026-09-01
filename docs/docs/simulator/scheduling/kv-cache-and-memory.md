@@ -236,11 +236,16 @@ allocates for it:
 | MiniMax-M3 | 7 | +11.7% |
 | Qwen3.8-27B | 1 | +6.2% |
 
-The drafter's attention is **full attention** whatever the target's layers are
-— Qwen3.5's MTP builds its block with `layer_type="full_attention"` explicitly
-— so a hybrid's drafter carries a KV cache but no recurrent state. That is why
-Qwen3.8's 6.2% is larger than DeepSeek's 1.6% despite both having one module:
-only 16 of Qwen3.8's 64 layers cache per token, so one more is 1/16.
+Which block that decoder layer is comes from the catalog's
+`mtp.decoder_block`, not from the checkpoint, because each family's MTP module
+**forces** it in vLLM's own source: DeepSeek/GLM build at layer index
+`num_hidden_layers`, Qwen3.5 passes `layer_type="full_attention"` explicitly,
+MiniMax-M3 passes `force_sparse_attn=True, force_moe=True`. So a *hybrid's*
+drafter carries a KV cache but no recurrent state (Qwen's forced
+full-attention), while M3's carries the sparse indexer's side cache too. That
+forcing is also why Qwen3.8's 6.2% is larger than DeepSeek's 1.6% despite both
+having one module: only 16 of Qwen3.8's 64 layers cache per token, so one more
+full-attention layer is 1/16.
 
 Where `kv_fp` is:
 

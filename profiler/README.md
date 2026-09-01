@@ -69,7 +69,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
-| **drafter (MTP)** | `--profile-mtp N` |
+| **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
 | **measurement** | `--measurement-iterations` |
@@ -77,12 +77,15 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **resume** | `--force` (default is resume) |
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
-| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}` |
+| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
 
 The five that decide how long a run takes, in rough order of effect:
 
 1. `--measurement-iterations` (default 3) — a straight multiplier. 1 is 3x
-   faster and 15-25% noisier per shot.
+   faster and 15-25% noisier per shot. It is also the **top level's**
+   invocation count: every profile node divides by its parent's, and the top
+   level has no parent node, so `extract_samples` is handed this value.
+   `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter bind there.
 2. `--attention-chunk-factor` / `--attention-kv-factor` (2.0) — coarsen the
    two biggest axes geometrically.
 3. `--attention-decode-q-lens` (`1`) — each extra value **doubles** the
@@ -314,8 +317,8 @@ tp<N>/
   linear_attention.csv   layer, prefill_tokens, n_decode, time_us
                                                      (mamba / gated-DeltaNet only)
   moe.csv                tokens, activated_experts, time_us          (MoE only)
-  mtp.csv                layer, sequences, time_us
-                                             (only with --profile-mtp)
+  mtp.csv                layer, sequences, time_us      (one drafter pass;
+                                             only with --profile-mtp)
   skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
                          ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
                          t_max_us, t_skew_us, alpha)                  (skew-enabled runs)
@@ -566,6 +569,36 @@ mixed — which kernels fire depends on the mix) and reports how much of the
 measured CUDA time the catalog binds, exiting non-zero while any is unbound.
 Run it whenever you write or edit a catalog, and after a vLLM upgrade.
 
+### The opposite failure: an entry that binds too much
+
+Coverage reports what is *un*bound, so it is blind to an entry that also claims
+the **target's** nodes. That happens whenever the guard is missing or wrong —
+the drafter's modules are the same classes as the target's, and so is
+DeepSeek's shared expert against a dense layer's `mlp`. Qwen3.8-27B's
+`mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms with a
+perfectly smooth monotone curve. Dump the tree and read the ancestor chains:
+
+```bash
+python3 .claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4 RMSNorm    # drafter
+python3 .claude/dump_m3_tree.py 4                              # per regime
+```
+
+### Sanity-check a fresh bundle against a bandwidth bound
+
+Nothing in a CSV reveals a constant-factor error. What does is physics:
+`lm_head` reads the whole output embedding, so
+
+```
+vocab * hidden * dtype_bytes / mem_bw
+```
+
+is a hard floor. Llama-3.1-8B on an RTX PRO 6000: 128256 × 4096 × 2 B ÷
+1.8 TB/s = 583 µs, against which a measured 714 µs is 82% efficiency — and
+every bundle in `profiler/perf/` lands at 80-83%, so an outlier is a bug.
+Decode attention is a pure KV read and admits the same check. Also compare
+against an existing bundle for the same model on other hardware, scaled by
+memory bandwidth.
+
 ## Adding a new model
 
 1. **Drop its HF `config.json`** at `configs/model/<org>/<name>.json`.
@@ -642,3 +675,12 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
 ```
 
 Overwrites only that `tp1/attention.csv` and refreshes `meta.yaml`.
+
+`--tp-refresh N` requires `N` to be one of `--tp`'s degrees, which defaults to
+`1` — so refreshing a `tp2/` folder needs both:
+
+```bash
+python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000     --tp 1,2 --tp-refresh 2 --group mtp --profile-mtp
+```
+
+Otherwise it exits with `tp=2 is not in the session's tp_degrees ([1])`.

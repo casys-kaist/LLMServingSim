@@ -47,9 +47,10 @@ acceptance is front-loaded rather than i.i.d.
 
 - Simulator container set up
 - A profiled bundle for the model
-- **For a model that drafts with itself, an `mtp:` block in its
-  architecture catalog.** See the caveat below — this is currently the
-  blocker for all four modern families.
+- **For a model that drafts with itself, an `mtp:` section in its
+  architecture catalog and an `mtp.csv` in the bundle.** All four
+  modern families ship both; anything else raises rather than reporting
+  a free drafter.
 
 ## Run
 
@@ -111,20 +112,26 @@ default is just `1`.
 
 ## Caveats
 
-:::caution[Draft time is not charged yet]
+:::caution[Draft time needs the model's own drafter profile]
 vLLM runs the drafter **N times per step** — once, then
-`num_speculative_tokens - 1` more — each a decode-shaped forward over a
-norm pair, an `eh_proj`, a full decoder layer, `lm_head` and the
-sampler. Reporting that as free would claim a speedup no engine can
+`num_speculative_tokens - 1` more. Each pass is a norm pair, an
+`eh_proj`, **a full decoder layer**, and (DeepSeek/GLM) a norm plus
+`lm_head`. The decoder layer dominates: on Qwen3.8-27B one pass
+measures 597 µs for its block against ~136 µs for the whole wrapper.
+Reporting any of that as free would claim a speedup no engine can
 deliver, so the simulator's behaviour splits:
 
 - **A model with MTP modules** (`num_nextn_predict_layers`,
-  `num_mtp_modules`, `mtp_num_hidden_layers`) **raises** until its
-  drafter can be priced. All four modern families now carry the `mtp:`
-  catalog block; what is still missing is the measurement. Profile it
-  with `--profile-mtp N`, which is cheap — the drafter's axis is the
-  decode batch size alone, 40 shots in well under a minute, because
-  every pass is decode-shaped at `max_query_len = 1`.
+  `num_mtp_modules`, `mtp_num_hidden_layers`) is charged for all N
+  passes, emitted after the target's head — which is where vLLM runs
+  them, from `sample_tokens()`. The first pass reuses the target's own
+  token layout; the rest are pure decode at one query per sequence.
+  This needs `mtp.prologue` and `mtp.decoder_block` in the catalog and
+  an `mtp.csv` in the bundle, and **raises** without them. Profile it
+  with `--profile-mtp`, which is cheap — one axis, 40 shots in well
+  under a minute. The flag takes no draft count: the engine boots at
+  `num_speculative_tokens=1` so the CSV holds one pass, which is the
+  unit the simulator multiplies by your N.
 - **A model with no MTP modules** drafts with a separate model or with
   n-gram. That is a serving choice rather than a checkpoint property,
   and the simulator has no second model to charge, so it warns:
