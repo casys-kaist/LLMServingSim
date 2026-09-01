@@ -9,6 +9,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **`scripts/patches/`, applied by `docker-vllm.sh` at container start.** The
+  one patch backports vLLM [PR #51395](https://github.com/vllm-project/vllm/pull/51395)
+  onto 0.28.0: without it DeepSeek-V3.2 and GLM-5 crash partway through a
+  profile run on any Blackwell card, because `FlashInferMLASparseSM120Impl` --
+  the only sparse-MLA backend accepting compute capability 12 -- does not
+  override `supports_dense_mha_prefill`, so `mla_attention.py` reads a
+  `masked_mha_available` it never set. Idempotent and a no-op on a vLLM that
+  already has the fix. `python -m profiler coverage` does **not** catch this:
+  it fires three fixed shots, and the failure needs the dense-MHA prefill
+  path, first reached at shot 89 of 152. `docker-vllm.sh` also pins
+  `nvidia-nccl-cu13`, since installing `datasets` pulls a newer one than the
+  image's torch declares and pip installs it over the reported conflict.
 - **Three example pages for the features this cycle added**, under a new
   "Model families" section plus one in Advanced: hybrid linear attention
   (gated DeltaNet), sparse attention (DSA and block-sparse MSA), and
