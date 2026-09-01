@@ -247,6 +247,7 @@ _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
                   "kv_decode", "decode_q_len"],
     "linear_attention": ["layer", "prefill_tokens", "n_decode"],
     "moe": ["tokens", "activated_experts"],
+    "mtp": ["layer", "sequences"],
 }
 
 
