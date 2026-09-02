@@ -36,7 +36,7 @@ from profiler.core.config import (
     probe_moe_params,
 )
 from profiler.core.stack import describe as describe_stack
-from profiler.core.stack import minimal_layer_count
+from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,9 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
     return out
 
 
-def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
+def fuse_engine_kwargs(
+    args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+) -> dict[str, Any]:
     """Produce the final ``**kwargs`` to pass to ``vllm.LLM()``.
 
     Design: profile every TP degree on a **single GPU** by keeping
@@ -191,9 +193,19 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     # their layers read as free. Resolved from the checkpoint's own config so
     # nobody has to know that Qwen3.8-27B's answer is 4, and logged because it
     # decides whether a block type gets measured at all.
-    resolved_layers = minimal_layer_count(args.model_config or {})
+    resolved_layers = minimal_layer_count_for(
+        args.model_config or {}, stack_axes)
     hf_overrides["num_hidden_layers"] = resolved_layers
     log.info("%s", describe_stack(args.model_config or {}))
+    if stack_axes != ALL_AXES:
+        # describe_stack answers for every axis; say what this engine is
+        # actually being shrunk to, or the two lines contradict each other.
+        log.info(
+            "shrinking to %d layer(s) for this engine: it measures %s only, "
+            "and the stack is uniform on %s",
+            resolved_layers, "/".join(stack_axes),
+            "those axes" if resolved_layers == 1 else "part of them",
+        )
 
     if args.num_hidden_layers is not None:
         hf_overrides["num_hidden_layers"] = args.num_hidden_layers
@@ -281,7 +293,7 @@ def _materialize_config(
 
 
 def spin_up(
-    args: ProfileArgs, tp: int
+    args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -301,7 +313,7 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
-    kwargs = fuse_engine_kwargs(args, tp)
+    kwargs = fuse_engine_kwargs(args, tp, stack_axes)
 
     # Materialize the model's config.json in a temp directory so vLLM
     # can load it directly from disk.
