@@ -188,8 +188,14 @@ def run_full(
                      tp)
             continue
 
+        # The main pass always boots **without** the drafter. Booting with it
+        # would put a second copy of every class in the decoder block into the
+        # profile tree -- the drafter replays the target's own block -- so each
+        # dense / attention / moe entry would match twice and record the sum.
+        # The drafter gets its own engine at the end of this TP instead.
+        main_args = dataclasses.replace(args, profile_mtp=False)
         with log.stage(f"TP={tp}  booting vLLM engine"):
-            llm, engine_kwargs, tmpdir = spin_up(args, tp)
+            llm, engine_kwargs, tmpdir = spin_up(main_args, tp)
             last_engine_kwargs = engine_kwargs
             limits = probe_limits(llm, args)
             # Unset means the model's own context window, resolved once here so
@@ -225,6 +231,8 @@ def run_full(
         try:
             if not args.only_skew:
                 for category in categories_for(arch, tp):
+                    if category.name == "mtp":
+                        continue  # second pass, with the drafter built
                     _fire_one_category(
                         llm, category, arch, args, limits, tp, tp_root,
                     )
@@ -239,6 +247,28 @@ def run_full(
                 sample_skew(llm, arch, args, limits, tp, tp_root)
         finally:
             spin_down(llm, tmpdir)
+
+        # Second pass: the drafter, on its own engine and its own category.
+        # Only the `mtp` catalog group is in the slice handed to the matcher,
+        # and its entries are pinned to the drafter's wrapper, so nothing can
+        # double here. Skipped when the model declares no MTP modules -- the
+        # category's slice would be empty and _fire_one_category says so.
+        if args.profile_mtp and not args.only_skew:
+            mtp_category = next(
+                (c for c in categories_for(arch, tp) if c.name == "mtp"), None)
+            if mtp_category is None:
+                log.info("TP=%d: --profile-mtp set but this architecture "
+                         "declares no 'mtp' catalog group; nothing to do", tp)
+            else:
+                with log.stage(f"TP={tp}  booting vLLM engine with the drafter"):
+                    llm, _, tmpdir = spin_up(args, tp)
+                    mtp_limits = probe_limits(llm, args)
+                try:
+                    _fire_one_category(
+                        llm, mtp_category, arch, args, mtp_limits, tp, tp_root,
+                    )
+                finally:
+                    spin_down(llm, tmpdir)
 
     # After every tp has run, copy tp_stable rows from tp1 into the rest.
     # Skip when only_skew=True (nothing new to replicate).
@@ -393,11 +423,29 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
             log.warning(
                 "  unbound %8.1f us  %s   under: %s", us, cls[:64], ancestors,
             )
-        for canonical, chains in report.over_matches:
+        # With the drafter booted, every class in the decoder block appears
+        # twice -- once under the target, once under the drafter's replayed
+        # copy -- so a non-mtp entry matching both is expected rather than a
+        # defect. That configuration cannot reach a CSV: --profile-mtp is
+        # rejected for a full run and for any --group but mtp, and the mtp
+        # group's slice holds only mtp entries. Report the count, not a line
+        # each, and do not fail on it.
+        mtp_names = set((arch.catalog.mtp or {}))
+        real = [(c, ch) for c, ch in report.over_matches
+                if not args.profile_mtp or c in mtp_names]
+        expected = len(report.over_matches) - len(real)
+        for canonical, chains in real:
             log.warning(
                 "  OVER-MATCH %s claims nodes in %d unrelated places: %s",
                 canonical, len(chains), " | ".join(chains),
             )
+        if expected:
+            log.info(
+                "  (%d non-mtp entr%s also match the drafter's replayed "
+                "block, which is why --profile-mtp is restricted to "
+                "--group mtp)", expected, "y" if expected == 1 else "ies",
+            )
+        report.over_matches = real
 
     missed = {l: r for l, r in reports.items() if r.gaps}
     over = {l: r for l, r in reports.items() if r.over_matches}

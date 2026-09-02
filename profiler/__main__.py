@@ -574,8 +574,17 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Dispatch.
     if ns.cmd == "profile":
+        # --profile-mtp needs no restriction here: run_full boots the drafter
+        # in a second engine after the main pass, with only the `mtp` category,
+        # so the two never share a profile tree.
         run_full(arch_path, profile_args, ns.out_root)
     elif ns.cmd == "slice":
+        if profile_args.profile_mtp and ns.group != "mtp":
+            parser.error(
+                f"--profile-mtp with --group {ns.group} would record the sum "
+                f"of the target's layers and the drafter's replayed copy of "
+                f"them. Only --group mtp is scoped to the drafter."
+            )
         run_slice(
             arch_path,
             profile_args,

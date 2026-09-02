@@ -117,7 +117,7 @@ shared:
 # ~103 GB. The modules are identical and the simulator multiplies by the
 # declared count.
 mtp:
-  prologue: [mtp_eh_proj, mtp_glue]
+  prologue: [mtp_embed, mtp_eh_proj, mtp_glue]
   # ``mtp_norms`` is one merged profile node covering norms on **both** sides
   # of the block -- enorm and hnorm before ``eh_proj``, ``final_layernorm``
   # after the decoder layer -- and all three are same-class siblings under
@@ -140,6 +140,11 @@ mtp:
 
 catalog:
   mtp:
+    mtp_embed:
+      # The drafter's own embed_tokens, told apart by the predictor it hangs
+      # off rather than by class.
+      vllm: VocabParallelEmbedding
+      within: MiniMaxM3MultiTokenPredictor
     mtp_eh_proj:
       # 2h -> h. ReplicatedLinear, so every rank holds all of it.
       vllm: ReplicatedLinear
@@ -158,7 +163,12 @@ catalog:
 
   dense:
     embedding:
+      # The drafter builds its own embed_tokens of the same class. The dump
+      # puts the target's under MiniMaxM3SparseForCausalLM > MiniMaxM3Model
+      # and the drafter's under MiniMaxM3MTP, which is a real profile node, so
+      # not_within separates them; the drafter's is bound as ``mtp_embed``.
       vllm: VocabParallelEmbedding
+      not_within: MiniMaxM3MTP
     layernorm:
       vllm: MiniMAXGemmaRMSNorm
       within: MiniMaxM3DecoderLayer
