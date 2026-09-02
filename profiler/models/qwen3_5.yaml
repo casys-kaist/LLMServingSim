@@ -104,7 +104,7 @@ shared:
 # ancestors. ``fc`` needs no guard -- ``ColumnParallelLinear`` is bound
 # nowhere else in this catalog.
 mtp:
-  prologue: [mtp_fc]
+  prologue: [mtp_embed, mtp_fc]
   # ``mtp_norms`` is one merged profile node covering norms on **both** sides
   # of the block -- pre_fc_norm_embedding and pre_fc_norm_hidden before ``fc``,
   # ``norm`` after the decoder layer -- and the three are same-class siblings
@@ -143,6 +143,12 @@ catalog:
       # target's projections are Merged/Row/QKVParallelLinear, all distinct
       # class names, so the bare class matches only the drafter's.
       vllm: ColumnParallelLinear
+    mtp_embed:
+      # The drafter's own embed_tokens. Same class as the target's, and its
+      # nodes arrive at the top level, so the two are told apart by pinning the
+      # target's ``within`` and excluding the target here.
+      vllm: VocabParallelEmbedding
+      not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]
     mtp_norms:
       # norm + pre_fc_norm_hidden + pre_fc_norm_embedding, reported as one
       # merged node (their sum) -- all three are the same class at the same
@@ -154,7 +160,14 @@ catalog:
 
   dense:
     embedding:
+      # ``within`` is not optional here. The drafter carries its **own**
+      # embed_tokens, of the same class, and with --profile-mtp it lands at the
+      # top level while the target's sits inside the model -- so an unguarded
+      # entry sums the two and reads ~2.1x (3.8 + 4.3 us on Qwen3.8-27B).
+      # `profiler coverage` cannot see that: over-matching leaves nothing
+      # unbound. The drafter's copy is bound as ``mtp_embed`` instead.
       vllm: VocabParallelEmbedding
+      within: Qwen3_5ForCausalLM
     layernorm:
       vllm: GemmaRMSNorm
       within: Qwen3_5DecoderLayer

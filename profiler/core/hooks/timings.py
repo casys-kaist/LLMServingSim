@@ -287,6 +287,9 @@ class CoverageReport:
     bound_us_by_layer: dict[str, float]
     gaps: list[tuple[str, float, str]]
     """``(node_class, cuda_us, ancestor_chain)``, largest first."""
+    over_matches: list[tuple[str, list[str]]]
+    """``(canonical_name, ancestor_chains)`` for entries claiming nodes in
+    structurally unrelated places -- the failure ``gaps`` is blind to."""
 
     @property
     def bound_us(self) -> float:
@@ -301,6 +304,7 @@ class CoverageReport:
             "total_us": self.total_us,
             "bound_us_by_layer": self.bound_us_by_layer,
             "gaps": [list(g) for g in self.gaps],
+            "over_matches": [[n, list(c)] for n, c in self.over_matches],
         }
 
     @classmethod
@@ -309,6 +313,8 @@ class CoverageReport:
             total_us=float(raw["total_us"]),
             bound_us_by_layer=dict(raw["bound_us_by_layer"]),
             gaps=[(str(a), float(b), str(c)) for a, b, c in raw["gaps"]],
+            over_matches=[(str(n), [str(x) for x in c])
+                          for n, c in raw.get("over_matches") or []],
         )
 
 
@@ -324,6 +330,13 @@ def attribute_tree(
     """
     bound: dict[str, float] = {}
     gaps: list[tuple[str, float, str]] = []
+    # Where each entry's matches sat, so an entry claiming two unrelated places
+    # can be reported. ``gaps`` cannot see this: over-matching leaves nothing
+    # unbound, so coverage reads 100% while a number is silently the sum of two
+    # roles. Qwen3.5's ``mtp_norms`` measured the target's norms as well as the
+    # drafter's and read 1287 us for two RMSNorms; its ``embedding`` summed the
+    # target's table with the drafter's own and read 2.1x. Both passed coverage.
+    seen_at: dict[str, set[tuple[str, ...]]] = {}
 
     def binds_anything(node: dict[str, Any], ancestors: list[str]) -> bool:
         cls = _strip_class_name(str(node["entry"]["name"]))
@@ -344,6 +357,7 @@ def attribute_tree(
                 # This node's cost covers its subtree; do not descend, or the
                 # children would be counted twice.
                 bound[canonical] = bound.get(canonical, 0.0) + cuda_us
+                seen_at.setdefault(canonical, set()).add(tuple(ancestors))
                 continue
             if not binds_anything(node, ancestors):
                 gaps.append((cls, cuda_us, " > ".join(ancestors[-3:])))
@@ -351,9 +365,32 @@ def attribute_tree(
             walk(node.get("children") or [], ancestors + [cls])
 
     walk(tree, ancestors=[])
+
+    # An entry may legitimately match several nodes -- MiniMax-M3's sparse
+    # attention is three Triton kernels, and a ``*``-prefixed glue entry is
+    # many at::native functors -- but those all sit under one parent, so their
+    # ancestor chains share a prefix. Matches with **no** common prefix are in
+    # structurally unrelated places, which is what an entry doing two jobs
+    # looks like.
+    over: list[tuple[str, list[str]]] = []
+    for canonical, chains in sorted(seen_at.items()):
+        if len(chains) < 2:
+            continue
+        first = min(chains, key=len)
+        shared = 0
+        for i, name in enumerate(first):
+            if all(len(c) > i and c[i] == name for c in chains):
+                shared = i + 1
+            else:
+                break
+        if shared == 0:
+            over.append((canonical,
+                         sorted(" > ".join(c) or "(top level)" for c in chains)))
+
     total = sum(float(n["entry"]["cuda_time_us"]) for n in tree)
     return CoverageReport(
         total_us=total,
         bound_us_by_layer=bound,
         gaps=sorted(gaps, key=lambda g: -g[1]),
+        over_matches=over,
     )
