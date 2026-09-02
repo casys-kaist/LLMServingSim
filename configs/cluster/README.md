@@ -215,6 +215,14 @@ scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
 
 ## Provided configurations
 
+The four modern families are served on many devices, and the PP degrees below
+are the **smallest that fit**, not knobs chosen for variety: DeepSeek-V3.2 is
+625 GB at fp8 and GLM-5 and MiniMax-M3 are larger still in bf16, against a
+96 GB RTX PRO 6000. `MemoryModel` refuses to build below them. PP rather than
+TP because only `tp1` is profiled for those three — see
+`profiler/perf/<hardware>/<model>/<variant>/`.
+
+
 | File | Description |
 | --- | --- |
 | `single_node_single_instance.json` | Single node, Llama-3.1-8B on one GPU (the default config) |
@@ -245,3 +253,9 @@ scheduling. MoE expert weights are sharded by `ep_size` (each instance holds
 | `single_node_moe_pp_instance.json` | Single node, MoE on 4 GPUs as `tp=2 x pp=2` with `ep=2` |
 | `dual_node_multi_instance.json` | Two nodes, two instances each |
 | `dual_node_moe_dp_ep_intra_inter_instance.json` | Two-node MoE DP+EP example with per-dimension intra/inter link settings |
+| `single_node_hybrid_instance.json` | Qwen3.8-27B on one GPU — gated DeltaNet interleaved with full attention. The one modern family that fits a single 96 GB card (50 GiB in bf16) |
+| `single_node_hybrid_tp_instance.json` | Qwen3.8-27B at TP=2. The recurrent state is TP-sharded, so this is not just a narrower dense layer |
+| `single_node_hybrid_pp_instance.json` | Qwen3.8-27B at PP=2 |
+| `single_node_sparse_mla_instance.json` | DeepSeek-V3.2-Exp at PP=16 — MLA plus the DSA indexer, a stack whose first three layers are dense, and the only checkpoint with group-limited expert routing (`n_group 8`, `topk_group 4`) |
+| `single_node_sparse_mla_dp_ep_instance.json` | GLM-5, two PP=32 instances in one DP group over EP=2. Same catalog and vLLM path as DeepSeek-V3.2, but `n_group 1` — the unrestricted routing case spelled out |
+| `single_node_sparse_gqa_instance.json` | MiniMax-M3 at PP=16 — the other sparse shape: top-16 blocks of 128 over GQA, against DeepSeek's top-2048 tokens over MLA |
