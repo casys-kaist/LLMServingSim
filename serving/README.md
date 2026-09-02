@@ -88,6 +88,13 @@ that moved is printed as a markdown table to paste into the PR — a difference
 is not automatically a bug, but it always needs an explanation. See
 [Validating your changes](https://llmservingsim.ai/docs/contributor/validating-changes).
 
+The scenario list treats the **model family** as an axis of its own. Most of it
+runs Llama-3.1-8B/70B, Qwen3-30B-A3B or Qwen3-32B, which between them reach no
+linear attention, sparse attention, MLA, heterogeneous stack or drafter; the
+`hybrid_*`, `sparse_*` and `spec_*` scenarios are what cover those, and they
+exist because a speculative `pp_size > 1` deadlock survived a green run of
+everything else.
+
 ## Architecture
 
 The simulation loop in `serving/__main__.py` orchestrates these modules per iteration:
