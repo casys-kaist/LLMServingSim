@@ -812,6 +812,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   What found it was a bandwidth bound: `lm_head` reads the whole output
   embedding, so `vocab * hidden * bytes / mem_bw` = 583 us is a floor and
   6417 us is impossible.
+- **Fixed: speculative decoding deadlocked at `pp_size > 1`.** `add_done` read
+  the draft count to roll back from `req.num_spec_scheduled`, which is
+  per-*batch* state living on the request: with a pipeline, `schedule()` runs
+  again while the batch is in flight and rewrites that field for the step it is
+  building -- to 0, since the request is no longer caught up. The rollback then
+  never ran and `num_computed_tokens` stayed `N - 1` past
+  `num_tokens_reached`, which no later step can schedule, so the scheduler's
+  own guard fired. `Batch.spec_scheduled` snapshots it at build time, exactly
+  as `scheduled_tokens` already does. Invisible at `pp_size == 1`, where an
+  instance holds one batch at a time -- the same class as the DP+PP
+  single-slot hangs.
+  - Found by a **48-scenario sweep** of the four modern families over
+    TP / PP / DP / DP+EP x prefix caching x speculative decoding: 44 passed,
+    and the four that failed were all this one bug. `serving/validate.sh`
+    cannot see it -- its 58 scenarios use only the older families -- and it
+    stays at 58/58 across the fix. The harness is CPU-only, so it runs
+    alongside profiling.
 - **The attention grid reaches the model's own context by default.**
   `--attention-max-kv` was a constant 16384 whatever the checkpoint, so a model
   serving 160k was profiled to a tenth of it and the simulator extrapolated the
