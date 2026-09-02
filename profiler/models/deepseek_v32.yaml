@@ -103,7 +103,7 @@ shared:
 # 1-3 us apiece. GLM-5 reports the identical eight nodes -- it shares
 # DeepSeekMTP -- at 115.9 / 111.0 for eh_proj.
 mtp:
-  prologue: [mtp_enorm_hnorm, mtp_eh_proj, mtp_glue]
+  prologue: [mtp_embed, mtp_enorm_hnorm, mtp_eh_proj, mtp_glue]
   # mtp_block gets no names of its own: it is a DeepseekV2DecoderLayer, so the
   # simulator replays the target's own block sequence for it. What it cannot
   # read off the checkpoint is *which* block -- ``deepseek_mtp.py`` builds it
@@ -117,6 +117,11 @@ mtp:
 
 catalog:
   mtp:
+    mtp_embed:
+      # The drafter's own embed_tokens, told apart from the target's by the
+      # predictor it hangs off.
+      vllm: VocabParallelEmbedding
+      within: DeepSeekMultiTokenPredictor
     mtp_eh_proj:
       # 2h -> h, and a plain nn.Linear rather than a TP-parallel one, so it is
       # NOT sharded. The dominant cost of a drafter pass by two orders of
@@ -144,7 +149,14 @@ catalog:
 
   dense:
     embedding:
+      # The drafter builds its **own** embed_tokens of the same class, so an
+      # unguarded entry sums the two. The dump puts the target's under
+      # DeepseekV3ForCausalLM and the drafter's under
+      # DeepSeekMultiTokenPredictor -- a real profile node here, unlike
+      # Qwen3.5's flattened wrapper -- so not_within separates them, and the
+      # drafter's is bound as ``mtp_embed``.
       vllm: VocabParallelEmbedding
+      not_within: DeepSeekMultiTokenPredictor
     layernorm:
       vllm: RMSNorm
       within: DeepseekV2DecoderLayer

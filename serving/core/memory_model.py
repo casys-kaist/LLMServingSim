@@ -1231,6 +1231,14 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = 0
         output_size = input_size
 
+    elif layer_name == "block_glue":
+        # Eager tensor work the decoder forward does outside any module, on a
+        # family whose block leaves some (Phi MoE). It carries no weights and
+        # moves the hidden state, so it is sized like a residual-width op.
+        input_size = length * n_embd * fp
+        weight_size = 0
+        output_size = input_size
+
     elif layer_name == "sampler":
         input_size = length * (vocab_size // p) * fp
         weight_size = 0
