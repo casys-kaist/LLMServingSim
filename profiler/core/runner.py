@@ -38,6 +38,7 @@ from profiler.core.engine import (
 )
 from profiler.core.hooks.batch import Shot
 from profiler.core.hooks.timings import CoverageReport, TimingSample
+from profiler.core.stack import minimal_layer_count_for
 from profiler.core.writer import (
     persist_meta,
     replicate_tp_stable,
@@ -194,59 +195,88 @@ def run_full(
         # dense / attention / moe entry would match twice and record the sum.
         # The drafter gets its own engine at the end of this TP instead.
         main_args = dataclasses.replace(args, profile_mtp=False)
-        with log.stage(f"TP={tp}  booting vLLM engine"):
-            llm, engine_kwargs, tmpdir = spin_up(main_args, tp)
-            last_engine_kwargs = engine_kwargs
-            limits = probe_limits(llm, args)
-            # Unset means the model's own context window, resolved once here so
-            # every downstream reader -- the grids and the meta the run records
-            # -- sees one number.
-            args = dataclasses.replace(
-                args,
-                attention_max_kv=resolve_attention_max_kv(args, limits),
-            )
-            limits_by_tp[tp] = limits
 
-        # Visibility: what the live engine actually allocated for
-        # this (tp, 1-layer-shrunk) configuration. Drives every
-        # feasibility filter downstream.
-        log.info(
-            "TP=%d limits: num_cache_tokens=%d max_model_len=%d "
-            "max_num_batched_tokens=%d max_num_seqs=%d block_size=%d%s%s",
-            tp,
-            limits.num_cache_tokens,
-            limits.max_model_len,
-            limits.max_num_batched_tokens,
-            limits.max_num_seqs,
-            limits.block_size,
-            (f" linear_attn_chunk={limits.linear_attn_chunk}"
-             if limits.linear_attn_chunk else ""),
-            (f" num_experts={limits.num_experts} top_k={limits.top_k}"
-             if limits.num_experts else ""),
-        )
+        # Group the categories by how deep a stack they actually need. Every
+        # layer costs the profiler its whole op count on every shot, and the
+        # tree merges same-class siblings -- so a second layer of a type
+        # already present adds no information, only time. DeepSeek-V3.2 needs
+        # 4 layers for its MLP axis and 1 for attention, and the attention
+        # sweep is the expensive one.
+        wanted = categories_for(arch, tp)
+        by_depth: dict[int, list] = {}
+        for category in wanted:
+            if category.name == "mtp":
+                continue  # second pass, with the drafter built
+            depth = minimal_layer_count_for(
+                args.model_config or {}, category.stack_axes)
+            by_depth.setdefault(depth, []).append(category)
+        # Deepest first: its engine also answers probe_limits for the meta and
+        # for `--attention-max-kv`, which has to describe the stack the
+        # simulator will run rather than a shrunk one.
+        depths = sorted(by_depth, reverse=True)
+        if len(depths) > 1:
+            log.info(
+                "TP=%d: %s", tp, "; ".join(
+                    f"{d} layer(s) for " + "/".join(c.label for c in by_depth[d])
+                    for d in depths))
 
         tp_root = variant_root / f"tp{tp}"
         tp_root.mkdir(parents=True, exist_ok=True)
 
-        try:
-            if not args.only_skew:
-                for category in categories_for(arch, tp):
-                    if category.name == "mtp":
-                        continue  # second pass, with the drafter built
-                    _fire_one_category(
-                        llm, category, arch, args, limits, tp, tp_root,
-                    )
-            else:
-                log.info("only_skew mode: skipping dense / per_seq / "
-                         "attention / moe categories")
-            # Skew measurement after all categories — uses the same
-            # attention kernel slice but fires shots with non-uniform
-            # decode kv distributions. Writes tp_root/skew.csv.
-            if not args.skip_skew:
-                from profiler.core.skew import sample_skew
-                sample_skew(llm, arch, args, limits, tp, tp_root)
-        finally:
-            spin_down(llm, tmpdir)
+        for depth in depths:
+            axes = by_depth[depth][0].stack_axes
+            stage = (f"TP={tp}  booting vLLM engine"
+                     + (f" ({depth} layer(s))" if len(depths) > 1 else ""))
+            with log.stage(stage):
+                llm, engine_kwargs, tmpdir = spin_up(main_args, tp, axes)
+                limits = probe_limits(llm, main_args)
+            if depth == depths[0]:
+                # The deepest engine is the one whose shapes describe the stack
+                # the simulator will run, so it is the one the meta records and
+                # the one --attention-max-kv resolves against.
+                last_engine_kwargs = engine_kwargs
+                limits_by_tp[tp] = limits
+                args = dataclasses.replace(
+                    args,
+                    attention_max_kv=resolve_attention_max_kv(args, limits),
+                )
+                # Visibility: what the live engine actually allocated for this
+                # (tp, shrunk) configuration. Drives every feasibility filter
+                # downstream.
+                log.info(
+                    "TP=%d limits: num_cache_tokens=%d max_model_len=%d "
+                    "max_num_batched_tokens=%d max_num_seqs=%d "
+                    "block_size=%d%s%s",
+                    tp,
+                    limits.num_cache_tokens,
+                    limits.max_model_len,
+                    limits.max_num_batched_tokens,
+                    limits.max_num_seqs,
+                    limits.block_size,
+                    (f" linear_attn_chunk={limits.linear_attn_chunk}"
+                     if limits.linear_attn_chunk else ""),
+                    (f" num_experts={limits.num_experts} top_k={limits.top_k}"
+                     if limits.num_experts else ""),
+                )
+
+            try:
+                if not args.only_skew:
+                    for category in by_depth[depth]:
+                        _fire_one_category(
+                            llm, category, arch, args, limits, tp, tp_root,
+                        )
+                else:
+                    log.info("only_skew mode: skipping dense / per_seq / "
+                             "attention / moe categories")
+                # Skew rides on the attention kernel slice, so it belongs to
+                # the engine that measured attention -- same shrink, same
+                # limits, same feasibility bounds.
+                if not args.skip_skew and any(
+                        c.name == "attention" for c in by_depth[depth]):
+                    from profiler.core.skew import sample_skew
+                    sample_skew(llm, arch, args, limits, tp, tp_root)
+            finally:
+                spin_down(llm, tmpdir)
 
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
@@ -320,8 +350,14 @@ def run_slice(
     log.banner(args, variant_root)
     log.info("Slice refresh: tp=%d group=%s", tp, group)
 
-    with log.stage(f"TP={tp}  booting vLLM engine"):
-        llm, engine_kwargs, tmpdir = spin_up(args, tp)
+    # Shrink to what this category measures, not to what every category
+    # together would need: the attention sweep does not care which MLP a layer
+    # runs, and each extra layer costs the profiler its whole op count on every
+    # shot. DeepSeek-V3.2 and GLM-5 go from 4 layers to 1 here.
+    depth = minimal_layer_count_for(args.model_config or {},
+                                    category.stack_axes)
+    with log.stage(f"TP={tp}  booting vLLM engine ({depth} layer(s))"):
+        llm, engine_kwargs, tmpdir = spin_up(args, tp, category.stack_axes)
         limits = probe_limits(llm, args)
         args = dataclasses.replace(
             args, attention_max_kv=resolve_attention_max_kv(args, limits),

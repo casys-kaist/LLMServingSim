@@ -249,6 +249,40 @@ single `layerwise_profile` context. A single sample can swing 15-25% on a large
 GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call
 figure comes from dividing by the invocation count.
 
+It is also the biggest knob on how long a sweep takes, because **a shot's cost
+is almost entirely the profiler**. Measured on a 4-layer DeepSeek-V3.2, one
+shot at the default: 0.1 ms to assemble, 49 ms for the three forwards, 2.1 ms
+to convert the tree — and **1,125 ms inside the `layerwise_profile` context**.
+Session setup/teardown is only 6.9 ms of that; the rest is per-op instrumentation
+at **372 ms per forward against 16 ms outside**, linear in the forwards:
+
+| forwards in one session | ms |
+| --- | --- |
+| 0 | 6.9 |
+| 1 | 372 |
+| 3 | 1,125 |
+| 6 | 2,310 |
+
+So `--measurement-iterations 1` really is ~3x faster, at 15-25% more noise per
+shot. Turning off the profiler's `with_stack` does **not** help, despite being
+14x in a raw `key_averages()` path: `layerwise_profile` builds its tree from
+`experimental_event_tree()`, which does not pay for it.
+
+:::tip[The layer count is the same axis, and it is free]
+Op count sets the wall clock, and the profile tree merges same-class siblings —
+so a second layer of a type already present adds **no information**, only its
+op count on every shot. Each category is therefore shrunk to the axes it
+measures, and the profiler boots one engine per distinct depth. DeepSeek-V3.2
+and GLM-5 need 4 layers for their MLP axis (`first_k_dense_replace 3`) and
+**1** for attention, since every one of their layers has the same attention:
+1,057 → 341 ms per shot, **3.1x**, with no loss of accuracy. Qwen3.8-27B and
+MiniMax-M3 vary on the attention axis too, so they gain nothing here.
+
+Fewer layers means a larger `num_cache_tokens`, which the feasibility filters
+read, so more shots pass — wider coverage, and a grid that is not row-for-row
+comparable with a deeper run's.
+:::
+
 The division is **per parent**: every node divides by its parent node's
 invocation count. The top level has no parent node, so `extract_samples` is
 given `iterations` as its count — and vLLM 0.28 additionally reports a

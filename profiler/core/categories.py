@@ -32,6 +32,7 @@ from profiler.core.config import (
 )
 from profiler.core.engine import RuntimeLimits
 from profiler.core.hooks.batch import Shot
+from profiler.core.stack import ALL_AXES, ATTENTION_AXES
 from profiler.core.hooks.timings import TimingSample
 
 
@@ -156,6 +157,17 @@ class Category(ABC):
     name: ClassVar[str]
     sink_filename: ClassVar[str]
     label: ClassVar[str]
+
+    #: Which axes of the layer stack this category's measurements depend on.
+    #: The engine is shrunk to the smallest prefix instantiating every value of
+    #: these, and a category should not pay for an axis it does not measure:
+    #: the profile tree merges same-class siblings, so a second layer of a type
+    #: already present adds no information, only its whole op count on every
+    #: shot -- 372 ms of profiling overhead per forward at 4 layers of
+    #: DeepSeek-V3.2 against 94 ms at one. The default is every axis, which is
+    #: what ``dense`` needs (it measures layers in both MLP kinds and both
+    #: attention kinds) and the safe answer for anything new.
+    stack_axes: ClassVar[tuple[str, ...]] = ALL_AXES
 
     @abstractmethod
     def compose_shots(
@@ -409,6 +421,10 @@ class AttentionCategory(Category):
     """
 
     name = "attention"
+    # Only the attention axes: which MLP a layer runs cannot change
+    # an attention kernel's cost, so a stack shrunk for the MLP axis
+    # is measuring the same kernel several times over.
+    stack_axes = ATTENTION_AXES
     sink_filename = "attention.csv"
     label = "attention"
 
@@ -679,6 +695,10 @@ class LinearAttentionCategory(Category):
     """
 
     name = "linear_attention"
+    # Only the attention axes: which MLP a layer runs cannot change
+    # an attention kernel's cost, so a stack shrunk for the MLP axis
+    # is measuring the same kernel several times over.
+    stack_axes = ATTENTION_AXES
     sink_filename = "linear_attention.csv"
     label = "linear_attention"
 

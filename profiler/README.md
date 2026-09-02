@@ -81,11 +81,26 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 
 The five that decide how long a run takes, in rough order of effect:
 
-1. `--measurement-iterations` (default 3) — a straight multiplier. 1 is 3x
-   faster and 15-25% noisier per shot. It is also the **top level's**
-   invocation count: every profile node divides by its parent's, and the top
-   level has no parent node, so `extract_samples` is handed this value.
-   `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter bind there.
+1. `--measurement-iterations` (default 3) — a straight multiplier, and the
+   biggest single knob: the profiler costs **372 us per forward against 16 us
+   outside it** on a 4-layer DeepSeek-V3.2, and that is linear in the forwards
+   (0/1/3/6 inside one session → 6.9/372/1,125/2,310 ms). Session
+   setup/teardown is only 6.9 ms, so 1 is ~3x faster and 15-25% noisier per
+   shot. It is also the **top level's** invocation count: every profile node
+   divides by its parent's, and the top level has no parent node, so
+   `extract_samples` is handed this value. `embedding`, `lm_head`, `sampler`
+   and Qwen3.5's whole drafter bind there.
+1b. **Layer count, per category** — not a flag; resolved from the checkpoint.
+   The same per-forward cost means op count sets the wall clock, and the
+   profile tree merges same-class siblings, so a second layer of a type
+   already present adds no information. Each category is shrunk to the axes it
+   measures (`Category.stack_axes`), and `run_full` boots one engine per
+   distinct depth. DeepSeek-V3.2 and GLM-5 need 4 layers for their MLP axis and
+   **1** for attention, which is the expensive sweep: 1,057 → 341 ms per shot,
+   3.1x measured. Qwen3.8-27B and MiniMax-M3 vary on the attention axis too, so
+   they gain nothing. Fewer layers also means a larger `num_cache_tokens`, so
+   more shots clear the feasibility filters -- wider coverage, and a grid not
+   row-for-row comparable with a deeper run's.
 2. `--attention-chunk-factor` / `--attention-kv-factor` (2.0) — coarsen the
    two biggest axes geometrically.
 2b. `--attention-max-kv` — defaults to the model's own context

@@ -230,6 +230,51 @@ Every TP degree is profiled on a **single GPU**: the engine is always booted wit
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
 
+**The stack is shrunk per category, not per model.** A shot's cost is
+overwhelmingly the profiler, and it scales with the forward's op count — so
+with the layer count. Measured on DeepSeek-V3.2, one shot (warmup + 3 timed):
+
+| | ms |
+|---|---|
+| shot assembly | 0.1 |
+| 3 forwards, no profiler | 49 |
+| **the `layerwise_profile` context** | **1,125** |
+| `convert_stats_to_dict()` | 2.1 |
+
+Session setup/teardown is 6.9 ms; the cost is **372 ms per forward inside the
+profiler against 16 ms outside**, linear in the forwards (0/1/3/6 forwards →
+6.9/372/1,125/2,310 ms). `with_stack=False` changes nothing — the 14x it buys
+in a raw `key_averages()` path is irrelevant here, because `layerwise_profile`
+builds its tree from `experimental_event_tree()` instead.
+
+So a category must not pay for an axis it does not measure. The profile tree
+merges same-class siblings, so a second layer of a type already present adds
+**no information**, only its op count on every shot. `Category.stack_axes`
+declares the axes (`attention` / `linear_attention` → `(attn, sparse)`,
+everything else → all), `stack.minimal_layer_count_for` answers per axis set,
+and `run_full` boots one engine per distinct depth — deepest first, since that
+engine's shapes are what `meta.yaml` and `--attention-max-kv` must describe.
+
+Where it lands, from each checkpoint's own config:
+
+| model | all axes | attention only |
+|---|---|---|
+| DeepSeek-V3.2, GLM-5 | 4 (`first_k_dense_replace 3`) | **1** — every layer has the same attention |
+| Qwen3.8-27B | 4 | 4 — gated DeltaNet three times, then full attention |
+| MiniMax-M3 | 4 | 4 — non-sparse three times, then sparse |
+| Llama, Qwen3, Mixtral, PhiMoE | 1 | 1 |
+
+Only DeepSeek and GLM-5 gain, and only on `attention` — which is the sweep
+that dominates a run. **1,057 → 341 ms per shot, 3.1x measured.** Splitting a
+category further does not help: cost is per forward and a forward runs the
+whole stack, so measuring `dense`'s MLP entries in a separate 1-layer engine
+would mean two sweeps rather than one, even though Qwen3.8's MLP axis is
+uniform.
+
+One consequence to know: fewer layers means a larger `num_cache_tokens`, which
+the feasibility filters read, so **more shots pass**. Coverage widens and the
+grid is not row-for-row comparable with a deeper run's.
+
 **Every field vLLM shards has to be in that list**, or one part of the model is
 measured per-rank while the rest is measured at full size, and a mixed
 measurement is worse than either. `linear_num_key_heads` /
