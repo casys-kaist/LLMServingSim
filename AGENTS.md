@@ -271,9 +271,28 @@ whole stack, so measuring `dense`'s MLP entries in a separate 1-layer engine
 would mean two sweeps rather than one, even though Qwen3.8's MLP axis is
 uniform.
 
-One consequence to know: fewer layers means a larger `num_cache_tokens`, which
-the feasibility filters read, so **more shots pass**. Coverage widens and the
-grid is not row-for-row comparable with a deeper run's.
+Two things to know.
+
+Fewer layers means a larger `num_cache_tokens`, which the feasibility filters
+read, so **more shots pass**. Coverage widens and the grid is not row-for-row
+comparable with a deeper run's.
+
+And **axes are a conservative proxy** for what a category needs, which is
+really "every block its entries live in". The proxy never over-shrinks, so no
+data is lost, but it does under-shrink: DeepSeek-V3.2's `dense` entries sit
+only in `attn.full_attention` and `mlp.dense` — `moe` is its own category — so
+layer 0 alone would serve, while the all-axes answer is 4 because the MLP turns
+to MoE at layer 3. Qwen3.8's `linear_attention` is the same story. The slack is
+deliberate: `attention` is 8,643 shots against `dense`'s 152,
+`linear_attention`'s 78 and `per_sequence`'s 40, so the axis rule already
+captures every minute that matters and an entry-to-block resolver would save
+three or four.
+
+The reason a category cannot simply be shrunk to one layer is not that its
+entries are hard to separate — it is that **at one layer some of them do not
+exist**. A 1-layer Qwen3.8 instantiates only the gated-DeltaNet block, so
+`qkv_proj` and `o_proj` are never built, their rows are missing from
+`dense.csv`, and the simulator charges those layers zero.
 
 **Every field vLLM shards has to be in that list**, or one part of the model is
 measured per-rank while the rest is measured at full size, and a mixed

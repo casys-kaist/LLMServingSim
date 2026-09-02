@@ -164,9 +164,19 @@ class Category(ABC):
     #: the profile tree merges same-class siblings, so a second layer of a type
     #: already present adds no information, only its whole op count on every
     #: shot -- 372 ms of profiling overhead per forward at 4 layers of
-    #: DeepSeek-V3.2 against 94 ms at one. The default is every axis, which is
-    #: what ``dense`` needs (it measures layers in both MLP kinds and both
-    #: attention kinds) and the safe answer for anything new.
+    #: DeepSeek-V3.2 against 94 ms at one. The default is every axis, and it is
+    #: the safe answer for anything new.
+    #:
+    #: Axes are a **conservative proxy** for what a category needs, which is
+    #: really "every block its entries live in". They agree where it matters
+    #: and the proxy over-shrinks nowhere, so no data is ever lost -- but it
+    #: does under-shrink: DeepSeek-V3.2's ``dense`` entries sit only in
+    #: ``attn.full_attention`` and ``mlp.dense`` (``moe`` is its own category),
+    #: so layer 0 alone would do, while the all-axes answer is 4 because the
+    #: MLP axis turns to MoE at layer 3. That slack is deliberate: ``attention``
+    #: is 8,643 shots against ``dense``'s 152, so the axis rule already
+    #: captures every minute that matters, and an entry-to-block resolver would
+    #: have to cross-reference ``blocks`` with ``catalog`` to save three.
     stack_axes: ClassVar[tuple[str, ...]] = ALL_AXES
 
     @abstractmethod
