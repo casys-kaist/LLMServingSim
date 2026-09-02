@@ -826,6 +826,42 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
     cannot see it -- its 58 scenarios use only the older families -- and it
     stays at 58/58 across the fix. The harness is CPU-only, so it runs
     alongside profiling.
+- **Each category is profiled at the layer count it needs, not the model's.**
+  A shot's cost is almost entirely the profiler, and it is linear in the
+  forward's op count. Measured on a 4-layer DeepSeek-V3.2, one shot at the
+  default 3 iterations: 0.1 ms to assemble, 49 ms for the forwards, 2.1 ms to
+  convert the tree, and **1,125 ms inside the `layerwise_profile` context** --
+  of which session setup/teardown is 6.9 ms and the rest is per-op
+  instrumentation at 372 ms per forward against 16 ms outside (0/1/3/6 forwards
+  in one session: 6.9/372/1,125/2,310 ms).
+
+  The profile tree merges same-class siblings, so a second layer of a type
+  already present adds **no information**, only its op count on every shot.
+  `Category.stack_axes` declares which axes a category measures (`attention`
+  and `linear_attention` → `(attn, sparse)`, everything else → all),
+  `stack.minimal_layer_count_for` answers per axis set, and `run_full` boots
+  one engine per distinct depth -- deepest first, because that engine's shapes
+  are what `meta.yaml` and `--attention-max-kv` describe. `run_slice` shrinks
+  to its one category.
+
+  DeepSeek-V3.2 and GLM-5 need 4 layers for their MLP axis
+  (`first_k_dense_replace 3`) and **1** for attention, since every one of their
+  layers has the same attention -- and attention is the sweep that dominates a
+  run: **1,057 → 341 ms per shot, 3.1x, with no loss of accuracy**. Qwen3.8-27B
+  and MiniMax-M3 vary on the attention axis too and gain nothing; the six
+  families that were already at one layer are unaffected.
+
+  Two things this is not. Turning off the profiler's `with_stack` does not help
+  despite being 14x in a raw `key_averages()` path -- `layerwise_profile` builds
+  its tree from `experimental_event_tree()`, which does not pay for it.
+  And splitting a category further does not help either: cost is per forward
+  and a forward runs the whole stack, so measuring `dense`'s MLP entries in
+  their own 1-layer engine would mean two sweeps instead of one, even though
+  Qwen3.8's MLP axis is uniform.
+
+  One consequence: fewer layers means a larger `num_cache_tokens`, which the
+  feasibility filters read, so more shots pass. Coverage widens, and the grid
+  is not row-for-row comparable with a deeper run's.
 - **The attention grid reaches the model's own context by default.**
   `--attention-max-kv` was a constant 16384 whatever the checkpoint, so a model
   serving 160k was profiled to a tenth of it and the simulator extrapolated the
