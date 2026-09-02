@@ -23,6 +23,7 @@ serving/                        Python package
 │   ├── request.py              Request / Batch data classes
 │   ├── block_pool.py           per-tier KV block pool + prefix-cache index
 │   ├── kv_cache_manager.py     tiered KV cache manager (block hashing, allocation)
+│   ├── run_paths.py            per-run ASTRA-Sim input/output path layout
 │   ├── logger.py               Rich-based logger + stdio capture
 │   └── utils.py                model config loading, formatting helpers
 ├── run.sh                      one runnable example per feature (a menu, not a suite)
@@ -192,6 +193,19 @@ Routes tokens to MoE experts according to configurable policies (Copy, Round Rob
 Custom). `COPY` (default) enables block copy optimization. Provides EP-aware routing via
 `route_ep()` with even expert-to-rank partitioning for per-rank latency lookup.
 
+### `spec_decode.py`
+The acceptance model behind `--num-speculative-tokens`. Which draft tokens the
+target accepts is the one thing a simulator cannot compute — it needs both
+models' distributions over real tokens — so acceptance is a **policy**, chosen
+the way MoE expert routing is, with the default taken from what each model's
+authors published (`configs/spec_decode.json`). The rate is `accepted / drafted`
+and **marginal**, so `mean_accept_length = 1 + rate * N`; that identity
+reproduces all nine published (rate, length) pairs to within 0.01 tokens.
+`--spec-acceptance-policy` picks how the accepted count is drawn (`FIXED`,
+`DECAY`, `CUSTOM`). A model with no published figure gets no default — the four
+modern families range from 0.39 to 0.78, so there is nothing defensible to
+guess.
+
 ### `memory_model.py`
 Static sizing math plus a byte-level view over the block pools. Contains
 `calculate_sizes(parallel=)` and `get_weight` for per-layer tensor size computation — the
@@ -274,6 +288,13 @@ sub-batch interleaving. The `comm_type` field supports dimension scoping
 (e.g., `ALLGATHER:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a
 new model architecture, add a `profiler/models/<model_type>.yaml` with a
 matching `blocks:` / `shared:` rather than editing this file.
+
+### `run_paths.py`
+Resolves `--run-id` and the ASTRA-Sim input layout beneath it. An omitted run
+id becomes a process-unique one, so two simulator invocations running at once
+do not share intermediate files; an explicit one is validated as a safe path
+component. `RunPaths` then carries the network / system / memory config paths
+that `config_builder.py` writes and `controller.py` hands to ASTRA-Sim.
 
 ### `config_builder.py`
 Parses the user-provided cluster config JSON from `configs/cluster/` and generates the
