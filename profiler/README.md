@@ -99,7 +99,12 @@ The five that decide how long a run takes, in rough order of effect:
    (2048) onward while its `indexer` keeps growing with the whole KV, so the
    unprofiled region is exactly where the cost lives.
 3. `--attention-decode-q-lens` (`1`) — each extra value **doubles** the
-   attention sweep. Only needed for speculative decoding.
+   attention sweep. Only needed for speculative decoding. The halves are
+   disjoint (`q > 1` never yields a pure-prefill shot, and `decode_q_len` is
+   part of the row key), so one model's sweep can run `q=1` on one GPU and
+   `q=N` on another and the CSVs concatenate — pin `--attention-max-kv` on
+   both, or each half derives its own cap from its own `max(q)` and they
+   sweep different kv sets.
 4. `--skip-skew` — drops the whole second sweep.
 5. `--num-hidden-layers` — normally auto-resolved and best left alone, but it
    is why a hybrid costs ~4x a uniform stack: every shot's forward runs all

@@ -78,6 +78,29 @@ interpolating, because query length changes the kernel's tile shape rather than
 just its size.
 :::
 
+:::tip[One model's sweep can run on two GPUs]
+`q > 1` never yields a pure-prefill shot, and `decode_q_len` is part of the row
+key the CSV is written under. So a `q=1` sweep and a `q=N` sweep are disjoint,
+and together they are exactly the combined grid — 14,653 + 14,083 = 28,736 for
+DeepSeek-V3.2 at its full context. Run one half per GPU and concatenate:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m profiler slice <model> --hardware <hw> \
+    --tp-refresh 1 --group attention --force \
+    --attention-max-kv 163834 --attention-decode-q-lens 1
+
+CUDA_VISIBLE_DEVICES=1 python -m profiler slice <model> --hardware <hw> \
+    --tp-refresh 1 --group attention --force \
+    --attention-max-kv 163834 --attention-decode-q-lens 5 \
+    --out-root /tmp/half_q5
+```
+
+**Pin `--attention-max-kv` on both halves.** Left to derive, the resolver reads
+each run's own `max(decode_q_lens)`, so the `q=1` half would take 163,838 and
+the `q=5` half 163,834 — different kv sets, and the halves stop lining up. Use
+the value a combined run would resolve to: `max_model_len - max(q) - 1`.
+:::
+
 
 The 4D attention sweep covers `(prefill_chunk, kv_prefill, n_decode,
 kv_decode)`. Three knobs control its shape:
