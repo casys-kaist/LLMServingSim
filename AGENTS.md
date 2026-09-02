@@ -30,6 +30,8 @@ LLMServingSim/
 │   │   ├── request.py          # Request/Batch data classes
 │   │   ├── block_pool.py       # Per-tier KV block pool + prefix-cache index
 │   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
+│   │   ├── spec_decode.py      # Speculative-decoding acceptance model
+│   │   ├── run_paths.py        # Per-run ASTRA-Sim input/output path layout
 │   │   ├── logger.py           # Rich-based logger + stdio capture
 │   │   └── utils.py            # Model config loading, formatting
 │   ├── run.sh                  # One runnable example per feature (a menu, not a suite)
