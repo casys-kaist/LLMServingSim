@@ -496,11 +496,12 @@ pooled `tables["attention"]` shortcut: there was one, every lookup took it, and
 a sparse layer got the dense kernel's latency (2.1x per layer on M3).
 
 Names beyond this table are per-family and live in the catalogs
-(`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `*_glue`). **`calculate_sizes` in
-`memory_model.py` raises on a name it does not know**, and it knows only the 16
-above — so a new family needs its tensor-size formulas added there before it
-can be simulated, which is outstanding for Qwen3.5 (12 names), DeepSeek/GLM
-(10) and MiniMax-M3 (6).
+(`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `mtp_*`, `*_glue`).
+**`calculate_sizes` in `memory_model.py` raises on a name it does not know**,
+so a new family needs its tensor-size formulas added there before it can be
+simulated at all. Every name in every shipped catalog has one today — 26 for
+Qwen3.5 and DeepSeek/GLM, 21 for MiniMax-M3 — which `.claude/chk_sizes.py`
+checks by calling `calculate_sizes` for each.
 
 ### Trace generator structure
 `trace_generator.py` walks the architecture yaml's `blocks:` section to emit
@@ -1262,6 +1263,17 @@ what the `saturated_*` scenarios are for; `example_trace.jsonl` never gets
 there, and its DP members always drain together, which is what the `*_uneven`
 scenarios are for.
 
+**A model family is an axis too.** Everything but the `hybrid_*`, `sparse_*`
+and `spec_*` scenarios runs Llama-3.1-8B/70B, Qwen3-30B-A3B or Qwen3-32B, so
+none of it reaches linear attention, sparse attention, MLA, a heterogeneous
+stack or the drafter — a speculative `pp_size > 1` deadlock lived through a
+green 58/58 for exactly that reason. Their cluster configs use the **smallest
+parallelism in which each model fits** on the profiled hardware (DeepSeek-V3.2
+is 625 GB at fp8, so PP=16 is a floor `MemoryModel` enforces, not a choice),
+and PP rather than TP because only `tp1` is profiled for three of the four.
+`--num-reqs` is deliberately small: what these check is which layers get
+emitted, and the stacks are 60-78 deep.
+
 ## Common Pitfalls
 
 - **Don't reintroduce `sequence:`, or any second layer-order form.** There is
@@ -1282,8 +1294,8 @@ scenarios are for.
   the clock 3.1x on 48 layers, and the recorded baseline enshrined it
 - **Don't add a layer name to a catalog without a `calculate_sizes` formula.**
   `memory_model.calculate_sizes` **raises** on an unknown name, so the model
-  becomes unsimulable — which is the state Qwen3.5, DeepSeek/GLM and MiniMax-M3
-  are in today
+  becomes unsimulable rather than merely mis-sized. Every shipped catalog is
+  covered; `.claude/chk_sizes.py` re-checks it in seconds
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
   into the container's site-packages by `scripts/compile.sh`, so editing
