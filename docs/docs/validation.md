@@ -22,7 +22,7 @@ per-tick metrics with `python -m bench validate`.
 | --- | --- |
 | **Workload** | 300 ShareGPT-derived requests, ~10 sps Poisson arrivals |
 | **Hardware** | RTXPRO6000 and RTX 4090, single node (profile bundles in `profiler/perf/<hardware>/`) |
-| **vLLM version** | `v0.19.0` (the pin used by the bench container) |
+| **vLLM version** | `v0.19.0` — what these runs were recorded against. The bench container now pins `v0.28.0`, so re-running them would not reproduce these numbers exactly |
 | **Block size** | 16 |
 | **Engine flags** | Defaults except where the cluster config dictates otherwise |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
