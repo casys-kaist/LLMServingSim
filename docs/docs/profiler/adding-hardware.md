@@ -31,14 +31,14 @@ handles it. Three steps:
 ### 1. Confirm vLLM support
 
 The profiler runs vLLM `0.19.0` by default
-(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.19.0`). Check
+(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Check
 that vLLM's release notes mention your GPU.
 
 | GPU family | vLLM 0.19.0 support |
 | --- | --- |
 | NVIDIA A100, H100, H200 | Yes |
 | NVIDIA RTX PRO 6000, RTX 6000 Ada, L40S | Yes |
-| NVIDIA Blackwell (B100, B200) | Yes (with CUDA 13.x image: `v0.19.0-cu130`) |
+| NVIDIA Blackwell (B100, B200) | Yes (with the CUDA 12.9 image: `v0.28.0-cu129`) |
 | NVIDIA Hopper SXM | Yes |
 | AMD MI300X | Yes (ROCm path; needs `vllm/vllm-rocm`) |
 | AMD MI200 / older | Limited; check vLLM matrix |

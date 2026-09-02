@@ -23,8 +23,11 @@ Two stages, about eight minutes total:
    compared against its recorded `Total clocks (ns)`. Every cluster
    config, every parallelism shape (TP, PP, DP and their combinations, EP),
    prefix caching and the tiers below it, the scheduler flags, both routing
-   policies, PIM, CXL, P/D disaggregation, agentic sessions and two hardware
-   profiles.
+   policies, PIM, CXL, P/D disaggregation, agentic sessions, two hardware
+   profiles — and the **model families**: linear attention, both sparse
+   shapes, MLA, heterogeneous stacks and speculative decoding, which nothing
+   else reaches because the rest of the list runs Llama-3.1-8B/70B,
+   Qwen3-30B-A3B or Qwen3-32B.
 2. **Accuracy** — regenerates each `bench/examples` entry's `outputs/sim.csv`
    and `validation/summary.txt` and checks both md5s. `sim.csv` is the
    per-request TTFT / TPOT / latency against a recorded real vLLM run;
@@ -37,7 +40,7 @@ Two stages, about eight minutes total:
 A clean run ends with:
 
 ```
-Behaviour: 58/58 scenarios match their baselines.
+Behaviour: 70/70 scenarios match their baselines.
 Accuracy: all 8 sim.csv + summary.txt files are byte-identical.
 ```
 
