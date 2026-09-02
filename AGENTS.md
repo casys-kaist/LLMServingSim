@@ -757,6 +757,13 @@ get wrong:
 - **Clamp the overshoot.** A step commits `1 + accepted` at once and can run
   past `output`; vLLM stops at max_tokens and discards the excess, so the
   overshoot is not throughput
+- **The draft count is per *batch*, not per request.** `add_done` reads it from
+  `Batch.spec_scheduled`, snapshotted at build time exactly as
+  `Batch.scheduled_tokens` is. Left on the request it is rewritten by the next
+  `schedule()` while the batch is still in flight — to 0, since the request is
+  no longer caught up — so the rollback never runs and `num_computed_tokens`
+  stays `N - 1` past `num_tokens_reached`, which no later step can schedule.
+  Invisible at `pp_size == 1`, where an instance holds one batch at a time
 
 The verification forward needs the **fifth attention axis**, `decode_q_len`
 (query tokens per decode sequence, `1 + N`). It is opt-in in the profiler
@@ -1319,6 +1326,13 @@ scenarios are for.
   `[critical] workload file ... does not exist` and then **hangs instead of exiting**.
   Both were issue #65; `add_done` needs `start_npu in batch.end` to complete a batch,
   so any batch the start NPU cannot claim deadlocks silently
+- **Don't keep per-batch scheduler state on a `Request`.** If `add_done` reads
+  it, it belongs in the `Batch`, snapshotted at build time like
+  `scheduled_tokens` and `spec_scheduled`. At `pp_size > 1` the next
+  `schedule()` runs while the batch is in flight and rewrites the request's
+  fields for the step it is building, so `add_done` reads the wrong step's
+  values. That deadlocked every speculative `pp_size > 1` run and is invisible
+  at `pp_size == 1`
 - **Don't give a DP group one slot per member anywhere.** `dp_pending[dg][inst]` and
   `dp_ready_workloads[npu]` are both FIFOs because at `pp_size > 1` a member has up to
   `pp_size` batches outstanding. Three separate hangs came from single slots: the second
