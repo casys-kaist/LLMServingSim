@@ -430,6 +430,18 @@ This uses vLLM V1's `input_batch` buffer exactly up to `MSQ`. Mixed cases at
 `n = MSQ` need `MSQ + 1` requests and are still filtered. If a runtime workload
 needs mixed-regime data at `n = X`, profile with `MAX_NUM_SEQS ≥ X + 1`.
 
+The bounds that count **tokens** rather than requests have to see
+`decode_q_len`, because a decode request submits `q` of them. They are inside
+the `q` loop in `AttentionCategory.compose_shots` for that reason — see the
+speculative-decoding section for what happens when they are not.
+
+`--attention-max-kv` is resolved **once**, right after `probe_limits`, by
+`engine.resolve_attention_max_kv`, and written back into the frozen
+`ProfileArgs` with `dataclasses.replace`. Everything downstream — both grids
+and the meta the run records — therefore reads one concrete number and never
+`None`; `compose_shots` asserts on `None` rather than silently sweeping at the
+wrong resolution.
+
 ### Canonical layer names (simulator ↔ profiler, unified)
 The simulator consumes the profiler's per-category CSVs directly. Canonical
 layer names match vLLM's own attribute names. `trace_generator` walks the
@@ -753,6 +765,45 @@ unprofiled value falls back to the nearest with a one-shot warning rather than
 interpolating: query length changes the kernel's tile shape, not just its size,
 and unlike the other four axes there is no measurement saying a value between
 two profiled ones lies between their costs.
+
+Being opt-in meant it had **never been run**, and the grid's feasibility
+filters sat outside the `decode_q_len` loop — so every one of them counted a
+decode request as a single token. Right at `q = 1`, wrong above it: a shot at
+`chunk = max_num_batched_tokens` whose `n_dec * q` ran past `max_num_seqs`
+passed the filter and overflowed vLLM's own buffer, three and a half hours into
+a sweep, as `operands could not be broadcast together with shapes (2304,)
+(2432,) (2304,)` — 2304 being `MNBT + MSQ` and 2432 the real token count,
+`2048 + 64*6`. The three token-based bounds (the combined sum, a decode's own
+sequence length, and the KV block budget) are inside the loop now and take `q`.
+At `q = 1` every one is identical to what it was, so committed grids still line
+up shot for shot with a re-profile.
+
+Two shapes of the grid are worth knowing when planning a run:
+
+- **The split.** `q > 1` never yields a pure-prefill shot, and `decode_q_len`
+  is part of the sink's row key, so a `q=1` sweep and a `q=N` sweep are
+  disjoint and their union is exactly the combined grid. One model's attention
+  sweep can therefore run one half per GPU and the CSVs concatenate. Pin
+  `--attention-max-kv` on both halves when doing this: the resolver reads
+  `max(decode_q_lens)`, so the halves would otherwise derive different caps and
+  sweep different kv sets.
+- **The reach.** `--attention-max-kv` defaults to the model's own context,
+  `max_model_len - max(decode_q_len) - 1` — not `max_model_len`, which gets
+  the top point filtered (a decode occupies `kv + q` positions and needs one
+  more to be a decode) and stops the sweep a doubling short. Cost is close to
+  linear in the number of kv values, since the KV-budget filter prunes the
+  large-kv x large-n_decode corner: 8,643 shots at 16,384 against 14,653 at
+  DeepSeek-V3.2's full 163,834.
+
+**Reach matters more on a sparse model than a dense one.** The simulator
+extrapolates linearly past the top profiled kv, which is right for decode
+attention — a pure KV read fitting `a + b*(n_decode*kv_decode)` at R^2=1.0000 —
+and wrong once selection is involved. Measured on DeepSeek-V3.2 at
+`n_decode = 8`, `attention` is 342 us at `kv = 2048` and 350 us at 16,384, flat
+from `index_topk` onward because past that it only reads the selected tokens,
+while `indexer` goes 52 -> 101 us because it scores the whole KV to make the
+selection. The unprofiled region is exactly where a long-context run's cost
+lives.
 
 ### Linear-attention state, prefix caching and the drafter
 Three things a hybrid or speculative run costs that a per-token KV model does

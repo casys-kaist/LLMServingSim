@@ -20,6 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dataclasses
+
 from profiler.core import logger as log
 from profiler.core.categories import (
     CATEGORY_BY_NAME,
@@ -28,7 +30,12 @@ from profiler.core.categories import (
     categories_for,
 )
 from profiler.core.config import Architecture, ProfileArgs, load_architecture
-from profiler.core.engine import probe_limits, spin_down, spin_up
+from profiler.core.engine import (
+    probe_limits,
+    resolve_attention_max_kv,
+    spin_down,
+    spin_up,
+)
 from profiler.core.hooks.batch import Shot
 from profiler.core.hooks.timings import CoverageReport, TimingSample
 from profiler.core.writer import (
@@ -185,6 +192,13 @@ def run_full(
             llm, engine_kwargs, tmpdir = spin_up(args, tp)
             last_engine_kwargs = engine_kwargs
             limits = probe_limits(llm, args)
+            # Unset means the model's own context window, resolved once here so
+            # every downstream reader -- the grids and the meta the run records
+            # -- sees one number.
+            args = dataclasses.replace(
+                args,
+                attention_max_kv=resolve_attention_max_kv(args, limits),
+            )
             limits_by_tp[tp] = limits
 
         # Visibility: what the live engine actually allocated for
@@ -279,6 +293,9 @@ def run_slice(
     with log.stage(f"TP={tp}  booting vLLM engine"):
         llm, engine_kwargs, tmpdir = spin_up(args, tp)
         limits = probe_limits(llm, args)
+        args = dataclasses.replace(
+            args, attention_max_kv=resolve_attention_max_kv(args, limits),
+        )
 
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)

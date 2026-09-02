@@ -363,6 +363,32 @@ def _cap_mtp_modules(config: dict[str, Any], cap: int = 1) -> dict[str, Any]:
     return out
 
 
+def resolve_attention_max_kv(args: ProfileArgs, limits: RuntimeLimits) -> int:
+    """The kv-axis cap for the attention and skew grids.
+
+    Unset means **the model's own context window**, not a constant: a cap that
+    does not follow the checkpoint stops the sweep at 16k on a model that
+    serves 160k, and the simulator then extrapolates the rest. That is fine for
+    a dense kernel, which is linear in kv, and wrong for a sparse one -- past
+    ``index_topk`` the attention kernel is flat while the indexer keeps growing
+    with the whole KV, so the two curves diverge exactly in the region no shot
+    covers.
+
+    The derived cap is ``max_model_len - max(decode_q_len) - 1`` rather than
+    ``max_model_len``: a decode request occupies ``kv + q`` positions and the
+    grid needs one more to be a decode rather than the whole window, so passing
+    the context length verbatim gets the top point filtered out and the sweep
+    silently stops one doubling short.
+
+    An explicit value still wins, and is still clamped to what the engine
+    accepted.
+    """
+    if args.attention_max_kv is not None:
+        return min(args.attention_max_kv, limits.max_model_len)
+    q_max = max((int(q) for q in args.attention_decode_q_lens), default=1)
+    return max(1, limits.max_model_len - max(1, q_max) - 1)
+
+
 def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     """Read back the runtime shapes the engine accepted.
 

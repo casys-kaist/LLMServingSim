@@ -187,10 +187,20 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "boundaries and the points just past them.")
 
     # Attention grid.
-    p.add_argument("--attention-max-kv", type=int, default=16384,
-                   help="Cap for the kv_prefill / kv_decode axes. The "
-                        "grid grows geometrically from 512 up to "
-                        "min(this, max_model_len). Default: 16384.")
+    p.add_argument("--attention-max-kv", type=int, default=None,
+                   help="Cap for the kv_prefill / kv_decode axes. The grid "
+                        "grows geometrically from 512 up to "
+                        "min(this, max_model_len). Default: the model's own "
+                        "context, max_model_len - max(decode_q_len) - 1 -- a "
+                        "decode occupies kv + q positions and needs one more "
+                        "to be a decode at all, so passing max_model_len "
+                        "verbatim gets the top point filtered and the sweep "
+                        "stops a doubling short. Lower it (e.g. 16384) to "
+                        "trade coverage for time; the simulator extrapolates "
+                        "past the top profiled kv, which is safe for a dense "
+                        "kernel and not for a sparse one, whose attention "
+                        "flattens at index_topk while its indexer keeps "
+                        "growing.")
     p.add_argument("--attention-decode-q-lens", type=str, default="1",
                    dest="attention_decode_q_lens",
                    help="Comma-separated query-token counts per decode sequence "

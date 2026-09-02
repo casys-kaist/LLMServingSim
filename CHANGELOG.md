@@ -809,6 +809,45 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   What found it was a bandwidth bound: `lm_head` reads the whole output
   embedding, so `vocab * hidden * bytes / mem_bw` = 583 us is a floor and
   6417 us is impossible.
+- **The attention grid reaches the model's own context by default.**
+  `--attention-max-kv` was a constant 16384 whatever the checkpoint, so a model
+  serving 160k was profiled to a tenth of it and the simulator extrapolated the
+  rest. Unset now derives `max_model_len - max(decode_q_len) - 1` against the
+  live engine -- not `max_model_len`, which gets the top point filtered (a
+  decode occupies `kv + q` positions and needs one more to be a decode) and
+  stops the sweep a doubling short: 131072 where you asked for 163840 on
+  DeepSeek-V3.2. Resolved once after `probe_limits` and written back into the
+  frozen `ProfileArgs`, so both grids and the recorded meta see one concrete
+  number. An explicit value still wins, clamped to what the engine accepted.
+  Cost is close to linear in the number of kv values, since the KV-budget
+  filter prunes the large-kv x large-n_decode corner: 8643 shots at 16384
+  against 14653 at DeepSeek's full 163834.
+  - **Reach matters more on a sparse model.** The simulator extrapolates
+    linearly past the top profiled kv, which is right for decode attention -- a
+    pure KV read fitting `a + b*(n_decode*kv_decode)` at R^2=1.0000 -- and
+    wrong once selection is involved. On DeepSeek-V3.2 at `n_decode=8`,
+    `attention` is 342 us at kv=2048 and 350 us at 16384 (flat from
+    `index_topk` onward, reading only the selected tokens) while `indexer` goes
+    52 -> 101 us, scoring the whole KV to make the selection. The unprofiled
+    region is where a long-context run's cost lives.
+- **Fixed: the attention grid counted a decode request as one token.** Its
+  feasibility filters sat outside the `decode_q_len` loop, so a shot at
+  `chunk = max_num_batched_tokens` whose `n_dec * q` ran past `max_num_seqs`
+  passed the filter and overflowed vLLM's own buffer -- three and a half hours
+  into a sweep, as `operands could not be broadcast together with shapes
+  (2304,) (2432,) (2304,)`, 2304 being MNBT + MSQ and 2432 the real token count
+  (2048 + 64*6). The three token-based bounds now sit inside the loop and take
+  `q`. Verified without a GPU: the q=1 grid is identical shot for shot (8643),
+  so committed bundles stay aligned with a re-profile, and no shot in a q=(1,6)
+  grid exceeds the buffer. The path had never been run --
+  `--attention-decode-q-lens` is opt-in because each value doubles the sweep,
+  and every committed bundle was profiled at the default of 1.
+  - A useful consequence of the same key: `q > 1` never yields a pure-prefill
+    shot and `decode_q_len` is part of the sink's row key, so a `q=1` sweep and
+    a `q=N` sweep are disjoint and their union is exactly the combined grid.
+    One model's attention sweep can run one half per GPU and the CSVs
+    concatenate -- pin `--attention-max-kv` on both halves, or the resolver
+    reads each half's own `max(decode_q_lens)` and they sweep different kv sets.
 - **Group-limited expert routing** (DeepSeek-V3/V3.2's `n_group` /
   `topk_group`, read off the checkpoint the way `deepseek_v2.py` reads them).
   A token's k experts are drawn only from `topk_group` of `n_group` groups, so
