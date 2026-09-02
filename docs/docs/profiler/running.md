@@ -78,6 +78,29 @@ interpolating, because query length changes the kernel's tile shape rather than
 just its size.
 :::
 
+:::tip[One model's sweep can run on two GPUs]
+`q > 1` never yields a pure-prefill shot, and `decode_q_len` is part of the row
+key the CSV is written under. So a `q=1` sweep and a `q=N` sweep are disjoint,
+and together they are exactly the combined grid — 14,653 + 14,083 = 28,736 for
+DeepSeek-V3.2 at its full context. Run one half per GPU and concatenate:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m profiler slice <model> --hardware <hw> \
+    --tp-refresh 1 --group attention --force \
+    --attention-max-kv 163834 --attention-decode-q-lens 1
+
+CUDA_VISIBLE_DEVICES=1 python -m profiler slice <model> --hardware <hw> \
+    --tp-refresh 1 --group attention --force \
+    --attention-max-kv 163834 --attention-decode-q-lens 5 \
+    --out-root /tmp/half_q5
+```
+
+**Pin `--attention-max-kv` on both halves.** Left to derive, the resolver reads
+each run's own `max(decode_q_lens)`, so the `q=1` half would take 163,838 and
+the `q=5` half 163,834 — different kv sets, and the halves stop lining up. Use
+the value a combined run would resolve to: `max_model_len - max(q) - 1`.
+:::
+
 
 The 4D attention sweep covers `(prefill_chunk, kv_prefill, n_decode,
 kv_decode)`. Three knobs control its shape:
@@ -201,7 +224,7 @@ file is an error.
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
-| `--attention-max-kv` | `16384` | `ATTENTION_MAX_KV` |
+| `--attention-max-kv` | the model's own context | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
 | `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
 | `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |
@@ -249,6 +272,46 @@ an RTX PRO 6000, against which a measured 714 µs is 82% efficiency and 6417 µs
 is impossible. Spot-check `lm_head`, `embedding` and one decode-attention row
 this way, and against an existing bundle for the same model on other hardware
 scaled by memory bandwidth.
+:::
+
+### `--attention-max-kv` — how far out the KV axes reach
+
+Unset, this is **the model's own context window**, resolved against the live
+engine as `max_model_len - max(decode_q_len) - 1`. It is not `max_model_len`
+itself: a decode request occupies `kv + q` positions and needs one more to be a
+decode rather than the whole window, so passing the context length verbatim
+gets the top point filtered and the sweep stops one doubling short — on
+DeepSeek-V3.2 that is 131,072 where you asked for 163,840.
+
+Lowering it trades coverage for time. Cost is close to linear in the number of
+kv values, because the KV-budget filter prunes the large-kv × large-n_decode
+corner:
+
+| `--attention-max-kv` | shots (q=1) | with a second `decode_q_len` |
+| --- | --- | --- |
+| 16,384 | 8,643 (≈4 h) | 16,926 (≈8 h) |
+| 131,072 | 13,685 (≈6.3 h) | 26,830 (≈12.4 h) |
+| 163,834 (DeepSeek's full context) | 14,653 (≈6.8 h) | 28,736 (≈13.3 h) |
+
+:::caution[On a sparse model the top of the range is not optional]
+The simulator extrapolates linearly past the highest profiled kv. That is safe
+for a dense kernel, which is linear in kv — decode attention is a pure KV read
+and fits `a + b·(n_decode·kv_decode)` at R²=1.0000. It is **not** safe for a
+sparse one, where two kernels diverge. Measured on DeepSeek-V3.2 at
+`n_decode = 8`:
+
+| `kv_decode` | `attention` (MLA) | `indexer` |
+| --- | --- | --- |
+| 1,024 | 838 µs | 27 µs |
+| 2,048 | 342 µs | 52 µs |
+| 8,192 | 350 µs | 72 µs |
+| 16,384 | 350 µs | 101 µs |
+
+`attention` flattens at `index_topk: 2048` — past that it only reads the
+selected tokens. `indexer` keeps growing, because it scores the whole KV to
+make the selection. Extrapolating a flat curve is harmless; extrapolating the
+indexer ten-fold past its last measured point is the term that decides a
+long-context run.
 :::
 
 ### `--profile-mtp` — profiling the drafter
