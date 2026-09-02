@@ -185,6 +185,37 @@ opposite directions between vendors. Profiling a hybrid needs
 block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one;
 the profiler resolves that itself.
 
+**How finely to divide is mostly not a choice.** An entry exists iff the
+profile tree holds a node carrying CUDA time that no other entry claims, and
+the tree holds a node per module that launches a kernel **of its own** — so
+vLLM's implementation sets the count, and the same operation needs seven
+entries in one family and one in another. DeepSeek-V3.2's `Indexer` is an
+`nn.Module` container (`self.wq_b = ReplicatedLinear`,
+`self.wk_weights_proj = MergedColumnParallelLinear`, `self.k_norm = LayerNorm`,
+plus `view`/`cat` in its `forward`), so it decomposes into 7; MiniMax-M3's
+`MiniMaxM3IndexerTritonImpl` is a `forward` and nothing else, with its index
+projections folded into `MinimaxM3QKVParallelLinearWithIndexer`, so it is 1.
+That is also why `*_glue` exists only where the forward does eager tensor work
+between module calls — Llama, Mixtral and Qwen3 blocks are pure module chains.
+
+What *is* a choice is which level to bind, since a parent node's time already
+covers its subtree. Entries may merge only when all three hold: **one scaling
+axis** (categories cannot mix — `Indexer` cannot be one node because its
+projections scale with tokens and its scoring with kv, and binding the parent
+forces the 8,643-shot attention grid on work that `dense` covers in 152);
+**nothing pinned** (`o_proj`/`down_proj` carry the TP all-reduce after them,
+`attention`/`sparse_attention` have PIM swapped in front); **no `tp_stable`
+mixing** (that flag buys one sweep at TP=1 plus replication). `moe` is the rule
+in the other direction: one entry for the whole block, because everything in it
+scales with tokens.
+
+**Finer than the rule requires is allowed and usually right.** DeepSeek's 7
+indexer entries could be 3. They are not merged because a per-entry number can
+be checked against physics and a composite cannot — `lm_head` was caught at 9x
+against `vocab * hidden * bytes / mem_bw`. Coarsen when trace width actually
+costs, and coarsen the **trace** rather than the catalog: measurement fidelity
+and graph size need not share a granularity.
+
 **Write a catalog from a live profile dump, not from vLLM's source.** The
 module tree and the profile tree differ both ways: `rotary_emb`, `q_norm`,
 `k_norm` and `RMSNormGated` are real modules that never become profile nodes
@@ -1253,8 +1284,17 @@ whether a change can affect the simulator, the paths to check are
 4. For a catalog change (new or edited `profiler/models/*.yaml`), and after a
    vLLM upgrade: `python -m profiler coverage <model> --hardware <hw>` inside
    the vLLM container. It boots once, runs one forward per batch regime, and
-   exits non-zero while any kernel is unbound. This is the only check that
-   catches a catalog entry that names a real class and measures **nothing** —
+   exits non-zero on either defect it can find. A **gap** is CUDA time no
+   entry claims. An **over-match** is one entry claiming nodes in
+   structurally unrelated places, so its number is the sum of two roles —
+   which the coverage percentage cannot show, because over-matching leaves
+   nothing unbound. It fires only when the matched nodes' ancestor chains
+   share no common prefix, so an entry legitimately binding several kernels
+   under one parent (M3's `sparse_attention`, any `*`-prefixed glue) is not
+   flagged. Qwen3.5's `mtp_norms` read **1287 us for two RMSNorms** and its
+   `embedding` read **2.1x** while passing coverage at 100%. This is also the
+   only check that catches an entry that names a real class and measures
+   **nothing** —
    the profile tree holds only modules that launch a kernel of their own, and
    the module tree cannot tell you which those are. Every one of the four
    modern families had at least one such entry.

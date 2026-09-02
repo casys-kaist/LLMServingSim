@@ -393,8 +393,25 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
             log.warning(
                 "  unbound %8.1f us  %s   under: %s", us, cls[:64], ancestors,
             )
+        for canonical, chains in report.over_matches:
+            log.warning(
+                "  OVER-MATCH %s claims nodes in %d unrelated places: %s",
+                canonical, len(chains), " | ".join(chains),
+            )
 
     missed = {l: r for l, r in reports.items() if r.gaps}
+    over = {l: r for l, r in reports.items() if r.over_matches}
+    if over:
+        log.warning(
+            "One entry is measuring more than one thing in %s. Its number is "
+            "the sum of two roles, and the coverage percentage above cannot "
+            "show it -- over-matching leaves nothing unbound. Pin the entry "
+            "with 'within' (or exclude the other role with 'not_within') and "
+            "give the second role an entry of its own. Qwen3.5's 'mtp_norms' "
+            "read 1287 us for two RMSNorms this way, and its 'embedding' "
+            "summed the target's table with the drafter's own.",
+            ", ".join(over),
+        )
     if missed:
         log.warning(
             "Catalog does not account for every kernel in %s. Each line above "

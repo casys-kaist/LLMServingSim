@@ -255,6 +255,63 @@ linear-attention block runs several non-interchangeable kernels on the same
 axes. `attention` may also hold more than one entry now — a sparse-attention
 model runs an indexer kernel alongside the attention kernel on the same axes.
 
+### How finely to divide: the granularity rule
+
+The entry *set* is not a style choice. A `catalog` entry exists iff the profile
+tree holds a node that carries CUDA time and no other entry claims it — and the
+tree holds a node per module that launches a kernel **of its own**. So vLLM's
+implementation decides how many entries a block needs, and the same operation
+can need seven in one family and one in another.
+
+DeepSeek-V3.2's and MiniMax-M3's indexers are the clearest case. Both select a
+sparse subset of the KV; the catalogs differ because the code does:
+
+| | DeepSeek-V3.2 / GLM-5 | MiniMax-M3 |
+| --- | --- | --- |
+| the class | `Indexer(nn.Module)`, a **container** | `MiniMaxM3IndexerTritonImpl`, a `forward` and nothing else |
+| index projections | `self.wq_b = ReplicatedLinear(...)`, `self.wk_weights_proj = MergedColumnParallelLinear(...)` | folded into `MinimaxM3QKVParallelLinearWithIndexer` — one GEMM emitting `[q \| k \| v \| index_q \| index_k]` |
+| index key norm | `self.k_norm = LayerNorm(...)` | inside the fused q-norm/rope/KV-insert kernel |
+| eager tensor work | `view` / `reshape` / `cat` in `forward`, outside any module | absorbed |
+| top-k scoring | `SparseAttnIndexer` | `minimax_m3_index_decode` and friends |
+| **entries needed** | **7** | **1**, plus what the qkv projection absorbed |
+
+Every `self.X = <a vLLM layer>` becomes its own profile node, so DeepSeek's
+indexer decomposes; M3 wrote one Triton implementation, so it does not. This is
+also why `*_glue` exists only in the families that do eager tensor work between
+module calls: Llama, Mixtral and Qwen3 blocks are pure module chains and have
+no leftover.
+
+**What *is* a choice** is which level to bind, because a parent node's
+`cuda_time_us` already covers its subtree. Merging entries is allowed when all
+three hold:
+
+1. **One scaling axis.** A trace node gets one latency from one lookup on one
+   grid. `dense` is 1-D in tokens, `attention` is 4-D, `per_sequence` is 1-D in
+   sequences, `linear_attention` is regime-aware — so entries can only merge
+   *within* a category. DeepSeek's `Indexer` cannot become one node because its
+   projections scale with tokens while its scoring scales with kv length;
+   binding the parent would force the whole thing onto the attention grid,
+   which is 8,643 shots against `dense`'s 152.
+2. **Nothing pinned gets merged.** `o_proj` and `down_proj` have the TP
+   all-reduce attached *after* them; `attention` and `sparse_attention` have
+   PIM offload swapped in *front* of them.
+3. **No `tp_stable` mixing.** That flag is per entry and buys profiling once at
+   TP=1 and replicating; merging a replicated norm into a sharded projection
+   costs a sweep at every TP.
+
+`moe` is the rule working in the other direction: one entry binds the whole
+`DeepseekV2MoE` block — gate, routed experts and shared expert — because
+everything in it scales with tokens, so a 4-shot grid covers it.
+
+**Finer than the rule requires is allowed, and is often right.** DeepSeek's
+seven indexer entries could be three under the rule above. They are not merged
+because a per-entry number can be checked against physics and a merged one
+cannot: `lm_head` was found to be 9x too large by comparing it against
+`vocab * hidden * bytes / mem_bw`, and no composite node admits that check.
+Coarsen when trace width actually costs — and prefer coarsening the *trace*
+over the catalog, since measurement fidelity and graph size do not have to
+share a granularity.
+
 ### `catalog` entry fields
 
 | Field | Required | Meaning |
@@ -541,6 +598,31 @@ decode     4239.7 us total,   4239.7 us bound (100.0%), 0 unbound node(s)
 mixed      4712.3 us total,   4712.3 us bound (100.0%), 0 unbound node(s)
 Catalog binds every measured kernel, in all 3 regimes.
 ```
+
+It reports **two** kinds of defect, and the second is the one 100% coverage
+hides:
+
+- **A gap** — CUDA time no entry claims. The simulator will never see it.
+- **An over-match** — one entry claiming nodes in structurally unrelated places,
+  so its number is the sum of two roles. Coverage's percentage cannot show
+  this, because over-matching leaves nothing unbound:
+
+```
+  OVER-MATCH embedding claims nodes in 2 unrelated places: (top level) | Qwen3_5ForCausalLM
+```
+
+Either exits non-zero. An entry matching several nodes is fine when they sit
+under one parent — MiniMax-M3's `sparse_attention` is three Triton kernels, a
+`*`-prefixed glue entry is many `at::native` functors — and the check allows
+exactly that: it fires only when the matched nodes' ancestor chains share no
+common prefix. Fix it by pinning the entry with `within`, or excluding the
+other role with `not_within`, and giving that role an entry of its own.
+
+This is not hypothetical. Qwen3.5's `mtp_norms` had no guard, measured the
+target's norms alongside the drafter's, and read **1287 µs for two RMSNorms**;
+its `embedding` summed the target's table with the drafter's own and read
+**2.1x**. Both passed coverage at 100%, and both curves stayed smooth and
+monotone.
 
 Anything short of that prints the unbound nodes largest-first, with the
 ancestor chain to bind them by:

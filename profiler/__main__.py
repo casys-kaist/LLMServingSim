@@ -585,7 +585,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif ns.cmd == "coverage":
         reports = run_coverage(arch_path, profile_args)
-        if any(r.gaps for r in reports.values()):
+        # Both are catalog defects: a gap is CUDA time the simulator will never
+        # see, an over-match is a number that is the sum of two roles.
+        if any(r.gaps or r.over_matches for r in reports.values()):
             return 1
     else:  # pragma: no cover
         parser.error(f"unknown command: {ns.cmd!r}")

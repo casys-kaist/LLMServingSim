@@ -885,7 +885,10 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # - MoE experts: parallel = EP degree, each rank holds num_local_experts // p experts.
 
     # ----------------- Embedding & Norms -----------------
-    if layer_name == "embedding":
+    if layer_name in ("embedding", "mtp_embed"):
+        # ``mtp_embed`` is the drafter's own embed_tokens -- the same shape as
+        # the target's, and a separate table: vLLM's MTP wrappers build one
+        # rather than sharing.
         input_size = length * fp * 2  # token_ids are int32 or int64
         weight_size = (vocab_size // p) * n_embd * fp
         output_size = length * n_embd * fp
