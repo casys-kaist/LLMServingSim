@@ -427,10 +427,19 @@ class Scheduler:
         decode_k_list = []
         decode_q_lens = []
         scheduled_tokens = {}
+        spec_scheduled = {}
         pd_kv_send_tokens = 0
 
         for req, num_new, computed_before in scheduled:
             scheduled_tokens[req.id] = num_new
+            # Snapshot the draft count for the same reason as the token count:
+            # ``req.num_spec_scheduled`` is what *this* step scheduled, and at
+            # pp_size > 1 the next ``schedule()`` runs while this batch is in
+            # flight and rewrites it -- to 0, since the request is no longer
+            # caught up. ``add_done`` would then find no draft to roll back,
+            # leave num_computed_tokens N-1 past num_tokens_reached, and the
+            # request could never be scheduled again.
+            spec_scheduled[req.id] = req.num_spec_scheduled
             total_len += num_new
             q_list.append(num_new)
             k_list.append(computed_before)
@@ -482,6 +491,7 @@ class Scheduler:
         batch.fired.append(sys)
         batch.requests.extend(req for req, _, _ in scheduled)
         batch.scheduled_tokens = scheduled_tokens
+        batch.spec_scheduled = spec_scheduled
         # Written down to a victim tier off the critical path, so it carries no
         # latency -- but the bytes still cost DRAM energy.
         batch.write_through = write_through_bytes
@@ -588,7 +598,7 @@ class Scheduler:
                 # tokens; a block holding a rejected token must never be hashed,
                 # or a later request could hit on text the model never emitted.
                 accepted = 0
-                n_draft = req.num_spec_scheduled
+                n_draft = batch.spec_scheduled.get(req.id, 0)
                 if n_draft:
                     accepted = self.spec.draw(n_draft)
                     req.num_computed_tokens -= (n_draft - accepted)

@@ -175,8 +175,12 @@ class Batch:
         # "derive the default path".
         self.workload_name = None
 
-        # for debugging
+        # Per-batch snapshots ``add_done`` works from. They cannot live on the
+        # Request: at ``pp_size > 1`` a request is re-examined by a later
+        # ``schedule()`` while this batch is still in flight, and that call
+        # rewrites the request's own fields for the step it is building.
         self.scheduled_tokens = None
+        self.spec_scheduled = {}
     def log(self):
         print("-------------------------Batch Log------------------------")
         for key in self.__dict__.keys():
