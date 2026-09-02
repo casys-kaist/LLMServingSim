@@ -32,6 +32,7 @@ from profiler.core.config import (
 )
 from profiler.core.engine import RuntimeLimits
 from profiler.core.hooks.batch import Shot
+from profiler.core.stack import ALL_AXES, ATTENTION_AXES
 from profiler.core.hooks.timings import TimingSample
 
 
@@ -156,6 +157,27 @@ class Category(ABC):
     name: ClassVar[str]
     sink_filename: ClassVar[str]
     label: ClassVar[str]
+
+    #: Which axes of the layer stack this category's measurements depend on.
+    #: The engine is shrunk to the smallest prefix instantiating every value of
+    #: these, and a category should not pay for an axis it does not measure:
+    #: the profile tree merges same-class siblings, so a second layer of a type
+    #: already present adds no information, only its whole op count on every
+    #: shot -- 372 ms of profiling overhead per forward at 4 layers of
+    #: DeepSeek-V3.2 against 94 ms at one. The default is every axis, and it is
+    #: the safe answer for anything new.
+    #:
+    #: Axes are a **conservative proxy** for what a category needs, which is
+    #: really "every block its entries live in". They agree where it matters
+    #: and the proxy over-shrinks nowhere, so no data is ever lost -- but it
+    #: does under-shrink: DeepSeek-V3.2's ``dense`` entries sit only in
+    #: ``attn.full_attention`` and ``mlp.dense`` (``moe`` is its own category),
+    #: so layer 0 alone would do, while the all-axes answer is 4 because the
+    #: MLP axis turns to MoE at layer 3. That slack is deliberate: ``attention``
+    #: is 8,643 shots against ``dense``'s 152, so the axis rule already
+    #: captures every minute that matters, and an entry-to-block resolver would
+    #: have to cross-reference ``blocks`` with ``catalog`` to save three.
+    stack_axes: ClassVar[tuple[str, ...]] = ALL_AXES
 
     @abstractmethod
     def compose_shots(
@@ -409,6 +431,10 @@ class AttentionCategory(Category):
     """
 
     name = "attention"
+    # Only the attention axes: which MLP a layer runs cannot change
+    # an attention kernel's cost, so a stack shrunk for the MLP axis
+    # is measuring the same kernel several times over.
+    stack_axes = ATTENTION_AXES
     sink_filename = "attention.csv"
     label = "attention"
 
@@ -679,6 +705,10 @@ class LinearAttentionCategory(Category):
     """
 
     name = "linear_attention"
+    # Only the attention axes: which MLP a layer runs cannot change
+    # an attention kernel's cost, so a stack shrunk for the MLP axis
+    # is measuring the same kernel several times over.
+    stack_axes = ATTENTION_AXES
     sink_filename = "linear_attention.csv"
     label = "linear_attention"
 

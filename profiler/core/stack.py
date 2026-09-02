@@ -251,28 +251,59 @@ def is_uniform(cfg: dict[str, Any]) -> bool:
     return len(set(stack)) <= 1
 
 
-def minimal_layer_count(cfg: dict[str, Any]) -> int:
-    """Smallest layer count that instantiates every distinct block type.
+#: The axes of a :class:`LayerSpec`, and the subsets a category can depend on.
+#: ``attn`` and ``sparse`` travel together: a sparse-attention layer runs a
+#: different kernel from a non-sparse one of the same attention type.
+ATTENTION_AXES = ("attn", "sparse")
+MLP_AXES = ("mlp",)
+ALL_AXES = ATTENTION_AXES + MLP_AXES
+
+
+def minimal_layer_count_for(
+    cfg: dict[str, Any], axes: tuple[str, ...] = ALL_AXES
+) -> int:
+    """Smallest layer count that instantiates every value of ``axes``.
 
     The smallest **prefix**, not the smallest subset: the profiler shrinks by
-    setting ``num_hidden_layers``, which keeps layers ``0..N-1``, so a block
-    type that first appears at layer 40 forces N to 41 whether we like it or
-    not. Qwen3.8-27B's ``layer_types`` runs gated-DeltaNet three times before
-    the first full-attention layer, so N is 4.
+    setting ``num_hidden_layers``, which keeps layers ``0..N-1``, so a value
+    that first appears at layer 40 forces N to 41 whether we like it or not.
 
-    Returns 1 for a uniform stack — unchanged from the previous behaviour —
-    and never more than the model's own layer count.
+    ``axes`` is what makes this per **category**. Every layer costs the
+    profiler its whole op count on every shot -- measured at 372 ms of
+    profiling overhead per forward on a 4-layer DeepSeek-V3.2 against 94 ms at
+    one layer -- so a category should not pay for an axis it does not measure.
+    DeepSeek-V3.2 and GLM-5 need 4 layers only because their MLP turns from
+    dense to MoE at ``first_k_dense_replace``; every one of their layers has
+    the same attention, so the attention sweep needs **1**. Qwen3.8-27B is the
+    mirror image: 4 for attention (gated DeltaNet three times before the first
+    full-attention layer) and 1 for the MLP.
+
+    Returns 1 for a stack that is uniform on the requested axes, and never
+    more than the model's own layer count.
     """
     stack = resolve_stack(cfg)
     if not stack:
         return 1
-    wanted = set(stack)
-    seen: set[LayerSpec] = set()
+
+    def key(spec: "LayerSpec") -> tuple:
+        return tuple(getattr(spec, a) for a in axes)
+
+    wanted = {key(spec) for spec in stack}
+    seen: set[tuple] = set()
     for i, spec in enumerate(stack):
-        seen.add(spec)
+        seen.add(key(spec))
         if seen == wanted:
             return i + 1
     return len(stack)
+
+
+def minimal_layer_count(cfg: dict[str, Any]) -> int:
+    """Smallest layer count that instantiates every distinct block type.
+
+    The all-axes case of :func:`minimal_layer_count_for`, which is what a
+    category measuring both axes (``dense``) needs, and the safe default.
+    """
+    return minimal_layer_count_for(cfg, ALL_AXES)
 
 
 def describe(cfg: dict[str, Any]) -> str:
