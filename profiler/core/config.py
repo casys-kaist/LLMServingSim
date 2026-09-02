@@ -710,8 +710,13 @@ class ProfileArgs:
         dtype / kv_cache_dtype / max_num_batched_tokens / max_num_seqs:
             Common vLLM engine kwargs. None means "use defaults"
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
-        attention_max_kv: Cap for attention grid's KV axes. Doubles
-            from 512 up to min(this, max_model_len).
+        attention_max_kv: Cap for the attention and skew grids' KV axes.
+            Doubles from 512 up to min(this, max_model_len). ``None`` means
+            the model's own context, and ``runner`` resolves it against the
+            live engine's ``max_model_len`` (see
+            ``engine.resolve_attention_max_kv``) before any grid is composed --
+            so every reader downstream, including the meta the run records,
+            sees one concrete number and never ``None``.
         profile_mtp: When set, boot with ``speculative_config`` so the drafter
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
@@ -799,7 +804,7 @@ class ProfileArgs:
     profiling is one file-edit away."""
 
     # Attention grid
-    attention_max_kv: int = 16384
+    attention_max_kv: int | None = None
     attention_decode_q_lens: tuple[int, ...] = (1,)
     """Query tokens per decode sequence to sweep on the attention axis.
 

@@ -88,6 +88,16 @@ The five that decide how long a run takes, in rough order of effect:
    `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter bind there.
 2. `--attention-chunk-factor` / `--attention-kv-factor` (2.0) — coarsen the
    two biggest axes geometrically.
+2b. `--attention-max-kv` — defaults to the model's own context
+   (`max_model_len - max(decode_q_len) - 1`, not `max_model_len` itself: a
+   decode occupies `kv + q` positions and needs one more to be a decode, so
+   the context length verbatim gets the top point filtered). Capping it at
+   16384 nearly halves the sweep. Do that only for a **dense** model: the
+   simulator extrapolates past the top profiled kv, and decode attention is a
+   pure KV read that is linear in it. On a sparse model the two kernels
+   diverge there -- DeepSeek-V3.2's `attention` is flat from `index_topk`
+   (2048) onward while its `indexer` keeps growing with the whole KV, so the
+   unprofiled region is exactly where the cost lives.
 3. `--attention-decode-q-lens` (`1`) — each extra value **doubles** the
    attention sweep. Only needed for speculative decoding.
 4. `--skip-skew` — drops the whole second sweep.
@@ -152,7 +162,7 @@ MAX_NUM_SEQS=256                    # vLLM's --max-num-seqs. Profile with MSQ > 
 #### Attention grid
 
 ```bash
-ATTENTION_MAX_KV=16384              # upper bound for kv_prefill / kv_decode axes
+ATTENTION_MAX_KV=""                 # kv_prefill / kv_decode bound; empty = the model's own context
 ATTENTION_CHUNK_FACTOR=2.0          # geometric factor for prefill_chunk axis (doubling)
 ATTENTION_KV_FACTOR=2.0             # geometric factor for kv axes (doubling)
 ```
@@ -483,7 +493,7 @@ log-4x doubling scheme adapted to the observed max; `skew_rate` is a
 normalised [0, 1] metric with fixed bin edges; `pc` is used raw (not
 bucketed) so every profiled grid point becomes its own alpha column.
 This means widening the sweep (raising `MAX_NUM_SEQS` above 128 or
-`ATTENTION_MAX_KV` above 16k) lights up proper resolution on the
+`ATTENTION_MAX_KV`, whose default is now the model's own context) lights up proper resolution on the
 affected axis without any code change — the fitter writes the axes it
 used into `meta.yaml::skew_fit.bucket_axes` and the simulator reads
 them from there.

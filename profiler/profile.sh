@@ -96,9 +96,14 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # PROFILE_MTP=1
 
 # --- Attention grid ---------------------------------------------------------
-# Upper bound for kv_prefill / kv_decode axes. The grid grows
-# geometrically from 512 up to min(this, max_model_len).
-ATTENTION_MAX_KV=16384
+# Upper bound for kv_prefill / kv_decode axes. The grid grows geometrically
+# from 512 up to min(this, max_model_len). Leave it EMPTY to cover the model's
+# own context, which is the default and what a long-context run needs -- the
+# simulator extrapolates past the top profiled kv, and on a sparse model the
+# indexer keeps growing there while the attention kernel has already flattened
+# at index_topk. Setting it (16384 is the old default) roughly halves the
+# sweep: 8,643 shots against 14,653 at DeepSeek-V3.2's full 163,834.
+ATTENTION_MAX_KV=
 # Geometric factor for the prefill_chunk axis (grows from 16 up to
 # MAX_NUM_BATCHED_TOKENS). 2.0 is doubling; lower for denser sampling
 # on the quadratic-cost regime at the cost of longer profile time.

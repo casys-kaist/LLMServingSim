@@ -428,6 +428,13 @@ class AttentionCategory(Category):
         n_dec_vals = _geometric_grid(
             limits.max_num_seqs, _ATTN_N_DECODE_START,
         )
+        # ``runner`` resolves this against the live engine before any grid
+        # is composed, so None here means a caller bypassed that -- and a
+        # silently wrong cap is a whole sweep at the wrong resolution.
+        assert args.attention_max_kv is not None, (
+            "attention_max_kv is unresolved; call "
+            "engine.resolve_attention_max_kv(args, limits) after probe_limits"
+        )
         kv_cap = min(args.attention_max_kv, limits.max_model_len)
         kv_vals = _geometric_grid(
             kv_cap, _ATTN_KV_START, factor=args.attention_kv_factor,
