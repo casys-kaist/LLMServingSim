@@ -476,11 +476,6 @@ class AttentionCategory(Category):
                         # the boundary (observed during skew sweeps),
                         # so we stay strictly below.
                         #
-                        # 1. Combined sum bound (advisory).
-                        if chunk + n_dec > (
-                            limits.max_num_batched_tokens + limits.max_num_seqs
-                        ):
-                            continue
                         # 2. Request count vs max_num_seqs. vLLM V1
                         # pre-allocates input_batch for MSQ sequences;
                         # MSQ itself fits, MSQ+1 overflows the buffer.
@@ -491,12 +486,6 @@ class AttentionCategory(Category):
                         # (hardware position-embedding index).
                         if chunk > 0 and chunk + kv_p + 1 > limits.max_model_len:
                             continue
-                        if n_dec > 0 and 1 + kv_d + 1 > limits.max_model_len:
-                            continue
-                        # 4. KV cache block budget. Each request
-                        # rounds up to a whole block, so block-aligned
-                        # totals can be up to ~2× the raw KV tokens
-                        # for tiny requests. Compute exactly.
                         bs = limits.block_size
 
                         def _aligned(total_len: int, bs: int = bs) -> int:
@@ -504,17 +493,43 @@ class AttentionCategory(Category):
                         prefill_block_toks = (
                             _aligned(chunk + kv_p) if chunk > 0 else 0
                         )
-                        decode_block_toks = (
-                            n_dec * _aligned(1 + kv_d) if n_dec > 0 else 0
-                        )
-                        if (prefill_block_toks + decode_block_toks
-                                > limits.num_cache_tokens):
-                            continue
                         for q in q_vals:
                             # q > 1 only makes sense where there are decodes
                             # to widen; with none it would duplicate the
                             # pure-prefill row.
                             if q > 1 and n_dec == 0:
+                                continue
+                            # The remaining bounds are per **token**, and a
+                            # decode request submits ``q`` of them rather than
+                            # one -- so they have to sit inside this loop.
+                            # They used to sit outside it, which counted every
+                            # decode as a single token: a shot at chunk=MNBT
+                            # whose n_dec*q ran past MSQ then passed the filter
+                            # and overflowed vLLM's own buffer, surfacing hours
+                            # into a sweep as ``operands could not be broadcast
+                            # together with shapes (2304,) (2432,) (2304,)`` --
+                            # 2304 being MNBT + MSQ and 2432 the real token
+                            # count. At q=1 every bound below is identical to
+                            # what it was, so existing grids are unchanged.
+                            #
+                            # 1. Combined sum bound (advisory).
+                            if chunk + n_dec * q > (
+                                limits.max_num_batched_tokens
+                                + limits.max_num_seqs
+                            ):
+                                continue
+                            # 3b. A decode request's own sequence length.
+                            if n_dec > 0 and q + kv_d + 1 > limits.max_model_len:
+                                continue
+                            # 4. KV cache block budget. Each request rounds up
+                            # to a whole block, so block-aligned totals can be
+                            # up to ~2x the raw KV tokens for tiny requests.
+                            # Compute exactly.
+                            decode_block_toks = (
+                                n_dec * _aligned(q + kv_d) if n_dec > 0 else 0
+                            )
+                            if (prefill_block_toks + decode_block_toks
+                                    > limits.num_cache_tokens):
                                 continue
                             yield Shot.attention(
                                 prefill_chunk=chunk,
