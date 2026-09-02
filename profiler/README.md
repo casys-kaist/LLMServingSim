@@ -174,6 +174,49 @@ ATTENTION_KV_FACTOR=2.0             # geometric factor for kv axes (doubling)
 
 Smaller factors densify that axis; larger factors coarsen it.
 
+#### Engine limits and model shape
+
+The defaults suit a dense model that fits one card. The modern families need
+some of these -- MiniMax-M3 fails outright at the platform's default block size
+and asks for 10.5 GiB of KV before the drafter is built:
+
+```bash
+BLOCK_SIZE=16                       # vLLM's --block-size. A model whose attention works
+                                    # in wider units raises it or refuses to boot:
+                                    # MiniMax-M3 needs 128 ("No common block size for 16").
+                                    # A hybrid derives its own from the mamba page and
+                                    # ignores this -- see "Block size is derived" below.
+GPU_MEMORY_UTILIZATION=0.9          # vLLM's --gpu-memory-utilization. Lower it when the
+                                    # engine cannot fit both the model and its KV cache
+                                    # (MiniMax-M3: 0.75).
+MAX_MODEL_LEN=                      # vLLM's --max-model-len; empty = the checkpoint's own.
+                                    # Lower it when the declared context reserves more KV
+                                    # than the card has (MiniMax-M3 declares 1,048,576).
+NUM_HIDDEN_LAYERS=                  # empty = resolved from the checkpoint: the smallest
+                                    # prefix that instantiates every block type (4 on a
+                                    # hybrid, 1 on a uniform stack). Set it only to
+                                    # override that.
+HF_OVERRIDES=()                     # array of KEY=VALUE, applied on top of the config on
+                                    # disk: HF_OVERRIDES=(index_topk=1024).
+LINEAR_ATTN_CHUNK=                  # gated-DeltaNet chunk length; empty = the config's
+                                    # chunk_size, else vLLM's FLA_CHUNK_SIZE.
+PROFILE_MTP=                        # any non-empty value profiles the drafter. A flag, not
+                                    # a count: the engine boots at num_speculative_tokens=1
+                                    # so mtp.csv holds ONE pass, which is the unit the
+                                    # simulator multiplies by its own N.
+```
+
+#### Where output lands
+
+```bash
+OUT_ROOT=                           # empty = profiler/perf. Point it elsewhere to build a
+                                    # bundle without touching the committed tree -- which is
+                                    # how one model's attention sweep is split across two
+                                    # GPUs and the halves concatenated.
+MODEL_CONFIG_ROOT=                  # empty = configs/model. A different tree of HF configs,
+                                    # for profiling hypothetical shapes.
+```
+
 #### Measurement averaging
 
 ```bash
