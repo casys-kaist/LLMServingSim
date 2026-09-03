@@ -35,6 +35,7 @@ from profiler.core.config import (
     SHARD_FIELDS,
     ProfileArgs,
     probe_linear_attn_chunk,
+    probe_key_saturation,
     probe_moe_params,
 )
 from profiler.core.stack import describe as describe_stack
@@ -76,6 +77,13 @@ class RuntimeLimits:
         moe_ep: the EP degree this engine stands in for, i.e. the label the
             MoE rows are written under. 1 means the whole model on one rank,
             which is what every bundle held before the axis existed.
+        key_saturation: how many key tokens a query can attend to, when the
+            checkpoint bounds it (``index_topk``, or M3's selected-block
+            count times its block size); None on a dense model, whose queries
+            read their whole causal window. The attention grid stops its key
+            axis there, because past it every shot measures the same thing --
+            DeepSeek-V3.2's current grid spends 15 kv points out to 163,830
+            and leaves only 9 below the bound, where all the variation is.
     """
 
     max_num_batched_tokens: int
@@ -87,6 +95,7 @@ class RuntimeLimits:
     num_experts: int | None = None
     top_k: int | None = None
     moe_ep: int = 1
+    key_saturation: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +519,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     )
     moe_params = probe_moe_params(cfg_dict)
     num_experts, top_k = moe_params or (None, None)
+    key_saturation = probe_key_saturation(cfg_dict)
 
     # CLI wins over the resolved value, so a user can widen or coarsen the
     # prefill grid without editing a model config.
@@ -530,6 +540,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
         max_model_len=cfg.model_config.max_model_len,
         num_experts=num_experts,
         top_k=top_k,
+        key_saturation=key_saturation,
     )
 
 
