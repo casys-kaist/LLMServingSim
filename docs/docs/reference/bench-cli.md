@@ -59,6 +59,9 @@ comparison is not apples-to-apples.
 | `--dtype` | string | `bfloat16` | Model dtype |
 | `--kv-cache-dtype` | string | `auto` | vLLM `kv_cache_dtype` |
 | `--seed` | int | `42` | Sampling seed |
+| `--load-format` | string | `auto` | vLLM `load_format`. `dummy` skips reading weights and initialises them randomly, which is valid ground truth for a **performance** comparison and needs no checkpoint on disk: the replay feeds token ids (`TokensPrompt`) and pins the output length (`min_tokens == max_tokens`, `ignore_eos`), so nothing recorded reads a generated token. Shapes, memory footprint, kernel selection, block counts and scheduling are unchanged; only the token *values* are garbage. Recorded in `meta.json`, so a dummy run can never be mistaken for a real-weights one |
+| `--skip-tokenizer-init` | flag | off | Boot without loading a tokenizer. The replay never needs one, so what this buys is benching a checkpoint whose tokenizer is not on disk: point `--model` at the repo's own `configs/model/<org>/<name>.json` **directory** — the way the profiler boots one — and a gated model, or a synthetic shrunk config with no tokenizer at all, runs with no Hub access. Not a speed knob: forcing detokenisation off separately measured 0.18% of run span, i.e. noise |
+| `--resolve-only` | flag | off | Boot the engine, write `meta.json`, and exit without replaying. What that buys is the one number a latency comparison depends on before any of it means anything: `kv_cache.num_gpu_blocks`, which vLLM only settles at boot after subtracting the activation peak and CUDA context. Cheap with `--load-format dummy`, so a config can be checked against the simulator's block count in a minute. `requests.jsonl` and `timeseries.csv` are not written — there is no run to record |
 
 :::note[Defaults differ from `python -m serving`]
 `bench run` defaults `--dtype` to `bfloat16` outright, where the
