@@ -152,16 +152,17 @@ def _load_bench_timeseries(path: Path) -> list[dict]:
 def _bench_latencies(reqs: list[dict]) -> tuple[list[float], list[float], list[float]]:
     """Compute TTFT / TPOT / e2e in milliseconds from RequestStateStats.
 
-    vLLM currently records a mixed clock domain in ``requests.jsonl``:
+    vLLM records a mixed clock domain in ``requests.jsonl``:
     ``arrival_time`` is wall-clock epoch seconds, while
     ``queued_ts``/``scheduled_ts``/``first_token_ts``/``last_token_ts``
-    are monotonic engine timestamps. When that happens, use
-    ``queued_ts`` as the arrival anchor because it shares the same time
-    base as the rest of the per-request lifecycle.
+    are monotonic engine timestamps. Convert ``arrival_time`` into that
+    domain and anchor there -- **not** on ``queued_ts``, which is stamped a
+    whole in-flight step later. See ``_bench_arrival_ts``.
     """
+    offset = bench_epoch_to_monotonic_offset(reqs)
     ttft, tpot, lat = [], [], []
     for r in reqs:
-        arr, _ = _bench_arrival_ts(r)
+        arr, _ = _bench_arrival_ts(r, offset)
         first = r.get("first_token_ts")
         last = r.get("last_token_ts")
         if arr is None or first is None or last is None:
@@ -174,12 +175,50 @@ def _bench_latencies(reqs: list[dict]) -> tuple[list[float], list[float], list[f
     return ttft, tpot, lat
 
 
-def _bench_arrival_ts(req: dict) -> tuple[float | None, bool]:
+def bench_epoch_to_monotonic_offset(reqs: list[dict]) -> float | None:
+    """Estimate the epoch -> monotonic offset from a run's own requests.
+
+    ``queued_ts = arrival_time + offset + pickup``, where ``pickup >= 0`` is
+    the wait until the engine core next polls its input queue, so the minimum
+    of ``queued_ts - arrival_time`` over the run bounds the offset from above
+    by ``min(pickup)``. With a few hundred requests some arrival lands close
+    to a loop boundary, so the residual bias is a couple of milliseconds --
+    against the tens of milliseconds the anchor choice is worth. Returns None
+    when the two fields are not in different domains (nothing to convert).
+    """
+    deltas = [r["queued_ts"] - r["arrival_time"] for r in reqs
+              if r.get("queued_ts") is not None
+              and r.get("arrival_time") is not None]
+    if not deltas:
+        return None
+    return min(deltas)
+
+
+def _bench_arrival_ts(req: dict, offset: float | None = None) -> tuple[float | None, bool]:
     """Pick the arrival timestamp in the same clock domain as first/last.
 
-    Old and current bench outputs store ``arrival_time`` as absolute
-    epoch seconds while the engine lifecycle timestamps are monotonic
-    seconds. Detect that mismatch and fall back to ``queued_ts``.
+    **Anchor at ``arrival_time``, not ``queued_ts``.** They differ by the wait
+    until the engine core next polls its input queue: ``QUEUED`` is recorded
+    inside ``Scheduler.add_request``, which runs at a loop boundary, so a
+    request that arrives mid-step is registered only when the in-flight step
+    ends. Measured on RTXPRO6000/Qwen3-30B-A3B, ``queued_ts - arrival_time``
+    is p50 **21.7 ms** / p90 61.6 ms -- the same distribution as the
+    simulator's own wait-for-the-in-flight-batch term (p50 22.5, p90 62.4),
+    because it is the same physical wait.
+
+    Anchoring at ``queued_ts`` therefore drops that wait from vLLM's TTFT
+    while the simulator, which starts from the workload's arrival time, keeps
+    it -- and the comparison charges the simulator for a term it measured
+    correctly. It is worth 18% of a 124 ms TTFT and 0.07% of a 32 s
+    end-to-end latency, which is exactly why TTFT looked wrong on this example
+    while TPOT and latency sat at 0.5%. With the anchor fixed, that example's
+    per-request |TTFT error| median goes from 16.8% to 9.7% and its median
+    bias from +13.5% to -2.5%.
+
+    ``arrival_time`` is epoch seconds (set at frontend entry) and the
+    lifecycle timestamps are monotonic, so ``offset`` converts between them;
+    see ``bench_epoch_to_monotonic_offset``. Without one, fall back to
+    ``queued_ts`` as before rather than subtract across clock domains.
     """
     arr = req.get("arrival_time")
     queued = req.get("queued_ts")
@@ -193,6 +232,10 @@ def _bench_arrival_ts(req: dict) -> tuple[float | None, bool]:
 
     if _same_time_domain(arr, first) and _same_time_domain(arr, last):
         return arr, False
+    if offset is not None:
+        shifted = arr + offset
+        if _same_time_domain(shifted, first) or _same_time_domain(shifted, last):
+            return shifted, False
     if _same_time_domain(queued, first) or _same_time_domain(queued, last):
         return queued, True
     return arr, False
