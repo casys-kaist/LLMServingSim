@@ -29,6 +29,32 @@ Phase B is skipped entirely on any step that preempted. That anti-thrash
 rule is what keeps the running set from oscillating
 preempt → refill → preempt.
 
+## Admission is one step stale
+
+Phase B's arrival horizon lags by one step, because vLLM's
+`scheduler_config.async_scheduling` is on by default. That makes vLLM's
+`max_concurrent_batches` 2 at `pp_size` 1, and
+`EngineCore.step_with_batch_queue` composes batch k+1 right after submitting
+k, then blocks on k's future. The batch that runs next was therefore built
+while the previous one was still on the GPU, and a request arriving after
+that composition cannot join it — it waits for the batch after.
+
+Following vLLM's loop for a request arriving at `a` during batch A: it misses
+B (composed when A was submitted) and lands in C (composed when A finished),
+so `TTFT = (t_A_end − a) + dt_B + dt_C`. `_arrival_cutoff` reproduces this by
+lagging the horizon to the completed batch's own composition clock.
+
+The lag is dropped when the instance was not busy right up to the current
+clock — an idle engine's batch queue is empty, and vLLM admits a new arrival
+immediately — and `schedule()` retries phase B with the full horizon whenever
+the lagged pass admitted nothing.
+
+It is worth roughly 0.6 of a step. That is invisible on a saturated run,
+where TTFT is dominated by queueing (the RTXPRO6000/Qwen3-32B example is
++1.3% with or without it, on a 37 s TTFT), and about a fifth of the median
+TTFT on a lightly loaded one. Turn it off with `--no-async-scheduling` to
+model an engine started with vLLM's `--no-async-scheduling`.
+
 `--enable-prefix-caching` does not change the code path, only whether
 blocks get indexed for reuse. There is one scheduler for both.
 

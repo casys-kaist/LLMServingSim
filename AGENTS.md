@@ -795,6 +795,28 @@ arrival time to avoid busy-looping.
   its first chunk (`--reserve-full-isl`, on by default, per-instance
   `reserve_full_isl`). Mirrors vLLM's `scheduler_reserve_full_isl`, `True` there
   too; checking only the first chunk lets chunked prefill over-admit
+- Admission is **one step stale** under `--async-scheduling` (on by default, as
+  vLLM's `scheduler_config.async_scheduling` is). vLLM's
+  `max_concurrent_batches` is 2 at `pp_size` 1 with it on
+  (`config/vllm.py`: "Async scheduling requires 2 concurrent batches to
+  overlap"), and `EngineCore.step_with_batch_queue` composes batch k+1 right
+  after submitting k, then blocks on k's future -- so the batch that executes
+  next was built while the previous one was still on the GPU, and a request
+  arriving after that cannot join it. `_arrival_cutoff` reproduces it by lagging
+  phase B's arrival horizon to the completed batch's own `batch_time`. Working
+  through vLLM's loop, a request arriving at `a` during batch A lands in C, not
+  B, so `TTFT = (t_A_end - a) + dt_B + dt_C` on both sides.
+  The lag is dropped when the instance was **not** busy right up to `current`
+  (an idle engine's batch queue is empty and vLLM admits immediately), and
+  `schedule()` retries phase B with the full horizon when the lagged pass
+  admitted nothing. That retry is load-bearing, not cosmetic: the main loop
+  advances the clock only for arrivals still pending in the *router*, so a
+  request already sitting in `waiting` behind a stale cutoff would be invisible
+  forever and the run would answer "pass" at a clock that never moves.
+  Worth ~0.6 step of TTFT. Invisible on a saturated run (RTXPRO6000/Qwen3-32B
+  is +1.3% either way, since its TTFT is 37 s) and a fifth of the median on a
+  light one -- it moved the DP+EP example's TTFT mean from -5.6% to -1.2% and
+  P90 from -3.5% to -1.1%, leaving TPOT and latency untouched
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
 - **There is no prefill phase or decode phase.** A request just catches up to

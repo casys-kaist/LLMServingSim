@@ -37,7 +37,7 @@ class Scheduler:
                  enable_chunked_prefill=False,
                  long_prefill_token_threshold=0, cxl_mem=0, ep_size=1, kv_cache_dtype='auto',
                  npu_memory_utilization=1.0, reserve_full_isl=True,
-                 acceptance_model=None):
+                 acceptance_model=None, async_scheduling=True):
         self.model = model
         self.config = get_config(model)
         self.node_id = node_id
@@ -61,10 +61,20 @@ class Scheduler:
         # vLLM's ``need_mamba_block_aligned_split``:
         # ``has_mamba_layers and mamba_cache_mode == "align"``, and "align" is
         # what prefix caching selects. See ``_mamba_block_aligned_split``.
-        self._needs_mamba_aligned_split = bool(enable_prefix_caching) and any(
-            spec.attn == 'linear_attention'
-            for spec in (get_layer_stack(model) or [])
-        )
+        _stack = get_layer_stack(model) or []
+        _is_hybrid = any(spec.attn == 'linear_attention' for spec in _stack)
+        _is_moe = any(getattr(spec, 'mlp', None) == 'moe' for spec in _stack)
+        # vLLM's ``VllmConfig.use_v2_model_runner`` via
+        # ``_is_default_v2_model_runner_model``: V2 is the default for anything
+        # that is not MoE, except that a hybrid stack stays on V1 unless its
+        # architecture is explicitly a default-V2 one. vLLM also forces V2 for a
+        # short list of architectures
+        # (``config/vllm.py::default_v2_model_runner_architectures``); no config
+        # under ``configs/model/`` is on it, and a snapshot of a list that moves
+        # every release would drift silently, so adding one from that list means
+        # revisiting this. It matters only for ``_async_adds_a_batch``.
+        self._uses_v2_model_runner = (not _is_moe) and (not _is_hybrid)
+        self._needs_mamba_aligned_split = bool(enable_prefix_caching) and _is_hybrid
         if self._needs_mamba_aligned_split and not enable_chunked_prefill:
             # vLLM asserts this, in the same block that picks "align"
             # (models/config.py: `assert enable_chunked_prefill, "Chunked
@@ -97,6 +107,20 @@ class Scheduler:
         self.inflight = []
         self.done = []
         self.batch_ids = -1
+
+        # vLLM's ``scheduler_config.async_scheduling``, True by default there.
+        # It makes ``max_concurrent_batches`` 2 at pp_size 1 (``config/vllm.py``:
+        # "Async scheduling requires 2 concurrent batches to overlap"), so the
+        # engine composes the *next* batch while the current one is still on the
+        # GPU. A request that arrives after that composition cannot join it and
+        # waits one more step. ``_arrival_cutoff`` is where that shows up.
+        self.async_scheduling = bool(async_scheduling)
+        # Clock of the batch that completed most recently, and the clock at
+        # which it was composed. Together they answer "was this instance busy
+        # right up to now, and if so what could the scheduler see when it built
+        # the batch that is finishing?"
+        self._last_batch_start = None
+        self._last_batch_end = None
 
         # Speculative-decoding counters, reported as vLLM reports them: the
         # acceptance rate is accepted/drafted.
@@ -161,6 +185,17 @@ class Scheduler:
         # preempt -> refill -> preempt.
         if not preempted:
             token_budget = self._schedule_waiting(current, scheduled, token_budget)
+            if not scheduled and self._async_adds_a_batch():
+                # The lag only exists while there is a batch to compose ahead
+                # of, and there is none: nothing was admitted and nothing is
+                # running. vLLM's batch queue is empty in this state, so its
+                # ``schedule()`` admits whatever has arrived. Keeping the lag
+                # here would hide an already-queued request behind a cutoff
+                # that only a completed batch can advance -- the main loop
+                # answers "pass", the clock never moves (it advances only for
+                # arrivals still pending in the router), and the run spins.
+                token_budget = self._schedule_waiting(
+                    current, scheduled, token_budget, cutoff=current)
 
         if not scheduled:
             return None
@@ -224,13 +259,67 @@ class Scheduler:
             i += 1
         return token_budget
 
-    def _schedule_waiting(self, current, scheduled, token_budget):
-        """Phase B: admit from the waiting queue. Never preempts to admit."""
+    def _async_adds_a_batch(self) -> bool:
+        """Whether async scheduling buys a lookahead the pipeline does not
+        already provide.
+
+        vLLM's ``max_concurrent_batches`` (``config/vllm.py``) is ``2`` at
+        ``pp_size`` 1 with async scheduling on, and ``pp_size + 1`` above it --
+        but only on the **V2** model runner. On V1 it stays at ``pp_size``,
+        because "V1 Model Runner does not fully support async scheduling with
+        PP". So for a V1 model at ``pp_size > 1`` async adds no batch at all,
+        and the one-step-stale composition is already what ``schedule()``'s
+        ``len(self.inflight) >= self.pp_size`` cap models. Charging the lag
+        there too double-counts it: it moved ``moe_pp`` -6.9% and
+        ``moe_dp_tp_pp_uneven`` -12.7%, since delaying admission repacks
+        batches rather than simply adding time.
+        """
+        if not self.async_scheduling:
+            return False
+        if self.pp_size <= 1:
+            return True
+        return self._uses_v2_model_runner
+
+    def _arrival_cutoff(self, current):
+        """The latest arrival time this step's admission can see.
+
+        Under vLLM's async scheduling the batch that executes next was composed
+        while the previous one was still running, so its view of the arrival
+        queue is one step stale. ``EngineCore.step_with_batch_queue`` keeps
+        ``max_concurrent_batches`` batches outstanding -- 2 at ``pp_size`` 1 when
+        async scheduling is on -- and submits batch k+1 right after k, then
+        blocks on k's future. So the batch dispatched at the end of step k saw
+        arrivals only up to the point where step k itself was composed.
+
+        Returns ``current`` (no lag) when this instance was *not* busy right up
+        to now: an idle engine's queue is empty, nothing is scheduled ahead, and
+        vLLM picks a newly arrived request up immediately. That case is not
+        cosmetic -- freezing the cutoff in the past while the engine idles would
+        make a request that arrives later permanently invisible.
+        """
+        if not self._async_adds_a_batch():
+            return current
+        if self._last_batch_end is None or self._last_batch_start is None:
+            return current
+        if current > self._last_batch_end:
+            # The instance went idle and the clock advanced past the last
+            # completion, so there is no in-flight step to hide behind.
+            return current
+        return self._last_batch_start
+
+    def _schedule_waiting(self, current, scheduled, token_budget, cutoff=None):
+        """Phase B: admit from the waiting queue. Never preempts to admit.
+
+        ``cutoff`` overrides the async-scheduling arrival lag; see
+        ``_arrival_cutoff`` and the retry in ``schedule()``.
+        """
+        if cutoff is None:
+            cutoff = self._arrival_cutoff(current)
         while self.waiting and token_budget > 0:
             if len(self.running) >= self.max_num_seqs:
                 break
             req = self.waiting[0]
-            if req.arrival > current:
+            if req.arrival > cutoff:
                 # Arrival-sorted, so nothing behind it has arrived either.
                 break
 
@@ -627,6 +716,12 @@ class Scheduler:
                 self._retire(req)
                 self.done.append(req)
                 end_reqs.append(req)
+
+        # What the next admission is allowed to see. ``batch.batch_time`` is the
+        # clock at which this batch was composed; under async scheduling that is
+        # also the newest arrival the batch replacing it could have seen.
+        self._last_batch_start = batch.batch_time
+        self._last_batch_end = finish
 
         del self.inflight[idx]
         return prompt_t, gen_t, end_reqs
