@@ -323,7 +323,7 @@ perf/<hw>/<model>/<variant>/
   tp<N>/
     dense.csv                            layer, tokens, time_us
     per_sequence.csv                     layer, sequences, time_us
-    attention.csv                        prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
+    attention.csv                        layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
     linear_attention.csv                 layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
     moe.csv                              ep, tokens, activated_experts, time_us  (MoE only)
     skew.csv                             raw heterogeneous-decode shots        (skew enabled)
@@ -583,6 +583,75 @@ which tile padding and SM imbalance do not bound). Rows with
   `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
   other category and refreshes just `skew.csv` + `skew_fit.csv`.
 
+### The attention grid's second axis describes the batch, not one sequence
+It used to be `kv_prefill`, one prefill sequence's context, and the simulator
+fed it `sum(batch.prefill_k_list)`. A step routinely carries several prefill
+sequences -- one request finishing its prompt beside another just starting --
+and summing their contexts produces a coordinate none of them has: 0, 1200 and
+64 came out as 1264.
+
+The axis is now **`prefill_key`**: the mean, over the batch's prefill
+sequences, of how far that sequence's queries look back --
+
+    prefill_key = mean_i ( k_i + c_i / 2 )
+
+`c_i` is what request *i* has scheduled this step and `k_i` what it already
+holds; the half is causal masking, since the average query in a chunk sees
+half of it. Matched against real vLLM runs -- table built from the shapes the
+profiler sweeps, scored on multi-prefill steps -- that moves |err| p50 from
+14.18% to 5.97% on DeepSeek-V3.2 and 12.96% to 7.93% on Llama-3.1-8B, and it
+improves the single-prefill case too (2.15% -> 1.71%, 10.28% -> 9.88%). Adding
+`n_prefill` as a fifth axis on top changes nothing measurable: once the key
+coordinate is batch-aware the sequence count has nothing left to say. The grid
+stays four axes wide.
+
+**Sweeping it needs multi-sequence shots.** One sequence can only reach
+`key >= tokens / 2`, so "many tokens, short keys" -- 4 requests of 500 tokens
+with no context -- is unreachable, and **32-39% of a real run's multi-prefill
+steps land there**, at the full token budget, which is exactly where a
+saturated run's TTFT is set. `_compose_prefill` derives the batch that
+realises a target coordinate: the fewest sequences that leave each a
+non-negative context. About 27% of the grid's shots are multi-sequence.
+
+**Old bundles are relabelled, not refused.** Every pre-change shot had exactly
+one prefill sequence, so `prefill_key = kv_prefill + prefill_chunk / 2` is
+exact and `_build_attention_table` applies it on load. What a relabel cannot
+recover is the coverage above. `meta.yaml::attention_grid.axes` is the marker
+that says which form a bundle holds.
+
+`kv_prefill` still exists on `BatchCtx` and is still the summed context -- it
+is a *length*, and tensor sizing and the PIM split need it as one.
+
+### A saturating kernel is capped at lookup, per kernel
+A sparse-attention query reads at most a fixed number of selected positions,
+so its cost stops growing once a sequence's key window passes that bound:
+DeepSeek-V3.2's 16-token prefill costs 968.8 us at no context, 742.4 at 512,
+then 139.3 at 2048 and 138.3 at 8192 -- flat from exactly `index_topk`. The
+same sweep on Llama rises throughout (8.5, 18.8, 51.2, 181.1), because a dense
+query reads its whole causal window.
+
+`stack.probe_key_saturation` reads the bound off the checkpoint -- `index_topk`
+for DeepSeek/GLM, `sparse_topk_blocks` x `sparse_block_size` plus the
+always-included initial and local blocks for MiniMax-M3 (17 x 128 = 2176) --
+and the catalog's `key_saturates` says which entries are subject to it. That
+is a per-**kernel** property, not a per-model one: M3 is sparse only from its
+fourth layer on, and a sparse model's `indexer` scores the whole KV to make
+the selection and never saturates (52 -> 101 us from kv 2048 to 16384).
+
+The cap is applied at lookup, never at sweep time. Both kernels share one
+grid, so a capped column would collapse the indexer's large-key rows onto a
+single cell. `BatchCtx` carries the mean both ways because the clip is per
+sequence and must precede the mean -- `mean(min(x, cap))` is not
+`min(mean(x), cap)`.
+
+**The same flag governs the skew guard.** `alpha` is where a skewed batch
+lands on the line between two measured uniform endpoints, and that line does
+not care which end is higher, but both the sweep and the simulator required
+`t_max > t_mean`. That is right for dense -- cost rises with kv, so a negative
+gap is noise -- and wrong for a saturating kernel, where the gap is negative
+for essentially every case, so a sparse skew sweep would have had almost every
+row dropped as `nan`.
+
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
 (strict `>`, not `>=`) so that `n = MSQ` **pure** cases (no prefill chunk) fit.
@@ -616,7 +685,7 @@ the lookup.
 | `qkv_proj` | dense | `tokens = total_len` |
 | `qk_norm` | dense (tp_stable; Qwen3 only) | `tokens = total_len` |
 | `rotary_emb` | dense | `tokens = total_len` |
-| `attention` | attention | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` |
+| `attention` | attention | `(prefill_chunk, prefill_key, n_decode, kv_decode)` |
 | `o_proj` | dense + ALLREDUCE after (TP>1) | `tokens = total_len` |
 | `gate_up_proj` | dense | `tokens = total_len` |
 | `act_fn` | dense | `tokens = total_len` |
@@ -744,7 +813,7 @@ sampler_291  25933        LOCAL        2565120       LOCAL         0            
 The simulator loads per-category CSVs via `_load_perf_db()` and dispatches
 lookups by catalog category: `_lookup_dense` (1D linear over tokens),
 `_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D
-linear over `(prefill_chunk, kv_prefill, n_decode, kv_decode)`), and
+linear over `(prefill_chunk, prefill_key, n_decode, kv_decode)`), and
 `_lookup_moe` (2D over `(tokens, activated_experts)` within the table for
 this run's `ep_total`, profiled at tp=1).
 Lookups extrapolate **above** the top profiled value (time_us is linearly
@@ -1477,6 +1546,45 @@ back to the nearest profiled one with a one-shot warning. Not interpolated, for
 the same reason `decode_q_len` is not: `E/ep` has to be a whole number of
 experts and the permute width is a staircase in it. A bundle with no `ep`
 column reads as ep=1 and prices exactly as it did before the axis existed.
+
+### A shrunk checkpoint can reuse most of a bundle, but not `moe`
+
+A performance simulator does not need real weights to be validated -- it needs
+real shapes, the real scheduler and the real kernels. So a checkpoint can be
+shrunk to fit one card by cutting only *counts*
+(`num_hidden_layers`, `n_routed_experts`) while keeping every shape a kernel's
+cost depends on. `configs/model/deepseek-ai/DeepSeek-V3.2-Exp-16L64E.json` is
+that: 61 -> 16 layers and 256 -> 64 experts, 671.9B -> 43.5B, 625.7 GB -> 40.5 GB
+at fp8, and it still resolves to 3 dense + 13 MoE layers with sparse attention
+throughout, so MLA, the DSA indexer, group-limited routing (`n_group` 8 still
+divides 64) and the MTP module are all still exercised. Only vLLM needs the
+shrink: `--load-format dummy` still allocates the weight tensors.
+
+**`dense`, `per_sequence`, `attention` and `mtp` transfer.** Per-layer latency
+does not depend on how many layers the model has -- the same assumption the
+profiler already rests on, since it measures 1-4 layers per category and the
+simulator multiplies. Copy them and record a `derived_from` block in
+`meta.yaml` so nobody reads them as measured on the shrunk checkpoint.
+
+**`moe` does not.** Measured at matched `(ep, tokens, activated_experts)`, the
+64-expert block costs **0.77x to 1.10x** the 256-expert one, p50 0.925:
+
+| tokens | activated | E=256 | E=64 | ratio |
+|---|---|---|---|---|
+| 8 | 8 | 92.1 us | 91.5 us | 0.993 |
+| 8 | 64 | 587.3 | 588.7 | 1.002 |
+| 2048 | 8 | 822.4 | 663.1 | **0.806** |
+| 2048 | 64 | 884.4 | 817.7 | 0.925 |
+
+The axes do capture the GEMM: work is `tokens * k` and weight traffic is
+`activated * expert_weight`, and `k`, `moe_intermediate_size` and `hidden_size`
+are unchanged by the shrink. What they do not capture is the permute's
+histogram over `E` bins, which is why the gap appears at **many tokens and few
+activated experts** -- where sorting dominates the GEMM -- and closes at small
+token counts. Copying the table would have overcharged prefill-sized MoE steps
+by ~20%. It is also the measured case for the `ep` column existing at all:
+`E_local` is a cost driver, not just a constraint on which `activated` values
+are reachable.
 
 ### MoE expert blocks
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank

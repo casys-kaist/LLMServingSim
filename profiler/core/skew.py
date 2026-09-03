@@ -382,7 +382,8 @@ def _measure(llm, reqs, slice_, iters: int) -> dict[str, float]:
     return out
 
 
-def _measure_case(llm, case: SkewCase, slice_, iters: int) -> list[dict]:
+def _measure_case(llm, case: SkewCase, slice_, iters: int,
+                  saturates: dict[str, bool] | None = None) -> list[dict]:
     """Three shots, one row per layer measured in all three of them.
 
     A layer missing from any of the three is dropped rather than fitted from a
@@ -402,8 +403,18 @@ def _measure_case(llm, case: SkewCase, slice_, iters: int) -> list[dict]:
     rows: list[dict] = []
     for layer in sorted(set(by_mean) & set(by_max) & set(by_skew)):
         t_mean, t_max, t_skew = by_mean[layer], by_max[layer], by_skew[layer]
-        alpha = ((t_skew - t_mean) / (t_max - t_mean)
-                 if t_max > t_mean else float("nan"))
+        # ``alpha`` is where the skewed batch lands on the line between the
+        # two uniform endpoints, and that line does not care which end is
+        # higher. Requiring ``t_max > t_mean`` was a dense assumption: cost
+        # rises with kv there, so a negative gap is noise and dropping the row
+        # is right. A sparse kernel below its key bound costs *less* at a
+        # longer kv -- DeepSeek-V3.2 measures 968.8 us at no context and 139.3
+        # at 2048 -- so the gap is negative for essentially every case and the
+        # whole sweep was being discarded. The fit is a WLS in ``dtm``, which
+        # already down-weights a small lever, so only a zero one is unusable.
+        gap = t_max - t_mean
+        usable = gap > 0 or ((saturates or {}).get(layer) and gap != 0)
+        alpha = (t_skew - t_mean) / gap if usable else float("nan")
         rows.append({
             "layer": layer,
             "regime": "pure" if case.pc == 0 else "mixed",
@@ -506,6 +517,11 @@ def sample_skew(
         name: {"vllm": e.vllm, "within": e.within, "tp_stable": e.tp_stable}
         for name, e in arch.catalog.attention.items()
     }
+    # Which kernels saturate in key length. A saturating kernel costs *less*
+    # at a longer kv, so its endpoint gap is genuinely negative and the row is
+    # real; on a non-saturating one a negative gap is measurement noise.
+    saturates = {name: bool(e.key_saturates)
+                 for name, e in arch.catalog.attention.items()}
     iters = args.measurement_iterations
     grid = _build_grid(args, limits)
     from profiler.core.writer import _geometric_spec
@@ -548,7 +564,8 @@ def sample_skew(
     with log.progress(label, total=len(cases)) as bar:
         for i, case in enumerate(cases):
             try:
-                case_rows = _measure_case(llm, case, slice_, iters)
+                case_rows = _measure_case(llm, case, slice_, iters,
+                                          saturates)
             except Exception as e:
                 log.warning(
                     "skew shot failed (n=%d nb=%d pc=%d kp=%d): %s",

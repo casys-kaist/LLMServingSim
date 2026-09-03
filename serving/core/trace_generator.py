@@ -1057,17 +1057,26 @@ def _prefill_key_for(perf_db, bctx, layer):
     one. Both are precomputed on the batch context because the clip is per
     sequence and has to happen before the mean.
     """
-    section = perf_db["architecture"]["catalog"].get("attention") or {}
-    entry = section.get(layer) or {}
-    if entry.get("key_saturates"):
+    if _key_saturates(perf_db, layer):
         return bctx.prefill_key_capped
     return bctx.prefill_key
+
+
+def _key_saturates(perf_db, layer):
+    """Whether this kernel's cost stops growing in key length.
+
+    Declared per catalog entry because it varies inside one stack: MiniMax-M3
+    is sparse from its fourth layer on, and a sparse model's indexer scores
+    the whole KV to make the selection and never saturates.
+    """
+    section = perf_db["architecture"]["catalog"].get("attention") or {}
+    return bool((section.get(layer) or {}).get("key_saturates"))
 
 
 def _lookup_attention_with_skew(
     perf_db, tp, prefill_chunk, prefill_key,
     n_decode, kv_decode_mean, kv_decode_max, kv_decode_min,
-    layer="attention", decode_q_len=1,
+    layer="attention", decode_q_len=1, kv_prefill=0,
 ):
     """Attention lookup with skew correction applied.
 
@@ -1096,9 +1105,15 @@ def _lookup_attention_with_skew(
     # reach here due to the short-circuit above, but defensive).
     kv_gap = kv_decode_max - kv_decode_min
     skew_rate = (kv_decode_mean - kv_decode_min) / kv_gap if kv_gap > 0 else 0.5
+    # ``kv_prefill`` here, not the new key coordinate: the skew bucket's
+    # ``kp`` axis is binned from skew.csv's own ``kp`` column, which is the
+    # case's prefill context. Feeding it a different quantity would miss
+    # every bucket. Aligning the two is a follow-up that needs a re-sweep to
+    # mean anything -- and AGENTS.md already records that the ``pc`` axis is
+    # keyed raw, so mixed batches fall through to the pooled alpha regardless.
     alpha = _skew_alpha(
         perf_db, tp, prefill_chunk, n_decode, skew_rate, kv_decode_max,
-        prefill_key, layer,
+        kv_prefill, layer,
     )
     if alpha == 0.0:
         return max(1, int(round(t_mean)))
@@ -1106,10 +1121,16 @@ def _lookup_attention_with_skew(
         perf_db, tp, prefill_chunk, prefill_key, n_decode, kv_decode_max,
         layer, decode_q_len,
     )
-    # Guard against interpolation producing t_max < t_mean (can happen
-    # at the axis boundary); in that case the formula would produce a
-    # negative correction, which isn't physical.
-    if t_max <= t_mean:
+    # A negative endpoint gap means the batch's longest decode is *cheaper*
+    # than its mean one. On a dense kernel that cannot happen -- cost rises
+    # with kv -- so it is an interpolation artifact at the axis boundary and
+    # the correction is dropped. On a kernel that saturates in key length it
+    # is the shape of the thing: below its bound a sparse query walks the
+    # unfilled slots, so DeepSeek-V3.2 measures 968.8 us at no context and
+    # 139.3 at 2048. There the gap is real and the blend is just a linear
+    # interpolation between two measured points, which does not care which
+    # end is higher.
+    if t_max <= t_mean and not _key_saturates(perf_db, layer):
         return max(1, int(round(t_mean)))
     return max(1, int(round(t_mean + alpha * (t_max - t_mean))))
 
@@ -1428,6 +1449,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
+            bctx.kv_prefill,
         )
     elif category == "mtp":
         # Keyed on the pass's token count. The profiler sweeps this category on
@@ -1981,6 +2003,7 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
             _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
+            bctx.kv_prefill,
         )
     if category == "linear_attention":
         return _lookup_linear_attention(
