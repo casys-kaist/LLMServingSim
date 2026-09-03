@@ -44,6 +44,13 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"   # blank => use the model default
 DTYPE="${DTYPE:-bfloat16}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
 SEED="${SEED:-42}"
+# vLLM load_format. "dummy" initializes weights randomly instead of reading a
+# checkpoint, which is valid ground truth for a *performance* comparison and
+# needs no weights on disk: the replay feeds token ids directly and pins the
+# output length, so nothing recorded reads a generated token. Shapes, memory
+# footprint, kernel selection and scheduling are unchanged. Recorded in
+# meta.json, so a dummy run can never be mistaken for a real-weights one.
+LOAD_FORMAT="${LOAD_FORMAT:-auto}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -66,6 +73,7 @@ cmd=(python3 -m bench run
     --dtype "$DTYPE"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --seed "$SEED"
+    --load-format "$LOAD_FORMAT"
     --tick-seconds "$TICK_SECONDS"
     --num-reqs "$NUM_REQS"
     --log-level "$LOG_LEVEL"
