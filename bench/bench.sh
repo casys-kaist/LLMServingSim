@@ -55,6 +55,12 @@ LOAD_FORMAT="${LOAD_FORMAT:-auto}"
 # number a latency comparison depends on, kv_cache.num_gpu_blocks, which vLLM
 # only settles at boot. A minute with LOAD_FORMAT=dummy.
 RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
+# Boot without a tokenizer. The replay never needs one, so what this buys is
+# the ability to bench a checkpoint whose tokenizer is not on disk: point MODEL
+# at the repo's own configs/model/<org>/<name>.json directory -- the way the
+# profiler boots one -- and a gated or synthetic config runs with no Hub
+# access. Not a speed knob; detokenisation measured 0.18% of run span.
+SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -86,6 +92,7 @@ cmd=(python3 -m bench run
 [[ -n "$MAX_MODEL_LEN" ]] && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
 [[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
+[[ "$SKIP_TOKENIZER_INIT" == "1" ]] && cmd+=(--skip-tokenizer-init)
 
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"

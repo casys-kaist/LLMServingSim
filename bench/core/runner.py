@@ -81,6 +81,20 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "simulator's block count in a minute. requests.jsonl "
                         "and timeseries.csv are not written -- there is no "
                         "run to record.")
+    p.add_argument("--skip-tokenizer-init", action="store_true",
+                   dest="skip_tokenizer_init", default=False,
+                   help="Boot vLLM without loading a tokenizer. The replay "
+                        "never needs one -- it feeds token ids directly "
+                        "(TokensPrompt) and pins the output length "
+                        "(min_tokens == max_tokens, ignore_eos), so nothing "
+                        "here tokenises input or reads generated text. What it "
+                        "buys is the ability to bench a checkpoint whose "
+                        "tokenizer is not on disk: a gated model served from "
+                        "the repo's own configs/model/<org>/<name>.json (pass "
+                        "that directory as --model, the way the profiler boots "
+                        "one), or a synthetic config with no tokenizer at all. "
+                        "Not a speed knob: forcing detokenize off separately "
+                        "measured 0.18% of run span, i.e. noise.")
     p.add_argument("--load-format", default="auto", dest="load_format",
                    help="vLLM load_format. 'dummy' skips reading weights and "
                         "initializes them randomly, which is valid ground "
@@ -183,6 +197,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         kv_cache_dtype=args.kv_cache_dtype,
         seed=args.seed,
         load_format=args.load_format,
+        skip_tokenizer_init=args.skip_tokenizer_init,
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
@@ -346,6 +361,10 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
         "max_model_len", "dtype", "kv_cache_dtype", "seed", "load_format",
+        # Recorded for the same reason load_format is: a run booted from a
+        # tokenizer-less config directory should never be mistaken for one
+        # booted from the real checkpoint.
+        "skip_tokenizer_init",
     )
     return {k: getattr(engine_args, k, None) for k in fields}
 
