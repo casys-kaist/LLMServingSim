@@ -410,19 +410,40 @@ def _build_linear_attention_tables_by_layer(df):
 
 
 def _build_moe_table(df):
-    """MoE table: (tokens, activated_experts) → latency_ns."""
-    grouped = {}
-    for ae, tok, lat in zip(df["activated_experts"].astype(int).tolist(),
-                            df["tokens"].astype(int).tolist(),
-                            df["latency_ns"].astype(int).tolist()):
-        grouped.setdefault(ae, {})[tok] = lat
-    ae_vals = sorted(grouped)
-    rows = []
-    for ae in ae_vals:
-        by_tok = grouped[ae]
-        tok_keys = sorted(by_tok)
-        rows.append({"keys": tok_keys, "values": [by_tok[k] for k in tok_keys]})
-    return {"activated_experts_vals": ae_vals, "rows": rows}
+    """MoE tables keyed by EP degree: ``{ep: (tokens, activated) -> ns}``.
+
+    An EP rank runs a *slice* of the MoE block -- ``E/ep`` local experts, and
+    ``k/ep`` of a token's k expert assignments -- so its cost is not the whole
+    block's, and the difference is not a scale factor. It shows up hardest on
+    the ``activated_experts`` axis: profiled at ep=1 the axis floor is ``top_k``
+    (a token cannot activate fewer), while a rank routinely activates fewer
+    than that, and the lookup clamps below the floor rather than
+    extrapolating. Measured on a GLM-5 EP=2 run, 98.4% of MoE lookups asked
+    for ``activated=4`` against a floor of 8, over-charging the MoE term by
+    1.4x-3.7x depending on the per-rank token count.
+
+    A bundle written before the axis existed has no ``ep`` column; it is the
+    whole model on one rank, so it reads as ep=1 and behaves exactly as before.
+    """
+    eps = (df["ep"].astype(int).tolist() if "ep" in df.columns
+           else [1] * len(df))
+    grouped: dict[int, dict] = {}
+    for ep, ae, tok, lat in zip(eps,
+                                df["activated_experts"].astype(int).tolist(),
+                                df["tokens"].astype(int).tolist(),
+                                df["latency_ns"].astype(int).tolist()):
+        grouped.setdefault(ep, {}).setdefault(ae, {})[tok] = lat
+    out = {}
+    for ep, by_ae in grouped.items():
+        ae_vals = sorted(by_ae)
+        rows = []
+        for ae in ae_vals:
+            by_tok = by_ae[ae]
+            tok_keys = sorted(by_tok)
+            rows.append({"keys": tok_keys,
+                         "values": [by_tok[k] for k in tok_keys]})
+        out[ep] = {"activated_experts_vals": ae_vals, "rows": rows}
+    return out
 
 
 def _load_perf_db(hardware, model, variant, tp_needed, model_type,
@@ -1118,17 +1139,46 @@ def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
     return max(1, int(out))
 
 
-def _lookup_moe(perf_db, tokens, activated_experts):
-    """MoE is profiled once at tp=1 (single-rank view); the simulator
-    looks up per EP-rank token counts.
+def _moe_ep_slice(by_ep, ep, perf_db):
+    """The table profiled for this EP degree, or the nearest one.
+
+    Not interpolated, for the same reason ``decode_q_len`` is not: ``E/ep`` has
+    to be a whole number of experts and the permute width is a staircase in it,
+    so a value between two profiled degrees is not a configuration that exists.
+    Ties go to the smaller degree, which is the wider slice and therefore the
+    conservative direction.
+    """
+    if ep in by_ep:
+        return by_ep[ep]
+    have = sorted(by_ep)
+    nearest = min(have, key=lambda e: (abs(e - ep), e))
+    key = ("moe_ep", perf_db["model"], ep, nearest)
+    if key not in _skipped_layer_warned:
+        _skipped_layer_warned.add(key)
+        logger.warning(
+            "ep_size=%d was not profiled for the MoE block (have %s); using "
+            "%d. An EP rank runs E/ep experts and k/ep of a token's expert "
+            "assignments, so the wrong slice misprices every MoE layer -- "
+            "re-profile with --moe-ep-degrees including %d.",
+            ep, have, nearest, ep,
+        )
+    return by_ep[nearest]
+
+
+def _lookup_moe(perf_db, ep, tokens, activated_experts):
+    """MoE is profiled at tp=1 (experts shard by EP, not TP) and per EP degree.
+
+    ``ep`` is the **total** EP degree across the group, which is what decides
+    how much of the block one rank holds.
     """
     tp_eff = 1 if 1 in perf_db["available_tps"] else perf_db["available_tps"][0]
-    tbl = _tp_tables(perf_db, tp_eff).get("moe")
-    if tbl is None:
+    by_ep = _tp_tables(perf_db, tp_eff).get("moe")
+    if by_ep is None:
         raise KeyError(
             f"Missing moe profile. Check that moe.csv exists under "
             f"perf/{perf_db['hardware']}/{perf_db['model']}/{perf_db['variant']}/tp{tp_eff}/."
         )
+    tbl = _moe_ep_slice(by_ep, max(1, int(ep)), perf_db)
     ae_vals = tbl["activated_experts_vals"]
     rows = tbl["rows"]
     aeq = max(int(activated_experts), 1)
@@ -1491,7 +1541,11 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
         activated_experts = routing.activated_experts[i]
 
         if local_tokens > 0:
-            rank_latency_ns = _lookup_moe(ctx.perf_db, local_tokens, max(activated_experts, 1))
+            # The **total** EP degree, not this instance's share: what a rank
+            # holds is E/ep_total, and that is what the profiled slice is.
+            rank_latency_ns = _lookup_moe(
+                ctx.perf_db, ep_total, local_tokens,
+                max(activated_experts, 1))
             rank_inp, rank_wt, rank_out = calculate_sizes(
                 ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp)
             max_rank_latency_ns = max(max_rank_latency_ns, rank_latency_ns)
