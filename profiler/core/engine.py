@@ -30,6 +30,8 @@ from vllm import LLM
 from profiler.core import logger as log
 from profiler.core.config import (
     HOST_ENGINE_DEFAULTS,
+    MOE_NUM_EXPERTS_KEYS,
+    MOE_TOP_K_KEYS,
     SHARD_FIELDS,
     ProfileArgs,
     probe_linear_attn_chunk,
@@ -67,7 +69,13 @@ class RuntimeLimits:
             tracks the chunk count, so the sweep has to sample boundaries and
             the points just past them.
         num_experts / top_k: MoE parameters from HF config. None for
-            non-MoE models.
+            non-MoE models. Under an EP override these are already the
+            **rank-local** values -- ``E/ep`` experts and ``k/ep`` slots per
+            token -- because the override goes through ``hf_overrides`` and
+            ``probe_limits`` reads the live config back.
+        moe_ep: the EP degree this engine stands in for, i.e. the label the
+            MoE rows are written under. 1 means the whole model on one rank,
+            which is what every bundle held before the axis existed.
     """
 
     max_num_batched_tokens: int
@@ -78,6 +86,7 @@ class RuntimeLimits:
     linear_attn_chunk: int | None = None
     num_experts: int | None = None
     top_k: int | None = None
+    moe_ep: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +303,7 @@ def _materialize_config(
 
 def spin_up(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+    moe_ep: int = 1,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -326,6 +336,7 @@ def spin_up(
     materialized = _materialize_config(args.model_config, kwargs)
     if args.profile_mtp:
         materialized = _cap_mtp_modules(materialized)
+    materialized = _slice_experts_for_ep(materialized, moe_ep)
     config_path.write_text(json.dumps(materialized, indent=2))
     log.debug("model config written to %s", config_path)
 
@@ -346,6 +357,71 @@ def spin_up(
     with log.capture_stdio():
         llm = LLM(**kwargs)
     return llm, kwargs, tmpdir
+
+
+def _slice_experts_for_ep(config: dict[str, Any], ep: int) -> dict[str, Any]:
+    """Cut the expert count and top-k down to one EP rank's share.
+
+    An EP rank does not run the model's MoE block, it runs a slice: ``E/ep``
+    local experts, and ``k/ep`` of a token's k expert assignments. Profiling at
+    ep=1 and charging the result per rank overstates all three of the permute
+    width, the GEMM rows and the distinct experts activated -- and the third is
+    the one that bites, because the ``activated_experts`` axis then floors at
+    ``top_k``, a value the runtime routinely goes under (98.4% of MoE lookups
+    in a GLM-5 EP=2 run asked for 4 against a floor of 8) and the lookup clamps
+    rather than extrapolating: 1.4x-3.7x over on the MoE term.
+
+    Written into the config **file**, not passed as ``hf_overrides``, for the
+    same reason ``_cap_mtp_modules`` is: on a wrapped checkpoint the fields
+    live under ``text_config``, where a top-level override never lands.
+    MiniMax-M3 is exactly that shape (``model_type: minimax_m3_vl``, experts
+    under ``text_config``), and the ``hf_overrides`` version raised "the model
+    config declares no expert count" on it while working fine on the three
+    flat ones.
+
+    ``k//ep`` floors at 1: past ``ep = k`` a token reaches only some ranks, and
+    a rank it reaches runs one expert for it.
+    """
+    if ep <= 1:
+        return config
+    # Deep, not shallow: ``text_config`` is a nested dict, and a shallow copy
+    # shares it with the caller's ``args.model_config``. spin_up is called once
+    # per EP degree from the same args, so a shared holder makes the slices
+    # compound -- 128 experts became 64 at ep=2 and then 16 at ep=4.
+    out = copy.deepcopy(config)
+    found = False
+    for holder in (out, out.get("text_config")):
+        if not isinstance(holder, dict):
+            continue
+        e_key = next((k for k in MOE_NUM_EXPERTS_KEYS if k in holder), None)
+        k_key = next((k for k in MOE_TOP_K_KEYS if k in holder), None)
+        if e_key is None or k_key is None:
+            continue
+        experts, top_k = int(holder[e_key]), int(holder[k_key])
+        if experts % ep:
+            raise ValueError(
+                f"ep={ep} does not divide {e_key}={experts}; a rank would hold "
+                f"a fractional number of experts"
+            )
+        local = experts // ep
+        # Group-limited routing (DeepSeek/GLM) constrains the slice: vLLM needs
+        # the local experts to divide evenly into n_group groups.
+        n_group = int(holder.get("n_group") or 1)
+        if n_group > 1 and (local < n_group or local % n_group):
+            raise ValueError(
+                f"ep={ep} leaves {local} local experts, which n_group="
+                f"{n_group} does not divide; that slice is not a configuration "
+                f"vLLM can build"
+            )
+        holder[e_key], holder[k_key] = local, max(1, top_k // ep)
+        found = True
+    if not found:
+        raise ValueError(
+            f"--moe-ep-degrees includes {ep} but the model config declares no "
+            f"expert count / top-k under any known key, at the top level or "
+            f"under text_config; cannot express a per-rank slice"
+        )
+    return out
 
 
 def _cap_mtp_modules(config: dict[str, Any], cap: int = 1) -> dict[str, Any]:

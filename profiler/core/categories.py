@@ -95,6 +95,7 @@ class LinearAttentionPoint:
 
 @dataclass(frozen=True)
 class ExpertPoint:
+    ep: int
     tokens: int
     activated_experts: int
     microseconds: float
@@ -809,8 +810,14 @@ class ExpertCategory(Category):
                 "name, add it to MOE_NUM_EXPERTS_KEYS / MOE_TOP_K_KEYS in "
                 "profiler/core/config.py."
             )
+        # Already rank-local under an EP override: ``hf_overrides`` shrank the
+        # expert count to E/ep and the top-k to k/ep, and ``probe_limits`` read
+        # them back off the live config. So the grid below is one rank's, and
+        # its ``activated`` floor is k/ep rather than k -- which is the whole
+        # point of the axis.
         num_experts = limits.num_experts
         top_k = limits.top_k
+        ep = max(1, int(getattr(limits, "moe_ep", 1)))
 
         for n_tokens in _power_of_two_grid(limits.max_num_batched_tokens):
             # Cheap guards: n_tokens must fit context (with sampler
@@ -832,6 +839,7 @@ class ExpertCategory(Category):
                 yield Shot.moe(
                     total_tokens=n_tokens,
                     activated_experts=activated,
+                    ep=ep,
                 )
 
     def extract_points(self, shot, timings, arch, tp):
@@ -842,6 +850,7 @@ class ExpertCategory(Category):
             return
         sample = timings[0]
         yield ExpertPoint(
+            ep=int(shot.experts.get("ep", 1)),
             tokens=total_tokens,
             activated_experts=activated,
             microseconds=sample.microseconds,
@@ -853,7 +862,12 @@ class ExpertCategory(Category):
     def shot_key(self, shot):
         total_tokens = sum(new for new, _ in shot.requests)
         assert shot.experts is not None
-        return (total_tokens, int(shot.experts["activated"]))
+        # Must match the CSV row key minus ``layer``, and moe has no layer
+        # column -- so ``ep`` leads, exactly as it does in _KEY_FIELDS_BY_CATEGORY.
+        # Resume mode compares against this, so a bundle profiled before the
+        # axis existed preloads as ep=1 and is skipped rather than re-fired.
+        return (int(shot.experts.get("ep", 1)), total_tokens,
+                int(shot.experts["activated"]))
 
 
 # ---------------------------------------------------------------------------

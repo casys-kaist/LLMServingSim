@@ -717,6 +717,12 @@ class ProfileArgs:
             ``engine.resolve_attention_max_kv``) before any grid is composed --
             so every reader downstream, including the meta the run records,
             sees one concrete number and never ``None``.
+        moe_ep_degrees: EP degrees to profile the MoE block at. Each one past
+            1 costs its own engine boot, because the slice a rank runs -- E/ep
+            experts, k/ep assignments per token -- is a config the engine is
+            built with, not a per-shot knob. Default ``(1,)``, which is the
+            whole model on one rank and what every bundle held before the axis
+            existed.
         profile_mtp: When set, boot with ``speculative_config`` so the drafter
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
@@ -772,6 +778,7 @@ class ProfileArgs:
     # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
+    moe_ep_degrees: tuple[int, ...] = (1,)
     profile_mtp: bool = False
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one

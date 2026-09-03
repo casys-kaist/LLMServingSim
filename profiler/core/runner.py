@@ -38,7 +38,7 @@ from profiler.core.engine import (
 )
 from profiler.core.hooks.batch import Shot
 from profiler.core.hooks.timings import CoverageReport, TimingSample
-from profiler.core.stack import minimal_layer_count_for
+from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 from profiler.core.writer import (
     persist_meta,
     replicate_tp_stable,
@@ -203,10 +203,13 @@ def run_full(
         # 4 layers for its MLP axis and 1 for attention, and the attention
         # sweep is the expensive one.
         wanted = categories_for(arch, tp)
+        moe_eps = tuple(args.moe_ep_degrees or (1,))
         by_depth: dict[int, list] = {}
         for category in wanted:
             if category.name == "mtp":
                 continue  # second pass, with the drafter built
+            if category.name == "moe" and 1 not in moe_eps:
+                continue  # every requested EP slice needs its own engine
             depth = minimal_layer_count_for(
                 args.model_config or {}, category.stack_axes)
             by_depth.setdefault(depth, []).append(category)
@@ -278,6 +281,32 @@ def run_full(
             finally:
                 spin_down(llm, tmpdir)
 
+        # Per-EP pass for the MoE block. ep=1 rode the main engine above (it
+        # *is* the main engine's expert count), so only the other degrees need
+        # a boot -- each one a different model: E/ep experts, k/ep assignments
+        # per token. That is what makes the rank-local operating point a
+        # measured grid point instead of a clamp against the ep=1 floor.
+        moe_category = next(
+            (c for c in categories_for(arch, tp) if c.name == "moe"), None)
+        if moe_category is not None and not args.only_skew:
+            for ep in (e for e in moe_eps if e != 1):
+                with log.stage(f"TP={tp}  booting vLLM engine at EP={ep} "
+                               f"for the MoE slice"):
+                    llm, _, tmpdir = spin_up(args, tp, moe_category.stack_axes,
+                                             moe_ep=ep)
+                    ep_limits = dataclasses.replace(
+                        probe_limits(llm, args), moe_ep=ep)
+                log.info(
+                    "TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
+                    tp, ep, ep_limits.num_experts, ep_limits.top_k,
+                )
+                try:
+                    _fire_one_category(
+                        llm, moe_category, arch, args, ep_limits, tp, tp_root,
+                    )
+                finally:
+                    spin_down(llm, tmpdir)
+
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
         # and its entries are pinned to the drafter's wrapper, so nothing can
@@ -308,7 +337,9 @@ def run_full(
 
     if last_engine_kwargs is None:
         last_engine_kwargs = {}
-    persist_meta(args, arch_path, last_engine_kwargs, variant_root, limits_by_tp)
+    persist_meta(args, arch_path, last_engine_kwargs, variant_root, limits_by_tp,
+                 measured_categories=tuple(
+                     c.name for c in categories_for(arch, args.tp_degrees[0])))
 
     log.done(variant_root)
 
@@ -356,29 +387,64 @@ def run_slice(
     # shot. DeepSeek-V3.2 and GLM-5 go from 4 layers to 1 here.
     depth = minimal_layer_count_for(args.model_config or {},
                                     category.stack_axes)
-    with log.stage(f"TP={tp}  booting vLLM engine ({depth} layer(s))"):
-        llm, engine_kwargs, tmpdir = spin_up(args, tp, category.stack_axes)
-        limits = probe_limits(llm, args)
-        args = dataclasses.replace(
-            args, attention_max_kv=resolve_attention_max_kv(args, limits),
-        )
-
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)
 
-    try:
-        _fire_one_category(
-            llm, category, arch, args, limits, tp, tp_root,
-        )
-    finally:
-        spin_down(llm, tmpdir)
+    # The MoE block is the one category whose engine is a *slice* of the model
+    # rather than the whole of it, so a refresh may need several boots. Every
+    # other group is one engine and ``moe_ep`` stays 1.
+    eps = (tuple(args.moe_ep_degrees or (1,)) if group == "moe" else (1,))
+    engine_kwargs: dict = {}
+    limits = None
+    for ep in eps:
+        stage = f"TP={tp}  booting vLLM engine ({depth} layer(s))"
+        if ep != 1:
+            stage += f" at EP={ep}"
+        with log.stage(stage):
+            llm, engine_kwargs, tmpdir = spin_up(
+                args, tp, category.stack_axes, moe_ep=ep)
+            limits = dataclasses.replace(probe_limits(llm, args), moe_ep=ep)
+            args = dataclasses.replace(
+                args, attention_max_kv=resolve_attention_max_kv(args, limits),
+            )
+        if ep != 1:
+            log.info("TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
+                     tp, ep, limits.num_experts, limits.top_k)
+        try:
+            _fire_one_category(
+                llm, category, arch, args, limits, tp, tp_root,
+            )
+        finally:
+            spin_down(llm, tmpdir)
 
     # A slice refresh at tp=1 may invalidate prior replication; redo it.
     if tp == 1:
         with log.stage("replicating tp_stable layers"):
             replicate_tp_stable(variant_root, arch, args.tp_degrees)
 
-    persist_meta(args, arch_path, engine_kwargs, variant_root, {tp: limits})
+    # What this refresh is entitled to rewrite. ``engine_effective`` and
+    # ``engine_resolved`` describe the deepest main engine; this one booted a
+    # stack shrunk to its own category's axes, and with ``--profile-mtp`` it
+    # booted the drafter alongside -- a different model either way. And only a
+    # run that swept attention knows which axes the grid covers.
+    deepest = minimal_layer_count_for(args.model_config or {}, ALL_AXES)
+    records_engine = not args.profile_mtp and depth == deepest
+    persist_meta(
+        args, arch_path,
+        engine_kwargs if records_engine else None,
+        variant_root,
+        {tp: limits} if records_engine else None,
+        records_engine=records_engine,
+        records_attention_grid=(group == "attention"),
+        measured_categories=(group,),
+    )
+    if not records_engine:
+        log.info(
+            "meta: keeping the recorded engine_effective/engine_resolved -- "
+            "this refresh booted %d layer(s)%s, not the %d-layer main engine "
+            "the file describes",
+            depth, " with the drafter" if args.profile_mtp else "", deepest,
+        )
 
     log.done(variant_root)
 
