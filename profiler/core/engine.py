@@ -35,9 +35,9 @@ from profiler.core.config import (
     SHARD_FIELDS,
     ProfileArgs,
     probe_linear_attn_chunk,
-    probe_key_saturation,
     probe_moe_params,
 )
+from profiler.core.stack import probe_key_saturation
 from profiler.core.stack import describe as describe_stack
 from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 
