@@ -174,11 +174,18 @@ class Shot:
         return cls(requests=reqs)
 
     @classmethod
-    def moe(cls, total_tokens: int, activated_experts: int) -> "Shot":
-        """Dense-style batch tagged with MoE routing metadata."""
+    def moe(cls, total_tokens: int, activated_experts: int,
+            ep: int = 1) -> "Shot":
+        """Dense-style batch tagged with MoE routing metadata.
+
+        ``ep`` is the EP degree the booting engine stands in for. It rides on
+        the shot only so ``extract_points`` can label the row -- the worker
+        does not read it, because the slice is already baked into the engine's
+        expert count and top-k.
+        """
         return cls(
             requests=[(total_tokens, 0)],
-            experts={"activated": activated_experts},
+            experts={"activated": activated_experts, "ep": ep},
         )
 
 
