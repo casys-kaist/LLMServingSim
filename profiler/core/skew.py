@@ -172,32 +172,61 @@ def _build_grid(args: ProfileArgs, limits) -> dict:
     }
 
 
-def _tier2_pivots(grid: dict) -> list[tuple]:
-    """Skew-sweep anchors derived from the current grid.
+def _spanning(vals: list, stride: int) -> list:
+    """Every ``stride``-th value plus the last, order preserved.
 
-    Pick pivots that span both regimes (pure pc=0, mixed pc>0) and
-    both extreme and balanced ratios. Uses first-kvs as the anchor
-    so the skew axis sweep is comparable across tier 2 entries.
+    Used to coarsen an axis for the tier-2 skew sweep without picking
+    absolute cut-offs: which values exist is still the grid's decision.
+    """
+    if not vals:
+        return []
+    out = list(vals[::max(1, stride)])
+    if vals[-1] not in out:
+        out.append(vals[-1])
+    return out
+
+
+def _tier2_pivots(grid: dict) -> list[tuple]:
+    """Skew-axis sweep anchors: a coarse factorial spanning the grid.
+
+    Tier 2 is the **only** source of ``skew != _SKEW_REP`` in the dataset, so
+    wherever it does not reach, a bucket's alpha is fitted from ``nb``
+    variation at a single skew. It used to be four pivots pinned to
+    ``grid["pc"][1]`` -- 16 on every bundle in ``profiler/perf/`` -- plus
+    ``grid["kvs"][0]`` and ``n`` from ``grid["n"][1:3]``, i.e. 17 cases all at
+    ``pc`` 0 or 16. That left the region a real chunked prefill actually runs
+    in with no skew-axis data at all: on Qwen3-30B-A3B the 792 rows at
+    ``pc >= 512, kp = 0`` are every one of them ``skew = 4.0``, and their
+    buckets hold ~1.3 samples each, which is why half the fitted alphas there
+    come out negative.
+
+    Spanning the axes by stride instead of anchoring at one end keeps the cost
+    bounded without introducing a cut-off: strides are relative to whatever
+    grid the CLI produced, so a coarser or denser sweep scales with it.
     """
     if not grid["n"] or not grid["pc"] or not grid["kvs"]:
         return []
-    pcmid = grid["pc"][min(1, len(grid["pc"]) - 1)]
-    kvsmid = grid["kvs"][0]
-    # Two mid-sized n's if available
-    n_samples = []
-    for i in (1, 2):
-        if i < len(grid["n"]):
-            n_samples.append(grid["n"][i])
-    if not n_samples:
-        n_samples = [grid["n"][0]]
+    # pc: every other value, so both the small-chunk regime the old pivots
+    # covered and the large-chunk regime a real prefill produces are swept.
+    pc_mixed = _spanning([pc for pc in grid["pc"] if pc > 0], 2)
+    n_samples = _spanning(grid["n"], 2)
+    kvs_samples = _spanning(grid["kvs"], 2)
+    # Both the "few heavy outliers" and the balanced shape, since alpha peaks
+    # at small nb/n and the endpoint gap closes as it approaches 1.
+    ratios = (0.125, 0.5)
+
     pivots: list[tuple] = []
-    for n in n_samples[:2]:
-        pivots.append((n, 0.125, pcmid, 0, kvsmid, _T2_SKEW_MIXED))
-    if len(n_samples) >= 1:
-        pivots.append((n_samples[0], 0.5, pcmid, 0, kvsmid, _T2_SKEW_MIXED[:3]))
-    # Pure-regime pivot (pc=0)
+    for pc in pc_mixed:
+        for n in n_samples:
+            for kvs in kvs_samples:
+                for r in ratios:
+                    pivots.append((n, r, pc, 0, kvs, _T2_SKEW_MIXED))
+    # Pure regime (pc=0) keeps its own sweep: it is a different kernel path and
+    # its alpha sits several-fold below the mixed one.
     if 0 in grid["pc"]:
-        pivots.append((n_samples[0], 0.125, 0, 0, kvsmid, _T2_SKEW_PURE))
+        for n in n_samples:
+            for kvs in kvs_samples:
+                pivots.append((n, 0.125, 0, 0, kvs, _T2_SKEW_PURE))
     return pivots
 
 
@@ -278,6 +307,24 @@ def _build_cases(args: ProfileArgs, limits) -> list[SkewCase]:
     grid = _build_grid(args, limits)
     cases: list[SkewCase] = []
 
+    # Tier 2 is fired **first**, on purpose. It is the only source of
+    # ``skew != _SKEW_REP``, so it carries all the information the uniform
+    # attention grid cannot express -- while tier 1 is the bulk of the shots
+    # and grows with whatever KV budget the engine happens to resolve (a
+    # re-profile of Qwen3-30B-A3B added 4,200 tier-1 cases before reaching
+    # tier 2 at all, and a time-boxed run then delivered no new skew-axis
+    # data). Ordering costs nothing -- the shots are independent and the dedup
+    # below is order-insensitive, since a duplicate is the same case either
+    # way -- and it makes an interrupted sweep useful.
+    # Tier 2 — skew-axis sweep at a few pivots. This is the only
+    # source of skew ≠ _SKEW_REP samples in the dataset; keep even
+    # though T1 covers the skew=4 baseline.
+    for (n, r, pc, kp, kvs, skews) in _tier2_pivots(grid):
+        for sk in skews:
+            c = SkewCase(n=n, ratio=r, skew=sk, pc=pc, kp=kp, kvs=kvs)
+            if _feasible(c, limits, args):
+                cases.append(c)
+
     # Tier 1 — factorial at representative skew.
     # Per-n, the effective ratio list is the fractional ``_RATIO_VALS``
     # plus ``nb_abs / n`` for each nb_abs in _NB_ABSOLUTE (dedup'd).
@@ -299,15 +346,6 @@ def _build_cases(args: ProfileArgs, limits) -> list[SkewCase]:
                                      pc=pc, kp=kp, kvs=kvs)
                         if _feasible(c, limits, args):
                             cases.append(c)
-
-    # Tier 2 — skew-axis sweep at a few pivots. This is the only
-    # source of skew ≠ _SKEW_REP samples in the dataset; keep even
-    # though T1 covers the skew=4 baseline.
-    for (n, r, pc, kp, kvs, skews) in _tier2_pivots(grid):
-        for sk in skews:
-            c = SkewCase(n=n, ratio=r, skew=sk, pc=pc, kp=kp, kvs=kvs)
-            if _feasible(c, limits, args):
-                cases.append(c)
 
     # Dedup (T1 + T2 can overlap at skew=4)
     seen = set()
