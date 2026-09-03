@@ -70,7 +70,15 @@ class AttentionPoint:
     # attention layer, but it is a different kernel with a different cost.
     layer: str
     prefill_chunk: int
-    kv_prefill: int
+    # Mean, over the batch's prefill sequences, of how far that sequence's
+    # queries look back: its context plus half its own chunk (causal). The
+    # column it replaces, ``kv_prefill``, described a single sequence, so a
+    # step carrying several was summed into a number describing none of them
+    # -- three requests with 0, 1200 and 64 tokens of context came out as
+    # 1264. Recorded **uncapped**: a sparse kernel's cost saturates in this
+    # quantity but the indexer's does not, and the two share this grid, so the
+    # saturation is applied per kernel at lookup instead.
+    prefill_key: float
     n_decode: int
     kv_decode: int
     # Query tokens per decode sequence: 1 for ordinary decoding, 1 + N for a
@@ -421,6 +429,75 @@ def _geometric_grid(max_value: int, start: int, factor: float = 2.0) -> list[int
     return values
 
 
+def _compose_prefill(
+    total_tokens: int,
+    key_mean: int,
+    min_chunk: int,
+    max_seqs: int,
+) -> list[tuple[int, int]] | None:
+    """The prefill sequences that put a batch at ``(total_tokens, key_mean)``.
+
+    ``key_mean`` is the mean, over the batch's prefill sequences, of how far
+    that sequence's queries look back: its context plus half its own chunk
+    (causal). With one sequence that is ``h + c/2``, so a single sequence can
+    only ever reach ``key_mean >= total_tokens / 2``. Below that the tokens
+    have to be spread over ``k = ceil(total_tokens / (2 * key_mean))``
+    sequences, which is the fewest that leaves each one a non-negative
+    context -- and the fewest matters, because a real step carries as few
+    prefill sequences as the token budget allows.
+
+    Returns None when the point is unreachable: no context can be negative,
+    and a chunk below ``min_chunk`` is not a prefill chunk (the axis itself
+    starts there).
+    """
+    if total_tokens <= 0:
+        return []
+    if key_mean <= 0:
+        return None
+    k = max(1, -(-total_tokens // (2 * key_mean)))
+    if k > max_seqs or total_tokens // k < min_chunk:
+        return None
+    base, extra = divmod(total_tokens, k)
+    # The remainder goes on the first sequence, so the chunks stay as even as
+    # integers allow and the mean below is exact rather than approximate.
+    chunks = [base + (1 if i < extra else 0) for i in range(k)]
+    # One context for all of them: the sweep point is a mean, and a uniform
+    # context is the composition that realises it with nothing else varying.
+    # Heterogeneous contexts are what the *runtime* produces, and the mean is
+    # what the axis reads, so they land on the same coordinate by
+    # construction.
+    reqs = []
+    for c in chunks:
+        h = key_mean - c / 2.0
+        if h < 0:
+            return None
+        reqs.append((c, int(round(h))))
+    return reqs
+
+
+def _attn_key(shot) -> tuple[int, float, int, int, int]:
+    """``(prefill tokens, mean prefill key, n_decode, kv_decode, q)``.
+
+    ``Shot.n_prefill`` says where the prefill sequences end, because with
+    more than one of them the boundary cannot be read off the shapes -- and
+    at ``q > 1`` a decode submits as many query tokens as a small prefill
+    chunk. Shots recorded before that field existed carry 0, and there the
+    old rule applies: at most one leading request with more than ``q``
+    tokens is the prefill.
+    """
+    reqs = list(shot.requests)
+    q = max(1, getattr(shot, "decode_q_len", 1))
+    n_pf = int(getattr(shot, "n_prefill", 0) or 0)
+    if not n_pf:
+        n_pf = 1 if (reqs and reqs[0][0] > q) else 0
+    prefill = reqs[:n_pf]
+    decodes = reqs[n_pf:]
+    total = sum(c for c, _ in prefill)
+    key = (sum(h + c / 2.0 for c, h in prefill) / n_pf) if n_pf else 0.0
+    kv_dec = decodes[0][1] if decodes else 0
+    return total, key, len(decodes), kv_dec, q
+
+
 class AttentionCategory(Category):
     """Unified attention profile covering pure-prefill, pure-decode,
     and mixed kernel shapes in a single 4D grid.
@@ -445,15 +522,23 @@ class AttentionCategory(Category):
         # max_num_seqs. The KV axes are additionally capped by
         # ``args.attention_max_kv`` (CLI-configurable) to keep
         # profile time bounded on long-context models.
-        # prefill_chunk and kv axes both default to 2.0 (doubling);
-        # override via --attention-chunk-factor / --attention-kv-factor
-        # if you want denser sampling. n_decode stays on doubling.
+        #
+        # The prefill side is swept as ``(total prefill tokens, key length)``
+        # and the *batch composition* is derived, rather than as one sequence
+        # of ``chunk`` tokens with ``kv_prefill`` of context. The old form
+        # cannot reach a batch that carries several prefill sequences at all:
+        # with one sequence the key length is always at least half the token
+        # count, so "many tokens, short keys" -- 4 requests of 500 tokens with
+        # no context -- is unreachable, and that is where 32-39% of a real
+        # run's multi-prefill steps land, at the full token budget, which is
+        # exactly where a saturated run's TTFT is set.
         chunk_vals = _geometric_grid(
             limits.max_num_batched_tokens, _ATTN_CHUNK_START,
             factor=args.attention_chunk_factor,
         )
         n_dec_vals = _geometric_grid(
             limits.max_num_seqs, _ATTN_N_DECODE_START,
+            factor=args.attention_n_factor,
         )
         # ``runner`` resolves this against the live engine before any grid
         # is composed, so None here means a caller bypassed that -- and a
@@ -466,6 +551,16 @@ class AttentionCategory(Category):
         kv_vals = _geometric_grid(
             kv_cap, _ATTN_KV_START, factor=args.attention_kv_factor,
         )
+        # The prefill key axis needs more reach than the decode one. A
+        # decode's key length *is* its kv, so ``kv_cap`` bounds it; a prefill
+        # sequence's is its context plus half its own chunk, so a request at
+        # the top of the kv reach carrying a full-budget chunk sits half a
+        # budget above it. Sweeping only to ``kv_cap`` would leave every such
+        # step extrapolating.
+        key_vals = _geometric_grid(
+            kv_cap + limits.max_num_batched_tokens // 2,
+            _ATTN_KV_START, factor=args.attention_kv_factor,
+        )
         # Query tokens per decode sequence. [1] by default -- the axis
         # multiplies the whole sweep, and it only matters for speculative
         # decoding, whose verification step submits 1 + N queries per sequence.
@@ -475,10 +570,21 @@ class AttentionCategory(Category):
         q_vals = sorted({max(1, int(v)) for v in args.attention_decode_q_lens})
 
         for chunk in chunk_vals:
-            for kv_p in kv_vals:
-                # When there's no prefill, sweeping kv_prefill would
+            for kv_p in key_vals:
+                # When there's no prefill, sweeping the key axis would
                 # only produce duplicate rows. Collapse to kv_p=0.
                 if chunk == 0 and kv_p != 0:
+                    continue
+                # Derive the composition that puts this shot at
+                # (sum_c=chunk, mean key=kv_p). One sequence can only reach
+                # ``key >= chunk/2``; below that the tokens have to be spread
+                # over the fewest sequences that make the per-sequence
+                # context non-negative.
+                prefill_reqs = _compose_prefill(
+                    chunk, kv_p, min_chunk=_ATTN_CHUNK_START,
+                    max_seqs=limits.max_num_seqs,
+                )
+                if chunk > 0 and prefill_reqs is None:
                     continue
                 for n_dec in n_dec_vals:
                     for kv_d in kv_vals:
@@ -513,19 +619,24 @@ class AttentionCategory(Category):
                         # 2. Request count vs max_num_seqs. vLLM V1
                         # pre-allocates input_batch for MSQ sequences;
                         # MSQ itself fits, MSQ+1 overflows the buffer.
-                        n_reqs = (1 if chunk > 0 else 0) + n_dec
+                        n_reqs = len(prefill_reqs or ()) + n_dec
                         if n_reqs > limits.max_num_seqs:
                             continue
                         # 3. Per-request sequence length vs max_model_len
                         # (hardware position-embedding index).
-                        if chunk > 0 and chunk + kv_p + 1 > limits.max_model_len:
+                        # Per **sequence**, not for the batch: with the
+                        # tokens spread over several prefill sequences each
+                        # one is shorter than the batch's total.
+                        if prefill_reqs and max(
+                            c + h for c, h in prefill_reqs
+                        ) + 1 > limits.max_model_len:
                             continue
                         bs = limits.block_size
 
                         def _aligned(total_len: int, bs: int = bs) -> int:
                             return ((total_len + bs - 1) // bs) * bs
-                        prefill_block_toks = (
-                            _aligned(chunk + kv_p) if chunk > 0 else 0
+                        prefill_block_toks = sum(
+                            _aligned(c + h) for c, h in (prefill_reqs or ())
                         )
                         for q in q_vals:
                             # q > 1 only makes sense where there are decodes
@@ -565,9 +676,8 @@ class AttentionCategory(Category):
                             if (prefill_block_toks + decode_block_toks
                                     > limits.num_cache_tokens):
                                 continue
-                            yield Shot.attention(
-                                prefill_chunk=chunk,
-                                kv_prefill=kv_p,
+                            yield Shot.attention_batch(
+                                prefill_reqs=prefill_reqs or [],
                                 n_decode=n_dec,
                                 kv_decode=kv_d,
                                 decode_q_len=q,
@@ -575,28 +685,10 @@ class AttentionCategory(Category):
 
     def extract_points(self, shot, timings, arch, tp):
         # Shot.attention encodes the 4D key in its request list:
-        #   requests[0] = (prefill_chunk, kv_prefill)   if chunk>0
+        #   requests[:n_prefill] = the prefill sequences, (chunk, context) each
         #   requests[k] = (1, kv_decode) for each decode, k in [1..n_decode]
-        reqs = shot.requests
-        q = max(1, getattr(shot, "decode_q_len", 1))
-        # Reconstruct the key from the shot shape. The decode query length has
-        # to come from the shot rather than the shapes: at q > 1 a decode
-        # request looks exactly like a prefill chunk in ``requests``, which is
-        # the ambiguity the axis exists to remove.
-        if reqs and reqs[0][0] > q:
-            # First request is the prefill.
-            prefill_chunk, kv_prefill = reqs[0]
-            decode_reqs = reqs[1:]
-        elif reqs and reqs[0][0] == q and len(reqs) > 0:
-            # No prefill; everything is a decode.
-            prefill_chunk, kv_prefill = 0, 0
-            decode_reqs = reqs
-        else:
-            raise RuntimeError(f"Unexpected attention shot shape: {reqs!r}")
-
-        n_decode = len(decode_reqs)
-        # All decodes share kv_decode by construction.
-        kv_decode = decode_reqs[0][1] if decode_reqs else 0
+        (prefill_chunk, prefill_key, n_decode,
+         kv_decode, q) = _attn_key(shot)
 
         # One point per matched layer. This used to average every sample into
         # a single point, which was right while the catalog was required to
@@ -613,7 +705,7 @@ class AttentionCategory(Category):
             yield AttentionPoint(
                 layer=sample.layer,
                 prefill_chunk=prefill_chunk,
-                kv_prefill=kv_prefill,
+                prefill_key=prefill_key,
                 n_decode=n_decode,
                 kv_decode=kv_decode,
                 decode_q_len=q,
@@ -624,17 +716,10 @@ class AttentionCategory(Category):
         return _entry_dict(arch.catalog.attention, arch)
 
     def shot_key(self, shot):
-        reqs = shot.requests
-        q = max(1, getattr(shot, "decode_q_len", 1))
-        if reqs and reqs[0][0] > q:
-            pc, kp = reqs[0]
-            decodes = reqs[1:]
-        else:
-            pc, kp = 0, 0
-            decodes = reqs
-        n_dec = len(decodes)
-        kv_dec = decodes[0][1] if decodes else 0
-        return (pc, kp, n_dec, kv_dec, q)
+        total, key, n_dec, kv_dec, q = _attn_key(shot)
+        # Rounded to match how the sink writes the column, so a resumed run
+        # recognises its own rows.
+        return (total, round(key, 3), n_dec, kv_dec, q)
 
 
 # ---------------------------------------------------------------------------
