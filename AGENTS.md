@@ -1298,14 +1298,34 @@ partitioning: `expert_id * ep_size // num_experts`.
 For DP groups (instances with the same `dp_group`), wave synchronization is achieved
 through two mechanisms:
 1. **Python-side dp_pending barrier**: trace generation is deferred until all DP group
-   members have scheduled their batches. The EP collectives' `comm_size` is
-   synchronized to the group-wide `max(total_len)`. `dp_pending[dg][inst]` is a
+   members have scheduled their batches, and the EP collectives are sized from
+   the round's gathered total. `dp_pending[dg][inst]` is a
    **FIFO**, not one slot: at `pp_size > 1` a member can have up to `pp_size` batches
    waiting, and a round pairs the members' *j*-th batches, mirroring vLLM, where DP
    rank A's *j*-th forward joins the same collective as rank B's *j*-th
 2. **ASTRA-Sim collective barrier**: all DP group instances' `.et` files are placed in a
    shared workload folder. The EP collectives in both files have matching stream
    IDs, causing ASTRA-Sim to block until both NPUs reach the collective.
+
+**A DP round is padded only while it fits the CUDA-graph capture range.**
+`dp_utils._synchronize_dp_ranks` sets `should_dp_pad = synced_cudagraph_mode
+!= 0`, and the synced mode is the **minimum** across ranks, so one member
+outside the range unpads the round for everyone. A prefill chunk is always
+outside it: `_cudagraph_capture_ceiling` mirrors vLLM's own derivation,
+`min(max_num_seqs * (1 + num_speculative_tokens) * 2, 512,
+max_num_batched_tokens)`, which is 256 tokens at 128 seqs against chunks of up
+to 2048. (512 rather than 1024 because the 1024 branch is SM100 -- B100/B200;
+RTX PRO 6000 is SM120. The `max_num_seqs` term usually binds anyway.)
+
+So a padded round runs every member at `max_total_len` and gathers
+`max_total_len * dp_group_size`; an unpadded one runs each member at its own
+length and gathers the plain sum. Padding unconditionally charged the small
+rank's dense and MoE layers at the big rank's token count and inflated both
+collectives with it, on exactly the mixed prefill/decode rounds -- which showed
+as a TTFT tail (median -6.2%, P90 +33.3%) rather than a uniform shift. Both
+completion paths need the rule: fixing only the one that opens a round left the
+example at +16.6% where fixing both gives -18.5%, so the other path carries
+most of the rounds.
 
 When one DP instance is idle (no requests), a dummy batch (1 decode token) is created
 so it can participate in the sync. When one instance finishes all requests, it
