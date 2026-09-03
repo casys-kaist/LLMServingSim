@@ -323,6 +323,7 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
             "npu_memory_utilization": _resolve_mem_util(
                 instance, args.npu_memory_utilization),
             "reserve_full_isl": instance.get("reserve_full_isl", args.reserve_full_isl),
+            "async_scheduling": instance.get("async_scheduling", args.async_scheduling),
             "enable_local_offloading": instance.get(
                 "enable_local_offloading", args.enable_local_offloading),
             "enable_attn_offloading": enable_attn_offloading,
@@ -528,6 +529,14 @@ def main():
                         'not merely its first chunk. Mirrors vLLM\'s scheduler_reserve_full_isl '
                         '(True there too); without it chunked prefill over-admits and thrashes '
                         'the KV cache. Override per instance with "reserve_full_isl"')
+    parser.add_argument('--async-scheduling', action=argparse.BooleanOptionalAction, default=True,
+                        help="compose the next batch while the current one is still running, "
+                        "as vLLM's scheduler_config.async_scheduling does (True there too). "
+                        "It makes max_concurrent_batches 2 at pp_size 1, so a request that "
+                        "arrives after the next batch was composed waits one more step -- "
+                        "worth ~0.6 step of TTFT, which is invisible on a saturated run and "
+                        "a fifth of the median TTFT on a light one. Override per instance "
+                        'with "async_scheduling"')
     parser.add_argument('--npu-memory-utilization', type=float, default=0.9,
                         help='fraction of NPU memory an instance may use for weights plus '
                         "KV cache. Corresponds to vLLM's --gpu-memory-utilization, renamed "
@@ -750,6 +759,7 @@ def main():
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
             npu_memory_utilization=inst_cfg["npu_memory_utilization"],
             reserve_full_isl=inst_cfg["reserve_full_isl"],
+            async_scheduling=inst_cfg["async_scheduling"],
             acceptance_model=_build_acceptance_model(
                 instance["model_name"], inst_cfg, instance["node_id"], instance_id),
         ))
