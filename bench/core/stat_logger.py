@@ -26,6 +26,7 @@ class _Sample:
     num_waiting: int
     num_prompt_tokens: int      # tokens prefilled this iteration
     num_generation_tokens: int  # tokens decoded this iteration
+    num_preempted_reqs: int     # requests preempted this iteration
     kv_cache_pct: float
     engine_idx: int
 
@@ -66,9 +67,18 @@ class BenchStatLogger(StatLoggerBase):
 
         prompt_toks = 0
         gen_toks = 0
+        preempted = 0
         if iteration_stats is not None:
             prompt_toks = getattr(iteration_stats, "num_prompt_tokens", 0)
             gen_toks = getattr(iteration_stats, "num_generation_tokens", 0)
+            # Preemptions are the one thing that separates two readings of a
+            # long ``prefill_time``. vLLM stamps ``scheduled_ts`` on the FIRST
+            # admission and explicitly ignores later ones ("# ignore
+            # preemptions" in metrics/stats.py), so a request that is admitted,
+            # preempted and re-admitted reports every second of that as
+            # prefill. Without this counter there is no way to tell that apart
+            # from the scheduler genuinely trickling a prefill across steps.
+            preempted = iteration_stats.num_preempted_reqs
 
         BenchStatLogger.samples.append(_Sample(
             t=time.monotonic() - (BenchStatLogger._t0 or time.monotonic()),
@@ -76,6 +86,7 @@ class BenchStatLogger(StatLoggerBase):
             num_waiting=waiting,
             num_prompt_tokens=prompt_toks,
             num_generation_tokens=gen_toks,
+            num_preempted_reqs=preempted,
             kv_cache_pct=cache_pct,
             engine_idx=engine_idx if engine_idx else self.engine_index,
         ))
@@ -102,6 +113,7 @@ class BenchStatLogger(StatLoggerBase):
             "gen_throughput",
             "running",
             "waiting",
+            "preempted",              # summed over the tick, across engines
             "kv_cache_pct",
         ]
         if not cls.samples:
@@ -124,6 +136,9 @@ class BenchStatLogger(StatLoggerBase):
             # divide by tick to convert to throughput.
             prompt_sum = sum(s.num_prompt_tokens for s in in_bucket)
             gen_sum = sum(s.num_generation_tokens for s in in_bucket)
+            # Summed, not snapshotted: it is a per-iteration event count, so
+            # the tick's total is what a reader wants.
+            preempted_sum = sum(s.num_preempted_reqs for s in in_bucket)
             # For running/waiting/cache, average across engines at the *latest*
             # iteration of each engine within the bucket.
             latest_per_engine: dict[int, _Sample] = {}
@@ -146,6 +161,7 @@ class BenchStatLogger(StatLoggerBase):
                 round(gen_sum / tick_seconds, 1),
                 running,
                 waiting,
+                preempted_sum,
                 round(cache_pct, 2),
             ])
             bucket_idx += 1
