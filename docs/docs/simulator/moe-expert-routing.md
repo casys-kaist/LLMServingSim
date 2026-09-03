@@ -212,12 +212,24 @@ Every rank's MoE block latency comes from
 
 | Key | Meaning |
 | --- | --- |
+| `ep` | The instance's **total** EP degree — picks which grid to read |
 | `local_tokens` | Tokens assigned to this rank after dispatch |
 | `activated_experts` | Number of *distinct* experts this rank touches |
 
-Profiled at TP=1 (no tensor splitting in MoE, per-expert weights are
-already small). Simulator does 2D linear interpolation across the
-two axes.
+Profiled at TP=1 (expert weights shard by `ep_size`, not `tp_size`) but
+**once per EP degree**, because a rank runs a slice of the block rather than
+the block: `E/ep` local experts and `k/ep` of a token's k assignments. The
+simulator does 2D linear interpolation across `local_tokens` and
+`activated_experts` inside the chosen grid, and falls back to the nearest
+profiled `ep` with a one-shot warning rather than interpolating across it.
+
+This matters most in decode. `activated_experts` is the only lookup axis whose
+minimum is a positive number the runtime can go under — it floors at `top_k`,
+since a token cannot activate fewer experts than it selects — and the lookup
+clamps below the grid instead of extrapolating. A GLM-5 EP=2 run asked for
+`activated=4` against a floor of 8 in **98.4%** of its MoE lookups. Reading the
+ep=1 grid there over-charges the MoE term by 1.7x to 4.8x depending on the
+model and degree.
 
 The full MoE block latency is then **max(rank_latencies)** because
 ranks execute in parallel and synchronize at the surrounding

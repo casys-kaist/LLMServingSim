@@ -21,7 +21,7 @@ profiler/perf/<HARDWARE>/<MODEL>/<variant>/
     ├── per_sequence.csv
     ├── attention.csv
     ├── linear_attention.csv      # mamba / gated-DeltaNet models only
-    ├── moe.csv                   # MoE models only
+    ├── moe.csv                   # MoE models only, one grid per EP degree
     ├── skew.csv                  # skew-enabled runs only
     └── skew_fit.csv              # skew-enabled runs only
 ```
@@ -151,22 +151,49 @@ produces.
 ## `moe.csv` (MoE models only)
 
 ```
-tokens,activated_experts,time_us
-1,8,50.2297
-2,8,56.1917
+ep,tokens,activated_experts,time_us
+1,1,8,47.8
+2,1,4,36.1
+4,1,2,30.2
 ...
 ```
 
 | Column | Meaning |
 | --- | --- |
+| `ep` | EP degree this grid was measured at — the engine ran `E/ep` local experts and `k/ep` assignments per token |
 | `tokens` | Local tokens on a single rank after dispatch |
 | `activated_experts` | Distinct experts touched on that rank |
 | `time_us` | Measured MoE block latency on a single rank |
 
-Simulator: **2D linear interpolation** on `(tokens, activated_experts)`.
-Profiled at **TP=1** only, increasing TP doesn't change the
-per-rank expert kernel. The simulator handles `ep_size` by adjusting
-expert-to-rank assignment, not by re-profiling.
+Simulator: **2D linear interpolation** on `(tokens, activated_experts)`
+within the grid for this instance's total EP degree. An unprofiled degree
+falls back to the nearest with a one-shot warning rather than interpolating
+across `ep` — `E/ep` has to be a whole number of experts and the permute width
+is a staircase in it.
+
+**One grid per EP degree, because a rank runs a slice and not the block.**
+It permutes over `E/ep` local experts rather than all E, a token contributes
+`k/ep` of its k expert assignments rather than all k, and so the distinct
+experts it activates start at `k/ep` rather than at `top_k`. Profiling only at
+ep=1 gets all three wrong in the same direction, and the third one is not even
+interpolated: `activated_experts` is the one lookup axis whose minimum is a
+positive number the runtime goes under, and the lookup clamps below the grid.
+Measured at one token on the rank:
+
+| model | ep=1 | ep=8 (a real rank at EP=8) |
+| --- | --- | --- |
+| DeepSeek-V3.2 | 84.7 us | **28.1 us** |
+| GLM-5 | 162.6 us | **33.7 us** |
+| MiniMax-M3 | 139.5 us | **47.3 us** |
+| Qwen3-30B-A3B | 47.8 us | **27.8 us** |
+
+Sweep it with `--moe-ep-degrees 1,2,4,8` (or `MOE_EP_DEGREES` in
+`profile.sh`) whenever the deployment runs EP > 1. Each degree past 1 costs one
+engine boot and the same ~57 shots — about 10 minutes for a full sweep. A
+bundle with no `ep` column is read as ep=1 and prices exactly as it did before
+the axis existed.
+
+Still profiled at **TP=1**: expert weights shard by `ep_size`, not `tp_size`.
 
 ## `skew.csv` (skew-enabled runs)
 
@@ -292,6 +319,10 @@ attention_grid:
   chunks: 0, 16-2048 x2
   n_decode: 0, 1-256 x2
   kv: 0, 16-16384 x2
+  decode_q_lens: [1]
+category_provenance:
+  dense: {vllm_version: 0.19.0, profiled_at: '2026-04-24T12:44:06+00:00'}
+  moe: {vllm_version: 0.28.0, profiled_at: '2026-09-03T02:13:24+00:00'}
 measurement_iterations: 3
 skew_profile:
   enabled: true
@@ -358,6 +389,27 @@ There is no `dtype` or `kv_cache_dtype` key here. The effective dtypes
 are encoded in `variant`.
 
 ### Grid specs are compact, not enumerated
+
+`attention_grid.decode_q_lens` lists the query lengths swept. It is recorded
+because it cannot be recovered from the rows: a `q > 1` sweep yields no
+pure-prefill shot, so the row count alone cannot tell you which query lengths
+fired, and a bundle holding five of them while the meta records none reads as
+a `q=1` sweep.
+
+`category_provenance` records the vLLM version and timestamp **per category**.
+A bundle is not necessarily one measurement session — a `slice` refresh
+rewrites one category and leaves the rest — and the top-level `vllm_version` /
+`profiled_at` describe only the most recent refresh. Which rows came from which
+version is not a detail: vLLM 0.28 restructured MoE, and the two versions agree
+to within noise on decode-sized batches while differing by 16–26% at 2048
+tokens.
+
+A refresh only rewrites what it measured. `engine_effective` and
+`engine_resolved` describe the **deepest main engine**, so a `--profile-mtp`
+refresh (which boots a different model — one extra full-attention layer and a
+conv state widened by `num_speculative_tokens`) and a per-category refresh
+(which boots a shrunk stack) both leave them alone. `attention_grid` may only
+be rewritten by a run that swept attention.
 
 `attention_grid` and `skew_profile.grid` use a shorthand rather than
 listing every point:
