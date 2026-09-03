@@ -255,6 +255,10 @@ catalog:
     attention:
       # mla_attn -> MultiHeadLatentAttentionWrapper -> MLAAttention.
       vllm: MLAAttention
+      # A query reads at most index_topk selected positions, so the cost
+      # stops growing once a sequence's key window passes it: a 16-token
+      # prefill measures 139.3 us at 2048 of context and 138.3 at 8192.
+      key_saturates: true
     indexer:
       # Scores the whole KV before the top-k selection, so its cost tracks kv
       # length on the same axes the attention kernel uses -- which is why it
