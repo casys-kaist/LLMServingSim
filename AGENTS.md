@@ -325,10 +325,34 @@ perf/<hw>/<model>/<variant>/
     per_sequence.csv                     layer, sequences, time_us
     attention.csv                        prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
     linear_attention.csv                 layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
-    moe.csv                              tokens, activated_experts, time_us   (MoE only)
+    moe.csv                              ep, tokens, activated_experts, time_us  (MoE only)
     skew.csv                             raw heterogeneous-decode shots        (skew enabled)
     skew_fit.csv                         fitted per-bucket alpha table         (skew enabled)
 ```
+
+**A refresh rewrites only what it measured.** `meta.yaml` describes more than
+any one `slice` covers, so `persist_meta` takes two authority flags and carries
+everything else over from the file:
+
+- `engine_effective` / `engine_resolved` describe the **deepest main engine** —
+  the one whose shapes the simulator will run, which is why `run_full` probes
+  limits there. A `--profile-mtp` refresh boots a different model (one extra
+  full-attention layer, a conv state widened by `num_speculative_tokens`), and
+  a per-category refresh boots a shrunk stack; neither is authoritative.
+  Letting the MTP pass write them put `block_size: 800` and half the KV cache
+  into Qwen3.8-27B's bundle where the main engine resolves **784** and
+  19,839,182 — and `_resolve_block_size` reads that block size whenever
+  `--block-size` is omitted, which is the documented way to get the profiled
+  value. Three of the four modern bundles had it.
+- `attention_grid` may only be rewritten by a run that swept attention. It now
+  records **`decode_q_lens`** as well, because the fifth axis is not derivable
+  from the other four (a `q > 1` sweep yields no pure-prefill shot, so the row
+  count cannot tell you which query lengths were fired) and a bundle holding
+  five of them while the meta records none reads as a `q=1` sweep.
+
+An empty `limits` argument now **preserves** `engine_resolved` rather than
+erasing it, which is how the MTP refresh could delete what the main engine
+resolved.
 
 `attention.csv`, `skew.csv` and `skew_fit.csv` are keyed by **`layer`** as well:
 a sparse-attention model has two or three kernels in that category and they
@@ -561,7 +585,7 @@ the lookup.
 | `final_layernorm` | dense (tp_stable) | `tokens = total_len` |
 | `lm_head` | per_sequence | `sequences = num_requests` |
 | `sampler` | per_sequence (tp_stable) | `sequences = num_requests` |
-| `moe` | moe (always profiled at tp=1; wrapped in the EP all-to-all) | `(local_tokens, activated_experts)` |
+| `moe` | moe (tp=1, one grid per EP degree; wrapped in the EP all-to-all) | `(ep_total, local_tokens, activated_experts)` |
 | `mtp_*` | mtp (only with `--profile-mtp`; emitted N times per step, each pass wrapping a replay of `mtp.decoder_block`) | `tokens = total_len` of the pass |
 
 The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
@@ -682,9 +706,12 @@ The simulator loads per-category CSVs via `_load_perf_db()` and dispatches
 lookups by catalog category: `_lookup_dense` (1D linear over tokens),
 `_lookup_per_sequence` (1D linear over sequences), `_lookup_attention` (4D
 linear over `(prefill_chunk, kv_prefill, n_decode, kv_decode)`), and
-`_lookup_moe` (2D over `(tokens, activated_experts)`, profiled at tp=1).
-All lookups extrapolate (time_us is linearly extended) rather than
-clamping.
+`_lookup_moe` (2D over `(tokens, activated_experts)` within the table for
+this run's `ep_total`, profiled at tp=1).
+Lookups extrapolate **above** the top profiled value (time_us is linearly
+extended); below the bottom they **clamp**. That asymmetry is only safe because
+every axis sweeps a 0 or 1 point, so no runtime query can fall under it -- with
+one exception, which is why `moe.csv` has an `ep` axis. See the MoE section.
 
 `_axis_bracket` blends on a **linear** scale, not in log space, even
 though the profiler sweeps every axis geometrically. Grid spacing decides
@@ -1182,8 +1209,24 @@ ASTRA-Sim's `data_size` convention for each collective:
 
 | Half | Marker | `comm_size` |
 |------|--------|-------------|
-| dispatch | `EXPERT 0` | `total_len / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
-| combine | `EXPERT END` | `total_len * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+| dispatch | `EXPERT 0` | `gathered / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
+| combine | `EXPERT END` | `gathered * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+
+`gathered` is the **sum** of the group's per-rank token counts, which under a
+DP group is `max_total_len * dp_group_size`. Both of vLLM's own facts say so:
+`AgRsAll2AllManager.dispatch_router_logits` all-gathers with
+`sizes[rank] == hidden_states.shape[0]`, so each rank contributes *all* of its
+tokens, and `dp_utils.coordinate_batch_across_dp` pads every rank up to the
+group max whenever cudagraphs are on. It was set to `max_total_len` — i.e.
+`ep_total` times too small — on the grounds that "ASTRA-Sim's Ring is 2x over
+real AG/RS". It is not: `Ring.cc` gives AllGather `(N-1) x chunk`,
+ReduceScatter `(N-1) x total/N` and AllReduce `2(N-1) x total/N` per rank,
+which is NCCL's ring algorithm for all three. What the halving actually
+compensated for was the MoE *compute* being over-charged by the sub-top_k
+clamp; with both fixed, the dp+ep bench example moved from -23.3% TTFT /
+-3.7% TPOT to +19.9% / +3.8%, and the TP-only example (which never takes this
+path) stayed at +1.3% / +0.8%. **Two errors that cancelled are now one
+residual** -- do not "recalibrate" either half back.
 
 Real lines (Qwen3-30B-A3B, `hidden 2048`, 128 experts, bf16, 10 tokens at
 `ep_total 2`), where `5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`:
@@ -1198,6 +1241,51 @@ The other backends (`deepep_*`, `mori_*`, `flashinfer_*`) would emit a
 different collective and are not modelled. Don't "fix" the docs back to a
 single ALLTOALL: the sizes differ between the two halves, so one collective
 cannot describe it.
+
+### The MoE grid is per EP degree
+An EP rank does not run the model's MoE block; it runs a **slice** of it, and
+the slice differs three ways at once: it permutes over `E/ep` local experts
+rather than all E, a token contributes `k/ep` of its k expert assignments
+rather than all k, and so the distinct experts it activates start at `k/ep`
+rather than at k. Profiling at ep=1 and charging that per rank gets all three
+wrong in the same direction.
+
+The third is the one that bit. `activated_experts` is the only axis in the repo
+whose minimum is a positive number the runtime can go under -- it floors at
+`top_k`, because a token cannot activate fewer experts than it selects, and the
+profiler's `ExpertRoute.forge` refuses to build one that does. The runtime goes
+under it constantly: `_balanced_route_ep` gives a decode step
+`activated = min(round(total_len * k / ep), E/ep)`, which is 1 at ep=8, and
+**98.4% of MoE lookups in a GLM-5 EP=2 run asked for 4 against a floor of 8**.
+Clamped, the MoE term reads 1.7x to 4.8x over at the decode operating point:
+
+| model, one token on the rank | ep=1 (what was charged) | ep=8 (the real slice) |
+|---|---|---|
+| DeepSeek-V3.2 | 84.7 us | **28.1 us** |
+| GLM-5 | 162.6 us | **33.7 us** |
+| MiniMax-M3 | 139.5 us | **47.3 us** |
+| Qwen3-30B-A3B | 47.8 us | **27.8 us** |
+
+**Extrapolating instead of measuring would have over-corrected.** Fitting
+`fixed + per_expert * a` through Qwen3-30B-A3B's own grid predicts 16.8 us at
+`a=4` where the ep=2 slice measures 36.2 us -- 2.2x low, because the fixed
+permute cost does not vanish with the expert count. The curve saturates from
+ep=8 on (28.1 / 27.5 / 27.7 us on DeepSeek) for the same reason: once `k/ep`
+floors at 1 only one expert plus that fixed cost is left.
+
+`--moe-ep-degrees 1,2,4,8,...` sweeps it. Each degree past 1 costs one engine
+boot and the same ~57 shots, so a full sweep is ~10 minutes per model. The
+slice is written into the materialized **config file**, not passed as
+`hf_overrides`, for the same reason `_cap_mtp_modules` is: on a wrapped
+checkpoint the expert fields live under `text_config`, where a top-level
+override never lands (MiniMax-M3 is exactly that shape). `n_group` must divide
+the local expert count, which costs DeepSeek-V3.2 only `ep=64`.
+
+The simulator picks the table for the instance's **total** EP degree and falls
+back to the nearest profiled one with a one-shot warning. Not interpolated, for
+the same reason `decode_q_len` is not: `E/ep` has to be a whole number of
+experts and the permute width is a staircase in it. A bundle with no `ep`
+column reads as ep=1 and prices exactly as it did before the axis existed.
 
 ### MoE expert blocks
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank
