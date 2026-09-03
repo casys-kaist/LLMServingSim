@@ -1481,19 +1481,25 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
     """
     ep_total = ctx.ep_total
 
-    # MoE compute uses ``bctx.total_len`` (= per-rank padded count after
-    # ``_pad_batch_to_max``), matching how the real vLLM kernel runs on the
-    # full padded forward shape. Routing / ``_lookup_moe`` therefore see
-    # the same per-rank padded value as every other dense layer.
-    effective_total_len_compute = bctx.total_len
+    # AG/RS comm size and MoE compute are the **same** quantity: the gathered
+    # token count. vLLM's naive DP+EP prepare hands the expert kernel the
+    # tensors returned by ``get_ep_group().dispatch(...)`` -- i.e. post
+    # all-gather -- so every rank runs its local experts over *every* rank's
+    # tokens and ``finalize``'s reduce-scatter hands back only its own slice.
+    # Charging a rank for its own batch instead understated the MoE term on
+    # every DP round whose members had comparable work: 0.6 ms per decode step
+    # and 2.8 ms per prefill step on Qwen3-30B-A3B at ep=2 over 48 MoE layers,
+    # which is the per-step deficit that showed up as -27% TTFT on the dp+ep
+    # bench example while the same model at dp=1 sat at +5%.
+    #
+    # It is less than the ep_total factor the token count suggests because the
+    # cost saturates once ``activated`` reaches ``E/ep``: past that, loading all
+    # the local experts' weights dominates and more tokens are nearly free
+    # (moe(2T)/moe(T) is 1.01-1.12x on that grid, not 2x).
+    effective_total_len_comm = (ctx.dp_sum_total_len if ctx.dp_sum_total_len > 0
+                                else bctx.total_len)
+    effective_total_len_compute = effective_total_len_comm
     routing = ctx.gate.route_ep(layer_num, batch_id_str, effective_total_len_compute, ep_total)
-
-    # AG/RS comm sizes are anchored to ``dp_sum_total_len``, which
-    # ``serving/__main__.py`` sets to ``max_total_len`` (NOT ``max × dp_group_size``)
-    # for DP groups; this calibrates the AG/RS bandwidth model against the same
-    # ``link_bw`` that already matches AllReduce. Falls back to this rank's own
-    # ``total_len`` when DP is inactive.
-    effective_total_len_comm = ctx.dp_sum_total_len if ctx.dp_sum_total_len > 0 else bctx.total_len
 
     # vLLM default ``allgather_reducescatter`` backend: dispatch = AllGather
     # (hidden + router_logits), combine = ReduceScatter (hidden only).

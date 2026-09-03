@@ -68,6 +68,18 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    help="vLLM kv_cache_dtype.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
+    p.add_argument("--load-format", default="auto", dest="load_format",
+                   help="vLLM load_format. 'dummy' skips reading weights and "
+                        "initializes them randomly, which is valid ground "
+                        "truth for a *performance* comparison and needs no "
+                        "checkpoint on disk: the replay feeds token ids "
+                        "directly (TokensPrompt) and pins the output length "
+                        "(min_tokens == max_tokens, ignore_eos), so nothing "
+                        "recorded here reads a generated token. Shapes, "
+                        "memory footprint, kernel selection, block counts and "
+                        "scheduling are unchanged; only the token *values* "
+                        "are garbage. Recorded in meta.json so a run can "
+                        "never be mistaken for a real-weights one.")
     p.add_argument("--tick-seconds", type=float, default=1.0,
                    dest="tick_seconds",
                    help="Stat logger downsample interval (timeseries.csv row spacing).")
@@ -157,6 +169,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         dtype=args.dtype,
         kv_cache_dtype=args.kv_cache_dtype,
         seed=args.seed,
+        load_format=args.load_format,
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
@@ -292,7 +305,7 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
     fields = (
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
-        "max_model_len", "dtype", "kv_cache_dtype", "seed",
+        "max_model_len", "dtype", "kv_cache_dtype", "seed", "load_format",
     )
     return {k: getattr(engine_args, k, None) for k in fields}
 
