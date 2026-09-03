@@ -49,9 +49,9 @@ def _pad_batch_to_max(batch, max_len):
     toward 1 and push the attention lookup far outside the profiled
     sweep.
 
-    MoE AG/RS comm size is anchored separately to ``max_total_len`` (no
-    ``× group_size``) in the iteration loop — that calibrates the
-    bandwidth model against the same ``link_bw`` AllReduce already uses.
+    The MoE AG/RS comm size is derived from the padded length in the
+    iteration loop, summed over the group -- vLLM gathers every rank's
+    own tokens, so the gathered buffer is the sum and not the max.
 
     Request-completion accounting (`scheduler.add_done`) reads
     ``batch.requests`` and ``batch.end``, not these mutated token-list
@@ -963,16 +963,30 @@ def main():
                     max_total_len = max(b.total_len for b, _ in round_batches.values())
                     for b, _ in round_batches.values():
                         _pad_batch_to_max(b, max_total_len)
-                    # MoE AG/RS comm size is anchored to ``max_total_len``
-                    # (not ``max × group_size``). The trace generator divides
-                    # this by ep_total internally for the per-rank AG chunk
-                    # and uses the same value for the RS pre-scatter buffer.
-                    # Empirically this matches real NCCL AG/RS bandwidth on
-                    # PCIe 5.0 at the same ``link_bw`` that already calibrates
-                    # AllReduce — i.e. ASTRA-Sim's Ring half-duplex model
-                    # ends up correct for AR but 2× over real AG/RS, and the
-                    # "× group_size" we used previously stacked the two errors.
-                    sum_total_len = max_total_len
+                    # The gathered size, which is what both EP collectives are
+                    # sized from. vLLM's ``AgRsAll2AllManager.dispatch_router_logits``
+                    # all-gathers ``[hidden_states, router_logits]`` with
+                    # ``sizes[rank] == hidden_states.shape[0]``, so every rank
+                    # contributes *all* of its own tokens and the result is the
+                    # concatenation over the group; ``combine`` reduce-scatters a
+                    # buffer of that same gathered size. The trace generator turns
+                    # this into ASTRA-Sim's two conventions by dividing by
+                    # ``ep_total`` for the AllGather's per-rank chunk and passing it
+                    # whole for the ReduceScatter's pre-scatter total -- both of
+                    # which are right only if this really is the sum.
+                    #
+                    # It used to be set to ``max_total_len``, i.e. ep_total times
+                    # too small, on the grounds that ASTRA-Sim's Ring model is "2x
+                    # over real AG/RS". It is not: ``Ring.cc`` gives AllGather
+                    # ``(N-1) x chunk``, ReduceScatter ``(N-1) x total/N`` and
+                    # AllReduce ``2(N-1) x total/N`` per rank, which is exactly
+                    # NCCL's ring algorithm for all three. What that halving really
+                    # compensated for was the MoE *compute* being 1.33x over from
+                    # the sub-top_k clamp; with the compute measured per EP slice,
+                    # the halving is a 2x under-count of the collective and shows up
+                    # as -23% TTFT on the dp+ep bench example while the TP-only one
+                    # (which never takes this path) sits at +1%.
+                    sum_total_len = max_total_len * len(dp_groups[dg])
 
                     # Shared workload folder for all DP members
                     first_inst_id = dp_groups[dg][0]
@@ -1061,9 +1075,8 @@ def main():
                         max_total_len = max(b.total_len for b, _ in round_batches.values())
                         for b, _ in round_batches.values():
                             _pad_batch_to_max(b, max_total_len)
-                        # See twin block above: anchor MoE comm to max_total_len
-                        # (no group-size multiplier).
-                        sum_total_len = max_total_len
+                        # See the twin block above for why this is the sum.
+                        sum_total_len = max_total_len * len(dp_groups[dg])
 
                         # Shared workload folder for all DP members
                         first_inst_id = dp_groups[dg][0]
