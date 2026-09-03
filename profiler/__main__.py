@@ -167,6 +167,17 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "support this. Pair it with the coverage subcommand "
                         "first: the drafter's kernels show up as unbound "
                         "until a catalog binds them.")
+    p.add_argument("--moe-ep-degrees", type=str, default="1",
+                   dest="moe_ep_degrees",
+                   help="Comma-separated EP degrees to profile the MoE block "
+                        "at, e.g. '1,2,4,8'. A rank does not run the model's "
+                        "MoE block but a slice of it -- E/ep experts, k/ep "
+                        "assignments per token -- so profiling only at ep=1 "
+                        "and charging that per rank overstates the MoE term "
+                        "(1.4x-3.7x measured, worst at small per-rank token "
+                        "counts). Each degree past 1 costs one extra engine "
+                        "boot and the same ~57 shots. Default '1', which "
+                        "reproduces bundles written before the axis existed.")
     p.add_argument("--hf-override", action="append", default=None,
                    dest="hf_override", metavar="KEY=VALUE",
                    help="Override one model-config field, repeatable. The "
@@ -422,6 +433,11 @@ def _build_profile_args(
         max_model_len=getattr(ns, "max_model_len", None),
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
         profile_mtp=bool(getattr(ns, "profile_mtp", False)),
+        moe_ep_degrees=tuple(sorted({
+            max(1, int(v))
+            for v in str(getattr(ns, "moe_ep_degrees", "1") or "1").split(",")
+            if v.strip()
+        })) or (1,),
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_decode_q_lens=tuple(

@@ -117,6 +117,21 @@ class DedupSink:
             field_order = reader.fieldnames or []
             if not field_order:
                 return 0
+            # A prior file that predates one of this sink's key fields cannot
+            # be preloaded at all -- every row would fail the key build below --
+            # and adopting its column order would pin ``flush`` to a schema too
+            # narrow for the rows about to be written. That is not
+            # hypothetical: adding the ``ep`` key to moe.csv made flush raise
+            # ``dict contains fields not in fieldnames: 'ep'`` *after* the whole
+            # sweep had run, and the file had already been truncated.
+            missing = [k for k in self.key_fields if k not in field_order]
+            if missing:
+                log.info(
+                    "%s predates the %s column(s); its rows cannot be keyed, "
+                    "so the sweep starts clean rather than resuming",
+                    self.out_path.name, ", ".join(missing),
+                )
+                return 0
             # Establish ordering now so flush preserves the original
             # schema even when no new rows come in.
             if self._fieldnames is None:
@@ -203,10 +218,19 @@ class DedupSink:
             for f in header
         ]
 
-        with self.out_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=header)
-            writer.writeheader()
-            writer.writerows(rows)
+        # Write beside the target and rename. Opening ``out_path`` directly
+        # truncates it before the first row is validated, so one bad row
+        # destroys a bundle that took hours -- which is exactly what happened
+        # when the moe key grew an ``ep`` field.
+        tmp = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
+        try:
+            with tmp.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=header)
+                writer.writeheader()
+                writer.writerows(rows)
+            tmp.replace(self.out_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
         log.debug("wrote %d rows → %s", len(rows), self.out_path)
         self._bucket.clear()
@@ -246,7 +270,7 @@ _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
     "attention": ["layer", "prefill_chunk", "kv_prefill", "n_decode",
                   "kv_decode", "decode_q_len"],
     "linear_attention": ["layer", "prefill_tokens", "n_decode"],
-    "moe": ["tokens", "activated_experts"],
+    "moe": ["ep", "tokens", "activated_experts"],
     "mtp": ["layer", "sequences"],
 }
 
@@ -505,26 +529,97 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
         "chunks": _geometric_spec(chunks),
         "n_decode": _geometric_spec(n_dec),
         "kv": _geometric_spec(kv),
+        # The fifth axis. Not derivable from the other four -- a q > 1 sweep
+        # yields no pure-prefill shot, so the row count alone cannot tell you
+        # which query lengths were fired -- and a bundle whose CSV holds five
+        # of them while the meta records none reads as a q=1 sweep.
+        "decode_q_lens": sorted({max(1, int(q))
+                                 for q in args.attention_decode_q_lens}),
     }
+
+
+def _category_provenance(
+    prior: dict[str, Any],
+    measured: tuple[str, ...],
+    version: str,
+    stamp: str,
+) -> dict[str, Any] | None:
+    """``{category: {vllm_version, profiled_at}}``, accumulated across refreshes.
+
+    A bundle is not necessarily one measurement session: a slice refresh
+    rewrites one category and leaves the rest alone, and those rest may have
+    been measured under a different vLLM. Recording it per category is the only
+    way the file can say so.
+    """
+    out: dict[str, Any] = {}
+    prior_block = prior.get("category_provenance")
+    if isinstance(prior_block, dict):
+        out.update({str(k): dict(v) for k, v in prior_block.items()
+                    if isinstance(v, dict)})
+    elif prior:
+        # First time: everything already in the file belongs to the run that
+        # wrote it, whose version and timestamp are the prior top-level ones.
+        seed = {"vllm_version": prior.get("vllm_version"),
+                "profiled_at": prior.get("profiled_at")}
+        if seed["vllm_version"]:
+            for name in _KEY_FIELDS_BY_CATEGORY:
+                out[name] = dict(seed)
+    for name in measured:
+        out[str(name)] = {"vllm_version": version, "profiled_at": stamp}
+    return out or None
 
 
 def persist_meta(
     args: ProfileArgs,
     arch_path: Path,
-    engine_kwargs_used: dict[str, Any],
+    engine_kwargs_used: dict[str, Any] | None,
     variant_root: Path,
     limits: Any = None,
+    *,
+    records_engine: bool = True,
+    records_attention_grid: bool = True,
+    measured_categories: tuple[str, ...] = (),
 ) -> None:
     """Write ``variant_root/meta.yaml`` describing the profile session.
 
-    Written once per variant. ``slice`` subcommand rewrites it in
-    place with the new timestamp.
+    Written once per variant; a ``slice`` refresh rewrites it in place. What a
+    refresh may rewrite is the point of the two flags, because the file
+    describes more than any one refresh measures:
+
+    ``records_engine`` -- ``engine_effective`` and ``engine_resolved`` describe
+    the **deepest main engine**, the one whose shapes the simulator will run
+    (``run_full`` picks it deliberately: "the deepest engine is the one whose
+    shapes describe the stack"). An MTP refresh boots a different engine
+    entirely -- one extra full-attention layer and a conv state widened by
+    ``num_speculative_tokens`` -- so its numbers describe a model nobody
+    simulates. Letting it write them put ``block_size: 800`` and half the KV
+    cache into Qwen3.8-27B's bundle where the main engine resolves 784 and
+    19,839,182, and the simulator reads that block size whenever
+    ``--block-size`` is omitted. A shrunk single-category engine is not
+    authoritative either, for the same reason.
+
+    ``records_attention_grid`` -- only a run that swept attention knows which
+    axes were fired. A ``per_sequence`` refresh regenerating the block from its
+    own defaults would have reported DeepSeek-V3.2's five query lengths as one
+    and its 163,830 kv reach as 163,838.
+
+    ``measured_categories`` names what this run actually fired, which is what
+    ``category_provenance`` records. The top-level ``vllm_version`` and
+    ``profiled_at`` describe the *most recent* refresh and so cannot describe a
+    bundle a refresh only partly rewrote -- adding the EP axis to
+    Qwen3-30B-A3B's MoE stamped the whole file 0.28.0 while its dense,
+    attention and per_sequence rows stayed 0.19.0 measurements. Which matters:
+    vLLM 0.28 restructured MoE substantially, and the two versions agree to
+    within noise on decode-sized batches but differ by 16-26% at 2048 tokens.
+
+    Anything not recorded is carried over from the file, not dropped.
     """
+    prior = _prior_meta(variant_root)
     # ``engine_kwargs_used`` carries the BUMPED ``max_num_batched_tokens``
     # (see engine.fuse_engine_kwargs). Record the LOGICAL value in
     # meta.yaml so the simulator's runtime-vs-profiled bound comparison
     # and any human inspection see the user-intended cap.
-    engine_effective = dict(engine_kwargs_used)
+    engine_effective = dict(engine_kwargs_used or {})
     try:
         engine_effective["max_num_batched_tokens"] = (
             int(engine_effective["max_num_batched_tokens"])
@@ -557,7 +652,16 @@ def persist_meta(
         "model": args.model,
         "variant": args.effective_variant,
         "tp_degrees": args.tp_degrees,
-        "engine_effective": _stringify(engine_effective),
+        # Per-category provenance. Seeded from the prior file's top-level
+        # version/timestamp for every category this run did not measure, so the
+        # first partial refresh of an older bundle labels its untouched
+        # categories correctly rather than inheriting the new run's version.
+        "category_provenance": _category_provenance(
+            prior, measured_categories, _vllm_version(), _utcnow_iso()),
+        "engine_effective": (
+            _stringify(engine_effective) if records_engine
+            else prior.get("engine_effective") or _stringify(engine_effective)
+        ),
         # What the engine actually SETTLED ON, which is not always what was
         # asked for. vLLM derives the KV block size from the backend's
         # ``get_supported_kernel_block_sizes`` and from hybrid page
@@ -571,11 +675,17 @@ def persist_meta(
         # Keyed by TP under ``per_tp``: on a hybrid stack the resolved block
         # size is per-rank, so it is a per-TP fact, and a single value would be
         # whichever TP happened to run last.
-        "engine_resolved": _engine_resolved_block(variant_root, limits),
+        "engine_resolved": _engine_resolved_block(
+            variant_root, limits if records_engine else None),
         # Attention-grid shape knobs + compact spec of the values the
         # sweep actually visited. Simulator uses the knobs to recognise
         # which density produced the CSVs; humans get the axes too.
-        "attention_grid": _attention_grid_spec(args, eff_mnbt, eff_msq),
+        "attention_grid": (
+            _attention_grid_spec(args, eff_mnbt, eff_msq)
+            if records_attention_grid
+            else prior.get("attention_grid")
+            or _attention_grid_spec(args, eff_mnbt, eff_msq)
+        ),
         "measurement_iterations": args.measurement_iterations,
         "skew_profile": _skew_meta_block(args),
         "skew_fit": _skew_fit_block(variant_root, args.tp_degrees),
@@ -763,6 +873,23 @@ def _utcnow_iso() -> str:
     )
 
 
+def _prior_meta(variant_root: Path) -> dict[str, Any]:
+    """The meta.yaml already in this variant root, or ``{}``.
+
+    A refresh boots one engine and sweeps one category, so most of the file
+    describes work it did not do. Reading the prior file is how those parts
+    survive; see ``persist_meta``'s ``records_*`` flags for which.
+    """
+    existing = variant_root / "meta.yaml"
+    if not existing.is_file():
+        return {}
+    try:
+        with existing.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
 def _engine_resolved_block(
     variant_root: Path,
     limits_by_tp: Any,
@@ -784,21 +911,18 @@ def _engine_resolved_block(
     the file are **kept**: a ``slice`` refresh boots one TP and must not erase
     what the other TPs resolved.
     """
+    prior = _prior_meta(variant_root)
+    prior_block = prior.get("engine_resolved")
     if not limits_by_tp:
-        return None
+        # Nothing new to say. Returning None here erased the block instead of
+        # leaving it alone, which is how an MTP-only refresh could delete what
+        # the main engine resolved.
+        return prior_block or None
 
     merged: dict[str, Any] = {}
-    existing = variant_root / "meta.yaml"
-    if existing.is_file():
-        try:
-            with existing.open("r", encoding="utf-8") as f:
-                prior = yaml.safe_load(f) or {}
-            prior_per_tp = ((prior.get("engine_resolved") or {}).get("per_tp")
-                            or {})
-            if isinstance(prior_per_tp, dict):
-                merged.update({str(k): v for k, v in prior_per_tp.items()})
-        except Exception:
-            pass
+    prior_per_tp = ((prior_block or {}).get("per_tp") or {})
+    if isinstance(prior_per_tp, dict):
+        merged.update({str(k): v for k, v in prior_per_tp.items()})
 
     for tp, limits in limits_by_tp.items():
         if limits is None:
