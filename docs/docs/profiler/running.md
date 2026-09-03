@@ -64,6 +64,41 @@ on a single GPU by dividing the model's per-rank shapes via
 ## Attention grid
 
 :::note[The `decode_q_len` axis is opt-in]
+### `--moe-ep-degrees`: profile the MoE block at the EP degrees you will simulate
+
+Default `1`, which measures the whole MoE block on one rank. That is right for
+a single-rank deployment and wrong for every other one: an EP rank runs a
+**slice** — `E/ep` local experts, and `k/ep` of a token's k expert assignments
+— so it permutes over less, does fewer GEMM rows, and activates fewer distinct
+experts than the whole block does.
+
+The last of those is not interpolated away. `activated_experts` is the one
+lookup axis whose minimum is a positive number the runtime goes under: it
+floors at `top_k`, because a token cannot activate fewer experts than it
+selects, and the simulator clamps below the grid rather than extrapolating.
+A GLM-5 EP=2 run asked for `activated=4` against a floor of 8 in 98.4% of its
+MoE lookups. At one token on the rank that clamp reads 1.7x to 4.8x over:
+
+| model | ep=1 | ep=8 |
+| --- | --- | --- |
+| DeepSeek-V3.2 | 84.7 us | 28.1 us |
+| GLM-5 | 162.6 us | 33.7 us |
+| MiniMax-M3 | 139.5 us | 47.3 us |
+| Qwen3-30B-A3B | 47.8 us | 27.8 us |
+
+Extrapolating instead of measuring would over-correct: a
+`fixed + per_expert * a` fit through Qwen3-30B-A3B's own grid predicts 16.8 us
+at `a=4` where the ep=2 slice measures 36.2, because the fixed permute cost
+does not vanish with the expert count. The curve saturates from ep=8 on for
+the same reason — once `k/ep` floors at 1, one expert plus that fixed cost is
+all that is left.
+
+Each degree past 1 costs one engine boot and the same ~57 shots, so
+`--moe-ep-degrees 1,2,4,8,16,32` is about ten minutes. `n_group` has to divide
+the local expert count, which is the only real constraint (it costs
+DeepSeek-V3.2 `ep=64`). A bundle with no `ep` column reads as ep=1 and prices
+exactly as it did before the axis existed.
+
 `--attention-decode-q-lens` (default `1`) sweeps how many query tokens each
 decode sequence submits. Ordinary decoding is 1; a **speculative-decoding**
 verification step is `1 + num_speculative_tokens`, which none of the other four
@@ -222,6 +257,7 @@ file is an error.
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
 | `--num-hidden-layers` | `1` | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
+| `--moe-ep-degrees` | `1` | `MOE_EP_DEGREES` |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | the model's own context | `ATTENTION_MAX_KV` |

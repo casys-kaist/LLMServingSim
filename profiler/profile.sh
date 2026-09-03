@@ -82,6 +82,23 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # count, so the grid samples boundaries and the points just past them.
 # LINEAR_ATTN_CHUNK=64
 
+# --- MoE expert parallelism -------------------------------------------------
+# EP degrees to profile the MoE block at. An EP rank does not run the model's
+# MoE block, it runs a slice: E/ep local experts, and k/ep of a token's k
+# expert assignments. Profiling only at ep=1 and charging that per rank
+# overstates the permute width, the GEMM rows and the distinct experts
+# activated -- and the last one is clamped rather than extrapolated, because
+# the activated_experts axis floors at top_k while a real rank routinely goes
+# under it. Measured at one token on the rank, that reads 1.7x to 4.8x over:
+# DeepSeek-V3.2 84.7us at ep=1 against 28.1 at ep=8, GLM-5 162.6 against 33.7.
+#
+# So set this to the EP degrees you intend to simulate whenever the deployment
+# runs EP > 1. Each degree past 1 costs one engine boot and the same ~57 shots
+# -- about 10 minutes for a full sweep. Leaving it unset profiles ep=1 only,
+# which is correct for a single-rank deployment and is what bundles written
+# before the axis existed hold.
+# MOE_EP_DEGREES="1,2,4,8"
+
 # --- Drafter (MTP) ----------------------------------------------------------
 # Boot with speculative decoding so vLLM also builds the model's own MTP
 # module, and profile it. Set to any non-empty value -- it is a flag, not a
@@ -190,6 +207,7 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
+[[ -n "${MOE_EP_DEGREES:-}" ]]         && cmd+=(--moe-ep-degrees "$MOE_EP_DEGREES")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.

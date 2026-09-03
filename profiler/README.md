@@ -69,6 +69,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
+| **MoE expert parallelism** | `--moe-ep-degrees` (default `1`; needed whenever the deployment runs EP > 1) |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
@@ -389,7 +390,7 @@ tp<N>/
                          kv_decode, decode_q_len, time_us
   linear_attention.csv   layer, prefill_tokens, n_decode, time_us
                                                      (mamba / gated-DeltaNet only)
-  moe.csv                tokens, activated_experts, time_us          (MoE only)
+  moe.csv                ep, tokens, activated_experts, time_us      (MoE only)
   mtp.csv                layer, sequences, time_us      (one drafter pass;
                                              only with --profile-mtp)
   skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
