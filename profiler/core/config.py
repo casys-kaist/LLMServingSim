@@ -320,6 +320,23 @@ class LayerEntry(BaseModel):
     """If True, profile this layer only at TP=1 and replicate the
     results into every tp{N}/ folder."""
 
+    key_saturates: bool = False
+    """If True, this kernel's cost stops growing once a sequence's key window
+    passes the checkpoint's bound (``probe_key_saturation``), so the
+    simulator caps the key length it looks the kernel up at.
+
+    A property of the computation, and it varies *within* a model rather than
+    between models. DeepSeek-V3.2's ``attention`` is sparse MLA and saturates
+    -- a 16-token prefill costs 139.3 us at 2048 of context and 138.3 at 8192
+    -- while its ``indexer`` scores the whole KV to make the selection and
+    keeps growing (52 -> 101 us from kv 2048 to 16384). MiniMax-M3 has both
+    kinds of attention in one stack, sparse from its fourth layer on.
+
+    Why it is capped at lookup rather than at sweep time: the two kernels
+    share one grid, so a capped column would collapse the indexer's
+    large-key rows onto one cell. The grid records the key length uncapped
+    and each kernel reads it at its own resolution."""
+
 
 class Catalog(BaseModel):
     """The full layer catalog, grouped by profile kind.

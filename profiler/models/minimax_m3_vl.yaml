@@ -241,6 +241,12 @@ catalog:
       vllm: [_gqa_sparse_fwd_kernel, _gqa_sparse_decode_kernel,
              _merge_topk_attn_out_kernel]
       within: MiniMaxM3SparseAttention
+      # Selection is block-sparse -- sparse_topk_blocks blocks of
+      # sparse_block_size, plus the always-included initial and local ones --
+      # so a query reads a bounded number of positions and the cost saturates
+      # there. The non-sparse ``attention`` above it does not, nor does the
+      # indexer, which scores the whole KV to make the selection.
+      key_saturates: true
     indexer:
       # Scores blocks over the whole KV before the top-k selection, so it keys
       # on the same axes as the attention kernel.
