@@ -755,10 +755,14 @@ That reads like a bug and it is not one to fix. Bracketing `pc` and blending
 the two neighbouring profiled values was implemented and **measured twice, on
 two different skew sweeps**, and it is worse on both:
 
-| RTXPRO6000/Qwen3-30B-A3B DP+EP | TTFT mean | TTFT P90 | TPOT mean | latency mean |
-|---|---|---|---|---|
-| pooled `alpha_default` (today) | **-0.2%** | **+0.5%** | **+0.4%** | **+0.4%** |
-| per-bucket, bracketed | -5.9% | -9.9% | -0.2% | -0.4% |
+| RTXPRO6000/Qwen3-30B-A3B DP+EP | TTFT mean | TTFT p50 | TTFT P90 | paired p50 | \|err\| p50 |
+|---|---|---|---|---|---|
+| pooled `alpha_default` (today) | **-2.6%** | **-3.7%** | **-0.1%** | **-2.5%** | **9.7%** |
+| per-bucket, bracketed | -8.2% | -7.0% | -10.5% | -5.6% | 12.0% |
+
+(Against the true arrival anchor -- see `bench/core/validate.py::_bench_arrival_ts`.
+The direction is the plain one: the simulator already sits slightly under, and
+the per-bucket table removes attention time, so it goes further under.)
 
 The mechanism, instrumented per lookup (`.claude/probe_dtm.py` records each
 skew-corrected lookup's alpha and its lever arm `dtm = t_max - t_mean`):
