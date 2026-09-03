@@ -740,6 +740,63 @@ is `pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, built against
 older profiles). `_hydrate_skew_fit_tables()` reads each TP's `skew_fit.csv`
 into the in-memory `alpha_by_bucket` map on first load.
 
+**Mixed batches deliberately read the pooled alpha, not the bucket table.**
+`pc` is the one axis keyed by its exact value -- the other four go through the
+bin labels in `bucket_axes`, which absorb any runtime value, while
+`fit_alpha.py` groups `pc` by the value itself. A runtime chunk is
+`min(remaining prompt, budget left after the decodes)` and lands on the
+profiled `{0, 16, ..., 2048}` only by coincidence (it asked for
+`pc = 1921, 369, 371, 536 ...` on the Qwen3-32B workload), so **every** `pc > 0`
+lookup misses its bucket and falls through to `alpha_default`: 208 of 2092
+resolutions on that workload, all 208 of them. `pc = 0` -- pure decode -- is a
+grid point, so those hit.
+
+That reads like a bug and it is not one to fix. Bracketing `pc` and blending
+the two neighbouring profiled values was implemented and **measured twice, on
+two different skew sweeps**, and it is worse on both:
+
+| RTXPRO6000/Qwen3-30B-A3B DP+EP | TTFT mean | TTFT P90 | TPOT mean | latency mean |
+|---|---|---|---|---|
+| pooled `alpha_default` (today) | **-0.2%** | **+0.5%** | **+0.4%** | **+0.4%** |
+| per-bucket, bracketed | -5.9% | -9.9% | -0.2% | -0.4% |
+
+The mechanism, instrumented per lookup (`.claude/probe_dtm.py` records each
+skew-corrected lookup's alpha and its lever arm `dtm = t_max - t_mean`):
+
+- the bucket table delivers **0.709x** the pooled skew contribution over the
+  run's 3,059 corrected lookups (30.77 ms against 43.39 ms), which is the whole
+  5.7-point move -- less attention time, faster sim, more negative TTFT error
+- its dtm-weighted mean alpha is **0.0429** against the pooled **0.0659**
+- and at the cells this workload visits, **51% of the per-bucket alphas are
+  negative** -- `t_skew < t_mean` in the two samples that fitted them, which
+  only measurement noise produces
+
+So the table's resolution exceeds its statistical support here: the true alpha
+is ~0.065 and the per-bucket noise is larger than that, while the pooled
+constant carries 17,325 samples behind one number. Two mechanisms that sound
+right and are **not** the cause, both checked and refuted: the runtime does not
+apply alpha at a larger lever than it was fitted on (runtime/fitted dtm is
+0.40x at the median, never above 1.22x), and alpha is not negatively correlated
+with dtm (+0.117).
+
+Do not predict this from a summary statistic. Three attempts got it wrong in
+order: the *median* per-bucket alpha (0.030) forced as a constant says the
+change costs 7 points, the unweighted *mean* over mixed lookups (0.065 against
+the 0.0659 it replaces) says it is free, and the run says -5.7. Only the
+end-to-end run settles it.
+
+What would make the table usable is samples at the cells this workload visits
+-- `pc >= 512, kp = 0, n <= 128, kvB <= 16k, sr <= 40%`. Widening tier 2 across
+the grid does **not** do that: it improved the pooled fit (`rel_err` p50
+1.23% -> 0.95%, p90 6.10% -> 5.72%, and TTFT mean -1.2% -> -0.2% because the
+pooled value is what gets read) but occupancy at those cells did not move,
+because a new `skew` value at a given `(nb, n)` lands in a different `sr` label
+and `kv_big = kvs * skew` scatters across `kvB` labels. Buckets went 3,979 ->
+5,976 and the <= 2-sample share 52% -> 61%. The axis that would actually pool
+samples there is `kvs` inside its log-4x `kv_big` bin -- `--skew-kvs-factor`
+below 2.0 -- since `n` and `pc` bins are derived one-per-profiled-value and
+only make more thin buckets.
+
 Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as
 `../profiler/perf/...` from the `astra-sim/` working directory).
