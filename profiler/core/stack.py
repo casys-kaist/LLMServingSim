@@ -334,3 +334,42 @@ def describe(cfg: dict[str, Any]) -> str:
         f"layer stack: heterogeneous over {len(stack)} layers -- {shapes} "
         f"-> profiling {n} layers to reach every block type"
     )
+
+
+def probe_key_saturation(hf_cfg: dict) -> int | None:
+    """How many key tokens a query can attend to, when the model bounds it.
+
+    A sparse-attention query reads at most a fixed number of selected
+    positions, so its cost stops growing once a sequence's key window passes
+    that bound -- measured on DeepSeek-V3.2, a 16-token prefill costs 968.8 us
+    at no context, 742.4 at 512, and then 139.3 at 2048 and 138.3 at 8192,
+    flat from exactly ``index_topk`` onward. A dense query reads its whole
+    causal window, so the same sweep rises throughout (Llama-3.1-8B: 8.5,
+    18.8, 51.2, 181.1 us) and there is nothing to bound. Returns None for
+    that case.
+
+    Each family declares the bound its own way, and both are checkpoint
+    fields:
+
+    * DeepSeek-V3.2 / GLM-5 select ``index_topk`` individual tokens.
+    * MiniMax-M3 selects ``sparse_topk_blocks`` blocks of
+      ``sparse_block_size``, plus the always-included initial and local
+      blocks, so the bound is their product.
+
+    Note this is a property of a *kernel*, not of a model: M3's
+    ``sparse_attention_freq`` leaves its first three layers non-sparse, so one
+    checkpoint has both bounded and unbounded attention. The caller applies
+    the value only to the catalog entries whose computation is sparse.
+    """
+    topk = hf_cfg.get("index_topk")
+    if topk:
+        return int(topk)
+    sparse = hf_cfg.get("sparse_attention_config") or {}
+    if isinstance(sparse, dict) and sparse.get("use_sparse_attention"):
+        blocks = (int(sparse.get("sparse_topk_blocks", 0) or 0)
+                  + int(sparse.get("sparse_init_block", 0) or 0)
+                  + int(sparse.get("sparse_local_block", 0) or 0))
+        block_size = int(sparse.get("sparse_block_size", 0) or 0)
+        if blocks > 0 and block_size > 0:
+            return blocks * block_size
+    return None
