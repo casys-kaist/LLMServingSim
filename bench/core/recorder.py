@@ -76,7 +76,14 @@ def write_timeseries(output_dir: Path, header: list[str], rows: list[list]) -> N
     """Write timeseries.csv. Default header::
 
         ["t", "prompt_throughput", "gen_throughput",
-         "running", "waiting", "kv_cache_pct"]
+         "running", "waiting", "preempted", "kv_cache_pct"]
+
+    ``preempted`` is the number of preemption events in the tick, summed over
+    DP engines. It is what tells a long ``prefill_time`` in requests.jsonl
+    apart from a genuinely trickled prefill: vLLM stamps ``scheduled_ts`` on
+    the first admission only and ignores re-admissions, so a preempted request
+    reports its whole round trip as prefill. Absent from runs recorded before
+    this column existed -- read the header rather than assuming a position.
     """
     import csv
     with (output_dir / "timeseries.csv").open("w") as f:

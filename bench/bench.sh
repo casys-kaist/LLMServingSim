@@ -51,6 +51,10 @@ SEED="${SEED:-42}"
 # footprint, kernel selection and scheduling are unchanged. Recorded in
 # meta.json, so a dummy run can never be mistaken for a real-weights one.
 LOAD_FORMAT="${LOAD_FORMAT:-auto}"
+# Boot, write meta.json, exit -- no replay. Set to 1 to read back the one
+# number a latency comparison depends on, kv_cache.num_gpu_blocks, which vLLM
+# only settles at boot. A minute with LOAD_FORMAT=dummy.
+RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -81,6 +85,7 @@ cmd=(python3 -m bench run
 
 [[ -n "$MAX_MODEL_LEN" ]] && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
+[[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
 
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"

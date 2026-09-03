@@ -68,6 +68,19 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    help="vLLM kv_cache_dtype.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
+    p.add_argument("--resolve-only", action="store_true", dest="resolve_only",
+                   default=False,
+                   help="Boot the engine, write meta.json, and exit without "
+                        "replaying the dataset. What that buys is the one "
+                        "number a simulator has to match before any latency "
+                        "comparison means anything: kv_cache.num_gpu_blocks, "
+                        "which vLLM only settles at boot after subtracting "
+                        "the activation peak and CUDA context. Cheap with "
+                        "--load-format dummy (one boot, no weights, no "
+                        "replay), so a config can be checked against the "
+                        "simulator's block count in a minute. requests.jsonl "
+                        "and timeseries.csv are not written -- there is no "
+                        "run to record.")
     p.add_argument("--load-format", default="auto", dest="load_format",
                    help="vLLM load_format. 'dummy' skips reading weights and "
                         "initializes them randomly, which is valid ground "
@@ -180,6 +193,33 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
                 engine_args, stat_loggers=[BenchStatLogger]
             )
     started_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    if args.resolve_only:
+        # Nothing to replay: snapshot what the engine resolved and stop. Kept
+        # inside the try/finally-free path deliberately -- there are no request
+        # records to lose, so a failure here should surface, not be swallowed.
+        resolved_config = _resolved_config(engine)
+        kv_cache = _kv_cache_facts(engine)
+        engine.shutdown()
+        recorder.write_meta(
+            output_dir,
+            model=args.model,
+            vllm_version=_vllm_version(),
+            engine_kwargs=engine_kwargs_for_meta,
+            dataset_path=str(args.dataset),
+            dataset_hash=_hash_file(Path(args.dataset)),
+            num_requests=0,
+            started_at=started_at,
+            finished_at=datetime.datetime.utcnow().isoformat() + "Z",
+            tick_seconds=args.tick_seconds,
+            kv_cache=kv_cache,
+            hardware=_hardware_facts(),
+            resolved_config=resolved_config,
+            resolve_only=True,
+        )
+        log.success("resolved config only -> %s  (num_gpu_blocks=%s)",
+                    output_dir, kv_cache.get("num_gpu_blocks"))
+        return
 
     try:
         with log.stage(f"Submitting {len(requests)} requests"):
