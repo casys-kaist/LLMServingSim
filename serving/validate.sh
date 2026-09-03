@@ -50,7 +50,16 @@ LOG_DIR="${LOG_DIR:-$(mktemp -d)}"
 mkdir -p "$LOG_DIR" || { echo "cannot create LOG_DIR: $LOG_DIR" >&2; exit 2; }
 TIMEOUT="${TIMEOUT:-1800}"
 
-COMMON=(--block-size 16 --log-level WARNING)
+# No --block-size: vLLM derives it from the backend rather than accepting what
+# it is given, so the value that matches the measurement is the one the profile
+# bundle recorded. Omitting the flag is what reads it back. This is a no-op for
+# the four bundles that predate the field (Llama-3.1-8B on both hardwares,
+# Qwen3-30B-A3B, Qwen3-32B) -- they record none, so the resolver falls through
+# to the same 16 that used to be passed here. It bites only on the modern
+# families, where 16 is a configuration vLLM cannot serve: MiniMax-M3's sparse
+# backend accepts 128 only, and Qwen3.8-27B's gated-DeltaNet stack raises the
+# attention block to 784 so one attention page covers one mamba page.
+COMMON=(--log-level WARNING)
 
 C=configs/cluster
 TRACE=workloads/example_trace.jsonl
