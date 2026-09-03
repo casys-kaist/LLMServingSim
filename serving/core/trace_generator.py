@@ -122,7 +122,22 @@ class BatchCtx:
     batch: object  # Batch
     total_len: int
     prefill_chunk: int  # sum(prefill_q_list): new prefill tokens this step
-    kv_prefill: int     # sum(prefill_k_list): existing kv history for prefill reqs
+    kv_prefill: int     # sum(prefill_k_list): total kv the prefills already
+                        # hold. A length, used for tensor sizing -- not the
+                        # attention lookup, which needs the mean below.
+    # The prefill side's key axis: the mean, over this step's prefill
+    # sequences, of how far that sequence's queries look back -- its context
+    # plus half its own chunk, since causal masking means the average query
+    # in a chunk sees half of it. It replaces ``sum(prefill_k_list)``, which
+    # described one sequence and, on a step carrying several, added their
+    # contexts into a number describing none of them.
+    prefill_key: float
+    # The same, with each sequence's value first clipped to the checkpoint's
+    # key bound. Both are carried because the bound applies per **kernel**:
+    # a sparse model's attention saturates in this quantity and its indexer
+    # does not. Clipping has to happen per sequence and before the mean --
+    # mean(min(x, cap)) is not min(mean(x), cap).
+    prefill_key_capped: float
     n_decode: int       # number of decode requests
     kv_decode_mean: int # mean decode kv length (4D grid carries one value)
     kv_decode_max: int  # max decode kv length (for skew correction)
@@ -161,7 +176,7 @@ class PowerAccumulator:
 #     meta.yaml                       profiler settings, effective engine kwargs
 #     tp<N>/dense.csv                 layer, tokens, time_us
 #     tp<N>/per_sequence.csv          layer, sequences, time_us
-#     tp<N>/attention.csv             prefill_chunk, kv_prefill, n_decode, kv_decode, time_us
+#     tp<N>/attention.csv             prefill_chunk, prefill_key, n_decode, kv_decode, time_us
 #     tp<N>/moe.csv                   tokens, activated_experts, time_us    (MoE only)
 #
 def _load_meta(variant_root):
@@ -288,18 +303,30 @@ def _build_1d_table(df, layer_col, key_col):
 
 def _build_attention_table(df):
     """4D attention table indexed by (prefill_chunk, n_decode) slices,
-    each slice a 2D grid over (kv_prefill, kv_decode). The profiler
+    each slice a 2D grid over (prefill_key, kv_decode). The profiler
     sweeps all four axes on doubling grids, so the lookup interpolates
     in log-space on each axis (plus a zero-pinned fallback when the
     axis value is 0, which always comes from an exact sample).
     """
     pc_col = df["prefill_chunk"].astype(int).tolist()
     nd_col = df["n_decode"].astype(int).tolist()
-    kp_col = df["kv_prefill"].astype(int).tolist()
     kd_col = df["kv_decode"].astype(int).tolist()
     lat_col = df["latency_ns"].astype(int).tolist()
+    # The prefill key axis. A bundle swept before it existed carries
+    # ``kv_prefill``, one sequence's context, and every such shot had exactly
+    # one prefill sequence -- so the axis value is recoverable exactly:
+    # context plus half the chunk. Relabelling rather than refusing keeps
+    # every committed bundle readable, at the cost of the coverage a
+    # single-sequence sweep cannot reach (one sequence can only ever reach
+    # ``key >= chunk/2``, so "many tokens, short keys" is absent and a step
+    # carrying several prefills extrapolates there).
+    if "prefill_key" in df.columns:
+        kp_col = df["prefill_key"].astype(float).tolist()
+    else:
+        kp_col = [k + c / 2.0 for k, c in
+                  zip(df["kv_prefill"].astype(float).tolist(), pc_col)]
 
-    # (prefill_chunk, n_decode) -> kv_prefill -> kv_decode -> latency_ns.
+    # (prefill_chunk, n_decode) -> prefill_key -> kv_decode -> latency_ns.
     # One pass in plain Python; see _build_1d_table for why not groupby.
     grouped = {}
     for pc, nd, kp, kd, lat in zip(pc_col, nd_col, kp_col, kd_col, lat_col):
@@ -313,7 +340,7 @@ def _build_attention_table(df):
             by_kd = by_kp[kp]
             kd_keys = sorted(by_kd)
             rows.append({"keys": kd_keys, "values": [by_kd[k] for k in kd_keys]})
-        slices[key] = {"kv_prefill_vals": kp_vals_s, "rows": rows}
+        slices[key] = {"prefill_key_vals": kp_vals_s, "rows": rows}
 
     return {
         "pc_vals": sorted(set(pc_col)), "nd_vals": sorted(set(nd_col)),
@@ -501,6 +528,15 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         # simulator has already failed on by the time it gets here.
         "layer_stack": (_stack_module().resolve_stack(model_config)
                         if model_config else []),
+        # How many key tokens a query can attend to, when the checkpoint
+        # bounds it (``index_topk``, or M3's selected-block count times its
+        # block size). None on a dense model. Read here rather than per
+        # lookup: it is a constant of the checkpoint, and the catalog says
+        # which kernels are subject to it.
+        "key_saturation": (
+            _stack_module().probe_key_saturation(
+                _stack_module().text_config(model_config))
+            if model_config else None),
     }
     _perf_db_cache[cache_key] = perf_db
     _check_tp_coverage(perf_db, tp_needed, hardware, model, variant)
@@ -813,16 +849,21 @@ def _axis_bracket(values, query):
     return lo, hi, (query - x0) / (x1 - x0)
 
 
-def _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode):
-    """Bilinear (linear on each axis) within a single (pc, nd) slice."""
+def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
+    """Bilinear (linear on each axis) within a single (pc, nd) slice.
+
+    ``prefill_key`` is a mean over the batch's prefill sequences, so it is
+    not an integer and must not be floored: at the bottom of the axis a
+    half-token is a percent of the coordinate.
+    """
     slice_tbl = tbl["slices"].get((pc, nd))
     if slice_tbl is None:
         return None
-    kp_vals = slice_tbl["kv_prefill_vals"]
+    kp_vals = slice_tbl["prefill_key_vals"]
     rows = slice_tbl["rows"]
     if not kp_vals:
         return None
-    lo_kp, hi_kp, t_kp = _axis_bracket(kp_vals, max(int(kv_prefill), 0))
+    lo_kp, hi_kp, t_kp = _axis_bracket(kp_vals, max(float(prefill_key), 0.0))
 
     def _row_lookup(row):
         ks, vs = row["keys"], row["values"]
@@ -1007,8 +1048,24 @@ def _skew_alpha(
     return 0.0
 
 
+def _prefill_key_for(perf_db, bctx, layer):
+    """Which prefill-key coordinate this kernel is looked up at.
+
+    A sparse kernel's cost stops growing once a sequence's key window passes
+    the checkpoint's bound, so it reads the clipped mean; the indexer that
+    scores the whole KV to make the selection does not, and reads the raw
+    one. Both are precomputed on the batch context because the clip is per
+    sequence and has to happen before the mean.
+    """
+    section = perf_db["architecture"]["catalog"].get("attention") or {}
+    entry = section.get(layer) or {}
+    if entry.get("key_saturates"):
+        return bctx.prefill_key_capped
+    return bctx.prefill_key
+
+
 def _lookup_attention_with_skew(
-    perf_db, tp, prefill_chunk, kv_prefill,
+    perf_db, tp, prefill_chunk, prefill_key,
     n_decode, kv_decode_mean, kv_decode_max, kv_decode_min,
     layer="attention", decode_q_len=1,
 ):
@@ -1028,7 +1085,7 @@ def _lookup_attention_with_skew(
     ``comp_time`` so we round here.
     """
     t_mean = _lookup_attention(
-        perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_mean,
+        perf_db, tp, prefill_chunk, prefill_key, n_decode, kv_decode_mean,
         layer, decode_q_len,
     )
     # No skew → no correction (also saves a redundant lookup).
@@ -1041,12 +1098,12 @@ def _lookup_attention_with_skew(
     skew_rate = (kv_decode_mean - kv_decode_min) / kv_gap if kv_gap > 0 else 0.5
     alpha = _skew_alpha(
         perf_db, tp, prefill_chunk, n_decode, skew_rate, kv_decode_max,
-        kv_prefill, layer,
+        prefill_key, layer,
     )
     if alpha == 0.0:
         return max(1, int(round(t_mean)))
     t_max = _lookup_attention(
-        perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decode_max,
+        perf_db, tp, prefill_chunk, prefill_key, n_decode, kv_decode_max,
         layer, decode_q_len,
     )
     # Guard against interpolation producing t_max < t_mean (can happen
@@ -1083,9 +1140,9 @@ def _attention_q_slice(by_q, decode_q_len, layer, tp):
     return by_q[nearest]
 
 
-def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
+def _lookup_attention(perf_db, tp, prefill_chunk, prefill_key, n_decode,
                       kv_decode, layer="attention", decode_q_len=1):
-    """4D interpolation on (prefill_chunk, kv_prefill, n_decode, kv_decode).
+    """4D interpolation on (prefill_chunk, prefill_key, n_decode, kv_decode).
 
     Each axis is bracketed by its two nearest profiled values and blended
     **linearly** -- not in log space, even though the profiler sweeps every
@@ -1120,13 +1177,13 @@ def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode,
     # Grab the four corners; missing corners fall back to the closest
     # available (pc, nd) pair.
     def _corner(pc, nd):
-        v = _attn_slice_lookup(tbl, pc, nd, kv_prefill, kv_decode)
+        v = _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode)
         if v is not None:
             return v
         nearest = min(tbl["pc_nd_pairs"],
                       key=lambda p: (p[0] - pc) ** 2 + (p[1] - nd) ** 2)
         return _attn_slice_lookup(tbl, nearest[0], nearest[1],
-                                  kv_prefill, kv_decode) or 0.0
+                                  prefill_key, kv_decode) or 0.0
 
     c00 = _corner(pc_vals[lo_pc], nd_vals[lo_nd])
     c01 = _corner(pc_vals[lo_pc], nd_vals[hi_nd])
@@ -1286,12 +1343,24 @@ def _build_batch_ctx(batch, ctx):
     # also contributes a logit. Track it via num_prefill + num_decode.
     lm_head_len = max(len(batch.requests), batch.num_prefill + batch.num_decode)
 
-    # 4D attention keys: profiler sweeps (prefill_chunk, kv_prefill,
-    # n_decode, kv_decode). The kv_decode axis carries a single value
-    # per shot, so we collapse multi-decode requests to their mean
-    # AND capture the per-batch max/min for the skew correction below.
+    # 4D attention keys: the profiler sweeps (prefill_chunk, prefill_key,
+    # n_decode, kv_decode). The kv_decode axis carries a single value per
+    # shot, so we collapse multi-decode requests to their mean AND capture
+    # the per-batch max/min for the skew correction below. The prefill side
+    # is a mean too, over that step's prefill sequences -- see BatchCtx.
     prefill_chunk = sum(batch.prefill_q_list)
     kv_prefill = sum(batch.prefill_k_list)
+    n_pf = len(batch.prefill_q_list)
+    cap = ctx.perf_db.get("key_saturation")
+    if n_pf:
+        raw = [k + c / 2.0
+               for c, k in zip(batch.prefill_q_list, batch.prefill_k_list)]
+        prefill_key = sum(raw) / n_pf
+        prefill_key_capped = (
+            sum(min(v, cap) for v in raw) / n_pf if cap else prefill_key
+        )
+    else:
+        prefill_key = prefill_key_capped = 0.0
     n_decode = len(batch.decode_k_list)
     # Query tokens per decode sequence: 1 normally, 1 + N when a speculative
     # step verifies N drafts. A fifth attention axis rather than folding into
@@ -1313,7 +1382,8 @@ def _build_batch_ctx(batch, ctx):
         kv_decode_min = 0
         total_len = max(1, total_len)  # preserve for size calcs
 
-    return BatchCtx(batch, total_len, prefill_chunk, kv_prefill, n_decode,
+    return BatchCtx(batch, total_len, prefill_chunk, kv_prefill,
+                    prefill_key, prefill_key_capped, n_decode,
                     kv_decode_mean, kv_decode_max, kv_decode_min,
                     lm_head_len, decode_lens, channel_split, decode_q_len)
 
@@ -1354,7 +1424,8 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
     elif category == "attention":
         latency_ns = _lookup_attention_with_skew(
             ctx.perf_db, ctx.tp_size,
-            bctx.prefill_chunk, bctx.kv_prefill,
+            bctx.prefill_chunk,
+            _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
         )
@@ -1906,7 +1977,8 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
     if category == "attention":
         return _lookup_attention_with_skew(
             ctx.perf_db, ctx.tp_size,
-            bctx.prefill_chunk, bctx.kv_prefill,
+            bctx.prefill_chunk,
+            _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
         )
@@ -1982,7 +2054,8 @@ def _drafter_loop_bctx(bctx):
         per_seq = (bctx.kv_prefill + bctx.prefill_chunk) // max(n, 1)
         kv_mean = kv_max = kv_min = per_seq
     return replace(
-        bctx, total_len=n, prefill_chunk=0, kv_prefill=0, n_decode=n,
+        bctx, total_len=n, prefill_chunk=0, kv_prefill=0,
+        prefill_key=0.0, prefill_key_capped=0.0, n_decode=n,
         kv_decode_mean=kv_mean, kv_decode_max=kv_max, kv_decode_min=kv_min,
         lm_head_len=n, decode_q_len=1,
     )
