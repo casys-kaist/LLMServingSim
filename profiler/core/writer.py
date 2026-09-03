@@ -517,18 +517,33 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
     )
     n_dec = _geometric_grid(
         effective_msq, _ATTN_N_DECODE_START,
+        factor=args.attention_n_factor,
     )
     kv = _geometric_grid(
         args.attention_max_kv, _ATTN_KV_START,
+        factor=args.attention_kv_factor,
+    )
+    key = _geometric_grid(
+        args.attention_max_kv + effective_mnbt // 2, _ATTN_KV_START,
         factor=args.attention_kv_factor,
     )
     return {
         "max_kv": args.attention_max_kv,
         "chunk_factor": args.attention_chunk_factor,
         "kv_factor": args.attention_kv_factor,
+        "n_factor": args.attention_n_factor,
+        # Which quantity the CSV's second prefill column holds. A bundle
+        # without this field predates the change and carries ``kv_prefill``,
+        # one sequence's context, which the simulator has to relabel before
+        # it can read the table -- see the axes note in the trace generator.
+        "axes": "prefill_tokens,prefill_key,n_decode,kv_decode",
         "chunks": _geometric_spec(chunks),
         "n_decode": _geometric_spec(n_dec),
         "kv": _geometric_spec(kv),
+        # The prefill key axis reaches further than the decode kv one: a
+        # decode's key length is its kv, but a prefill sequence's is its
+        # context plus half its own chunk.
+        "prefill_key": _geometric_spec(key),
         # The fifth axis. Not derivable from the other four -- a q > 1 sweep
         # yields no pure-prefill shot, so the row count alone cannot tell you
         # which query lengths were fired -- and a bundle whose CSV holds five
