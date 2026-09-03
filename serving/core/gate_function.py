@@ -6,8 +6,18 @@ from .logger import get_logger
 
 @dataclass
 class RoutingResult:
-    """Per-EP-rank routing information for a single MoE layer."""
-    local_tokens: list     # [rank] -> token count routed to this rank
+    """Per-EP-rank routing information for a single MoE layer.
+
+    ``local_tokens`` models a **dispatching** backend -- one that sends a rank
+    only the tokens with an expert it owns, which is what DeepEP does. The
+    trace generator emits vLLM's default ``allgather_reducescatter`` instead,
+    where every rank receives the whole gathered tensor and the expert kernel
+    permutes out the local ``(token, expert)`` pairs, so ``_emit_moe`` reads
+    only ``activated_experts`` and takes the token count from the gathered
+    total. Keep the field: it is the right answer for the backend it describes,
+    and it is what an all-to-all emitter would need.
+    """
+    local_tokens: list     # [rank] -> tokens a dispatching backend would send here
     activated_experts: list # [rank] -> number of distinct experts activated on this rank
     source_tokens: list    # [rank] -> token count originating from this rank before dispatch
 
