@@ -35,6 +35,33 @@ import sys as flush
 from pyinstrument import Profiler
 
 
+def _cudagraph_capture_ceiling(max_num_seqs, max_num_batched_tokens,
+                               num_speculative_tokens=0):
+    """Largest token count vLLM still replays a CUDA graph for.
+
+    Above it there is no graph, and that is what decides whether a DP round is
+    padded at all -- ``dp_utils._synchronize_dp_ranks`` sets
+    ``should_dp_pad = synced_cudagraph_mode != 0``, taking the **minimum** mode
+    across ranks, so one member outside the capture range unpads the whole
+    round. Prefill steps are always outside it.
+
+    vLLM's own derivation (``config/vllm.py``)::
+
+        decode_query_len = 1 + num_speculative_tokens
+        default = 1024 if device_capability_family(100) else 512
+        cap = min(max_num_seqs * decode_query_len * 2, default)
+        cap = min(max_num_batched_tokens, cap)
+
+    512 rather than 1024 because the 1024 branch is SM100 -- data-center
+    Blackwell, B100/B200. RTX PRO 6000 is SM120. The ``max_num_seqs`` term
+    usually binds anyway: at 128 seqs and no speculation the ceiling is 256,
+    well under either default.
+    """
+    decode_query_len = 1 + max(0, int(num_speculative_tokens or 0))
+    cap = min(int(max_num_seqs) * decode_query_len * 2, 512)
+    return max(1, min(int(max_num_batched_tokens), cap))
+
+
 def _pad_batch_to_max(batch, max_len):
     """Pad a batch up to ``max_len`` for DP-sync.
 
@@ -49,9 +76,10 @@ def _pad_batch_to_max(batch, max_len):
     toward 1 and push the attention lookup far outside the profiled
     sweep.
 
-    The MoE AG/RS comm size is derived from the padded length in the
-    iteration loop, summed over the group -- vLLM gathers every rank's
-    own tokens, so the gathered buffer is the sum and not the max.
+    Applied only while the round fits vLLM's CUDA-graph capture range --
+    see ``_cudagraph_capture_ceiling``. Above it vLLM pads nothing, so a
+    prefill round runs each rank at its own length and the MoE AG/RS
+    size is the plain sum of those, not ``group_size x max``.
 
     Request-completion accounting (`scheduler.add_done`) reads
     ``batch.requests`` and ``batch.end``, not these mutated token-list
@@ -961,8 +989,24 @@ def main():
                     own_workload = None
                     config = get_config(instances[instance_id]["model_name"])
                     max_total_len = max(b.total_len for b, _ in round_batches.values())
-                    for b, _ in round_batches.values():
-                        _pad_batch_to_max(b, max_total_len)
+                    # Padding is conditional, not automatic. vLLM pads a DP
+                    # round to the group max only while every rank is still
+                    # inside the CUDA-graph capture range; a prefill chunk is
+                    # not, and one such rank unpads the round for everyone
+                    # (the synced mode is the min). Padding unconditionally
+                    # charged the small rank's dense and MoE layers at the big
+                    # rank's token count and inflated both EP collectives with
+                    # it -- which lands on exactly the mixed prefill/decode
+                    # rounds, i.e. the TTFT tail.
+                    inst_cfg0 = instance_runtime_configs[dp_groups[dg][0]]
+                    dp_pad = max_total_len <= _cudagraph_capture_ceiling(
+                        inst_cfg0["max_num_seqs"],
+                        inst_cfg0["max_num_batched_tokens"],
+                        args.num_speculative_tokens,
+                    )
+                    if dp_pad:
+                        for b, _ in round_batches.values():
+                            _pad_batch_to_max(b, max_total_len)
                     # The gathered size, which is what both EP collectives are
                     # sized from. vLLM's ``AgRsAll2AllManager.dispatch_router_logits``
                     # all-gathers ``[hidden_states, router_logits]`` with
@@ -986,7 +1030,9 @@ def main():
                     # the halving is a 2x under-count of the collective and shows up
                     # as -23% TTFT on the dp+ep bench example while the TP-only one
                     # (which never takes this path) sits at +1%.
-                    sum_total_len = max_total_len * len(dp_groups[dg])
+                    sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
+                                     else sum(b.total_len
+                                              for b, _ in round_batches.values()))
 
                     # Shared workload folder for all DP members
                     first_inst_id = dp_groups[dg][0]
@@ -1073,10 +1119,22 @@ def main():
                         own_workload = None
                         config = get_config(instance["model_name"])
                         max_total_len = max(b.total_len for b, _ in round_batches.values())
-                        for b, _ in round_batches.values():
-                            _pad_batch_to_max(b, max_total_len)
-                        # See the twin block above for why this is the sum.
-                        sum_total_len = max_total_len * len(dp_groups[dg])
+                        # See the twin block above for both of these: padding
+                        # holds only while the whole round fits vLLM's
+                        # CUDA-graph capture range, and the collective is sized
+                        # from the gathered total, which is the sum either way.
+                        inst_cfg0 = instance_runtime_configs[dp_groups[dg][0]]
+                        dp_pad = max_total_len <= _cudagraph_capture_ceiling(
+                            inst_cfg0["max_num_seqs"],
+                            inst_cfg0["max_num_batched_tokens"],
+                            args.num_speculative_tokens,
+                        )
+                        if dp_pad:
+                            for b, _ in round_batches.values():
+                                _pad_batch_to_max(b, max_total_len)
+                        sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
+                                         else sum(b.total_len
+                                                  for b, _ in round_batches.values()))
 
                         # Shared workload folder for all DP members
                         first_inst_id = dp_groups[dg][0]
