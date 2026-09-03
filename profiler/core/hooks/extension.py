@@ -36,6 +36,7 @@ from profiler.core.hooks.moe_hook import (
     force_moe_routing,
     single_moe_runner,
 )
+from profiler.core.hooks.sampler_shim import wrap_sampler_for_profiling
 from profiler.core.hooks.timings import attribute_tree, extract_samples
 
 
@@ -72,6 +73,11 @@ class Extension:
         """
         shot = Shot.hydrate(shot_dict)
         iterations = max(1, int(iterations))
+
+        # vLLM 0.28's V2 model runner -- which every dense model takes --
+        # holds a sampler that is not an nn.Module, so it never becomes a
+        # profile node. Give it a module scope before anything fires.
+        wrap_sampler_for_profiling(self.model_runner)
 
         def _fresh_batch():
             # Rebuild the synthetic SchedulerOutput on every forward so
@@ -151,6 +157,11 @@ class Extension:
         """
         shot = Shot.hydrate(shot_dict)
         iterations = max(1, int(iterations))
+
+        # vLLM 0.28's V2 model runner -- which every dense model takes --
+        # holds a sampler that is not an nn.Module, so it never becomes a
+        # profile node. Give it a module scope before anything fires.
+        wrap_sampler_for_profiling(self.model_runner)
 
         def _fresh_batch():
             batch, _ = assemble_scheduler_output(shot, self.model_runner)

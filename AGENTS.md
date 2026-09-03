@@ -496,6 +496,45 @@ there is a bug.
 built from disk. M3's 7 modules are ~103 GB otherwise. M3 additionally needs
 `scripts/patches/vllm_m3_mtp_layer_name.py` to start at all.
 
+### A dense model's sampler is invisible on vLLM 0.28
+`layerwise_profile` builds its tree from **module** events, so a component that
+is not an `nn.Module` cannot become a node no matter what it launches. vLLM 0.28
+has two samplers and picks between them by model:
+
+| runner | chosen when | sampler | a node? |
+|---|---|---|---|
+| `vllm.v1.worker.gpu_model_runner` (V1) | MoE, hybrid | `vllm.v1.sample.sampler.Sampler`, an `nn.Module` | yes |
+| `vllm.v1.worker.gpu.model_runner` (V2) | **everything else** | `vllm.v1.worker.gpu.sample.sampler.Sampler`, a plain object | **no** |
+
+The rule is `VllmConfig._is_default_v2_model_runner_model`:
+`is_default_v2_architecture or not model_config.is_moe`. So **every dense model
+profiled on 0.28 silently loses its `sampler` row**, and the simulator then
+refuses the bundle with `Missing per-sequence profile for layer=sampler`. The
+four 0.28 bundles that existed before this are all MoE, which is why it
+surfaced only with the first dense refresh.
+
+Two things make it hard to spot from the outside. The two runner classes share
+the name `GPUModelRunner`, so `type(runner).__name__` cannot tell them apart —
+only `__module__` can. And `profiler coverage` passes at **100%**: coverage
+reports CUDA time no entry *claims*, and this work never enters the tree at all,
+so there is nothing left unbound.
+
+`profiler/core/hooks/sampler_shim.py` wraps a non-module sampler in an
+`nn.Module` named `Sampler`, installed once per worker by `Extension.fire` and
+`Extension.coverage`. The name is deliberate: a profile node carries its
+module's class name and that name is what a catalog binds, so one
+`sampler: {vllm: Sampler}` covers both runners and no catalog changes. The
+alternative was a second spelling in all nine of them.
+
+The term is not negligible — 21.6 us at one sequence to 107 us at 256 on
+RTXPRO6000/Llama-3.1-8B, against `lm_head`'s 714 to 840. Two independent
+checks that the shim measures exactly the missing work and nothing else:
+CUDA-event timing around the sampler call (29.5 us at 1 sequence, 63.7 at 128,
+90.3 at 256, an upper bound since it brackets the Python call too), and
+coverage's own total, which rose by 22.3 / 24.1 / 29.4 us across the three
+regimes once the shim was in.
+
+
 ### Skew profiling & alpha fit
 FlashAttention's varlen kernel pays tile-padding + SM-imbalance costs when a
 decode batch has non-uniform kv lengths. The uniform attention grid can't see
