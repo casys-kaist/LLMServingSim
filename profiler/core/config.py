@@ -862,12 +862,36 @@ class ProfileArgs:
     attention grid, so it is opt-in: pass the ``1 + N`` values you intend to
     simulate. Published N for the four modern families are 3, 4 and 5.
     """
-    attention_chunk_factor: float = 2.0
-    """Geometric factor for the prefill_chunk axis. Default 2.0
-    (doubling). Override via --attention-chunk-factor."""
-    attention_kv_factor: float = 2.0
-    """Geometric factor for the kv_prefill / kv_decode axes. Default
-    2.0 (doubling). Override via --attention-kv-factor."""
+    attention_chunk_factor: float = 1.5
+    """Geometric factor for the prefill-token axis. Override via
+    --attention-chunk-factor.
+
+    1.5 rather than doubling because the difference is measurable end to end,
+    not just in the table: on ``bench/examples/RTXPRO6000/Llama-3.1-8B``,
+    swapping only which attention grid the same simulator reads moves TTFT
+    mean from -4.6% to -1.1% and per-request |err| p50 from 4.9% to 2.7%. The
+    doubling grid's own held-out interpolation error is |err| p50 2.39% /
+    p90 8.81% over the 10,721 coordinates a x1.5 sweep measured and it does
+    not, and a saturated run turns a ~1% per-step error into several points of
+    TTFT because TTFT is almost entirely queueing.
+    """
+    attention_kv_factor: float = 1.5
+    """Geometric factor for the prefill-key and kv_decode axes. Override via
+    --attention-kv-factor. 1.5 for the reason above."""
+    attention_n_factor: float = 2.0
+    """Geometric factor for the n_decode axis. Override via
+    --attention-n-factor.
+
+    The only one of the four attention axes that had no knob, while the skew
+    sweep's own n axis has had ``--skew-n-factor`` all along. It stays at
+    doubling by default because on dense attention that axis is smooth --
+    per-sequence decode cost on Llama-3.1-8B runs 23.25 / 22.79 / 22.25 /
+    22.14 us at n = 16 / 32 / 64 / 128 -- so a denser sweep costs 50% more
+    shots for nothing. A sparse model needs it lower: DeepSeek-V3.2's
+    per-sequence cost drops ~3x between n=64 and n=128 at **every** kv
+    (48.63 -> 15.64 us/seq at kv=256, 7.57 -> 3.45 at kv=8192), and a doubling
+    grid interpolates straight across that step.
+    """
 
     # Measurement averaging
     measurement_iterations: int = 3

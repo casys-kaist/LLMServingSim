@@ -50,6 +50,12 @@ class Shot:
     # indistinguishable by shape from a prefill chunk -- which is exactly the
     # confusion this axis exists to remove.
     decode_q_len: int = 1
+    # How many of the leading ``requests`` are prefill sequences. Carried for
+    # the same reason ``decode_q_len`` is: a step can carry several prefill
+    # sequences, and then the boundary between them and the decodes cannot be
+    # read off the shapes -- a prefill chunk and a decode submitting the same
+    # number of query tokens look identical.
+    n_prefill: int = 0
 
     # Serialization roundtrip: these helpers keep cross-process
     # transport simple. collective_rpc serializes args as pickle, so
@@ -63,6 +69,7 @@ class Shot:
             requests=[tuple(r) for r in raw.get("requests", [])],
             experts=raw.get("experts"),
             decode_q_len=int(raw.get("decode_q_len") or 1),
+            n_prefill=int(raw.get("n_prefill") or 0),
         )
 
     # -----------------------------------------------------------------
@@ -114,7 +121,34 @@ class Shot:
             reqs.extend([(max(1, decode_q_len), kv_decode)] * n_decode)
         if not reqs:
             raise ValueError("attention Shot must have at least one request")
-        return cls(requests=reqs, decode_q_len=max(1, decode_q_len))
+        return cls(requests=reqs, decode_q_len=max(1, decode_q_len),
+                   n_prefill=1 if prefill_chunk > 0 else 0)
+
+    @classmethod
+    def attention_batch(
+        cls,
+        prefill_reqs: list[tuple[int, int]],
+        n_decode: int,
+        kv_decode: int,
+        decode_q_len: int = 1,
+    ) -> "Shot":
+        """Attention shot carrying **several** prefill sequences.
+
+        ``Shot.attention`` covers the one-sequence case, which is all a grid
+        indexed on a single sequence's chunk and context can express. A real
+        step routinely carries several -- one request finishing its prompt
+        beside another just starting -- and holding the total token count
+        fixed while splitting it across k sequences changes the cost in
+        opposite directions by family: 0.65-0.71x on dense GQA at k=7,
+        1.63-1.79x on sparse MLA. So the sweep has to be able to fire it.
+        """
+        reqs = list(prefill_reqs)
+        if n_decode > 0:
+            reqs.extend([(max(1, decode_q_len), kv_decode)] * n_decode)
+        if not reqs:
+            raise ValueError("attention Shot must have at least one request")
+        return cls(requests=reqs, decode_q_len=max(1, decode_q_len),
+                   n_prefill=len(prefill_reqs))
 
     # History given to a linear-attention shot's decode requests. The value is
     # arbitrary as far as cost goes -- a gated-DeltaNet state is fixed-size

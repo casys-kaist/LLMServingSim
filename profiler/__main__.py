@@ -222,14 +222,24 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "neither a prefill chunk of the same size nor that many "
                         "single-token decodes. Opt-in because it multiplies the "
                         "attention grid.")
-    p.add_argument("--attention-chunk-factor", type=float, default=2.0,
+    p.add_argument("--attention-chunk-factor", type=float, default=1.5,
                    dest="attention_chunk_factor",
-                   help="Geometric factor for the prefill_chunk axis. "
-                        "2.0 (default) is doubling. Lower for denser grid.")
-    p.add_argument("--attention-kv-factor", type=float, default=2.0,
+                   help="Geometric factor for the prefill-token axis. "
+                        "1.5 (default); 2.0 is doubling. The default is 1.5 "
+                        "because it is worth 3.5 points of TTFT end to end "
+                        "on the Llama bench example.")
+    p.add_argument("--attention-kv-factor", type=float, default=1.5,
                    dest="attention_kv_factor",
-                   help="Geometric factor for the kv_prefill / kv_decode "
-                        "axes. 2.0 (default) is doubling.")
+                   help="Geometric factor for the prefill-key and kv_decode "
+                        "axes. 1.5 (default); 2.0 is doubling.")
+    p.add_argument("--attention-n-factor", type=float, default=2.0,
+                   dest="attention_n_factor",
+                   help="Geometric factor for the n_decode axis. 2.0 "
+                        "(default) is doubling, which is right for dense "
+                        "attention -- that axis is smooth there. Lower it on "
+                        "a sparse model: DeepSeek-V3.2's per-sequence decode "
+                        "cost drops ~3x between n=64 and n=128 at every kv, "
+                        "and doubling interpolates across the step.")
     p.add_argument("--measurement-iterations", type=int, default=3,
                    dest="measurement_iterations",
                    help="Timed forwards per shot (averaged). A single sample "
@@ -445,6 +455,7 @@ def _build_profile_args(
         ) or (1,),
         attention_chunk_factor=ns.attention_chunk_factor,
         attention_kv_factor=ns.attention_kv_factor,
+        attention_n_factor=getattr(ns, "attention_n_factor", 2.0),
         measurement_iterations=ns.measurement_iterations,
         skip_skew=getattr(ns, "skip_skew", False),
         skew_n_factor=getattr(ns, "skew_n_factor", 2.0),
