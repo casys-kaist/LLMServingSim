@@ -3,9 +3,9 @@ vllm_version: 0.28.0
 cuda_version: '13.0'
 gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-09-01T05:42:50+00:00'
+profiled_at: '2026-09-02T19:03:02+00:00'
 architecture: qwen3_5
-architecture_sha256: 7e508c2ae2964e68dc15212885651da61e86e3ace5625fc9cd80b2aaa9612878
+architecture_sha256: 5c8241b892aee3a79f7f7d4bc0c8233ae1b6bad5570448749847109b8194e565
 model: Qwen/Qwen3.8-27B
 variant: bf16
 tp_degrees: [1, 2]
@@ -28,7 +28,7 @@ engine_effective:
     linear_num_key_heads: 8
     linear_num_value_heads: 24
   worker_extension_cls: profiler.core.hooks.extension.Extension
-  model: /tmp/profiler_model_sw_nc_xi
+  model: /tmp/profiler_model_nzumu59g
 engine_resolved:
   per_tp:
     '1':
@@ -38,16 +38,28 @@ engine_resolved:
     '2':
       block_size: 784
       max_model_len: 262144
-      num_cache_tokens: 41914343
+      num_cache_tokens: 41915119
 attention_grid:
-  max_kv: 16384
+  max_kv: 262142
   chunk_factor: 2.0
   kv_factor: 2.0
   chunks: 0, 16-2048 x2
   n_decode: 0, 1-256 x2
-  kv: 0, 16-16384 x2
+  kv: 0, 16-262142 x2
 measurement_iterations: 3
 skew_profile:
-  enabled: false
+  enabled: true
+  factors:
+    n: 2.0
+    pc: 2.0
+    kp: 2.0
+    kvs: 2.0
+  grid:
+    n: 2-256 x2
+    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
+    pc: 0, 16-2048 x2
+    kp: 0, 512-131071 x2
+    kvs: 128-262142 x2
+    skew_rep: 4.0
 skew_fit:
   enabled: false

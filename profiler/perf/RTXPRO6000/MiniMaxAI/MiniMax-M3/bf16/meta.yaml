@@ -3,12 +3,31 @@ vllm_version: 0.28.0
 cuda_version: '13.0'
 gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-08-31T12:30:12+00:00'
+profiled_at: '2026-09-03T02:44:03+00:00'
 architecture: minimax_m3_vl
-architecture_sha256: 7e788a8f7f119b657530e3f61165805fd0eb439298a8a3aa92509d092388c5be
+architecture_sha256: 75e5e71610a7fcefc83eeb0c893edcac075912b0c514b2e99eac864ef7e32161
 model: MiniMaxAI/MiniMax-M3
 variant: bf16
 tp_degrees: [1]
+category_provenance:
+  dense:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:02:16+00:00'
+  per_sequence:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:02:16+00:00'
+  attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:02:16+00:00'
+  linear_attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:02:16+00:00'
+  moe:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-03T02:44:03+00:00'
+  mtp:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:02:16+00:00'
 engine_effective:
   load_format: dummy
   enforce_eager: true
@@ -16,27 +35,42 @@ engine_effective:
   enable_prefix_caching: false
   generation_config: vllm
   tensor_parallel_size: 1
-  gpu_memory_utilization: 0.9
+  gpu_memory_utilization: 0.75
   max_num_batched_tokens: 2048
   max_num_seqs: 256
   hf_overrides:
     num_hidden_layers: 4
   block_size: 128
+  max_model_len: 32768
   worker_extension_cls: profiler.core.hooks.extension.Extension
-  model: /tmp/profiler_model_p5fk1ii9
+  model: /tmp/profiler_model_tsuyqs5s
 engine_resolved:
-  block_size: 128
-  max_model_len: 1048576
-  num_cache_tokens: 8120960
+  per_tp:
+    '1':
+      block_size: 128
+      max_model_len: 32768
+      num_cache_tokens: 7974784
 attention_grid:
-  max_kv: 16384
+  max_kv: 32766
   chunk_factor: 2.0
   kv_factor: 2.0
   chunks: 0, 16-2048 x2
   n_decode: 0, 1-256 x2
-  kv: 0, 16-16384 x2
+  kv: 0, 16-32766 x2
 measurement_iterations: 3
 skew_profile:
-  enabled: false
+  enabled: true
+  factors:
+    n: 2.0
+    pc: 2.0
+    kp: 2.0
+    kvs: 2.0
+  grid:
+    n: 2-256 x2
+    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
+    pc: 0, 16-2048 x2
+    kp: 0, 512-16383 x2
+    kvs: 128-32766 x2
+    skew_rep: 4.0
 skew_fit:
   enabled: false
