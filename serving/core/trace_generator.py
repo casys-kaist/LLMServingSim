@@ -1513,9 +1513,52 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
     dispatch_comm_size = ag_per_rank_tokens * dispatch_per_token
     combine_comm_size = effective_total_len_comm * combine_per_token
 
-    if ep_total > 1:
+    # Which collective the MoE block rides on depends on whether the *tokens*
+    # are partitioned, not on whether the experts are. Verified against vLLM
+    # 0.28:
+    #
+    #   DP > 1  -- tokens live on different ranks, so they have to move.
+    #     ``use_all2all_kernels`` is on and ``AgRsAll2AllManager`` all-gathers
+    #     then reduce-scatters. The group is the DP group at ``tp == 1`` and the
+    #     whole EP group above it, because ``use_sequence_parallel_moe``
+    #     (``enable_expert_parallel and tp > 1 and dp > 1``) shards the MoE
+    #     input across TP as well and ``_get_comm_group`` then returns
+    #     ``get_ep_group()``. Either way the ring is ``ep_total``, which is what
+    #     ``ep_dim`` already scopes. The reduce-scatter completes the
+    #     expert-sum, so ``_maybe_reduce_final_output`` adds nothing (it is a
+    #     no-op on a size-1 TP group, and explicitly skipped under
+    #     sequence-parallel).
+    #
+    #   DP == 1 -- the MoE input is *replicated* across the EP ranks (TP
+    #     all-reduces after ``o_proj``, and EP sets
+    #     ``moe_parallel_config.tp_size = 1``), so nothing needs dispatching:
+    #     ``use_all2all_kernels = use_ep and (dp_size > 1 or pcp_size > 1 or
+    #     is_sequence_parallel)`` is False and ``maybe_make_prepare_finalize``
+    #     returns None. What is left is one **AllReduce** over the TP group,
+    #     fired by ``_maybe_reduce_final_output``'s ``(tp_size > 1 or ep_size >
+    #     1)`` -- satisfied by ``ep_size``, since EP zeroed the MoE's own
+    #     tp_size. That reduction is not the dense hidden-dim one: it sums a
+    #     token's ``k`` expert contributions, which are split across ranks
+    #     because the experts are.
+    #
+    # ``dp_sum_total_len > 0`` is the same DP-active test the token counts
+    # above use.
+    dp_active = ctx.dp_sum_total_len > 0
+    # ``use_sequence_parallel_moe`` (allgather_reducescatter + expert parallel
+    # + tp > 1 + dp > 1) shards the MoE input across TP as well, which is why
+    # the dispatch/combine group widens from the DP group to the whole EP
+    # group. It also adds a trailing AllGather -- see below.
+    sp_moe = ep_total > 1 and dp_active and ctx.tp_size > 1
+    if ep_total > 1 and dp_active:
         dispatch_comm_type = _with_dim('ALLGATHER', ctx.ep_dim)
         combine_comm_type = _with_dim('REDUCESCATTER', ctx.ep_dim)
+    elif ep_total > 1 and ctx.tp_size > 1:
+        dispatch_comm_type = 'NONE'
+        dispatch_comm_size = 0
+        combine_comm_type = _with_dim('ALLREDUCE', ctx.tp_dim)
+        # vLLM all-reduces the block's own output, ``[num_tokens, hidden]``.
+        # ASTRA-Sim wants the full tensor for an ALLREDUCE, as on o_proj.
+        combine_comm_size = bctx.total_len * combine_per_token
     else:
         dispatch_comm_type = 'NONE'
         combine_comm_type = 'NONE'
@@ -1543,7 +1586,27 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
         # ``local_tokens`` here is the per-rank workload after dispatch
         # — already scaled to this rank's real tokens (no DP-padding sum).
         # We feed it straight into the MoE profile lookup.
-        local_tokens = routing.local_tokens[i]
+        # **Every** rank's token count is the gathered/replicated total, not a
+        # dispatched share. vLLM's default ``allgather_reducescatter`` backend
+        # hands each rank the full post-all-gather tensor
+        # (``NaiveDpEpPrepareAndFinalize.prepare`` returns what
+        # ``dispatch_router_logits`` gathered), and the expert kernel permutes
+        # out the ``(token, expert)`` pairs whose expert is local -- it does not
+        # receive a subset of tokens. With no all-gather at all (DP=1, where
+        # ``use_all2all_kernels`` is False) the input is simply replicated
+        # across the EP ranks, so it is the whole batch there too.
+        #
+        # ``routing.local_tokens`` answers a different question -- how many
+        # tokens a *dispatching* backend would send to this rank, which is
+        # ``gathered * P(at least one of the token's k experts is local)``. That
+        # is what DeepEP does, and the simulator does not emit it. Using it here
+        # understated the per-rank work by 1 - p_hit: 0.3% at ep=2 (p_hit
+        # 0.9969 on Qwen3-30B-A3B), but 9% at ep=4, 33% at ep=8 and 59% at
+        # ep=16. The profiled slice matches the gathered reading: the profiler
+        # cuts both ``E/ep`` and ``k/ep``, so a shot at ``tokens = T`` measures
+        # ``T * k/ep`` expert-token pairs, which is exactly what a rank computes
+        # over the gathered set.
+        local_tokens = effective_total_len_compute
         activated_experts = routing.activated_experts[i]
 
         if local_tokens > 0:
@@ -1567,6 +1630,35 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
         power_acc.npu_latencies_ns.append(max_rank_latency_ns)
 
     lines.append((f"EXPERT END {combine_comm_type} {combine_comm_size}",))
+
+    # Sequence-parallel MoE closes with one more collective, and it is not the
+    # expert sum -- the reduce-scatter above already did that over the whole EP
+    # group. ``Qwen3MoeSparseMoeBlock.forward`` slices the block's input to
+    # this TP rank's chunk (``sequence_parallel_chunk``, a local narrow, no
+    # collective), runs the experts, then reassembles the sequence with
+    # ``tensor_model_parallel_all_gather`` over the TP group -- otherwise the
+    # rest of the block would see only 1/tp of the tokens. Two collectives on
+    # two different groups, so one pair cannot describe them; it is ~17% of
+    # this configuration's MoE collective traffic.
+    #
+    # It rides as a **second pair on the same ``EXPERT END`` line**, which the
+    # converter now emits in order. A separate trace row does not work: the
+    # converter special-cases a block whose last layer is an expert marker
+    # (``layers[layer_end - 1].is_expert``), and a normal row there hung
+    # ASTRA-Sim on ``dual_node_moe_dp_ep_intra_inter``. A second ``EXPERT END``
+    # line does not either -- its ``is_expert`` handling would fire both the
+    # "start" and "end" branches on that one line and emit the comm twice.
+    #
+    # ASTRA-Sim wants the per-rank chunk for an ALLGATHER, and vLLM pads the
+    # sequence up to a multiple of ``tp_size`` before slicing.
+    if sp_moe:
+        chunk_bytes = (-(-bctx.total_len // ctx.tp_size)) * combine_per_token
+        end_line = (f"EXPERT END {combine_comm_type} {combine_comm_size} "
+                    f"{_with_dim('ALLGATHER', ctx.tp_dim)} {chunk_bytes}")
+        lines[-1] = (end_line,)
+        if power_acc is not None:
+            power_acc.link_data_bytes += total_ring_data(
+                chunk_bytes, ctx.tp_size, collective="allgather")
 
     # Post-expert ReduceScatter power (combine)
     if power_acc is not None and ep_total > 1:
