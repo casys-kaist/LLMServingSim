@@ -75,7 +75,8 @@ def write_requests(output_dir: Path, records: list[dict]) -> None:
 def write_timeseries(output_dir: Path, header: list[str], rows: list[list]) -> None:
     """Write timeseries.csv. Default header::
 
-        ["t", "prompt_throughput", "gen_throughput",
+        ["t", "prompt_throughput", "prompt_compute_throughput",
+         "prompt_cached_throughput", "gen_throughput",
          "running", "waiting", "preempted", "kv_cache_pct"]
 
     ``preempted`` is the number of preemption events in the tick, summed over
