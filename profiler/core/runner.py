@@ -180,6 +180,11 @@ def run_full(
     # out 784 at tp=1 and 784 at tp=2 -- but a *single* recorded value is
     # whichever TP ran last, and the simulator would read it for every TP.
     limits_by_tp: dict[int, Any] = {}
+    # Whether the skew sweep actually fired. It is conditional twice over
+    # (--skip-skew, and on the stack having an attention category at this
+    # depth), and it is what the provenance stamp has to record -- not the
+    # flag, the firing.
+    skew_measured = False
 
     for tp in args.tp_degrees:
         # Skip TPs with nothing non-tp_stable to do. The post-pass
@@ -278,6 +283,7 @@ def run_full(
                         c.name == "attention" for c in by_depth[depth]):
                     from profiler.core.skew import sample_skew
                     sample_skew(llm, arch, args, limits, tp, tp_root)
+                    skew_measured = True
             finally:
                 spin_down(llm, tmpdir)
 
@@ -337,9 +343,16 @@ def run_full(
 
     if last_engine_kwargs is None:
         last_engine_kwargs = {}
+    # What this run is entitled to stamp. ``--only-skew`` fires no category at
+    # all, so claiming them would relabel dense / attention / per_sequence as
+    # freshly measured on a run that only touched skew.csv -- the exact failure
+    # the per-artifact block exists to prevent.
+    measured: tuple[str, ...] = () if args.only_skew else tuple(
+        c.name for c in categories_for(arch, args.tp_degrees[0]))
+    if skew_measured:
+        measured += ("skew",)
     persist_meta(args, arch_path, last_engine_kwargs, variant_root, limits_by_tp,
-                 measured_categories=tuple(
-                     c.name for c in categories_for(arch, args.tp_degrees[0])))
+                 measured_categories=measured)
 
     log.done(variant_root)
 

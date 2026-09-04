@@ -553,34 +553,83 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
     }
 
 
+# What carries a provenance stamp. ``skew`` is measured -- on its own sweep,
+# riding the attention engine -- so it needs one, but it is not a category:
+# it has no key-field schema and nothing looks it up by key, so putting it in
+# _KEY_FIELDS_BY_CATEGORY would make the rest of the writer treat skew.csv as
+# an ordinary keyed table. ``skew_fit`` is deliberately absent: it is derived
+# from skew.csv by the fit, and a slice refresh rewrites it without measuring
+# anything, so stamping it would claim a measurement that never happened.
+_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew")
+
+
+def _artifacts_present(variant_root: Path) -> set[str]:
+    """Which stamped artifacts this bundle actually holds, by CSV.
+
+    Seeding and pruning both need this. A bundle that never measured MoE must
+    not be labelled as having measured it -- Llama-3.1-8B carried
+    ``linear_attention``, ``moe`` and ``mtp`` entries for exactly that reason,
+    seeded from a loop over every known category rather than over the files
+    that exist.
+    """
+    present: set[str] = set()
+    for tp_dir in variant_root.glob("tp*"):
+        if not tp_dir.is_dir():
+            continue
+        present.update(name for name in _STAMPED_ARTIFACTS
+                       if (tp_dir / f"{name}.csv").exists())
+    return present
+
+
 def _category_provenance(
     prior: dict[str, Any],
     measured: tuple[str, ...],
     version: str,
     stamp: str,
+    present: set[str],
 ) -> dict[str, Any] | None:
-    """``{category: {vllm_version, profiled_at}}``, accumulated across refreshes.
+    """``{artifact: {vllm_version, profiled_at}}``, accumulated across refreshes.
 
     A bundle is not necessarily one measurement session: a slice refresh
     rewrites one category and leaves the rest alone, and those rest may have
-    been measured under a different vLLM. Recording it per category is the only
+    been measured under a different vLLM. Recording it per artifact is the only
     way the file can say so.
+
+    ``present`` bounds the block to what the bundle holds, both when seeding an
+    older file and when carrying an existing block forward -- so a stale entry
+    for an artifact that was never measured is pruned on the next write rather
+    than inherited forever.
     """
     out: dict[str, Any] = {}
     prior_block = prior.get("category_provenance")
     if isinstance(prior_block, dict):
         out.update({str(k): dict(v) for k, v in prior_block.items()
-                    if isinstance(v, dict)})
+                    if isinstance(v, dict) and str(k) in present})
+        # An artifact on disk that the block never named must not inherit the
+        # top-level stamp: that describes the most recent refresh, not the
+        # session that measured this one. Llama-3.1-8B holds 0.19 skew shots
+        # under a 0.28.0 header, so seeding from it would re-assert exactly
+        # the claim this block exists to prevent. Say unknown instead, which
+        # is both true and visible; the next sweep of that artifact replaces
+        # it with a real version.
+        for name in sorted(present - set(out)):
+            out[name] = {"vllm_version": "unknown", "profiled_at": "unknown"}
     elif prior:
         # First time: everything already in the file belongs to the run that
         # wrote it, whose version and timestamp are the prior top-level ones.
         seed = {"vllm_version": prior.get("vllm_version"),
                 "profiled_at": prior.get("profiled_at")}
         if seed["vllm_version"]:
-            for name in _KEY_FIELDS_BY_CATEGORY:
+            for name in sorted(present):
                 out[name] = dict(seed)
+    # ``measured`` is what the run set out to fire, which is not always what it
+    # fired: ``categories_for`` reports every category the catalog declares,
+    # and ``mtp`` is only built when --profile-mtp is passed. Measuring
+    # something leaves a file behind, so ``present`` is the check -- and with
+    # it the block is exactly the set of artifacts on disk, in every branch.
     for name in measured:
-        out[str(name)] = {"vllm_version": version, "profiled_at": stamp}
+        if str(name) in present:
+            out[str(name)] = {"vllm_version": version, "profiled_at": stamp}
     return out or None
 
 
@@ -627,6 +676,16 @@ def persist_meta(
     vLLM 0.28 restructured MoE substantially, and the two versions agree to
     within noise on decode-sized batches but differ by 16-26% at 2048 tokens.
 
+    The block is bounded by the artifacts the bundle actually holds
+    (``_artifacts_present``), in both directions. Seeding an older file by
+    looping over every known category instead put ``linear_attention``,
+    ``moe`` and ``mtp`` entries into Llama-3.1-8B's meta, dated to a session
+    that measured none of them, and once written they were carried forward on
+    every later refresh. And ``skew`` had no entry at all, in any bundle, so
+    the one artifact whose raw shots a slice refresh never re-measures was
+    also the one the file could not describe -- which is how Llama's bundle
+    came to hold 0.19 skew shots under a ``vllm_version: 0.28.0`` header.
+
     Anything not recorded is carried over from the file, not dropped.
     """
     prior = _prior_meta(variant_root)
@@ -672,7 +731,8 @@ def persist_meta(
         # first partial refresh of an older bundle labels its untouched
         # categories correctly rather than inheriting the new run's version.
         "category_provenance": _category_provenance(
-            prior, measured_categories, _vllm_version(), _utcnow_iso()),
+            prior, measured_categories, _vllm_version(), _utcnow_iso(),
+            _artifacts_present(variant_root)),
         "engine_effective": (
             _stringify(engine_effective) if records_engine
             else prior.get("engine_effective") or _stringify(engine_effective)
