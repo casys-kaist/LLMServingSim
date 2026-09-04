@@ -190,6 +190,26 @@ ATTENTION_KV_FACTOR=2.0             # geometric factor for kv axes (doubling)
 
 Smaller factors densify that axis; larger factors coarsen it.
 
+**If the run dies with CUDA OOM, this is the first knob.** Left empty,
+`ATTENTION_MAX_KV` is the model's own context window, so a long-context
+checkpoint sweeps out to 131k or beyond and the largest decode shots ask the
+engine for `n_decode * kv_decode` tokens of KV in one go. Setting it bounds the
+biggest allocation the sweep ever makes, and cuts runtime with it -- 8,643
+shots at 16,384 against 14,653 at DeepSeek-V3.2's full 163,834. The cost is
+long-context coverage: the simulator extrapolates past the last profiled kv,
+which is safe on a dense kernel and not on a sparse one (see *Skew profiling*
+and the `--attention-max-kv` section of the docs site).
+
+The next knobs down, in order, are `MAX_MODEL_LEN` (caps the engine's context
+and hence the KV cache it reserves -- it also caps this one, since the grid
+runs to `min(the two)`), `MAX_NUM_SEQS` (caps `n_decode` per shot) and
+`MAX_NUM_BATCHED_TOKENS` (caps tokens per shot, i.e. the activation peak).
+None of them is free: every shot-feasibility filter is measured against the KV
+cache the engine resolved, so these change *which shots the sweep contains*,
+not only whether it survives. `GPU_MEMORY_UTILIZATION` cuts both ways -- lower
+leaves more room for activations but shrinks the KV cache, filtering out more
+of the large-kv shots.
+
 #### Engine limits and model shape
 
 The defaults suit a dense model that fits one card. The modern families need
