@@ -95,6 +95,22 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "one), or a synthetic config with no tokenizer at all. "
                         "Not a speed knob: forcing detokenize off separately "
                         "measured 0.18% of run span, i.e. noise.")
+    p.add_argument("--enforce-eager", action="store_true",
+                   dest="enforce_eager", default=False,
+                   help="Run vLLM eager, with torch.compile and cudagraphs "
+                        "off. Not the production configuration -- leave it "
+                        "off for the headline comparison. What it buys is a "
+                        "ground truth in the same execution mode the profiler "
+                        "is forced into: layerwise_profile builds its tree "
+                        "from module events and compilation fuses the module "
+                        "boundaries away, so every profiled latency describes "
+                        "an eager engine. Recording both separates a cost-"
+                        "model error from the cudagraph speedup the simulator "
+                        "cannot see. On RTXPRO6000/Llama-3.1-8B the same "
+                        "simulator reads TTFT mean +4.9% against the compiled "
+                        "truth and -1.0% against the eager one; on "
+                        "DeepSeek-V3.2 cudagraphs are worth 26% of a decode "
+                        "step.")
     p.add_argument("--load-format", default="auto", dest="load_format",
                    help="vLLM load_format. 'dummy' skips reading weights and "
                         "initializes them randomly, which is valid ground "
@@ -198,6 +214,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         seed=args.seed,
         load_format=args.load_format,
         skip_tokenizer_init=args.skip_tokenizer_init,
+        enforce_eager=args.enforce_eager,
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
@@ -365,6 +382,10 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
         # tokenizer-less config directory should never be mistaken for one
         # booted from the real checkpoint.
         "skip_tokenizer_init",
+        # Recorded because it changes what the run *is*: a compiled engine and
+        # an eager one are two different ground truths, and only the eager one
+        # is comparable with a profiled latency.
+        "enforce_eager",
     )
     return {k: getattr(engine_args, k, None) for k in fields}
 

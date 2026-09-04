@@ -61,6 +61,10 @@ RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
 # profiler boots one -- and a gated or synthetic config runs with no Hub
 # access. Not a speed knob; detokenisation measured 0.18% of run span.
 SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
+# Run vLLM eager. Not the production configuration -- what it buys is a truth
+# in the same execution mode the profiler is forced into, which separates a
+# cost-model error from the cudagraph speedup the simulator cannot see.
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -93,6 +97,7 @@ cmd=(python3 -m bench run
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
 [[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
 [[ "$SKIP_TOKENIZER_INIT" == "1" ]] && cmd+=(--skip-tokenizer-init)
+[[ "$ENFORCE_EAGER" == "1" ]] && cmd+=(--enforce-eager)
 
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"
