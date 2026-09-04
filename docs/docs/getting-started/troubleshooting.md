@@ -311,12 +311,49 @@ full sweep will finish.
 
 ## Out of memory inside the vLLM container
 
-**Symptom:** Profiler crashes with CUDA OOM partway through the
-attention sweep.
+**Symptom:** Profiler crashes with CUDA OOM, usually partway through the
+attention sweep — the sweep's largest shots come late, so a run can look
+healthy for hours first.
 
-**Fix:** lower `MAX_NUM_BATCHED_TOKENS` in `profiler/profile.sh`,
-or skip the heavy categories with environment variables (see
-[Profiler → Running](/docs/profiler/running)).
+**Fix:** cut how far the KV axes reach, in `profiler/profile.sh`:
+
+```bash
+ATTENTION_MAX_KV=16384    # top of the kv_decode / prefill_key axes
+```
+
+Unset, that bound is the model's **own context window**, so a long-context
+checkpoint sweeps to 131k or beyond and the largest decode shots ask the
+engine for `n_decode × kv_decode` tokens of KV at once. Capping it bounds the
+biggest allocation the sweep ever makes, and cuts runtime with it: 8,643 shots
+at 16,384 against 14,653 at DeepSeek-V3.2's full 163,834.
+
+If that is not enough, work down this list — each one trades away something
+different:
+
+| Knob | What it bounds | What you lose |
+| --- | --- | --- |
+| `ATTENTION_MAX_KV` | the top of the kv axes | long-context coverage; the simulator extrapolates past the last profiled kv |
+| `MAX_MODEL_LEN` | the engine's context, so the KV cache it reserves | the same reach, and it caps `ATTENTION_MAX_KV` too (the grid runs to `min(the two)`) |
+| `MAX_NUM_SEQS` | `n_decode` per shot | large-batch decode coverage |
+| `MAX_NUM_BATCHED_TOKENS` | tokens per shot, i.e. the activation peak | large prefill-chunk coverage |
+| `GPU_MEMORY_UTILIZATION` | the split between KV cache and everything else | see the caution below |
+
+:::caution[These are not free knobs]
+Every shot-feasibility filter is measured against the KV cache the engine
+actually resolved, so `GPU_MEMORY_UTILIZATION`, `MAX_MODEL_LEN` and
+`MAX_NUM_SEQS` change **which shots the sweep contains**, not just whether it
+survives. A bundle profiled under one paging regime does not describe another —
+keep them in step with what you simulate at, and record what you used. Lowering
+`GPU_MEMORY_UTILIZATION` in particular cuts both ways: it leaves more room for
+activations but shrinks the KV cache, which filters out more of the large-kv
+shots.
+:::
+
+MiniMax-M3 needs both a lower `MAX_MODEL_LEN` and a smaller
+`GPU_MEMORY_UTILIZATION` to fit at all; `profiler/profile.sh` says so inline.
+
+To skip whole categories instead, see
+[Profiler → Running](/docs/profiler/running).
 
 ## Still stuck?
 
