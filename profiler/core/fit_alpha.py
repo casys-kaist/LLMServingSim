@@ -387,20 +387,45 @@ def fit_alpha(skew_csv: Path) -> dict[str, Any]:
     return out
 
 
+def _tp_dirs_with_skew(variant_root: Path) -> list[int]:
+    """Every TP degree under ``variant_root`` that actually holds skew data."""
+    found: list[int] = []
+    for d in variant_root.glob("tp*"):
+        if not d.is_dir() or not (d / "skew.csv").exists():
+            continue
+        try:
+            found.append(int(d.name[2:]))
+        except ValueError:
+            continue
+    return sorted(found)
+
+
 def fit_alpha_per_tp(
-    variant_root: Path, tp_degrees: list[int]
+    variant_root: Path, tp_degrees: list[int] | None = None
 ) -> dict[str, Any]:
     """Walk every ``tp{N}/skew.csv`` under ``variant_root`` and fit.
 
-    Returns a meta-friendly dict with a ``per_tp`` map. TPs whose
-    skew.csv is absent or empty are silently skipped. Each TP's
-    ``bucket_axes`` is derived from its own data; the writer then
-    dedups and promotes them to the block top-level when they match
-    across TPs (which they usually do, since all TPs share the same
-    profile grid).
+    The block this feeds describes the **whole variant**, and the writer
+    replaces it wholesale, so it has to cover every TP the bundle holds --
+    not just the one this run happened to profile. Iterating the caller's
+    ``tp_degrees`` instead silently deleted the others: a ``--tp 1`` refresh
+    dropped ``skew_fit.per_tp[2]`` from meta.yaml while ``tp2/skew_fit.csv``
+    sat on disk, and ``_skew_alpha`` then found no entry for tp=2 and fell
+    back to ``_ATTN_SKEW_ALPHA_FALLBACK`` -- i.e. turned skew correction off
+    for every tp=2 run. ``tp_degrees`` is kept only as a hint, unioned in, so
+    a caller naming a TP whose CSV is missing still gets the same silent skip
+    as before.
+
+    Returns a meta-friendly dict with a ``per_tp`` map. TPs whose skew.csv is
+    absent or empty are silently skipped. Each TP's ``bucket_axes`` is derived
+    from its own data; the writer then dedups and promotes them to the block
+    top-level when they match across TPs (which they usually do, since all TPs
+    share the same profile grid).
     """
+    wanted = sorted(set(_tp_dirs_with_skew(variant_root))
+                    | {int(t) for t in (tp_degrees or ())})
     per_tp: dict[int, dict[str, Any]] = {}
-    for tp in tp_degrees:
+    for tp in wanted:
         fit = fit_alpha(variant_root / f"tp{tp}" / "skew.csv")
         if fit.get("enabled") is False:
             continue
