@@ -222,16 +222,14 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "neither a prefill chunk of the same size nor that many "
                         "single-token decodes. Opt-in because it multiplies the "
                         "attention grid.")
-    p.add_argument("--attention-chunk-factor", type=float, default=1.5,
+    p.add_argument("--attention-chunk-factor", type=float, default=2.0,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
-                        "1.5 (default); 2.0 is doubling. The default is 1.5 "
-                        "because it is worth 3.5 points of TTFT end to end "
-                        "on the Llama bench example.")
-    p.add_argument("--attention-kv-factor", type=float, default=1.5,
+                        "2.0 (default) is doubling; lower for a denser grid.")
+    p.add_argument("--attention-kv-factor", type=float, default=2.0,
                    dest="attention_kv_factor",
                    help="Geometric factor for the prefill-key and kv_decode "
-                        "axes. 1.5 (default); 2.0 is doubling.")
+                        "axes. 2.0 (default) is doubling.")
     p.add_argument("--attention-n-factor", type=float, default=2.0,
                    dest="attention_n_factor",
                    help="Geometric factor for the n_decode axis. 2.0 "
