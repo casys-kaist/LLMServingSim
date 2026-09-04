@@ -351,7 +351,16 @@ def run_full(
         c.name for c in categories_for(arch, args.tp_degrees[0]))
     if skew_measured:
         measured += ("skew",)
+    # And what it is entitled to *describe*. A skew-only run sweeps no
+    # attention grid, so regenerating that block from its own defaults would
+    # replace the recorded axes with a spec no CSV in the bundle matches --
+    # it would have overwritten a x1.5, 37,962-shot grid with a x2 one. It
+    # also boots only the attention-depth engine, which on a stack whose
+    # categories need different depths is not the deepest, so it is not
+    # authoritative for engine_effective / engine_resolved either.
     persist_meta(args, arch_path, last_engine_kwargs, variant_root, limits_by_tp,
+                 records_engine=not args.only_skew,
+                 records_attention_grid=not args.only_skew,
                  measured_categories=measured)
 
     log.done(variant_root)
