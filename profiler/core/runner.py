@@ -80,6 +80,8 @@ def _fire_one_category(
     limits,
     tp: int,
     out_dir: Path,
+    *,
+    wipe: bool | None = None,
 ) -> None:
     """Sweep all of this category's shots, write the resulting CSV.
 
@@ -87,12 +89,21 @@ def _fire_one_category(
     preloaded into the sink and shots whose key is already covered are
     skipped. The sink's flush at the end writes both preserved and
     newly-measured rows. ``--force`` restores wipe-and-rewrite.
+
+    ``wipe`` overrides that for a category swept more than once in a single
+    run. ``moe`` is: it fires once per EP degree, each on its own engine, and
+    the degrees share one CSV because ``ep`` is a column. With ``--force``
+    every pass started from an empty sink, so each one erased the degrees
+    before it and the file ended up holding only the last -- 50 rows at ep=8
+    where four degrees had been measured. Only the first pass may wipe.
     """
+    if wipe is None:
+        wipe = args.force
     sink = sink_for(category, out_dir)
     catalog_slice = category.catalog_slice(arch)
 
     prior_keys: set[tuple] = set()
-    if not args.force:
+    if not wipe:
         preloaded = sink.preload()
         if preloaded:
             prior_keys = sink.prior_shot_keys()
@@ -307,8 +318,11 @@ def run_full(
                     tp, ep, ep_limits.num_experts, ep_limits.top_k,
                 )
                 try:
+                    # ep=1 rode the main engine above and has already wiped
+                    # under --force; these passes add to that file.
                     _fire_one_category(
                         llm, moe_category, arch, args, ep_limits, tp, tp_root,
+                        wipe=False,
                     )
                 finally:
                     spin_down(llm, tmpdir)
@@ -435,6 +449,7 @@ def run_slice(
         try:
             _fire_one_category(
                 llm, category, arch, args, limits, tp, tp_root,
+                wipe=(args.force and ep == eps[0]),
             )
         finally:
             spin_down(llm, tmpdir)
