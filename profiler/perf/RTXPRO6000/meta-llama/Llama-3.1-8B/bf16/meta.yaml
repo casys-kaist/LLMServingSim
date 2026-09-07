@@ -22,6 +22,9 @@ category_provenance:
   skew:
     vllm_version: 0.28.0
     profiled_at: '2026-09-04T19:37:52+00:00'
+  step:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-07T07:33:00+00:00'
 engine_effective:
   load_format: dummy
   enforce_eager: true
