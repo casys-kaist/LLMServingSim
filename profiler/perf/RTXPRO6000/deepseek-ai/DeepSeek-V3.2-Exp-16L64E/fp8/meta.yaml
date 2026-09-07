@@ -1,0 +1,79 @@
+profiler_version: 1.0.0
+vllm_version: 0.28.0
+cuda_version: '13.0'
+gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
+hardware: RTXPRO6000
+profiled_at: '2026-09-03T14:07:48+00:00'
+architecture: deepseek_v32
+architecture_sha256: e5ac023d9f1fa324b8a325e0bb3d7a99917eec1775f97f82f3bebda6f642d410
+model: deepseek-ai/DeepSeek-V3.2-Exp-16L64E
+variant: fp8
+tp_degrees: [1]
+category_provenance:
+  dense:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:04:10+00:00'
+  per_sequence:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:04:10+00:00'
+  attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:04:10+00:00'
+  linear_attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:04:10+00:00'
+  moe:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-03T14:07:48+00:00'
+  mtp:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-02T19:04:10+00:00'
+engine_effective:
+  load_format: dummy
+  enforce_eager: true
+  skip_tokenizer_init: true
+  enable_prefix_caching: false
+  generation_config: vllm
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  hf_overrides:
+    num_hidden_layers: 4
+    intermediate_size: 18432
+    num_attention_heads: 128
+    num_key_value_heads: 128
+    vocab_size: 129280
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_trg45p7c
+engine_resolved:
+  per_tp:
+    '1':
+      block_size: 64
+      max_model_len: 163840
+      num_cache_tokens: 24342272
+attention_grid:
+  max_kv: 163830
+  chunk_factor: 2.0
+  kv_factor: 2.0
+  chunks: 0, 16-2048 x2
+  n_decode: 0, 1-256 x2
+  kv: 0, 16-163830 x2
+  decode_q_lens: [1, 2, 3, 5, 9]
+measurement_iterations: 3
+skew_profile:
+  enabled: true
+  factors:
+    n: 2.0
+    pc: 2.0
+    kp: 2.0
+    kvs: 2.0
+  grid:
+    n: 2-256 x2
+    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
+    pc: 0, 16-2048 x2
+    kp: 0, 512-8192 x2
+    kvs: 128-16384 x2
+    skew_rep: 4.0
+skew_fit:
+  enabled: false
