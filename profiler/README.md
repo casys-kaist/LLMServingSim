@@ -78,7 +78,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **resume** | `--force` (default is resume) |
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
-| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
+| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp,step}`. `--tp-refresh N` needs `N` to be in `--tp` too |
 
 The five that decide how long a run takes, in rough order of effect:
 
@@ -873,3 +873,20 @@ python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000     --tp 1,2 --t
 ```
 
 Otherwise it exits with `tp=2 is not in the session's tp_degrees ([1])`.
+
+`--group step` is the one group that is not a per-layer category: it measures a
+whole forward and attributes it to no layer, so it takes its own branch and
+boots the engine with cudagraphs **on**. It is here because the sweep takes
+minutes while a full re-profile takes hours, and refreshing the cudagraph term
+was otherwise only possible as part of one. It stamps neither `engine_*` nor
+`attention_grid` in `meta.yaml` — a graph-enabled boot is not the engine whose
+shapes the simulator runs, and this run sweeps no attention grid — exactly as
+`--only-skew` may not.
+
+```bash
+python -m profiler slice meta-llama/Llama-3.1-8B \
+    --hardware RTXPRO6000 --tp-refresh 1 --group step
+```
+
+The saving is TP-invariant, so it is measured at TP=1 and replicated into the
+other `tp<N>/` folders by the writer.

@@ -433,15 +433,43 @@ def run_slice(
     arch = load_architecture(arch_path)
     variant_root = _variant_root(out_root, args)
 
-    if group not in CATEGORY_BY_NAME:
+    if group != "step" and group not in CATEGORY_BY_NAME:
         raise ValueError(
             f"unknown group {group!r}; must be one of "
-            f"{sorted(CATEGORY_BY_NAME)}"
+            f"{sorted(CATEGORY_BY_NAME) + ['step']}"
         )
     if tp not in args.tp_degrees:
         raise ValueError(
             f"tp={tp} is not in the session's tp_degrees ({args.tp_degrees})"
         )
+
+    if group == "step":
+        # The step sweep is not a Category -- it measures a whole forward and
+        # attributes it to no layer -- so it cannot go through the loop below.
+        # It gets its own branch rather than a fake Category, and it is worth
+        # having here: the sweep needs an engine with graphs *on*, so before
+        # this the only way to refresh it was a full re-profile, several hours
+        # for a sweep that takes minutes.
+        from profiler.core.step import sample_step
+
+        tp_root = variant_root / f"tp{tp}"
+        with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
+                       f"for the step sweep"):
+            llm, engine_kwargs, tmpdir = spin_up(args, tp, cudagraphs=True)
+            limits = probe_limits(llm, args)
+        try:
+            sample_step(llm, args, limits, tp, tp_root)
+        finally:
+            spin_down(llm, tmpdir)
+        # A graph-enabled boot is not authoritative for the shapes the
+        # simulator runs, and this run swept no attention grid, so it may
+        # stamp neither -- exactly as --only-skew may not.
+        persist_meta(args, arch_path, engine_kwargs, variant_root, {},
+                     records_engine=False,
+                     records_attention_grid=False,
+                     measured_categories=("step",))
+        log.done(variant_root)
+        return
 
     category_cls = CATEGORY_BY_NAME[group]
     category = category_cls()
