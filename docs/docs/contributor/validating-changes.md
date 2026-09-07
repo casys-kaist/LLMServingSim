@@ -180,19 +180,27 @@ If you only changed the alpha fit (`fit_alpha.py`), you can use
 ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
 without rerunning the rest.
 
-### If you touched `hardware.yaml`
+### If you touched the step sweep or `hardware.yaml`
 
-It feeds the simulator, so a change there can move every clock in
-`validate.sh` even though the file lives under `profiler/`:
+Both feed the simulator, so a change there can move every clock in
+`validate.sh` even though the files live under `profiler/`:
 
+- **`profiler/core/step.py`, `hooks/cudagraph_hook.py`** — the cudagraph
+  correction. Re-measure one bundle and check the branch structure survives:
+  `FULL` and `PIECEWISE` should show a saving of hundreds of microseconds and
+  `NONE` should show **statistically zero**, because above the capture ceiling
+  vLLM dispatches no graph either way and the toggle can save nothing. A `NONE`
+  row with a real saving means the hook is intercepting something it should
+  not; a `FULL` row near zero means it is intercepting nothing — check the
+  `dispatches` count, which the sweep raises on when it is zero.
 - **`profiler/core/hardware.py`** — the interconnect fit. `python -m profiler
   hardware` prints the fitted `link_bw` / `link_latency` and the worst
   residual; the residual per size is kept in the file. A fit whose worst
   residual jumps is a fit that moved, and every cluster config on that hardware
   inherits it.
 
-Two GPUs are needed. Without them the command writes the spec section,
-records `interconnect: null`, and exits non-zero.
+Two GPUs are needed for the second one. Without them the command writes the
+spec section, records `interconnect: null`, and exits non-zero.
 
 ## What "this should reproduce" looks like in a PR
 

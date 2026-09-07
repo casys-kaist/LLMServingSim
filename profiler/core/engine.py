@@ -148,6 +148,7 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
 
 def fuse_engine_kwargs(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+    cudagraphs: bool = False,
 ) -> dict[str, Any]:
     """Produce the final ``**kwargs`` to pass to ``vllm.LLM()``.
 
@@ -274,6 +275,14 @@ def fuse_engine_kwargs(
     # 6. Wire the worker extension.
     kwargs["worker_extension_cls"] = "profiler.core.hooks.extension.Extension"
 
+    if cudagraphs:
+        # The step sweep is the one pass that needs the compiled + cudagraph
+        # path: it measures what that path buys, by turning graph replay off
+        # per forward (``need_eager``) inside an engine that has them. Every
+        # other category needs ``enforce_eager`` left alone -- with graphs on,
+        # ``layerwise_profile`` has no per-module boundaries to attribute to.
+        kwargs["enforce_eager"] = False
+
     return kwargs
 
 
@@ -312,7 +321,7 @@ def _materialize_config(
 
 def spin_up(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
-    moe_ep: int = 1,
+    moe_ep: int = 1, cudagraphs: bool = False,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -332,7 +341,7 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
-    kwargs = fuse_engine_kwargs(args, tp, stack_axes)
+    kwargs = fuse_engine_kwargs(args, tp, stack_axes, cudagraphs=cudagraphs)
 
     # Materialize the model's config.json in a temp directory so vLLM
     # can load it directly from disk.

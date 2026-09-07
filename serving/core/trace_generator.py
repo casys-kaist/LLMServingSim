@@ -5,6 +5,7 @@ from .utils import *
 from .utils import (
     _load_architecture, _stack_module, get_architecture, get_layer_stack,
     num_experts as utils_num_experts, config_weight_dtype, config_kv_cache_dtype,
+    _cudagraph_capture_ceiling,
 )
 import pandas as pd
 import yaml
@@ -111,6 +112,8 @@ class TraceCtx:
     ep_total: int      # total EP degree across DP group
     tp_dim: list       # involved_dim for TP collectives (ALLREDUCE), None = all dims
     ep_dim: list       # involved_dim for EP collectives (ALLTOALL), None = all dims
+    cudagraph_capture_ceiling: int  # largest token count vLLM replays a graph
+                                    # for; see _cudagraph_mode_for
     num_speculative_tokens: int  # draft length N; the drafter runs N times per
                                  # step, so this is how many passes to emit
     dp_sum_total_len: int  # sum of total_len across DP group (0 = DP inactive). Captures the post-AG gathered size for MoE compute; dummy batches are pre-padded to max by serving/__main__.py so the sum reflects vLLM's CUDA-graph padding.
@@ -473,6 +476,47 @@ def _build_moe_table(df):
     return out
 
 
+def _load_step_tables(root: str, tps: list[int]) -> dict:
+    """Read every ``tp<N>/step.csv`` into ``{tp: {branch: {tokens: ratio}}}``.
+
+    The ratio is derived rather than stored: ``step_us`` is the graph step and
+    ``saved_us`` what the graph saved, so ``step/(step+saved)`` is what that
+    case measured. Storing the saving instead is deliberate -- it is the
+    physically meaningful quantity, and it is what shows the term is a constant
+    per model rather than a constant fraction of a step.
+
+    A branch keeps one entry per captured token count. Where a branch has
+    several rows at the same count (the FULL sweep fires two kv lengths, since
+    launch count should not depend on kv and that is worth checking rather than
+    assuming) their ratios are averaged.
+    """
+    out: dict = {}
+    for tp in tps:
+        path = os.path.join(root, f"tp{tp}", "step.csv")
+        if not os.path.exists(path):
+            continue
+        acc: dict = {}
+        try:
+            df = pd.read_csv(path)
+        except Exception:                                  # noqa: BLE001
+            continue
+        for row in df.itertuples(index=False):
+            step = float(getattr(row, "step_us", 0.0) or 0.0)
+            saved = float(getattr(row, "saved_us", 0.0) or 0.0)
+            if step + saved <= 0:
+                continue
+            branch = str(getattr(row, "branch", "")).strip()
+            toks = int(getattr(row, "num_tokens", 0) or 0)
+            if not branch or toks <= 0:
+                continue
+            acc.setdefault(branch, {}).setdefault(toks, []).append(
+                step / (step + saved))
+        if acc:
+            out[tp] = {b: {t: sum(v) / len(v) for t, v in d.items()}
+                       for b, d in acc.items()}
+    return out
+
+
 def _load_perf_db(hardware, model, variant, tp_needed, model_type,
                   model_config=None):
     """Load the per-category perf DB for a (hardware, model, variant)
@@ -533,6 +577,10 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         # block size). None on a dense model. Read here rather than per
         # lookup: it is a constant of the checkpoint, and the catalog says
         # which kernels are subject to it.
+        # Per-TP cudagraph correction, keyed by branch and captured token
+        # count. Empty when the bundle was profiled with --skip-step, which
+        # _step_ratio warns about rather than silently ignoring.
+        "step": _load_step_tables(root, sorted(available_tps)),
         "key_saturation": (
             _stack_module().probe_key_saturation(
                 _stack_module().text_config(model_config))
@@ -1349,6 +1397,9 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
         num_speculative_tokens=num_speculative_tokens,
+        cudagraph_capture_ceiling=_cudagraph_capture_ceiling(
+            runtime_max_num_seqs or 0, runtime_max_num_batched_tokens or 0,
+            num_speculative_tokens),
     )
 
 
@@ -1429,6 +1480,101 @@ def _layer_category(perf_db, layer_name):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Step correction: the cudagraph term the per-layer profile cannot contain
+# ---------------------------------------------------------------------------
+# Every latency in a bundle is measured with ``enforce_eager=True``, because
+# ``layerwise_profile`` builds its tree from per-module CUDA events and
+# torch.compile fuses those boundaries away. Production runs the compiled +
+# cudagraph path. So the sum of profiled layers predicts *eager* execution --
+# measured end to end at +0.5% against an eager truth on Llama-3.1-8B and
+# -1.1% on Qwen3-32B -- and is 2-3% slow against the cudagraph truth those
+# examples actually run.
+#
+# ``profiler/core/step.py`` measures the difference on vLLM's own capture-size
+# grid and writes ``tp<N>/step.csv``. Which branch a batch takes is vLLM's
+# rule, not ours (``v1/cudagraph_dispatcher.py:272``, documented at
+# ``config/compilation.py:630``):
+#
+#     num_tokens > max_cudagraph_capture_size   -> NONE       (no graph)
+#     else, uniform decode                      -> FULL       (one graph/step)
+#     else                                       -> PIECEWISE  (graphs per piece)
+#
+# ``uniform_decode`` is ``gpu_model_runner.py:3990``:
+# ``max_num_scheduled_tokens == 1 + num_spec`` and
+# ``num_tokens == max_num_scheduled_tokens * num_reqs`` -- every request
+# submits the same query length and none is a prefill chunk.
+#
+# **What is applied is a ratio, but it is looked up per case rather than held
+# constant.** The measured quantity is an absolute saving: fitted against
+# shapes spanning 2.4x in step time, a constant saving leaves an RMS residual
+# of 96 us against 227 us for a constant ratio, because the saving is
+# ``kernel_count x launch_cost`` and the kernel count belongs to the model, not
+# the batch. A ratio still works as the *operation*, since the trace ->
+# ASTRA-Sim pipeline is proportional (scaling layers by 0.974 moved the
+# simulator's median ITL by -2.59%), and the simulator's own step is close to
+# the no-graph step it was calibrated against -- so the ratio a case implies
+# for its own step is the right multiplier here. It has to come from the
+# matching case, though, not from an average.
+#
+# The lookup rounds ``num_tokens`` **up** into the capture grid, because vLLM
+# pads a batch to the next captured size and replays that graph. Padding is
+# partial in practice -- an off-grid decode came within +0.1 to +1.3% of its
+# bucket, since input prep, sampling and output processing still scale with the
+# real batch -- so the round-up governs the correction while the base cost
+# stays on the profiled curves at the real size.
+_step_missing_warned: set = set()
+
+
+def _cudagraph_mode_for(ctx, bctx) -> str:
+    """Which cudagraph mode vLLM would dispatch for this batch."""
+    ceiling = ctx.cudagraph_capture_ceiling
+    if not ceiling or bctx.total_len > ceiling:
+        return "none"
+    if bctx.prefill_chunk == 0 and bctx.n_decode > 0:
+        return "full"
+    return "piecewise"
+
+
+def _step_ratio(ctx, bctx) -> float:
+    """Cudagraph/eager ratio for this batch, from ``step.csv``.
+
+    Returns 1.0 -- and warns once per bundle -- when the bundle carries no
+    step data. That is deliberately noisy: unlike skew, where no data means no
+    correction because a guessed alpha is worse than none, here the direction
+    and rough size of the missing term are established, so silence would hide
+    a known 2-3% bias. It is exactly the silence that made the term invisible
+    until an engine upgrade removed the offsetting error.
+    """
+    table = ctx.perf_db.get("step", {}).get(ctx.tp_size)
+    if not table:
+        key = (ctx.perf_db["hardware"], ctx.perf_db["model"],
+               ctx.perf_db["variant"], ctx.tp_size)
+        if key not in _step_missing_warned:
+            _step_missing_warned.add(key)
+            logger.warning(
+                "No step.csv for %s/%s/%s tp%d: the simulator will predict "
+                "eager execution, which is 2-3%% slower than the compiled + "
+                "cudagraph path production runs. Re-profile without "
+                "--skip-step to correct it.",
+                *key,
+            )
+        return 1.0
+    mode = _cudagraph_mode_for(ctx, bctx)
+    rows = table.get(mode)
+    if not rows:
+        return 1.0
+    # Round up into the capture grid: vLLM pads to the next captured size.
+    toks = sorted(rows)
+    hi = next((t for t in toks if t >= bctx.total_len), toks[-1])
+    return rows[hi]
+
+
+def _step_scale(ctx, bctx) -> float:
+    """Scale on a layer's profiled (eager) latency for this batch."""
+    return _step_ratio(ctx, bctx)
+
+
 def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer_num=None,
                 comm_type='NONE', comm_size=0, input_loc='LOCAL', output_loc='LOCAL'):
     """Emit a single trace layer: lookup latency, compute sizes, format, track power."""
@@ -1486,6 +1632,10 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
                                        parallel=ctx.tp_size, fp=ctx.fp)
 
     wt_loc = get_device(ctx.placement, layer_num, layer_name, "weights")
+
+    scale = _step_scale(ctx, bctx)
+    if scale != 1.0:
+        latency_ns = max(1, int(round(latency_ns * scale)))
 
     lines.append((layer_name, str(latency_ns), input_loc, str(inp), wt_loc,
                   str(wt), output_loc, str(out), comm_type, str(comm_size), batch_tag))

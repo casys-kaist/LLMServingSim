@@ -287,6 +287,68 @@ Crank any factor above 2.0 to coarsen that axis and cut profile time
 for denser sampling in axes where accuracy matters. The effective
 values land in `meta.yaml::skew_profile.factors`.
 
+#### Step sweep
+
+The profiler measures every latency with `enforce_eager=True` — it has no
+choice, because `layerwise_profile` builds its tree from per-module CUDA events
+and `torch.compile` fuses those boundaries away. Production runs the compiled +
+cudagraph path, so the sum of profiled layers predicts *eager* execution and is
+2-3% slow against what a serving run actually does. The step sweep measures
+that gap into `step.csv`.
+
+```bash
+SKIP_STEP=1                         # skip the sweep — the simulator then predicts
+                                    # eager execution and warns once per bundle.
+```
+
+On by default and cheap in forwards (~16 ms each outside `layerwise_profile`
+against ~372 ms inside), but it needs a **second engine boot with cudagraphs
+on**, which is why the switch exists: graph capture allocates memory a
+checkpoint that only just fits under `enforce_eager` may not have, and a
+per-category `slice` refresh has no reason to pay the boot. A failed boot logs
+and keeps the bundle rather than losing it.
+
+What it records is an absolute saving in microseconds, per branch, on **vLLM's
+own capture-size grid** — the engine is asked for `cudagraph_capture_sizes` and
+the sweep fires exactly those, because vLLM pads a batch up to the next
+captured size and replays *that* graph. Which branch a batch takes is vLLM's
+rule (`v1/cudagraph_dispatcher.py:272`):
+
+| `num_tokens` vs `max_cudagraph_capture_size` | batch | branch |
+|---|---|---|
+| over | anything | `NONE` — no graph at all |
+| under | uniform decode | `FULL` — one graph per step |
+| under | prefill or mixed | `PIECEWISE` — graphs per piece |
+
+Measured on RTXPRO6000/Llama-3.1-8B: `FULL` saves 587 us, `PIECEWISE` 482 us,
+`NONE` **5 us** — statistically zero, which is the control that says the
+measurement hook does what it claims.
+
+That control is load-bearing, and so is a second one. vLLM 0.28 has two model
+runners that reach the cudagraph decision by *different objects* — MoE and
+hybrid models take the V1 runner, everything else V2 — so a hook that patches
+one covers half the models and reads a saving of ~0 on the rest, which looks
+exactly like "cudagraphs buy nothing here". The sweep counts how often it
+actually intercepted a dispatch and **fails** when that is zero, rather than
+writing zeros.
+
+The saving scales with the model's kernel count, not with the batch: Qwen3-32B
+(64 layers, 644 entries/step) saves 1068 us against Llama's 587 (32 layers,
+324 entries), i.e. 1.66-1.81 us per launch on both. So it has to be measured
+per model — and it is **TP-invariant**, since each rank runs the same *number*
+of kernels whatever the TP degree, so one measurement at TP=1 serves all of
+them.
+
+**MoE models are not supported yet and the sweep says so.** Forcing the
+no-graph mode on an MoE block routes it onto a path that computes *every*
+expert rather than the selected ones, so the two columns stop being the same
+computation: Qwen3-30B-A3B measured a 62% "saving" against the dense models'
+2-4%, and 34,510 us is exactly what reading all 128 experts (58.0 GB at
+1597 GB/s = 36,293 us) costs. A plausibility bound aborts the sweep with that
+arithmetic in the message rather than writing a number that would price a
+decode step at 4x. MoE bundles therefore have no `step.csv` and the simulator
+warns once.
+
 #### Measuring the machine: `profiler hardware`
 
 Separate from any model sweep, because it characterises the hardware rather

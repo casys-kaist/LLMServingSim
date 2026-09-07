@@ -149,6 +149,13 @@ MEASUREMENT_ITERATIONS=3
 # decode-kv batches (1-2 hours per TP). Required for the alpha
 # formula fit that the simulator uses to predict skewed batches.
 # Set SKIP_SKEW=1 to disable.
+
+# The step sweep measures the cudagraph term the per-layer profile cannot
+# contain -- vLLM replays a graph for a decode batch and not for a prefill one,
+# and the profiler must run eager to attribute time at all. On by default and
+# cheap (~7 min), but it needs a second engine boot with graphs enabled: set
+# SKIP_STEP=1 when that boot will not fit in memory.
+# SKIP_STEP=1
 # SKIP_SKEW=1
 #
 # Per-axis geometric factors for the skew sweep. 2.0 (default) is
@@ -220,6 +227,7 @@ done
 [[ -n "${ATTENTION_DECODE_Q_LENS:-}" ]] && cmd+=(--attention-decode-q-lens "$ATTENTION_DECODE_Q_LENS")
 [[ -n "${MEASUREMENT_ITERATIONS:-}" ]] && cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
 [[ -n "${SKIP_SKEW:-}" ]]              && cmd+=(--skip-skew)
+[[ -n "${SKIP_STEP:-}" ]]              && cmd+=(--skip-step)
 [[ -n "${SKEW_N_FACTOR:-}" ]]          && cmd+=(--skew-n-factor "$SKEW_N_FACTOR")
 [[ -n "${SKEW_PC_FACTOR:-}" ]]         && cmd+=(--skew-pc-factor "$SKEW_PC_FACTOR")
 [[ -n "${SKEW_KP_FACTOR:-}" ]]         && cmd+=(--skew-kp-factor "$SKEW_KP_FACTOR")

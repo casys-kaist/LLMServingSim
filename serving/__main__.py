@@ -18,7 +18,8 @@ from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
 from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
-                                num_mtp_layers, get_architecture)
+                                num_mtp_layers, get_architecture,
+                                _cudagraph_capture_ceiling)
 from serving.core.hardware_defaults import apply_hardware_defaults
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
@@ -36,31 +37,6 @@ import sys as flush
 from pyinstrument import Profiler
 
 
-def _cudagraph_capture_ceiling(max_num_seqs, max_num_batched_tokens,
-                               num_speculative_tokens=0):
-    """Largest token count vLLM still replays a CUDA graph for.
-
-    Above it there is no graph, and that is what decides whether a DP round is
-    padded at all -- ``dp_utils._synchronize_dp_ranks`` sets
-    ``should_dp_pad = synced_cudagraph_mode != 0``, taking the **minimum** mode
-    across ranks, so one member outside the capture range unpads the whole
-    round. Prefill steps are always outside it.
-
-    vLLM's own derivation (``config/vllm.py``)::
-
-        decode_query_len = 1 + num_speculative_tokens
-        default = 1024 if device_capability_family(100) else 512
-        cap = min(max_num_seqs * decode_query_len * 2, default)
-        cap = min(max_num_batched_tokens, cap)
-
-    512 rather than 1024 because the 1024 branch is SM100 -- data-center
-    Blackwell, B100/B200. RTX PRO 6000 is SM120. The ``max_num_seqs`` term
-    usually binds anyway: at 128 seqs and no speculation the ceiling is 256,
-    well under either default.
-    """
-    decode_query_len = 1 + max(0, int(num_speculative_tokens or 0))
-    cap = min(int(max_num_seqs) * decode_query_len * 2, 512)
-    return max(1, min(int(max_num_batched_tokens), cap))
 
 
 def _pad_batch_to_max(batch, max_len):

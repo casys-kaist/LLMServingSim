@@ -331,6 +331,7 @@ perf/<hw>/
       moe.csv                            ep, tokens, activated_experts, time_us  (MoE only)
       skew.csv                           raw heterogeneous-decode shots        (skew enabled)
       skew_fit.csv                       fitted per-bucket alpha table         (skew enabled)
+      step.csv                           the cudagraph term, per capture size  (step enabled)
 ```
 
 **A refresh rewrites only what it measured.** `meta.yaml` describes more than
@@ -590,6 +591,164 @@ which tile padding and SM imbalance do not bound). Rows with
   *inside* a real fit still fall back to that fit's own pooled
   `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
   other category and refreshes just `skew.csv` + `skew_fit.csv`.
+
+### The step sweep: the cudagraph term the per-layer profile cannot contain
+Every latency in a bundle is measured with `enforce_eager=True`
+(`profiler/core/config.py`), because `layerwise_profile` builds its tree from
+per-module CUDA events and `torch.compile` fuses those boundaries away. There
+is no version of the profiler that measures a compiled model per layer.
+Production runs the compiled + cudagraph path. So the sum of profiled layers
+predicts **eager** execution, and the gap to production is a term nothing in
+`dense.csv` or `attention.csv` can express.
+
+It is not small and it is not new. Measured on RTXPRO6000/Llama-3.1-8B, the
+simulator matches an *eager* truth to **+0.5%** and sits **+5.3%** off the
+cudagraph truth the bench example actually runs. The flag has been there since
+`3012eb18` (2026-04-26), the first release of the vLLM-based profiler — i.e. as
+old as the current cost model.
+
+**Why it only surfaced with the 0.28 upgrade.** There were two errors of
+opposite sign, and vLLM removed one of them. Both versions measured today on
+the same GPU with the same real weights:
+
+| | sim | eager truth | cudagraph truth | sim vs eager | sim vs production |
+|---|---|---|---|---|---|
+| 0.19 | 6836.9 | 7487.3 | 7103.5 | **-8.7%** | **-3.8%** |
+| 0.28 | 6853.9 | 6819.9 | 6522.1 | **+0.5%** | **+5.1%** |
+
+The simulator sums kernel time and has no framework/dispatch term; under 0.19
+that was worth -8.7%, and the cudagraph blindness (+5.4%) cancelled most of it.
+vLLM 0.28 cut its own non-kernel time by 8.9% (the eager truth moved 7487 ->
+6820 while the *profiled kernel latencies did not move at all* — Llama dense
+p50 1.035, i.e. slightly slower), so the first error vanished and the second
+became visible. **The upgrade did not introduce the error; it removed the
+coincidence.** Same house pattern as the MoE compensating errors and the 3x
+skew.
+
+**Which branch a batch takes is vLLM's rule, not ours.**
+`v1/cudagraph_dispatcher.py:272`, under the default
+`cudagraph_mode=FULL_AND_PIECEWISE` (documented at
+`config/compilation.py:630`):
+
+```
+num_tokens > max_cudagraph_capture_size   -> NONE       (no graph at all)
+else, uniform decode                       -> FULL       (one graph per step)
+else                                        -> PIECEWISE  (graphs per piece)
+```
+
+and `uniform_decode` is `gpu_model_runner.py:3990`:
+`max_num_scheduled_tokens == 1 + num_spec` and
+`num_tokens == max_num_scheduled_tokens * num_reqs` — every request submits the
+same query length and none is a prefill chunk. The ceiling is the *same*
+quantity that already decides DP round padding, so
+`_cudagraph_capture_ceiling` lives in `serving/core/utils.py` and both readers
+import it rather than restating it.
+
+The boundary shows in the measurement. `prefill 256` (at the ceiling) saves
+456 us; `prefill 264`, eight tokens over, saves **14 us** — statistically zero,
+which is also the control proving the measurement hook does what it claims.
+
+**What is measured is an absolute saving, not a ratio.** Fitted against shapes
+spanning 2.4x in step time:
+
+| model | RMS residual on the saving | as a share of a step |
+|---|---|---|
+| constant ratio (r = 0.9719) | 227 us | 0.99% |
+| **constant saving (s = 589 us)** | **96 us** | **0.42%** |
+
+The ratio model is wrong in a structured way — it under-predicts on short steps
+and over-predicts on long ones — because the saving is
+`kernel_count x launch_cost` and the kernel count belongs to the **model**, not
+the batch. Two models confirm it independently:
+
+| model | layers | entries/step | saving | us/launch |
+|---|---|---|---|---|
+| Llama-3.1-8B | 32 | 324 | 587 us | 1.81 |
+| Qwen3-32B | 64 | 644 | 1068 us | 1.66 |
+
+`1068/587 = 1.82` against a layer ratio of 2.0, and 1.66-1.81 us per launch is
+what a CUDA launch costs. **That is why it cannot be a constant** — a model with
+twice the layers saves twice as much.
+
+**The grid is vLLM's capture-size list, read off the engine**
+(`[1, 2, 4, 8, 16, 24, 32, 40, ..., 248, 256]`), not a sweep of our choosing:
+vLLM pads a batch up to the next captured size and replays *that* graph, so a
+measurement taken anywhere else describes no batch the engine runs. Padding is
+partial in practice — an off-grid decode came within +0.1 to +1.3% of its
+bucket, because input prep, sampling and output processing still scale with the
+real batch — so the round-up governs the correction while the base cost stays
+on the profiled curves at the real size.
+
+**The saving is TP-invariant, so it is measured once at TP=1.** Each rank runs
+the same *number* of kernels whatever the TP degree; only shapes shard. Checked
+on Qwen3-32B by measuring both (one GPU each, shapes sharded via
+`hf_overrides`): `step_us` drops to 0.50-0.56x as expected while `saved_us`
+holds at **0.963x** (FULL) and **1.077x** (PIECEWISE, over the 45 of 63 cases
+where both savings clear 3x their own sem). Same category as `tp_stable`.
+
+**How it is measured: paired, inside one boot.** vLLM lets a single forward be
+run without graph replay in an otherwise normal engine, so the two modes can be
+alternated rather than compared across boots.
+`profiler/core/hooks/cudagraph_hook.py` patches that in;
+`Extension.step_time_paired` alternates. It matters: booting twice puts the two
+modes in different engines and boot-to-boot drift came out at **1.4 percentage
+points** against an effect of 2-5%, while the paired standard error is
+**0.1-0.2%**. The same quantity measured twice across boots disagreed by more
+than it is worth.
+
+**Both runners have to be patched, and they do not share a chokepoint.** vLLM
+0.28 reaches the cudagraph decision by different objects depending on the
+runner:
+
+| runner | route | force-eager argument |
+|---|---|---|
+| `v1.worker.gpu.model_runner` (V2) | `dispatch_cg_and_sync_dp` -> `CudaGraphManager.dispatch` | `need_eager=True` |
+| `v1.worker.gpu_model_runner` (V1) | `CudagraphDispatcher.dispatch` | `valid_modes={NONE}` |
+
+and which one a model gets is `VllmConfig._is_default_v2_model_runner_model`:
+`is_default_v2_architecture or not model_config.is_moe`. So **every MoE and
+hybrid model takes V1**, where a V2-only patch is completely inert -- the V1
+runner does not call `dispatch_cg_and_sync_dp` even once. A first version
+patched only V2 and measured Qwen3-30B-A3B's saving at **-1 us** against
+Llama's 587, which is indistinguishable from "cudagraphs buy nothing on this
+model". Both dense models happened to be V2, so nothing looked wrong.
+
+`_Toggle.consulted` counts how often a patched dispatch actually ran, and
+`step_time_paired` **raises** when it is zero: two columns of the same
+execution give a saving of zero that reads exactly like a real one, and a
+version that reaches the decision by a third route must fail loudly rather than
+write zeros. This is the same class of trap as the sampler shim -- work that
+never enters the tree leaves nothing for coverage to report.
+
+**On by default, skippable for two real reasons.** The forwards are cheap
+(~16 ms outside `layerwise_profile` against ~372 ms inside), but the pass needs
+a second engine boot with graphs *on* — minutes on a large model, and vLLM's
+graph capture allocates memory a checkpoint that only just fits under
+`enforce_eager` may not have. `--skip-step` exists for that and for a
+per-category `slice` refresh. A failed boot logs and keeps the bundle rather
+than losing it.
+
+**It does not work on an MoE model yet, and the sweep refuses rather than
+guessing.** Forcing `CUDAGraphMode.NONE` through the V1 runner does not merely
+skip graph replay on an MoE block — it routes onto a path that computes **every**
+expert. Measured on Qwen3-30B-A3B at one token: 7,820 us with replay against
+34,510 us with NONE, a 62% "saving" where the dense models show 2-4%. The
+arithmetic identifies it exactly: all 128 experts' weights are 58.0 GB, which at
+this card's 1597 GB/s is 36,293 us, while the correct top-8 path is 3.6 GB and
+2,268 us. The NONE column matches reading every expert.
+
+So `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts the sweep with the arithmetic in
+the message. Recording that row would have priced an MoE decode step at 4x.
+An MoE bundle therefore carries no `step.csv` today and the simulator warns;
+measuring it needs a route that turns off replay without changing which experts
+run, which has not been found.
+
+**The fallback is the opposite of skew's.** Skew's is `alpha = 0` — no data, no
+correction — and that is right, because a guessed alpha is worse than none.
+Here the direction and rough size of the missing term are established, so
+silence would hide a known 2-3% bias. `_step_ratio` warns once per bundle
+instead. Silence is precisely what let this term stay invisible for four
+months.
 
 ### hardware.yaml: the machine's own facts, measured
 A cluster config mixes two kinds of statement:

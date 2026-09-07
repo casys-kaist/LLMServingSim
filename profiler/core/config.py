@@ -875,6 +875,20 @@ class ProfileArgs:
     measurement_iterations: int = 3
     """N timed forwards per shot, averaged."""
 
+    skip_step: bool = False
+    """If True, skip the step sweep (step.csv will not be written and the
+    simulator applies no cudagraph correction -- it then predicts eager
+    execution, which is 2-5% slower than production on a dense model).
+
+    On by default, unlike ``skip_skew``, because a missing correction is a
+    *known* bias rather than an unknown one: skew's fallback of alpha=0 is
+    defensible since a guessed alpha is worse than none, while here the
+    direction and rough size are established. Skippable all the same, and for
+    two real reasons -- the sweep needs a second engine boot (minutes on a
+    large model, and vLLM's graph capture allocates memory a checkpoint that
+    only just fits under ``enforce_eager`` may not have), and a per-category
+    ``slice`` refresh has no reason to pay it."""
+
     skip_skew: bool = False
     """If True, skip the skew profiling step (skew.csv will not be
     written and alpha fit cannot run). Useful for quick profile runs
