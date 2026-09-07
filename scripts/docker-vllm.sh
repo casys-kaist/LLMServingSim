@@ -13,6 +13,11 @@
 # The working directory defaults to /workspace so any of the modules
 # can be run via ``python -m profiler``, ``python -m bench``, etc.
 #
+# ~/.cache/vllm is mounted alongside the HF cache so torch.compile artifacts
+# survive a container recreate. Without it every fresh container pays a cold
+# compile -- minutes of CPU with the GPU allocated and idle, which reads as a
+# hang.
+#
 # The official vllm/vllm-openai image already provides vllm, pydantic,
 # pyyaml, rich, and huggingface_hub. Three extras are installed on start:
 # pandas (the profiler's alpha fit and the simulator's tables), matplotlib
@@ -35,6 +40,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../scripts
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"                    # .../LLMServingSim
 
+# Extra host paths to mount, for booting a checkpoint that lives outside the
+# repo (real weights, so an MoE model's router is the trained one rather than
+# a random projection). Space-separated docker -v specs; mount a local model
+# store at the same path on both sides so symlinks inside it still resolve:
+#     VLLM_EXTRA_MOUNTS="/data/model:/data/model /srv/models:/srv/models" \
+#         ./scripts/docker-vllm.sh
+# Then pass the directory to bench as --model, which vLLM takes verbatim.
+VLLM_EXTRA_MOUNT_ARGS=()
+for spec in ${VLLM_EXTRA_MOUNTS:-}; do
+  VLLM_EXTRA_MOUNT_ARGS+=(-v "$spec")
+done
+
 # Which GPUs to expose. Defaults to every GPU on the host; set VLLM_GPUS to a
 # docker device spec to narrow it on a shared machine. Note the inner double
 # quotes — they are required, and are part of the value:
@@ -47,6 +64,8 @@ docker run --name vllm_docker \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -v "$REPO_ROOT":/workspace \
   --volume "$HOME/.cache/huggingface":/root/.cache/huggingface \
+  --volume "$HOME/.cache/vllm":/root/.cache/vllm \
+  "${VLLM_EXTRA_MOUNT_ARGS[@]+"${VLLM_EXTRA_MOUNT_ARGS[@]}"}" \
   --shm-size=16g \
   -w /workspace \
   --entrypoint /bin/bash \
