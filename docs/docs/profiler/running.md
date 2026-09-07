@@ -201,6 +201,53 @@ The skew sweep fires three shots per case (`t_mean`, `t_max`,
 substantially. See **[Skew & alpha fit](./skew-alpha-fit)** for the
 methodology.
 
+## Step sweep
+
+Every latency in a bundle is measured with `enforce_eager=True` — the profiler
+has no choice, because `layerwise_profile` builds its tree from per-module CUDA
+events and `torch.compile` fuses those boundaries away. Production runs the
+compiled + cudagraph path, so the sum of profiled layers predicts **eager**
+execution and lands 2–3% slow against a real serving run. The step sweep
+measures that gap into `step.csv`.
+
+```bash
+SKIP_STEP=1     # skip it — the simulator then predicts eager execution
+                # and warns once per bundle
+```
+
+On by default. The forwards are cheap (~16 ms each outside
+`layerwise_profile`, against ~372 ms inside it), but the pass needs a **second
+engine boot with cudagraphs on**, and that is what the switch is for: graph
+capture allocates memory a checkpoint that only just fits under
+`enforce_eager` may not have, and a per-category `slice` refresh has no reason
+to pay the boot. A failed boot logs and keeps the bundle.
+
+Three things about the measurement worth knowing:
+
+- **It records an absolute saving in microseconds, not a ratio.** The saving is
+  `kernel_count × launch_cost`, and the kernel count belongs to the model:
+  Llama-3.1-8B (32 layers) saves 587 µs, Qwen3-32B (64 layers) 1068 µs — 1.66–1.81 µs
+  per launch on both. A constant ratio fitted to the same data leaves 2.4× the
+  residual.
+- **The grid is vLLM's capture-size list**, read off the live engine, because
+  vLLM pads a batch up to the next captured size and replays *that* graph.
+- **It is TP-invariant**, so it is measured once at TP=1 and replicated. A rank
+  runs the same number of kernels at every TP degree; only shapes shard.
+  Verified on Qwen3-32B: `step_us` drops to 0.50–0.56× at TP=2 while the saving
+  holds at 0.96–1.08×.
+
+What it buys, on the committed dense examples against a vLLM 0.28 real-weight
+truth:
+
+| example | without `step.csv` | with |
+|---|---|---|
+| RTXPRO6000/Llama-3.1-8B | 8.6% | **3.2%** |
+| RTXPRO6000/Qwen3-32B | 7.8%\* | **1.5%** |
+
+\* Qwen3-32B also gained from the measured link values — see
+**[Cluster config → Hardware facts are inherited](../reference/cluster-config#hardware-facts-are-inherited)**.
+Llama is TP=1 and has no collectives, so its whole improvement is `step.csv`.
+
 ## Resume vs force
 
 | Variable | Default | Meaning |

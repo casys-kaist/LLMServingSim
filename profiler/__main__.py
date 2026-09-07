@@ -244,6 +244,15 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "can swing 15-25%% on large GEMMs due to DVFS / clock "
                         "jitter; N=3 (default) cuts that to ~5%% at ~3x "
                         "profile time.")
+    p.add_argument("--skip-step", action="store_true", default=False,
+                   dest="skip_step",
+                   help="Skip the step sweep (step.csv): the cudagraph term "
+                        "the per-layer profile cannot contain, measured on "
+                        "vLLM's own capture-size grid. Needs a second engine "
+                        "boot with graphs enabled, so skip it when that boot "
+                        "would not fit in memory or when refreshing one "
+                        "category. Without it the simulator predicts eager "
+                        "execution, 2-5%% slower than production.")
     p.add_argument("--skip-skew", action="store_true", default=False,
                    dest="skip_skew",
                    help="Skip the per-TP skew profiling step (skew.csv). "
@@ -455,6 +464,7 @@ def _build_profile_args(
         attention_kv_factor=ns.attention_kv_factor,
         attention_n_factor=getattr(ns, "attention_n_factor", 2.0),
         measurement_iterations=ns.measurement_iterations,
+        skip_step=getattr(ns, "skip_step", False),
         skip_skew=getattr(ns, "skip_skew", False),
         skew_n_factor=getattr(ns, "skew_n_factor", 2.0),
         skew_pc_factor=getattr(ns, "skew_pc_factor", 2.0),

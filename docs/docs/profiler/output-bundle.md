@@ -26,7 +26,8 @@ profiler/perf/<HARDWARE>/
         ├── linear_attention.csv  # mamba / gated-DeltaNet models only
         ├── moe.csv               # MoE models only, one grid per EP degree
         ├── skew.csv              # skew-enabled runs only
-        └── skew_fit.csv          # skew-enabled runs only
+        ├── skew_fit.csv          # skew-enabled runs only
+        └── step.csv              # step-enabled runs only (the default)
 ```
 
 `<variant>` is auto-named from the dtype combination
@@ -37,7 +38,9 @@ variants for the same hardware × model live as siblings.
 `tp<N>/` exists for each TP in `TP_DEGREES`. Layers tagged
 `tp_stable: true` in the architecture YAML (layernorms, sampler) are
 profiled once at TP=1 and **replicated** into other TP folders by the
-writer.
+writer. `step.csv` is in the same category — the cudagraph saving it records is
+`kernel_count × launch_cost` and a rank runs the same number of kernels at
+every TP degree, so it is measured once and replicated.
 
 `hardware.yaml` sits one level up because it answers a different question. The
 CSVs are per **(model, hardware)**; the interconnect and the card's memory are
@@ -204,6 +207,57 @@ bundle with no `ep` column is read as ep=1 and prices exactly as it did before
 the axis existed.
 
 Still profiled at **TP=1**: expert weights shard by `ep_size`, not `tp_size`.
+
+## `step.csv` (the cudagraph term)
+
+```csv
+branch,num_tokens,n_decode,kv_decode,prefill_chunk,step_us,saved_us,sem_us,n_pairs
+full,128,128,1024,0,34667.9,599.2,79.4,60
+piecewise,80,64,1024,16,26851.3,582.0,13.2,60
+none,512,0,1024,512,25653.1,13.6,7.2,60
+```
+
+Every other CSV in the bundle is a per-layer latency measured with
+`enforce_eager=True` — the profiler has no choice, because `layerwise_profile`
+builds its tree from per-module CUDA events and `torch.compile` fuses those
+boundaries away. Production runs the compiled + cudagraph path, so the sum of
+those layers predicts **eager** execution. `step.csv` measures the difference.
+
+| column | meaning |
+|---|---|
+| `branch` | which cudagraph mode vLLM dispatches: `full`, `piecewise`, `none` |
+| `num_tokens` | what vLLM dispatches on — a captured graph size |
+| `n_decode`, `kv_decode`, `prefill_chunk` | the shot that produced the row |
+| `step_us` | the whole step with graph replay |
+| `saved_us` | what replay saved (the measured quantity) |
+| `sem_us` | standard error of `saved_us` over `n_pairs` |
+
+**The saving is absolute, not a ratio.** Fitted against shapes spanning 2.4× in
+step time, a constant saving leaves an RMS residual of 96 µs against 227 µs for
+a constant ratio — because the saving is `kernel_count × launch_cost` and the
+kernel count belongs to the model, not the batch. Llama-3.1-8B (32 layers,
+324 entries/step) saves 587 µs; Qwen3-32B (64 layers, 644 entries) saves
+1068 µs. Both come to 1.66–1.81 µs per launch.
+
+**The branch is vLLM's rule**, at `v1/cudagraph_dispatcher.py:272` under the
+default `cudagraph_mode=FULL_AND_PIECEWISE`:
+
+| `num_tokens` vs `max_cudagraph_capture_size` | batch | branch |
+|---|---|---|
+| over | anything | `none` — no graph at all |
+| under | uniform decode | `full` — one graph per step |
+| under | prefill or mixed | `piecewise` — graphs per piece |
+
+The `none` rows are the control: with no graph either way, replay can save
+nothing, and they measure **5 µs** — statistically zero.
+
+**`num_tokens` is one of vLLM's own capture sizes**, read off the engine
+(`[1, 2, 4, 8, 16, 24, 32, 40, …, 248, 256]`), because vLLM pads a batch up to
+the next captured size and replays *that* graph. The simulator's lookup rounds
+up into the same list.
+
+Absent when the run used `--skip-step`; the simulator then predicts eager
+execution and warns once per bundle.
 
 ## `skew.csv` (skew-enabled runs)
 

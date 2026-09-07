@@ -196,6 +196,7 @@ def run_full(
     # depth), and it is what the provenance stamp has to record -- not the
     # flag, the firing.
     skew_measured = False
+    step_measured = False
 
     for tp in args.tp_degrees:
         # Skip TPs with nothing non-tp_stable to do. The post-pass
@@ -327,6 +328,41 @@ def run_full(
                 finally:
                     spin_down(llm, tmpdir)
 
+        # Step sweep: the cudagraph term. Its own boot, because it is the one
+        # pass that needs graphs *on* -- with them on, ``layerwise_profile``
+        # has no per-module boundaries to attribute time to, so every other
+        # category needs them off. Inside that engine the sweep turns replay
+        # off per forward (``need_eager``), which is what lets both modes be
+        # compared without boot-to-boot drift swamping a 2-5% effect.
+        #
+        # The stack is the deepest one, not a shrunk axis set: the saving is
+        # ``kernel_count x launch_cost`` and the kernel count scales with the
+        # layer count, so a 1-layer engine measures a term that does not
+        # transfer -- it read 87% of the step there against ~2% at full depth.
+        if not args.skip_step:
+            with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
+                           f"for the step sweep"):
+                llm, _, tmpdir = spin_up(args, tp, cudagraphs=True)
+                step_limits = probe_limits(llm, args)
+            try:
+                from profiler.core.step import sample_step
+                sample_step(llm, args, step_limits, tp, tp_root)
+                step_measured = True
+            except Exception as exc:                      # noqa: BLE001
+                # A graph-enabled boot allocates capture memory a checkpoint
+                # that only just fits under enforce_eager may not have. Losing
+                # the correction is a documented degradation; losing the whole
+                # bundle to it is not.
+                log.warning(
+                    "Step sweep failed (%s); bundle keeps its per-layer data "
+                    "and the simulator will predict eager execution. Re-run "
+                    "with --skip-step to silence, or lower "
+                    "--gpu-memory-utilization to make room for graph capture.",
+                    exc,
+                )
+            finally:
+                spin_down(llm, tmpdir)
+
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
         # and its entries are pinned to the drafter's wrapper, so nothing can
@@ -365,6 +401,8 @@ def run_full(
         c.name for c in categories_for(arch, args.tp_degrees[0]))
     if skew_measured:
         measured += ("skew",)
+    if step_measured:
+        measured += ("step",)
     # And what it is entitled to *describe*. A skew-only run sweeps no
     # attention grid, so regenerating that block from its own defaults would
     # replace the recorded axes with a spec no CSV in the bundle matches --

@@ -560,7 +560,7 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
 # an ordinary keyed table. ``skew_fit`` is deliberately absent: it is derived
 # from skew.csv by the fit, and a slice refresh rewrites it without measuring
 # anything, so stamping it would claim a measurement that never happened.
-_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew")
+_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew", "step")
 
 
 def _tp_degrees_present(variant_root: Path, measured: list[int]) -> list[int]:
