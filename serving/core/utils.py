@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 from functools import lru_cache
@@ -34,6 +35,17 @@ def _cudagraph_capture_ceiling(max_num_seqs, max_num_batched_tokens,
     """
     decode_query_len = 1 + max(0, int(num_speculative_tokens or 0))
     cap = min(int(max_num_seqs) * decode_query_len * 2, 512)
+    # A cluster config may leave an instance's token budget unset, which this
+    # codebase spells as 0 and carries as ``inf``. vLLM has no such state --
+    # ``max_num_batched_tokens`` is always a number there -- and an unbounded
+    # budget cannot lower a ceiling, so the term simply drops out. Without
+    # this, ``int(inf)`` raises: reachable since the ceiling started being
+    # resolved for every trace context rather than only for a DP round, which
+    # is why `single_node_heterogeneous` (one instance at 0) crashed.
+    if (max_num_batched_tokens is None
+            or not math.isfinite(float(max_num_batched_tokens))
+            or float(max_num_batched_tokens) <= 0):
+        return max(1, cap)
     return max(1, min(int(max_num_batched_tokens), cap))
 
 # Formatting string for a trace file's per-layer row. Kept in this
