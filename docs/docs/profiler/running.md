@@ -301,6 +301,7 @@ at all.
 ```bash
 python -m profiler profile  <model> --hardware <hw> [options]
 python -m profiler slice    <model> --hardware <hw> --tp-refresh N --group G [options]
+#   G in {dense, per_sequence, attention, linear_attention, moe, mtp, step}
 python -m profiler coverage <model> --hardware <hw> [options]
 ```
 

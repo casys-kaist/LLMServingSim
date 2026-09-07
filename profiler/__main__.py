@@ -557,9 +557,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_slice.add_argument(
         "--group",
         choices=["dense", "per_sequence", "attention", "linear_attention",
-                 "moe", "mtp"],
+                 "moe", "mtp", "step"],
         required=True,
-        help="Which profile category to refresh.",
+        help="Which profile category to refresh. `step` is the cudagraph "
+             "term rather than a per-layer category, and needs an engine "
+             "with graphs on -- it is here so that refreshing it does not "
+             "mean a full re-profile.",
     )
     _add_common_flags(p_slice)
 
