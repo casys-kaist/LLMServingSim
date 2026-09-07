@@ -1024,6 +1024,14 @@ def main():
                     sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
                                      else sum(b.total_len
                                               for b, _ in round_batches.values()))
+                    # The *smallest* member's contribution, which is what sets
+                    # a ragged collective's cost -- see ``_emit_moe``. Equal to
+                    # ``max_total_len`` on a padded round, so the two agree
+                    # wherever vLLM pads and only diverge on the mixed
+                    # prefill/decode rounds that vLLM leaves ragged.
+                    min_total_len = (max_total_len if dp_pad
+                                     else min(b.total_len
+                                              for b, _ in round_batches.values()))
 
                     # Shared workload folder for all DP members
                     first_inst_id = dp_groups[dg][0]
@@ -1047,6 +1055,7 @@ def main():
                                        dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                        tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                        dp_sum_total_len=sum_total_len,
+                                       dp_min_total_len=min_total_len,
                                        enable_block_copy=inst_cfg["enable_block_copy"],
                                        inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(
@@ -1126,6 +1135,9 @@ def main():
                         sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
                                          else sum(b.total_len
                                                   for b, _ in round_batches.values()))
+                        min_total_len = (max_total_len if dp_pad
+                                         else min(b.total_len
+                                                  for b, _ in round_batches.values()))
 
                         # Shared workload folder for all DP members
                         first_inst_id = dp_groups[dg][0]
@@ -1149,6 +1161,7 @@ def main():
                                            dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                            tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                            dp_sum_total_len=sum_total_len,
+                                       dp_min_total_len=min_total_len,
                                            enable_block_copy=inst_cfg["enable_block_copy"],
                                            inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(

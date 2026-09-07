@@ -117,6 +117,7 @@ class TraceCtx:
     num_speculative_tokens: int  # draft length N; the drafter runs N times per
                                  # step, so this is how many passes to emit
     dp_sum_total_len: int  # sum of total_len across DP group (0 = DP inactive). Captures the post-AG gathered size for MoE compute; dummy batches are pre-padded to max by serving/__main__.py so the sum reflects vLLM's CUDA-graph padding.
+    dp_min_total_len: int  # smallest member's total_len in the DP round (0 = DP inactive). Only the EP collectives read it: they are ragged, so their cost is set by the worst-off rank, not the average one. Equals max on a padded round.
 
 
 @dataclass
@@ -1361,7 +1362,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
                      placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                      variant, kv_cache_dtype='auto',
                      runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                     tp_dim=None, ep_dim=None, dp_sum_total_len=0, num_speculative_tokens=0):
+                     tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, num_speculative_tokens=0):
     model_type = config.get('model_type')
     if not model_type:
         raise KeyError(
@@ -1396,6 +1397,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+        dp_min_total_len=dp_min_total_len,
         num_speculative_tokens=num_speculative_tokens,
         cudagraph_capture_ceiling=_cudagraph_capture_ceiling(
             runtime_max_num_seqs or 0, runtime_max_num_batched_tokens or 0,
@@ -1752,9 +1754,39 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
     num_experts = utils_num_experts(ctx.config)
     dispatch_per_token = (n_embd + num_experts) * ctx.fp
     combine_per_token = n_embd * ctx.fp
-    ag_per_rank_tokens = max(1, effective_total_len_comm // max(ep_total, 1))
+    # Both EP collectives are **ragged**, and that decides what they cost.
+    # ``AgRsAll2AllManager`` passes per-rank ``sizes`` straight through, and
+    # ``pynccl.all_gatherv`` is one ``ncclBroadcast`` per rank at that rank's
+    # own size (``reduce_scatterv`` one ``ncclReduce`` per rank as root), fused
+    # in a single group. So rank *r* ships its own tokens and takes in everyone
+    # else's: its ingress is ``gathered - sizes[r]``, and the collective ends
+    # when the worst-off rank is done, i.e. at ``gathered - min(sizes)``.
+    #
+    # ASTRA-Sim's Ring charges ``(N-1) * chunk`` for AllGather and
+    # ``(N-1) * total/N`` for ReduceScatter, so the chunk that reproduces that
+    # bound is ``(gathered - min) / (N - 1)`` and the pre-scatter total is that
+    # chunk times N. A uniform round has ``min == gathered/N``, which gives
+    # back ``gathered/N`` and ``gathered`` exactly -- so this only moves the
+    # rounds vLLM leaves unpadded.
+    #
+    # Dividing the gathered total by ``ep_total`` instead charges the
+    # *average* rank. Every decode round is padded, so the two agree there and
+    # TPOT is untouched; a prefill chunk is outside the CUDA-graph capture
+    # range and never padded, so a (2048, 1) round was charged at 1024 where
+    # NCCL pays 2048. Measured on the dp+ep bench example: 0.659x of the real
+    # collective on prefill rounds, a mean 9.8 ms per round over 48 MoE layers
+    # and 25.4 ms on a full chunk -- landing on TTFT alone, which is the shape
+    # of the residual it was found by (TTFT -18.4%, TPOT -1.3%).
+    min_rank_tokens = (ctx.dp_min_total_len // max(ctx.tp_size, 1)
+                       if ctx.dp_min_total_len > 0
+                       else effective_total_len_comm // max(ep_total, 1))
+    if ep_total > 1:
+        ag_per_rank_tokens = max(
+            1, (effective_total_len_comm - min_rank_tokens) // (ep_total - 1))
+    else:
+        ag_per_rank_tokens = max(1, effective_total_len_comm)
     dispatch_comm_size = ag_per_rank_tokens * dispatch_per_token
-    combine_comm_size = effective_total_len_comm * combine_per_token
+    combine_comm_size = ag_per_rank_tokens * max(ep_total, 1) * combine_per_token
 
     # Which collective the MoE block rides on depends on whether the *tokens*
     # are partitioned, not on whether the experts are. Verified against vLLM
@@ -2392,7 +2424,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                       enable_attn_offloading, power_model, pim_model, fp,
                       variant, kv_cache_dtype='auto',
                       runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                      tp_dim=None, ep_dim=None, dp_sum_total_len=0,
+                      tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
                       num_speculative_tokens=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
@@ -2400,6 +2432,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                            runtime_max_num_batched_tokens=runtime_max_num_batched_tokens,
                            runtime_max_num_seqs=runtime_max_num_seqs,
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                           dp_min_total_len=dp_min_total_len,
                            num_speculative_tokens=num_speculative_tokens)
     bctx = _build_batch_ctx(batch, ctx)
 
@@ -2456,7 +2489,7 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                                   enable_attn_offloading, power_model, pim_model, fp,
                                   variant, kv_cache_dtype='auto',
                                   runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                                  tp_dim=None, ep_dim=None, dp_sum_total_len=0,
+                                  tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
                                   num_speculative_tokens=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
@@ -2464,6 +2497,7 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                            runtime_max_num_batched_tokens=runtime_max_num_batched_tokens,
                            runtime_max_num_seqs=runtime_max_num_seqs,
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                           dp_min_total_len=dp_min_total_len,
                            num_speculative_tokens=num_speculative_tokens)
     bctx1 = _build_batch_ctx(batches[0], ctx)
     bctx2 = _build_batch_ctx(batches[1], ctx)
@@ -2605,7 +2639,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                    placement={}, block_mode_on=False, expert_routing_policy="BALANCED",
                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None,
                    enable_sub_batch_interleaving=False, fp=16, dtype=None, kv_cache_dtype='auto',
-                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, enable_block_copy=True, inputs_root=None,
+                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, enable_block_copy=True, inputs_root=None,
                    num_speculative_tokens=0):
 
     model = batch.model
@@ -2665,6 +2699,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         runtime_max_num_batched_tokens=max_num_batched_tokens,
                         runtime_max_num_seqs=max_num_seqs,
                         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
+                        dp_min_total_len=dp_min_total_len,
                            num_speculative_tokens=num_speculative_tokens)
     if not enable_sub_batch_interleaving:
         rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)

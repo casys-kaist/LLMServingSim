@@ -155,8 +155,12 @@ The two halves are sized differently, because the collectives are:
 
 | | `comm_size` | Why |
 | --- | --- | --- |
-| Dispatch (`EXPERT 0`) | `(total_len / ep_total) * (hidden + num_experts) * fp` | ASTRA-Sim's AllGather `data_size` is the **per-rank local chunk**, and the dispatch carries the router logits alongside the hidden state |
-| Combine (`EXPERT END`) | `total_len * hidden * fp` | ASTRA-Sim's ReduceScatter `data_size` is the **pre-scatter total buffer**, hidden state only |
+| Dispatch (`EXPERT 0`) | `chunk * (hidden + num_experts) * fp` | ASTRA-Sim's AllGather `data_size` is the **per-rank local chunk**, and the dispatch carries the router logits alongside the hidden state |
+| Combine (`EXPERT END`) | `chunk * ep_total * hidden * fp` | ASTRA-Sim's ReduceScatter `data_size` is the **pre-scatter total buffer**, hidden state only |
+
+`chunk` is `(gathered - min) / (ep_total - 1)`: both collectives are ragged,
+so a rank's ingress is `gathered - sizes[r]` and the cost is set by the
+worst-off rank. With uniform sizes it reduces to `gathered / ep_total`.
 
 The example above is a real trace line: Qwen3-30B-A3B (`hidden 2048`,
 128 experts, bf16) with 10 tokens at `ep_total 2` gives
@@ -229,15 +233,25 @@ forward joins the same collective as rank B's *j*-th. The queue matters
 at `pp_size > 1`, where a member can have up to `pp_size` batches
 outstanding at once. When a wave assembles:
 
-- The simulator takes `max_total_len` across the group and pads every
-  member's batch up to it, matching CUDA-graph DP padding in production
-  serving.
-- The MoE collective size is anchored to that same `max_total_len` — *not*
-  `max x dp_group_size`. That calibrates the AllGather/ReduceScatter
-  bandwidth model against the same `link_bw` that already matches
-  AllReduce.
-- All members generate their traces with the same `comm_size`, even
-  if their per-instance `total_len` differs.
+- **Padding is conditional.** vLLM pads a DP round to the group's
+  `max_total_len` only while every rank is still inside the CUDA-graph
+  capture range: `_synchronize_dp_ranks` sets
+  `should_dp_pad = synced_cudagraph_mode != 0`, and the synced mode is the
+  **minimum** across ranks, so one member outside the range unpads the round
+  for everyone. A prefill chunk is always outside it — the ceiling is
+  `min(max_num_seqs * (1 + num_spec) * 2, 512, max_num_batched_tokens)`,
+  i.e. 256 tokens at 128 seqs, against chunks of up to 2048.
+- **The MoE collective is sized from the gathered total**, the sum of the
+  group's per-rank token counts — `max_total_len * dp_group_size` on a padded
+  round, the plain sum on an unpadded one. Every rank contributes *all* of its
+  own tokens: `dispatch_router_logits` all-gathers with
+  `sizes[rank] == hidden_states.shape[0]`.
+- **An unpadded round is ragged**, and its cost is set by the worst-off rank
+  rather than the average one, so the emitted chunk is
+  `(gathered - min) / (ep_total - 1)`. On a padded round that is exactly
+  `gathered / ep_total`, so decode rounds are unaffected.
+- All members of one round generate their traces with the same `comm_size`,
+  which is what makes the collectives match across the group's `.et` files.
 
 If one DP member has no pending requests, the scheduler synthesizes a
 **dummy batch** (1 decode token) so the wave still runs. When
@@ -311,10 +325,11 @@ So:
 - ALLREDUCE on `o_proj`: pass the **full output tensor size**
   (`total_len * hidden_size * fp_size`).
 - MoE: the dispatch AllGather takes the **per-rank chunk**
-  (`total_len / ep_total * (hidden + num_experts) * fp`) and the combine
-  ReduceScatter the **pre-scatter total** (`total_len * hidden * fp`),
-  matching ASTRA-Sim's `data_size` convention for each
-  (`total_len * hidden_size * fp_size`).
+  (`chunk * (hidden + num_experts) * fp`) and the combine ReduceScatter the
+  **pre-scatter total** (`chunk * ep_total * hidden * fp`), matching
+  ASTRA-Sim's `data_size` convention for each. `chunk` is
+  `(gathered - min) / (ep_total - 1)`, not `gathered / ep_total`, because the
+  collectives are ragged — see the DP+EP section above.
 
 If you see surprisingly fast collectives in your trace logs, check
 that you're not accidentally passing per-rank sizes, that's a
