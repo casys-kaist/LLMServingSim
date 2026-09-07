@@ -563,6 +563,26 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
 _STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew")
 
 
+def _tp_degrees_present(variant_root: Path, measured: list[int]) -> list[int]:
+    """Every TP degree the bundle holds, not just the one this run swept.
+
+    ``tp_degrees`` describes the bundle, and the writer replaces it wholesale,
+    so taking it from ``args`` alone means a ``--tp 1`` refresh records a
+    two-TP bundle as one-TP. That is what a MoE repair slice did to
+    Qwen3-30B-A3B. Nothing reads it -- the simulator scans tp* folders for
+    ``available_tps`` -- but it is the file's own claim about itself.
+    """
+    found: set[int] = {int(t) for t in measured}
+    for d in variant_root.glob("tp*"):
+        if not d.is_dir():
+            continue
+        try:
+            found.add(int(d.name[2:]))
+        except ValueError:
+            continue
+    return sorted(found)
+
+
 def _artifacts_present(variant_root: Path) -> set[str]:
     """Which stamped artifacts this bundle actually holds, by CSV.
 
@@ -725,7 +745,7 @@ def persist_meta(
         "architecture_sha256": architecture_hash(arch_path),
         "model": args.model,
         "variant": args.effective_variant,
-        "tp_degrees": args.tp_degrees,
+        "tp_degrees": _tp_degrees_present(variant_root, args.tp_degrees),
         # Per-category provenance. Seeded from the prior file's top-level
         # version/timestamp for every category this run did not measure, so the
         # first partial refresh of an older bundle labels its untouched
