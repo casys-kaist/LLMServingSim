@@ -44,8 +44,8 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | Field | Type | Description |
 | --- | --- | --- |
 | `num_nodes` | Integer | Number of nodes in the cluster |
-| `link_bw` | Float or Array<Float> | ASTRA-Sim topology link bandwidth in GB/s. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank |
-| `link_latency` | Float or Array<Float> | ASTRA-Sim topology link latency in ns. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank |
+| `link_bw` | Float or Array<Float> | ASTRA-Sim topology link bandwidth in GB/s. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited from `profiler/perf/<hw>/hardware.yaml` when omitted** — see below |
+| `link_latency` | Float or Array<Float> | ASTRA-Sim topology link latency in ns. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited when omitted** |
 
 ### Per-node fields
 
@@ -62,7 +62,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | --- | --- | --- | --- |
 | `model_name` | String | Yes | HuggingFace model identifier (must match `configs/model/`) |
 | `hardware` | String | Yes | Hardware name matching `profiler/perf/{hardware}/` |
-| `npu_mem` | Object | Yes | NPU memory config (`mem_size` in GB, `mem_bw` in GB/s, `mem_latency` in ns; optional `mem_util`, see below) |
+| `npu_mem` | Object | No | NPU memory config (`mem_size` in GiB, `mem_bw` in GB/s, `mem_latency` in ns; optional `mem_util`, see below). **`mem_size` / `mem_bw` / `mem_latency` are inherited from `hardware.yaml` when omitted**; `mem_util` is a calibration knob and is not |
 | `pd_type` | String/null | Yes | `"prefill"`, `"decode"`, or `null` for combined |
 | `num_npus` | Integer | * | Total GPUs for this instance (inferred from `tp_size * pp_size` if omitted) |
 | `tp_size` | Integer | * | Tensor parallel degree (inferred from `num_npus // pp_size` if omitted) |
@@ -176,6 +176,51 @@ concurrency and a large token budget, and the decode instance the reverse
 `single_node_heterogeneous.json` is the Qwen3-32B / TP=2 variant, and it does
 use `max_num_batched_tokens: 0` plus `enable_chunked_prefill: false` on the
 decode instance.
+
+### Hardware facts are inherited from the measured bundle
+
+A cluster config mixes two kinds of statement, and only one of them is yours:
+
+| | |
+|---|---|
+| `tp_size`, `num_npus`, `mem_util`, `dp_group`, `pd_type` | what you want to simulate |
+| `link_bw`, `link_latency`, `npu_mem.mem_size/mem_bw/mem_latency` | what the hardware actually is |
+
+The second kind is measured by `python -m profiler hardware --hardware <hw>`
+into `profiler/perf/<hw>/hardware.yaml`, and a config that **omits** those keys
+inherits the measured values. Every inherited value is logged with its
+provenance:
+
+```
+[HardwareDefaults] INFO  link_bw = 16.37 for RTXPRO6000 (inherited from hardware.yaml, measured)
+[HardwareDefaults] INFO  link_latency = 16100 for RTXPRO6000 (inherited from hardware.yaml, measured)
+[HardwareDefaults] INFO  npu_mem.mem_bw = 1597.6 for RTXPRO6000 (inherited from hardware.yaml, spec)
+[HardwareDefaults] INFO  npu_mem.mem_latency = 0 for RTXPRO6000 (inherited from hardware.yaml, assumed)
+```
+
+`measured` / `spec` / `assumed` tells you whether a number came from a
+benchmark, a device query, or nobody. That distinction is the point: the
+examples carried `link_latency: 20000` for four months as a fitted value, and
+NCCL puts it at 16,100 ns — the fitted number over-charged a decode-sized
+all-reduce by 10.4% and was free to absorb whatever else was mis-modelled.
+
+Three rules:
+
+1. **An explicit value always wins**, with no warning. Describing an 8-GPU
+   NVLink node you do not own is the point of the simulator, so
+   `"link_bw": 900` is never second-guessed.
+2. **A gap is filled from the bundle** and logged.
+3. **A gap with nothing to fill it raises.** If the interconnect was never
+   measured for that hardware, no number is defensible and the config has to
+   say what it wants. `RTX4090` is the worked example: the card is gone, its
+   `hardware.yaml` carries `measured: null`, and
+   `bench/examples/RTX4090/Llama-3.1-8B/config.json` keeps `link_bw` and
+   `link_latency` explicitly — where you can see they are the author's choice.
+
+`link_bw` / `link_latency` are cluster-level while `hardware` is per-instance,
+so they are inherited only when every instance shares one hardware label. A
+cluster mixing two card types has a link that is neither one's intra-node
+measurement, and it raises rather than copying one.
 
 ### Parallelism rules:
 - `num_npus = tp_size * pp_size`

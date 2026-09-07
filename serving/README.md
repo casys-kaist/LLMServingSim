@@ -173,6 +173,23 @@ All modules below live under `serving/core/`. Imports inside the
 subpackage use relative form (`from .X import ...`); external callers
 use `from serving.core.X import ...`.
 
+### `hardware_defaults.py`
+
+Fills a cluster config's hardware facts from
+`profiler/perf/<hw>/hardware.yaml` before anything reads them, at both places
+the config is loaded (`__main__`'s override pass and
+`config_builder.build_cluster_config`).
+
+`link_bw`, `link_latency` and `npu_mem.mem_size/mem_bw/mem_latency` describe
+the hardware, not the user's intent, so a config that omits them inherits the
+measured values and the run logs each one with its provenance
+(`measured` / `spec` / `assumed`). An explicit value always wins — describing
+hardware nobody owns is the point of the simulator — and a gap with nothing
+measured to fill it **raises** rather than substituting a number.
+
+See **[configs/cluster/README.md](../configs/cluster/README.md)** for the
+rules and the RTX4090 worked example.
+
 ### `request.py`
 Defines the `Request` and `Batch` data classes. Tracks per-request state and latency
 metrics (TTFT, TPOT, ITL).

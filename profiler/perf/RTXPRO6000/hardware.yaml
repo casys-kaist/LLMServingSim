@@ -1,0 +1,101 @@
+hardware: RTXPRO6000
+written_by: python -m profiler hardware
+written_at: '2026-09-07T11:10:06+00:00'
+spec:
+  gpu_name: NVIDIA RTX PRO 6000 Blackwell Server Edition
+  compute_capability: '12.0'
+  sm_count: 188
+  memory_total_gib: 94.97
+  memory_bus_width_bit: 512
+  memory_clock_mhz: 12481
+  memory_bw_gbps: 1597.6
+  l2_cache_mib: 128.0
+  sm_clock_mhz: 2430
+  torch: 2.13.0+cu130
+  cuda: '13.0'
+  driver_version: 590.48.01
+  pcie_gen_max: 5
+  pcie_width_max: 16
+  power_limit_w: 600.0
+measured:
+  at: '2026-09-07T11:10:06+00:00'
+  interconnect:
+    npus: 2
+    collective: all_reduce
+    dtype: bfloat16
+    note: npus is what was measured; a cluster config asking for more is extrapolating, and
+      an 8-GPU NVLink domain is not this physics.
+    samples:
+    - bytes: 10240
+      us: 34.26
+      us_min: 33.37
+      n: 100
+    - bytes: 81920
+      us: 37.72
+      us_min: 36.72
+      n: 100
+    - bytes: 327680
+      us: 48.77
+      us_min: 45.17
+      n: 100
+    - bytes: 1310720
+      us: 111.58
+      us_min: 105.4
+      n: 100
+    - bytes: 5242880
+      us: 356.49
+      us_min: 346.47
+      n: 100
+    - bytes: 16777216
+      us: 1069.72
+      us_min: 1041.67
+      n: 100
+    - bytes: 20971520
+      us: 1327.18
+      us_min: 1299.4
+      n: 100
+    fit:
+      model: 'astra-sim analytical: t = 2*latency + bytes/bandwidth (Ring AllReduce, N=2,
+        FullyConnected 1 hop)'
+      objective: minimise relative error over the whole sweep
+      bandwidth_gbps: 16.37
+      latency_ns: 16100
+      residual_pct_by_size:
+      - bytes: 10240
+        err_pct: -4.2
+      - bytes: 81920
+        err_pct: -1.4
+      - &id001
+        bytes: 327680
+        err_pct: 7.1
+      - bytes: 1310720
+        err_pct: 0.6
+      - bytes: 5242880
+        err_pct: -1.1
+      - bytes: 16777216
+        err_pct: -1.2
+      - bytes: 20971520
+        err_pct: -1.0
+      worst_residual: *id001
+      mean_abs_residual_pct: 2.4
+defaults:
+  link_bw:
+    value: 16.37
+    source: measured
+    from: all_reduce across 2 npus
+  link_latency:
+    value: 16100
+    source: measured
+    from: all_reduce across 2 npus
+  npu_mem:
+    mem_size:
+      value: 95
+      source: spec
+      unit: GiB
+    mem_bw:
+      value: 1597.6
+      source: spec
+      from: memory_clock x bus_width, checked against the vendor figure
+    mem_latency:
+      value: 0
+      source: assumed

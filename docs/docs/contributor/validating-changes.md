@@ -180,6 +180,20 @@ If you only changed the alpha fit (`fit_alpha.py`), you can use
 ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
 without rerunning the rest.
 
+### If you touched `hardware.yaml`
+
+It feeds the simulator, so a change there can move every clock in
+`validate.sh` even though the file lives under `profiler/`:
+
+- **`profiler/core/hardware.py`** — the interconnect fit. `python -m profiler
+  hardware` prints the fitted `link_bw` / `link_latency` and the worst
+  residual; the residual per size is kept in the file. A fit whose worst
+  residual jumps is a fit that moved, and every cluster config on that hardware
+  inherits it.
+
+Two GPUs are needed. Without them the command writes the spec section,
+records `interconnect: null`, and exits non-zero.
+
 ## What "this should reproduce" looks like in a PR
 
 In your PR description, include the exact command you ran and the
