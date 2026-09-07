@@ -1670,8 +1670,52 @@ ASTRA-Sim's `data_size` convention for each collective:
 
 | Half | Marker | `comm_size` |
 |------|--------|-------------|
-| dispatch | `EXPERT 0` | `gathered / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
-| combine | `EXPERT END` | `gathered * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+| dispatch | `EXPERT 0` | `chunk * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
+| combine | `EXPERT END` | `chunk * ep_total * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+
+where `chunk = (gathered - min) / (ep_total - 1)` — see below.
+
+**Both collectives are ragged, and that is what sets their cost.**
+`AgRsAll2AllManager` passes per-rank `sizes` straight through, and
+`pynccl.all_gatherv` is one `ncclBroadcast` per rank at *that rank's own* size
+(`reduce_scatterv` one `ncclReduce` per rank as root), fused in a single group.
+So rank *r* ships its own tokens and takes in everyone else's: its ingress is
+`gathered - sizes[r]`, and the collective ends when the worst-off rank is done,
+at **`gathered - min(sizes)`**. The ring derivation gives the same answer — in
+step *k* a rank forwards what it received in step *k-1*, so it sends every
+chunk but one and the bottleneck is `gathered - min`.
+
+ASTRA-Sim's Ring charges `(N-1) * chunk` for AllGather and `(N-1) * total/N`
+for ReduceScatter, so the chunk that reproduces that bound is
+`(gathered - min) / (N - 1)` and the pre-scatter total is that chunk times N.
+Two limits fall out, which is why this is the general form rather than a
+special case:
+
+| case | result |
+|---|---|
+| any `N`, uniform sizes | `(gathered - gathered/N)/(N-1) = gathered/N` — unchanged |
+| `N = 2`, ragged | `gathered - min = max` — the NCCL-measured value |
+
+Dividing the gathered total by `ep_total` instead charges the **average** rank.
+Every decode round is CUDA-graph padded, so the two agree there and TPOT is
+untouched; a prefill chunk is outside the capture range and never padded, so a
+`(2048, 1)` round was charged at 1024 where NCCL pays 2048. Measured on the
+dp+ep bench example: **0.659x** of the real collective on prefill rounds, a
+mean 9.8 ms per round over 48 MoE layers and 25.4 ms on a full chunk, and
+**exactly zero** on every decode round. That is the shape of the residual it
+was found by — q30 sat at TTFT -18.4% with TPOT -1.3%, and the fix takes the
+run to +3.4% / +2.5%, sum |err| 21.7% -> 8.4%.
+
+`dp_min_total_len` carries the value from both DP round-completion paths
+(`max_total_len` when the round is padded, the real minimum otherwise), divided
+by `tp_size` under sequence-parallel MoE, where each EP rank holds
+`total_len / tp`. The `N = 2` case is checked against real NCCL
+(`.claude/moecomm.py` times AllGather/ReduceScatter at the exact MoE sizes;
+ASTRA-Sim's ring model is otherwise accurate to 0.90x on decode and 0.94x on
+prefill, so the ragged assumption was the whole gap). **`N > 2` rests on the
+ring derivation, not on measurement** — it needs four GPUs, and the competing
+reading, a step-synchronous ring at `(N-1) * max`, agrees at `N = 2` and
+charges more at `N = 4`.
 
 `gathered` is the **sum** of the group's per-rank token counts, which under a
 DP group is `max_total_len * dp_group_size`. Both of vLLM's own facts say so:

@@ -260,8 +260,20 @@ convention for each collective:
 
 | Half | Marker | `comm_size` |
 | --- | --- | --- |
-| Dispatch | `EXPERT 0` | `total_len / ep_total * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits alongside the hidden state |
-| Combine | `EXPERT END` | `total_len * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+| Dispatch | `EXPERT 0` | `chunk * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits alongside the hidden state |
+| Combine | `EXPERT END` | `chunk * ep_total * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+
+`chunk` is `(gathered - min) / (ep_total - 1)`, where `gathered` is the sum of
+the group's per-rank token counts and `min` the smallest of them. Both
+collectives are **ragged** — vLLM passes per-rank `sizes` through, and
+`all_gatherv` is one broadcast per rank at that rank's own size — so a rank's
+ingress is `gathered - sizes[r]` and the collective ends at
+`gathered - min(sizes)`, the worst-off rank. With uniform sizes this reduces to
+`gathered / ep_total`, which is what a CUDA-graph-padded decode round has; an
+unpadded prefill round is where it differs, and charging the average there
+under-priced the collective by up to 2x. See
+**[DP+EP wave synchronization](./parallelism-mechanics#dpep-wave-synchronization)**
+for when a round is padded.
 
 Real lines from Qwen3-30B-A3B (`hidden 2048`, 128 experts, bf16) with
 10 tokens at `ep_total 2`:
