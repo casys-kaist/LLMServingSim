@@ -23,24 +23,78 @@ generates derived ASTRA-Sim input files (`network.yml`,
 ```json
 {
   "num_nodes": 1,
-  "link_bw": 16,
-  "link_latency": 20000,
   "nodes": [...],
   "cxl_mem": {...}
 }
 ```
 
+`link_bw` and `link_latency` may be set here, but the committed examples on
+hardware we own no longer do: they are measured into
+`profiler/perf/<hw>/hardware.yaml` and inherited. Set them explicitly to
+describe an interconnect you do not have.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `num_nodes` | int | ✓ |  | Number of physical nodes in the cluster |
-| `link_bw` | float or float[] | ✓ |  | ASTRA-Sim topology link bandwidth in **GB/s**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank |
-| `link_latency` | float or float[] | ✓ |  | ASTRA-Sim topology link latency in **ns**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank |
+| `link_bw` | float or float[] | — | *inherited* | ASTRA-Sim topology link bandwidth in **GB/s**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value from `profiler/perf/<hw>/hardware.yaml` is used — see [Hardware facts are inherited](#hardware-facts-are-inherited) |
+| `link_latency` | float or float[] | — | *inherited* | ASTRA-Sim topology link latency in **ns**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value is used |
 | `nodes` | array | ✓ |  | Length must equal `num_nodes` |
 | `cxl_mem` | object | optional | absent | CXL memory expansion (see below) |
 
 Example: if `network.yml` will end up with `npus_count: [4, 2]`, you may set
 `link_bw: [900, 100]` and `link_latency: [0, 20000]` to assign different
 bandwidth/latency per topology dimension.
+
+## Hardware facts are inherited
+
+A cluster config mixes two kinds of statement:
+
+| | |
+|---|---|
+| `tp_size`, `num_npus`, `mem_util`, `dp_group`, `pd_type` | what you want to simulate |
+| `link_bw`, `link_latency`, `npu_mem.mem_size/mem_bw/mem_latency` | what the hardware actually is |
+
+The second kind is measured by
+[`python -m profiler hardware`](../profiler/running) into
+`profiler/perf/<hw>/hardware.yaml`, and a config that omits those keys inherits
+it. Each inherited value is logged with where it came from:
+
+```
+[HardwareDefaults] INFO  link_bw = 16.37 for RTXPRO6000 (inherited from hardware.yaml, measured)
+[HardwareDefaults] INFO  link_latency = 16100 for RTXPRO6000 (inherited from hardware.yaml, measured)
+[HardwareDefaults] INFO  npu_mem.mem_bw = 1597.6 for RTXPRO6000 (inherited from hardware.yaml, spec)
+[HardwareDefaults] INFO  npu_mem.mem_latency = 0 for RTXPRO6000 (inherited from hardware.yaml, assumed)
+```
+
+`measured` came from a benchmark on that machine, `spec` from a device query,
+`assumed` from nobody. The distinction earns its place: the examples carried
+`link_latency: 20000` for four months as a value fitted against an older vLLM,
+NCCL measures 16,100 ns, and the fitted number over-charged a decode-sized
+all-reduce by 10.4% — while being free to absorb whatever else was
+mis-modelled, since nothing in a run's output said it was a guess.
+
+### Three rules
+
+1. **An explicit value always wins**, with no warning. Simulating hardware
+   nobody owns is the point, so `"link_bw": 900` for a hypothetical NVLink
+   domain is never second-guessed.
+2. **A gap is filled from the bundle** and logged with its provenance.
+3. **A gap with nothing to fill it raises.** If the interconnect was never
+   measured for that hardware — one GPU on the machine, or a card that is gone
+   — then no number is defensible and the config has to say what it wants.
+
+`link_bw` / `link_latency` are cluster-level while `hardware` is per-instance,
+so they are inherited only when every instance shares one hardware label. A
+cluster mixing two card types has a link that is neither one's intra-node
+measurement, and it raises rather than copying one.
+
+### The empty case: RTX4090
+
+That card is no longer in the machine, so its `hardware.yaml` is hand-written
+with `measured: null` and carries no link defaults. Its bench example keeps
+`link_bw` and `link_latency` in the config, where a reader can see they are the
+author's choice rather than a measurement. Simulating RTX4090 works exactly as
+before; what changed is that the guess is now visible as one.
 
 ## `cxl_mem` (top-level, optional)
 

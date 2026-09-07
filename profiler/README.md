@@ -287,6 +287,39 @@ Crank any factor above 2.0 to coarsen that axis and cut profile time
 for denser sampling in axes where accuracy matters. The effective
 values land in `meta.yaml::skew_profile.factors`.
 
+#### Measuring the machine: `profiler hardware`
+
+Separate from any model sweep, because it characterises the hardware rather
+than a model:
+
+```bash
+python -m profiler hardware --hardware RTXPRO6000 --npus 2
+```
+
+writes `profiler/perf/RTXPRO6000/hardware.yaml` — **one file per hardware
+folder**, shared by every model bundle under it. It carries the card's spec
+(queried from the device), an NCCL all-reduce sweep, and a `defaults` block
+that cluster configs inherit `link_bw` / `link_latency` /
+`npu_mem.mem_size|mem_bw|mem_latency` from when they omit them. Each default
+records its `source` — `measured`, `spec`, or `assumed` — and a simulation logs
+it, so a run says whether its link numbers came from a benchmark or from
+nobody.
+
+That distinction is why the command exists: the committed examples carried
+`link_latency: 20000` as a fitted value for four months, NCCL puts it at
+16,100 ns, and the fitted number over-charged a decode-sized all-reduce by
+10.4% while being free to absorb whatever else was mis-modelled.
+
+**Two GPUs are the floor** — a link has two ends. On a single-GPU machine the
+command still writes the spec section, records `interconnect: null` with the
+reason, and **exits non-zero** so a script notices. A cluster config on that
+hardware then has to name `link_bw` and `link_latency` itself; the simulator
+raises rather than substituting a number nobody measured.
+
+`--npus` is recorded, because an all-reduce across two PCIe-linked cards is not
+the physics of eight over NVLink and a config asking for more is
+extrapolating.
+
 #### Resume vs force
 
 ```bash

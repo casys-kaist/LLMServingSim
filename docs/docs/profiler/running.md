@@ -29,6 +29,28 @@ command line. The matching architecture YAML must exist under
 **[Adding a model architecture](./adding-model-architecture)** if it
 doesn't.
 
+### Characterise the machine first (once per hardware)
+
+Before profiling any model on a new machine, measure what the hardware
+actually is:
+
+```bash
+python -m profiler hardware --hardware RTXPRO6000 --npus 2
+```
+
+This writes `profiler/perf/RTXPRO6000/hardware.yaml` — **one file per hardware
+folder**, shared by every model bundle under it. Cluster configs then inherit
+`link_bw`, `link_latency` and `npu_mem.*` from it instead of carrying values
+somebody guessed. Run it once; it has nothing to do with any particular model.
+
+It needs **two GPUs**, because a link has two ends. On a single-GPU machine it
+still records the card's spec, writes `interconnect: null` with the reason, and
+**exits non-zero** so a script notices — and a cluster config on that hardware
+then has to name `link_bw` / `link_latency` itself rather than inheriting a
+number nobody measured.
+
+See **[Cluster config → Hardware facts are inherited](../reference/cluster-config#hardware-facts-are-inherited)**.
+
 ## What `profile.sh` does, in order
 
 1. Reads `configs/model/<MODEL>.json` (a raw HF `config.json`). If

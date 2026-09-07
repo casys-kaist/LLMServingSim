@@ -14,16 +14,19 @@ in the right format is consumable by
 ## Folder layout
 
 ```
-profiler/perf/<HARDWARE>/<MODEL>/<variant>/
-├── meta.yaml
-└── tp<N>/                        # one folder per profiled TP degree
-    ├── dense.csv
-    ├── per_sequence.csv
-    ├── attention.csv
-    ├── linear_attention.csv      # mamba / gated-DeltaNet models only
-    ├── moe.csv                   # MoE models only, one grid per EP degree
-    ├── skew.csv                  # skew-enabled runs only
-    └── skew_fit.csv              # skew-enabled runs only
+profiler/perf/<HARDWARE>/
+├── hardware.yaml                 # the card's spec + the measured interconnect;
+│                                 # one per hardware folder, shared by every model
+└── <MODEL>/<variant>/
+    ├── meta.yaml
+    └── tp<N>/                    # one folder per profiled TP degree
+        ├── dense.csv
+        ├── per_sequence.csv
+        ├── attention.csv
+        ├── linear_attention.csv  # mamba / gated-DeltaNet models only
+        ├── moe.csv               # MoE models only, one grid per EP degree
+        ├── skew.csv              # skew-enabled runs only
+        └── skew_fit.csv          # skew-enabled runs only
 ```
 
 `<variant>` is auto-named from the dtype combination
@@ -35,6 +38,13 @@ variants for the same hardware × model live as siblings.
 `tp_stable: true` in the architecture YAML (layernorms, sampler) are
 profiled once at TP=1 and **replicated** into other TP folders by the
 writer.
+
+`hardware.yaml` sits one level up because it answers a different question. The
+CSVs are per **(model, hardware)**; the interconnect and the card's memory are
+per **hardware**, so one file serves every model bundle underneath. Written by
+`python -m profiler hardware`, and read by cluster configs that omit
+`link_bw` / `link_latency` / `npu_mem.*` — see
+**[Cluster config schema](../reference/cluster-config)**.
 
 ## Times are microseconds
 

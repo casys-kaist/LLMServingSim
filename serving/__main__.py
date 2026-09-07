@@ -19,6 +19,7 @@ from serving.core.request import *
 from serving.core.utils import *
 from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
                                 num_mtp_layers, get_architecture)
+from serving.core.hardware_defaults import apply_hardware_defaults
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
@@ -132,7 +133,11 @@ def _cluster_config_path(path):
 
 def _load_cluster_config_for_overrides(path):
     with open(_cluster_config_path(path), "r") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    # Fill hardware facts the config omits from profiler/perf/<hw>/hardware.yaml
+    # before anything reads them. Both readers of this file do it, so the two
+    # see the same config; the pass is idempotent.
+    return apply_hardware_defaults(cfg)
 
 
 def _resolve_output_file(path, run_id):

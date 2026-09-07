@@ -7,6 +7,7 @@ import shutil
 from .utils import get_config, num_experts as _num_experts
 from .pim_model import PIMModel
 from .logger import get_logger
+from .hardware_defaults import apply_hardware_defaults
 
 class FlowStyleList(list): pass
 
@@ -328,10 +329,15 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
             cluster_config = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Cluster configuration file '{cluster_config_path}' not found.")
-
     except json.JSONDecodeError:
         print(f"Failed to parse JSON from '{cluster_config_path}'.")
         exit(1)
+
+    # Same pass __main__ applies, for the same reason: link_bw / link_latency /
+    # npu_mem are hardware facts, and a config that omits them inherits the
+    # measured values rather than being rejected. An explicit value always
+    # wins, and a gap with nothing measured to fill it raises here.
+    cluster_config = apply_hardware_defaults(cluster_config)
 
     inputs_root, network_config_path, system_config_path, memory_config_path = (
         _prepare_input_config_paths(astra_sim, inputs_root)

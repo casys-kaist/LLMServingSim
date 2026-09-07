@@ -28,6 +28,27 @@ way regardless of how the data was collected.
 This is the easy case. The profiler's vLLM-based workflow already
 handles it. Three steps:
 
+### 0. Measure the machine
+
+```bash
+python -m profiler hardware --hardware <LABEL> --npus 2
+```
+
+Writes `profiler/perf/<LABEL>/hardware.yaml`: the card's spec, queried from the
+device, and an NCCL all-reduce sweep that gives `link_bw` / `link_latency`.
+Cluster configs on this hardware then inherit those instead of carrying a
+guess, and every inherited value is logged with its provenance
+(`measured` / `spec` / `assumed`).
+
+Do this first and once — it characterises the machine, not a model, and the
+same file serves every model bundle in the folder.
+
+**It needs two of the cards.** With one, the spec section is still written,
+`interconnect` is `null` with the reason, and the command exits non-zero; a
+cluster config then has to set `link_bw` and `link_latency` explicitly. That is
+the honest outcome: a link has two ends, and the simulator will not substitute
+a number nobody measured.
+
 ### 1. Confirm vLLM support
 
 The profiler runs vLLM `0.19.0` by default

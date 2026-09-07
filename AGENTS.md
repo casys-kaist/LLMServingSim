@@ -317,17 +317,20 @@ developed in this repo.
 Each run produces a per-category CSV bundle:
 
 ```
-perf/<hw>/<model>/<variant>/
-  meta.yaml                              profiler/vLLM version, effective engine kwargs, GPU,
+perf/<hw>/
+  hardware.yaml                          the card's spec + the measured interconnect;
+                                         one per hardware folder, shared by every model
+  <model>/<variant>/
+    meta.yaml                            profiler/vLLM version, effective engine kwargs, GPU,
                                          timestamps, compact sweep specs, skew_fit summary
-  tp<N>/
-    dense.csv                            layer, tokens, time_us
-    per_sequence.csv                     layer, sequences, time_us
-    attention.csv                        layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
-    linear_attention.csv                 layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
-    moe.csv                              ep, tokens, activated_experts, time_us  (MoE only)
-    skew.csv                             raw heterogeneous-decode shots        (skew enabled)
-    skew_fit.csv                         fitted per-bucket alpha table         (skew enabled)
+    tp<N>/
+      dense.csv                          layer, tokens, time_us
+      per_sequence.csv                   layer, sequences, time_us
+      attention.csv                      layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
+      linear_attention.csv               layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
+      moe.csv                            ep, tokens, activated_experts, time_us  (MoE only)
+      skew.csv                           raw heterogeneous-decode shots        (skew enabled)
+      skew_fit.csv                       fitted per-bucket alpha table         (skew enabled)
 ```
 
 **A refresh rewrites only what it measured.** `meta.yaml` describes more than
@@ -587,6 +590,109 @@ which tile padding and SM imbalance do not bound). Rows with
   *inside* a real fit still fall back to that fit's own pooled
   `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
   other category and refreshes just `skew.csv` + `skew_fit.csv`.
+
+### hardware.yaml: the machine's own facts, measured
+A cluster config mixes two kinds of statement:
+
+```
+tp_size, num_npus, mem_util, dp_group      what the user wants to simulate
+link_bw, link_latency, npu_mem.mem_*       what the hardware actually is
+```
+
+The first has to stay the user's — describing hardware nobody owns is the point
+of the simulator. The second, for hardware that *is* owned and is being
+validated against, should be measured, and was not: the committed examples
+carried `link_latency: 20000`, fitted against a vLLM 0.19 truth. Measured with
+NCCL it is **16,100 ns**, and the fitted value over-charged a decode-sized
+all-reduce by **10.4%**.
+
+Worse than the error was its mobility. A value nobody had measured was free to
+absorb whatever else was mis-modelled — lowering it to 12,000 closed Qwen3-32B's
+error from 7.8% to 1.2% *without* any step correction, which looks like a fix
+and is a second compensating pair. Only a measurement separates the two terms.
+
+`python -m profiler hardware --hardware <hw> --npus 2` writes
+`profiler/perf/<hw>/hardware.yaml`: one file per hardware folder, shared by
+every model bundle under it. Three sections:
+
+- **`spec`** — queried from the device. GPU name, SM count, bus width, clocks,
+  PCIe generation and width, driver, power limit, and `memory_bw_gbps` derived
+  from the reported clock and bus width rather than hardcoded (12,481 MHz x
+  512 bit / 8 x 2 = 1597.6 GB/s, against the 1597 the configs carried).
+- **`measured`** — the NCCL all-reduce sweep, seven sizes x 100 iterations, with
+  the raw samples kept alongside the fit.
+- **`defaults`** — what a cluster config inherits, each entry carrying its own
+  `source`: `measured`, `spec`, or `assumed`. A run logs every inherited value
+  with that provenance, which is the whole point: `link_latency: 20000` survived
+  four months because nothing in a run's output said whether it had been
+  measured.
+
+**The fit minimises relative error over the whole sweep.** ASTRA-Sim's
+analytical model is `t = 2L + size/BW` for a Ring AllReduce at N=2
+(`BasicTopology::compute_communication_delay`, hops=1 on FullyConnected), and
+two parameters cannot follow NCCL's real curve — it switches algorithm and
+channel count with message size. Two alternatives were measured and rejected:
+
+| objective | mean \|err\| | max \|err\| |
+|---|---|---|
+| anchored on one message size | 6.3% | 24.2% |
+| ordinary least squares | 4.8% | 13.4% |
+| **relative error (this)** | **2.4%** | **7.1%** |
+
+Anchoring was worse and wrong in kind: the size it anchored on was a *model's*
+(1.31 MB is Qwen3-32B at 128 sequences, hidden 5120), and a hardware file must
+not privilege one model's shape. Plain least squares is dominated by the
+largest sample — 20 MB against 10 KB is a 2000x lever on the squared residual.
+The residual at every size is recorded rather than smoothed away; the worst is
++7.1% at 327 KB, where NCCL changes algorithm and the model's shape cannot
+follow.
+
+**Three inheritance rules** (`serving/core/hardware_defaults.py`, applied at
+both config load sites):
+
+1. **An explicit value always wins.** No exceptions and no warning — a config
+   describing an 8-GPU NVLink node it does not own must be able to say so.
+2. **A gap is filled from the bundle**, and the run logs the value and its
+   provenance.
+3. **A gap with nothing to fill it raises.** Not a default, not a warning. If
+   the interconnect was never measured — one GPU on the machine, or hardware
+   that is gone — no number is defensible.
+
+`link_bw` / `link_latency` are cluster-level while `hardware` is per-instance,
+so they are inherited only when every instance shares one label. A cluster
+mixing two card types has a link that is neither one's intra-node measurement.
+
+**Two GPUs are the floor, and the measurement is topology-specific.** A link has
+two ends. `profiler hardware` still writes a useful file on a single-GPU machine
+— the spec section needs only a device query — with `interconnect: null` and the
+reason, and it **exits non-zero** so a script notices, the same shape as
+`profiler coverage`. And `npus` is recorded because an all-reduce across two
+PCIe-linked cards is not the physics of eight over NVLink; a config asking for
+more is extrapolating.
+
+**RTX4090 is the worked example of the empty case.** The card is gone, so its
+`hardware.yaml` is hand-written with `measured: null`, carries no link defaults,
+and its bench example keeps `link_bw` / `link_latency` in the config — where a
+reader can see they are the author's choice rather than a measurement.
+
+**`mem_bw` is deliberately not measured.** A profiled kernel latency already
+contains the card's real memory behaviour; `mem_bw` only bites on the
+explicitly-modelled memory paths (`--prefix-storage` KV recall, PIM, remote
+memory). It is carried from the spec, marked `spec`, and `mem_latency` is
+marked `assumed` because every committed config has carried 0 and nobody has
+checked it. What will matter is **CPU** memory bandwidth, which those paths do
+read.
+
+**`mem_size` is CUDA's number, not the marketed one.** vLLM applies
+`gpu_memory_utilization` to `init_snapshot.total_memory`, which is
+`torch.cuda.mem_get_info()[1]` — 101,976,440,832 B = **94.97 GiB** on this
+card, against a marketed "96 GB". That is not a 1000/1024 slip: 96 decimal
+would be 89.41 GiB, so the marketing figure is GiB labelled GB, and the gap to
+CUDA's number is ECC/firmware reserve (0.4%) plus driver context (635 MiB).
+Since the simulator's `mem_util` mirrors vLLM's flag, its base has to be the
+same one. It changes nothing on a run that does not saturate — Qwen3-32B peaks
+at 36.8% KV with zero preemptions, and 96 vs 94.97 came out identical to four
+decimals — and moves KV capacity by 1.1% on one that does.
 
 ### The attention grid's second axis describes the batch, not one sequence
 It used to be `kv_prefill`, one prefill sequence's context, and the simulator

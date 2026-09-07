@@ -564,6 +564,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_flags(p_coverage)
 
+    p_hardware = sub.add_parser(
+        "hardware",
+        help="Measure this machine's interconnect and record the card's spec "
+             "(writes profiler/perf/<hw>/hardware.yaml). Needs two GPUs for "
+             "the link; exits non-zero when it cannot measure it.",
+    )
+    p_hardware.add_argument(
+        "--hardware", required=True, dest="hardware",
+        help="Hardware label -- the folder name under profiler/perf/.",
+    )
+    p_hardware.add_argument(
+        "--npus", type=int, default=2, dest="hw_npus",
+        help="How many GPUs to all-reduce across (default 2). Recorded, "
+             "because a config asking for more is extrapolating: eight cards "
+             "over NVLink are not two over PCIe.",
+    )
+    p_hardware.add_argument(
+        "--out", default="profiler/perf", dest="out_root",
+        help="Output root (default profiler/perf).",
+    )
+    p_hardware.add_argument(
+        "--log-level", default=None, dest="log_level",
+        help="DEBUG / INFO / WARNING / ERROR.",
+    )
+
     return p
 
 
@@ -572,6 +597,15 @@ def main(argv: list[str] | None = None) -> int:
     ns = parser.parse_args(argv)
 
     log.configure(_resolve_log_level(ns))
+
+    # `hardware` characterises the machine, not a model, so it runs before any
+    # of the model-config resolution below -- it takes no model argument.
+    if ns.cmd == "hardware":
+        from profiler.core.hardware import run_hardware
+
+        _, measured = run_hardware(ns.hardware, Path(ns.out_root),
+                                   npus=ns.hw_npus)
+        return 0 if measured else 1
 
     # 1. Locate the model's HF config.json.
     model_config_path, hf_id = _resolve_model(ns.model, ns.model_config_root)
