@@ -1,14 +1,27 @@
 profiler_version: 1.0.0
-vllm_version: 0.19.0
+vllm_version: 0.28.0
 cuda_version: '13.0'
 gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-04-24T12:44:27+00:00'
+profiled_at: '2026-09-04T19:37:52+00:00'
 architecture: llama
-architecture_sha256: 19d708000ec8a89edf1ca12dd388235b2cfe59007aaec6ea48702fb856ff2cfb
+architecture_sha256: 551e5a0a71cc78f4e842f74edf0c1de5bb79e88f4001afd7f1ef146807ad53e4
 model: meta-llama/Llama-3.1-8B
 variant: bf16
 tp_degrees: [1, 2]
+category_provenance:
+  dense:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:15:54+00:00'
+  per_sequence:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:16:39+00:00'
+  attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:06:24+00:00'
+  skew:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T19:37:52+00:00'
 engine_effective:
   load_format: dummy
   enforce_eager: true
@@ -16,7 +29,6 @@ engine_effective:
   enable_prefix_caching: false
   generation_config: vllm
   tensor_parallel_size: 1
-  block_size: 16
   gpu_memory_utilization: 0.9
   max_num_batched_tokens: 2048
   max_num_seqs: 256
@@ -26,15 +38,30 @@ engine_effective:
     num_attention_heads: 16
     num_key_value_heads: 4
     vocab_size: 64128
-  worker_extension_cls: profiler.hooks.extension.Extension
-  model: /tmp/profiler_model_owp9ccgm
+  block_size: 16
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_bk0psend
+engine_resolved:
+  per_tp:
+    '1':
+      block_size: 16
+      max_model_len: 131072
+      num_cache_tokens: 21625616
+    '2':
+      block_size: 16
+      max_model_len: 131072
+      num_cache_tokens: 43945504
 attention_grid:
   max_kv: 16384
-  chunk_factor: 2.0
-  kv_factor: 2.0
-  chunks: 0, 16-2048 x2
+  chunk_factor: 1.5
+  kv_factor: 1.5
+  n_factor: 2.0
+  axes: prefill_tokens,prefill_key,n_decode,kv_decode
+  chunks: 0, 16-2048 x1.5
   n_decode: 0, 1-256 x2
-  kv: 0, 16-16384 x2
+  kv: 0, 16-16384 x1.5
+  prefill_key: 0, 16-17408 x1.5
+  decode_q_lens: [1]
 measurement_iterations: 3
 skew_profile:
   enabled: true
@@ -65,19 +92,23 @@ skew_fit:
   per_tp:
     1:
       method: per_bucket_wls_5axis
-      n_samples: 12984
-      alpha_default: 0.0543
+      n_samples: 13476
+      alpha_default: 0.0535
+      alpha_default_by_layer:
+        attention: 0.0535
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0118
-      rel_err_p90: 0.0644
-      rel_err_p99: 0.2887
-      signed_mean: 0.005
+      rel_err_p50: 0.0126
+      rel_err_p90: 0.0681
+      rel_err_p99: 0.312
+      signed_mean: 0.0056
     2:
       method: per_bucket_wls_5axis
-      n_samples: 12814
-      alpha_default: 0.0654
+      n_samples: 13302
+      alpha_default: 0.0668
+      alpha_default_by_layer:
+        attention: 0.0668
       bucket_table: tp2/skew_fit.csv
-      rel_err_p50: 0.0113
-      rel_err_p90: 0.0652
-      rel_err_p99: 0.2639
-      signed_mean: 0.0064
+      rel_err_p50: 0.0112
+      rel_err_p90: 0.066
+      rel_err_p99: 0.2753
+      signed_mean: 0.0059

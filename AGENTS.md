@@ -485,11 +485,16 @@ KV-bandwidth check (28.5% of spec against 84-95% for every 0.19 bundle). The
 not structure.
 
 The four `vllm=0.19.0` bundles were never affected, which is what made them
-usable as the reference — and is also why nothing in `serving/validate.sh` or
-`bench/examples/` moved: every scenario and every committed accuracy figure
-uses Llama-3.1-8B/70B, Qwen3-30B-A3B or Qwen3-32B, all 0.19. After the fix
-every bundle's `lm_head` lands at 80-83% of its bandwidth floor, so an outlier
-there is a bug.
+usable as the reference: the fix was verified against them before anything was
+rewritten. They are gone now — every RTXPRO6000 bundle has been re-profiled on
+0.28 so the whole tree carries one vLLM version, and only
+`RTX4090/meta-llama/Llama-3.1-8B` stays 0.19, because that card is no longer in
+the machine. **That re-profile moves the recorded clocks.** Every
+`serving/validate.sh` scenario and every `bench/examples/` accuracy figure runs
+Llama-3.1-8B, Qwen3-30B-A3B or Qwen3-32B — the three that were 0.19 — so a
+refreshed baseline is part of the same change, not a regression to explain.
+After the fix every bundle's `lm_head` lands at 80-83% of its bandwidth floor,
+so an outlier there is a bug.
 
 `num_mtp_modules` is capped to 1 in the config **file**, not via
 `hf_overrides`: the drafter reads `speculative_config.draft_model_config.hf_config`,
