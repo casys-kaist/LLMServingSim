@@ -1,0 +1,26 @@
+{
+    "num_nodes": 1,
+    "nodes": [
+        {
+            "num_instances": 1,
+            "cpu_mem": {
+                "mem_size": 512,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "deepseek-ai/DeepSeek-V3.2-Exp-16L64E",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_util": 0.773104
+                    },
+                    "num_npus": 1,
+                    "tp_size": 1,
+                    "pd_type": null,
+                    "ep_size": 1
+                }
+            ]
+        }
+    ]
+}
