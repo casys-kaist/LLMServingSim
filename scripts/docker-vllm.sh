@@ -28,11 +28,28 @@
 # nvidia-nccl-cu13==2.29.7`), and pip reports the conflict but installs it
 # anyway.
 #
-# scripts/patches/ is applied after the installs. Two right now, each one line:
-# a backport of vLLM PR #51395, without which DeepSeek-V3.2 / GLM-5 crash
-# mid-sweep on any Blackwell card, and a separation of MiniMax-M3's MTP
-# layer-name prefix, without which it cannot start with speculative decoding at
-# all. Each is idempotent and a no-op on a vLLM that already carries the fix.
+# scripts/patches/ is applied after the installs -- every .py in the directory,
+# unconditionally. Each is idempotent and a no-op on a vLLM that already carries
+# the fix. Two are corrections the container cannot run without:
+#
+#   vllm_sm120_sparse_mla.py     backport of vLLM PR #51395; without it
+#                                DeepSeek-V3.2 / GLM-5 crash mid-sweep on any
+#                                Blackwell card
+#   vllm_m3_mtp_layer_name.py    separates MiniMax-M3's MTP layer-name prefix;
+#                                without it the model cannot start with
+#                                speculative decoding at all
+#
+# The other two are **instruments**, inert unless their environment variable is
+# set, and nothing in profiler/ or bench/ sets it -- they are run by hand when
+# a cost-model residual needs localising:
+#
+#   vllm_step_shape_log.py       VLLM_STEP_SHAPE_LOG -- per-step shape and
+#                                interval. Works under cudagraphs.
+#   vllm_moe_activated_log.py    VLLM_MOE_ACTIVATED_LOG -- the distinct-expert
+#                                count a real gate fires. Needs
+#                                --enforce-eager: it calls .unique() inside
+#                                the router, which graph capture refuses, and
+#                                under replay the Python never runs anyway.
 
 set -euo pipefail
 
