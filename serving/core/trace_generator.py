@@ -2725,7 +2725,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None,
                    enable_sub_batch_interleaving=False, fp=16, dtype=None, kv_cache_dtype='auto',
                    tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, enable_block_copy=True, inputs_root=None,
-                   num_speculative_tokens=0):
+                   num_speculative_tokens=0, gate_stats_path=None):
 
     model = batch.model
     config = get_config(model)
@@ -2763,6 +2763,10 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
             # ``n_group: 1``, which is the unrestricted case spelled out.
             n_group=config.get('n_group', 1),
             topk_group=config.get('topk_group', 1),
+            # Only read under ``CUSTOM``; a missing or mismatched file leaves
+            # the closed form in place, which is the documented fallback.
+            gate_stats=gate_stats_path,
+            model_name=model,
         )
     else:
         gate = None

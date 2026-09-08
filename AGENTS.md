@@ -1580,7 +1580,9 @@ a separate bundle and the simulator reads the one the checkpoint names.
 CLI flags follow vLLM naming where applicable:
 - `--skip-prefill` — skip the prefill phase (decode only)
 - `--request-routing-policy` (`LOAD`, `RR`, `RAND`, `CUSTOM`) — request routing across instances
-- `--expert-routing-policy` (`BALANCED`, `RR`, `RAND`, `CUSTOM`) — expert token routing for MoE
+- `--expert-routing-policy` (`BALANCED`, `RR`, `RAND`, `CUSTOM`) — expert token routing for MoE.
+  `CUSTOM` reads the measured distinct-expert count from `--gate-stats` rather than
+  deriving it from a uniform gate; see the gate-stats section
   (block-copy optimization is controlled separately via `--enable-block-copy`, default on)
 - Boolean flags use `argparse.BooleanOptionalAction` (e.g., `--enable-prefix-caching` /
   `--no-enable-prefix-caching`)
@@ -1794,6 +1796,81 @@ moves the DP=1 run's span from +6.0% to +3.7%.
 This is the same distinction `_hit_probs` already makes for how many *ranks* a
 token reaches, where modelling independent draws read ~1% low. Here the
 collision-free reading was worth 56%.
+
+### The uniform gate is an assumption, and it is measurable
+`_balanced_route_ep` asks how many **distinct** experts a batch reaches, and
+answers with the coupon-collector expectation for a *uniform* gate,
+`E * (1 - ((E-k)/E)**n)`. That is the right shape -- it reduces to `k` at one
+token and approaches `E` at many -- but a trained gate concentrates on popular
+experts, so the real count is lower and the concentration lives in the
+weights. No closed form can reach it.
+
+`bench run --record-gate-stats` measures it: the `VLLM_MOE_ACTIVATED_LOG`
+patch logs `(tokens, distinct, top_k)` per `select_experts` call and
+`bench/core/gate_stats.py` reduces the log to one curve in `gate_stats.json`,
+which the simulator reads under `--expert-routing-policy CUSTOM --gate-stats`.
+Measured on Qwen3-30B-A3B over 110,640 calls: **0.87x** of the uniform model
+through the middle of the range, **0.94x** at a saturated decode, exactly
+**1.000** at one token. Against a real DP=1 run, holding everything else
+fixed:
+
+| | TTFT mean | TTFT p50 | TPOT mean | span |
+|---|---|---|---|---|
+| BALANCED (uniform closed form) | +8.5% | +7.2% | +6.0% | +4.8% |
+| **CUSTOM (measured curve)** | **+3.0%** | **+2.1%** | **+1.9%** | **+0.3%** |
+
+Four things to know.
+
+**The curve is the measurement, not a fit.** Linear between the batch sizes
+the recording run visited, **clamped** at both ends rather than extrapolated:
+below the first point there is nothing under one token, and above the last the
+count is bounded by `E` and the curve is already flat (0.90-0.97 of `E` across
+every prefill-sized batch measured).
+
+**A mismatched curve is refused, not rescaled.** `num_experts` and
+`num_experts_per_tok` are recorded and checked, because a distinct count means
+nothing without them. The model name is compared on its **basename** -- bench
+is routinely pointed at a local directory while the simulator names the HF
+repo -- so that check is a typo guard and `E` / `top_k` are the real ones. A
+missing, unreadable or mismatched file falls back to the closed form with one
+warning, which is deliberate: a guessed concentration is worse than a closed
+form that at least knows the right `E`.
+
+**The measured count is global, so the per-rank figure is it divided by the EP
+degree** -- exactly as the closed form's `E_rank * (1 - miss)` is
+`E * (1 - miss)` divided by it. The router selects from all `E` experts
+whatever the degree.
+
+**Recording needs `--enforce-eager`, and that is not a compromise.** The
+patch's `.unique()` is a data-dependent shape and cannot be captured into a
+cudagraph, but the gate's top-k output is a function of the weights and the
+input, not of how the forward runs.
+
+**Do not try to force the *truth* to be uniform instead.** That mode was
+built, measured and removed. On a non-EP configuration under cudagraphs it
+reads **0.700x** of the real gate's TPOT, and the reason is not the count:
+Python interception alone costs 0.0% (a wrapper returning the gate's own ids
+measures 1.001), caching is irrelevant (a freshly randomised assignment reads
+0.674 against a cached tensor's 0.670), and raising the count to the uniform
+model's carries only 3.6 of the 33 points -- in the *cheaper* direction, which
+is backwards. An in-situ profile of 8 real decode steps at matched batch shape
+says why: attention is unchanged (`flash_fwd_splitkv` 1.039/1.022, 192 calls
+each, the control) and every mover is a MoE GEMM with the **kernel variant
+substituted** -- a `MoeFCGemm` instantiation appears with 144 calls, another
+drops to zero, and `Fused_Moe_Kernel` launches go 288 -> 336 and 96 -> 48. The
+per-expert histogram feeds `moe_align_block_size` and the grouped-GEMM
+launcher's config choice, so flattening it picks a different kernel. The mode
+cannot hold "everything but the count" fixed. The same experiment on a DP2+EP2
+configuration reads **1.0016**, so this is a property of the path, not of the
+question.
+
+**`moe.csv` is not affected.** It is profiled under `enforce_eager=True`,
+where the same forcing reads 1.05 and no kernel swap happens. And the
+end-to-end +1.9% TPOT with MoE at ~72% of a step bounds any `moe.csv` error to
+about ±2.4%. What this does add is another reason the cudagraph `step.csv`
+term is unmeasured on MoE models: the compiled path's MoE cost depends on the
+routing histogram through kernel selection, which an eager per-layer profile
+cannot express by construction.
 
 ### The EP all-to-all is emitted as AllGather + ReduceScatter
 An MoE dispatch/combine **is** an all-to-all, but it has several

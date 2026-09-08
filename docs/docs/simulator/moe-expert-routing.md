@@ -53,7 +53,7 @@ flowchart LR
         TN["8 tokens"] --> ASN["3, 1, 0, 4<br/>(seeded uniform)"]
     end
     subgraph CST["CUSTOM"]
-        TC["8 tokens"] --> ASC["whatever you<br/>write"]
+        TC["8 tokens"] --> ASC["the count a real<br/>gate was measured<br/>to reach"]
     end
 ```
 
@@ -62,7 +62,7 @@ flowchart LR
 | **BALANCED** (default) | Deterministic | Idealized load-balanced gate (post-aux-loss training) | Most research baselines |
 | **RR** | Deterministic | Pure round-robin assignment | Sanity / null-baseline runs |
 | **RAND** | Seeded random | Uniform random per token | Worst-case load imbalance studies |
-| **CUSTOM** | Plug-in | Whatever you write | Real trained gate weights, ablation |
+| **CUSTOM** | Deterministic | The **measured** distinct-expert count of a real trained gate | Comparing against a real vLLM run |
 
 ### BALANCED, closed-form pigeonhole
 
@@ -105,12 +105,66 @@ for reproducibility). Produces realistic worst-case load imbalance
 *untrained* gate produces. Use this if you want to study the cost of
 load imbalance specifically.
 
-### CUSTOM, plug-in
+### CUSTOM, the measured curve
 
-Edit `gate_function.py::GateRouter._custom_routing`. The hook
-receives the token list and returns expert assignments per token.
-Use this if you want to drive routing from real trained gate weights
-or a learned-from-trace model.
+BALANCED's closed form asks how many distinct experts a *uniform* gate
+would reach. A trained gate concentrates on popular experts, so it
+reaches fewer, and the concentration lives in the weights where no
+closed form can get at it. Measured on Qwen3-30B-A3B over 110,640 real
+gate calls: **0.87x** of the uniform model through the middle of the
+range, **0.94x** at a saturated decode, and exactly **1.000** at one
+token, where both readings are just `k`.
+
+CUSTOM reads that measurement instead of deriving it. Record it with
+[`bench run --record-gate-stats`](/docs/reference/bench-cli), which logs
+what the real gate did and reduces it to one curve, then point the
+simulator at the file:
+
+```bash
+python -m serving \
+  --cluster-config configs/cluster/single_node_moe_dp_ep_instance.json \
+  --dataset workloads/sharegpt-qwen3-30b-a3b-300-sps10.jsonl \
+  --expert-routing-policy CUSTOM \
+  --gate-stats bench/results/<run_id>/gate_stats.json
+```
+
+Against a real DP=1 vLLM run of Qwen3-30B-A3B on RTX PRO 6000, holding
+everything else fixed:
+
+| | TTFT mean | TTFT p50 | TPOT mean | span |
+| --- | --- | --- | --- | --- |
+| BALANCED (uniform closed form) | +8.5% | +7.2% | +6.0% | +4.8% |
+| **CUSTOM (measured curve)** | **+3.0%** | **+2.1%** | **+1.9%** | **+0.3%** |
+
+Nothing is fitted and nothing is interpolated across models. The curve
+is linear between the batch sizes the recording run visited and clamped
+at both ends: below the first point there is nothing under one token,
+and above the last the count is bounded by `E` and the curve is already
+flat there. `num_experts` and `num_experts_per_tok` are recorded in the
+file and checked on load, because a distinct count means nothing without
+them -- a curve from another checkpoint is refused rather than rescaled,
+and the closed form takes over.
+
+**A missing, unreadable or mismatched file falls back to BALANCED** with
+one warning. That is deliberate: a guessed concentration is worse than
+the closed form, which at least knows the right `E`.
+
+Per-token call sites (`GateRouter.route`, used at EP=1 by nothing in the
+simulator today) still go through `_custom_gate_function`, which is the
+plug-in hook for driving routing from something else entirely.
+
+:::note Why not force the *truth* to be uniform instead
+A bench mode that replaced the real gate's assignment was tried, and it
+does not answer this question. On a non-EP configuration under
+cudagraphs it reads **0.700x** of the real gate's TPOT -- flattening the
+per-expert histogram lands the grouped GEMM on a *different kernel
+variant*. An in-situ profile of 8 real decode steps at matched batch
+shape shows a `MoeFCGemm` template instantiation appearing with 144
+calls and another dropping to zero, with attention unchanged as the
+control. It cannot hold "everything but the count" fixed, so it measures
+the schedule rather than the count. Measuring the count directly has no
+such coupling.
+:::
 
 ## Group-limited routing
 
@@ -193,7 +247,10 @@ It's an **approximation** for:
   in practice the per-rank counts are still nearly identical).
 - MoE with `RAND` (per-block randomness produces variance the copy
   can't capture).
-- MoE with `CUSTOM` (depends entirely on what you wrote).
+- MoE with a `CUSTOM` per-token `_custom_gate_function` (depends
+  entirely on what you wrote). The measured curve is deterministic in
+  the batch's token count, so `block_copy` is exact for it, as it is
+  for BALANCED.
 
 For research where per-block variance matters, set
 `enable_block_copy=False` in the trace generator (or pick a policy

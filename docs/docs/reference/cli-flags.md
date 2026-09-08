@@ -47,7 +47,8 @@ matching runtime knobs per `instances[i]`; see
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
 | `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing |
-| `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing |
+| `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing. `CUSTOM` reads the **measured** distinct-expert count from `--gate-stats` instead of deriving it from a uniform gate |
+| `--gate-stats` | path | `None` | A `gate_stats.json` (or the `bench run` directory holding one) recorded by [`bench run --record-gate-stats`](/docs/reference/bench-cli). Read only under `--expert-routing-policy CUSTOM`. A trained gate concentrates on popular experts, so the uniform closed form over-counts — on Qwen3-30B-A3B by 13% through the middle of the range and 6% at a saturated decode, which is worth 6.0 points of TPOT error. Relative paths resolve against the repo root, not `astra-sim/`. A missing, unreadable or mismatched file falls back to `BALANCED` with a warning. See **[MoE expert routing](/docs/simulator/moe-expert-routing)** |
 | `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers (set False for per-layer EP variance) |
 
 ## Precision
