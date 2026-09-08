@@ -83,21 +83,36 @@ _WARMUPS = 5
 #    Far above that and the two columns are not the same computation.
 #
 #    On an MoE model, forcing ``CUDAGraphMode.NONE`` through the V1 runner does
-#    not merely skip graph replay -- it routes the block onto a path that
-#    computes **every** expert. Measured on Qwen3-30B-A3B at full depth, one
-#    token: 7,777 us with replay against 33,412 us with NONE, a 76.7%
-#    "saving". The arithmetic identifies it exactly -- all 128 experts' weights
-#    are 57.98 GB, which at this card's 1597.6 GB/s is 36,293 us, and 33,412 is
-#    92% of that, while the correct top-8 path is 3.62 GB and 2,268 us. Read as
-#    launch overhead it would be 66 us per launch against a real 1.7.
+#    not merely skip graph replay -- the NONE column is a *different
+#    computation*, and a large one. Measured on Qwen3-30B-A3B at full depth,
+#    one token: 7,777 us with replay against 33,412 us with NONE, a 76.7%
+#    "saving" where the dense models show 1-4%. Read as launch overhead that is
+#    66 us per launch against a real 1.7.
+#
+#    **What the extra 4.3x is has not been identified.** It is not "the NONE
+#    path computes every expert", which this comment used to claim on the
+#    strength of the arithmetic: all 128 experts' weights are 57.98 GB, which
+#    at this card's 1597.6 GB/s is 36,293 us, and 33,412 is 92% of that. Two
+#    measurements refute it. The two columns launch the **same number of
+#    kernels** (283 against 283), which a different set of experts could not
+#    do. And the cost does not scale with the expert count -- ``E = 8`` reads
+#    25,858 us against ``E = 32``'s 19,878, where reading every expert would
+#    make the larger model 4x the smaller. The 92% agreement is a coincidence.
+#
+#    That changes nothing about the guard, which is why it stays: the bound
+#    tests whether the two columns are the same computation, and 76.7% says
+#    they are not whatever the reason. A lead worth checking, not a claim:
+#    routing-histogram shape is known to swap grouped-GEMM kernel variants on
+#    this model (see AGENTS.md), so the NONE branch may be selecting different
+#    MoE kernels rather than more work.
 #
 #    **This bound only means anything at full depth**, which is why
-#    ``_full_depth_args`` exists. A 1-layer boot puts the whole MoE weight at
-#    1.21 GB, so reading every expert costs 757 us and hides inside the
-#    framework term -- at 1 layer the same model measures a 44% share that *is*
-#    ordinary overhead. A 1-layer sweep therefore both under-measures the real
-#    saving and disarms this check; that combination is how an invalid
-#    Qwen3-30B-A3B step.csv got written and believed.
+#    ``_full_depth_args`` exists. The saving it measures is
+#    ``kernel_count x launch_cost``, so a 1-layer boot's share is not
+#    comparable -- the same model measures 44% there, which at that depth is
+#    ordinary overhead, so the bound reads as a false positive and looks worth
+#    removing. It was removed on that reading and an invalid Qwen3-30B-A3B
+#    step.csv got written and believed.
 #
 # 2. ``_MAX_NONE_BRANCH_SAVED_SHARE`` -- the sweep's control. Above the capture
 #    ceiling vLLM dispatches no graph either way, so a ``none`` row must
@@ -312,10 +327,11 @@ def sample_step(llm, args: ProfileArgs, limits, tp: int,
             log.error(
                 "Step case %s: turning graph replay off changed the step by "
                 "%.1f%% (%.0f us of %.0f), far past what launch overhead can "
-                "be. The two columns are not the same computation -- on an MoE "
-                "model, forcing NONE routes the block onto a path that computes "
-                "every expert. Aborting rather than writing a number that "
-                "would price a decode step several times over.",
+                "be. The two columns are not the same computation -- on an "
+                "MoE model the NONE branch costs several times a replayed "
+                "step, for a reason not yet identified. Aborting rather than "
+                "writing a number that would price a decode step several "
+                "times over.",
                 case.key(), 100 * share, saved, step + saved,
             )
             raise RuntimeError(

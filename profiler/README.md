@@ -340,14 +340,22 @@ of kernels whatever the TP degree, so one measurement at TP=1 serves all of
 them.
 
 **MoE models are not supported and the sweep says so.** Forcing the no-graph
-mode on an MoE block routes it onto a path that computes *every* expert rather
-than the selected ones, so the two columns stop being the same computation.
+mode on an MoE block makes the two columns stop being the same computation.
 Measured on Qwen3-30B-A3B at full depth, one token: 7,777 us with replay
 against 33,412 us with NONE, a 76.7% "saving" against the dense models' 1-4%.
-All 128 experts' weights are 57.98 GB, which at 1597.6 GB/s is 36,293 us, and
-33,412 is 92% of that; the correct top-8 path is 2,268 us. A plausibility bound
-aborts with that arithmetic in the message, so MoE bundles have no `step.csv`
-and the simulator warns once.
+Read as launch overhead that is 66 us per launch against a real 1.7. A
+plausibility bound aborts on it, so MoE bundles have no `step.csv` and the
+simulator warns once.
+
+**What the extra 4.3x is has not been identified**, and this README used to
+claim it was the NONE path computing *every* expert — all 128 experts' weights
+are 57.98 GB, 36,293 us at 1597.6 GB/s, and 33,412 is 92% of that. Two
+measurements refute it: the two columns launch the **same number of kernels**
+(283 against 283), which a different set of experts could not do, and the cost
+does not scale with the expert count (`E = 8` reads 25,858 us against
+`E = 32`'s 19,878, where reading every expert would make the larger model 4x
+the smaller). The agreement is a coincidence. None of it changes the guard,
+which asks only whether the two columns are the same computation.
 
 **The sweep boots the checkpoint's real depth, and that is load-bearing for
 the bound above.** `spin_up`'s default shrinks to
