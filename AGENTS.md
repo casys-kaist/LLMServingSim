@@ -666,6 +666,29 @@ the batch. Two models confirm it independently:
 | Llama-3.1-8B | 32 | 324 | 587 us | 1.81 |
 | Qwen3-32B | 64 | 644 | 1068 us | 1.66 |
 
+**And the simulator has to subtract it, not scale by it.** `_load_step_tables`
+used to turn each row into `step_us / (step_us + saved_us)` and
+`_emit_layer` multiplied every layer by that. On a dense model the two
+readings agree, because the simulator's predicted step lands within a percent
+of the profiler's `step_us`. On an MoE model they do not: the profiler boots at
+`load_format: dummy`, a random router degenerates to picking the same `top_k`
+experts for every token, and `step_us` is then several times smaller than the
+step production runs — so a ratio built from it, applied to the simulator's own
+larger step, inflates the correction. `saved_us` is launch overhead and carries
+no weight-value dependence at all.
+
+`_apply_step_correction` now runs as a post-pass over the finished trace, where
+the denominator is the trace's *own* predicted total:
+`scale = 1 - saved / total`, which is the same subtraction distributed in
+proportion to each layer's time and keeps every row positive. It is divided by
+`pp_size`, since the saving is `kernel_count x launch_cost` measured on a whole
+model and a pipeline stage launches only its own slice. `_STEP_SCALE_FLOOR`
+clamps at 0.25 with a one-shot warning: a saving that exceeds a quarter of the
+predicted work means the bundle's `step.csv` describes a different model.
+
+Sub-batch interleaving puts two batches in one trace, so the correction is
+applied per `misc` tag — each is its own forward.
+
 `1068/587 = 1.82` against a layer ratio of 2.0, and 1.66-1.81 us per launch is
 what a CUDA launch costs. **That is why it cannot be a constant** — a model with
 twice the layers saves twice as much.
@@ -728,25 +751,46 @@ graph capture allocates memory a checkpoint that only just fits under
 per-category `slice` refresh. A failed boot logs and keeps the bundle rather
 than losing it.
 
-**It does not work on an MoE model yet, and the sweep refuses rather than
-guessing.** Forcing `CUDAGraphMode.NONE` through the V1 runner does not merely
-skip graph replay on an MoE block — it routes onto a path that computes **every**
-expert. Measured on Qwen3-30B-A3B at one token: 7,820 us with replay against
-34,510 us with NONE, a 62% "saving" where the dense models show 2-4%. The
-arithmetic identifies it exactly: all 128 experts' weights are 58.0 GB, which at
-this card's 1597 GB/s is 36,293 us, while the correct top-8 path is 3.6 GB and
-2,268 us. The NONE column matches reading every expert.
+**It works on an MoE model, and the guard that said otherwise tested the
+wrong quantity.** The sweep used to abort above a 20% share of a step, on the
+reading that forcing `CUDAGraphMode.NONE` through the V1 runner routes an MoE
+block onto a path computing **every** expert — a 62% "saving" at one token,
+with the arithmetic that all 128 experts' weights are 58.0 GB and at 1597 GB/s
+that is 36,293 us. **It does not reproduce.** Measured as a block of graph
+forwards against a block of no-graph forwards — which also rules out a
+per-switch cost, since the block and alternating figures agree to within 5% —
+Qwen3-30B-A3B's one-token step is 2.0 ms, not 34.5 ms, and its saving is in
+line with every other shape:
 
-So `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts the sweep with the arithmetic in
-the message. Recording that row would have priced an MoE decode step at 4x.
-An MoE bundle therefore carries no `step.csv` today and the simulator warns;
-measuring it needs a route that turns off replay without changing which experts
-run, which has not been found.
+| shape | graph | no graph | saving | share |
+|---|---|---|---|---|
+| decode n=1 | 1141 us | 2042 us | 901 us | 44.1% |
+| decode n=8 | 1647 | 2721 | 1074 | 39.5% |
+| decode n=32 | 2269 | 3083 | 814 | 26.4% |
+| decode n=128 | 5594 | 6229 | 635 | 10.2% |
+| prefill 256 (= ceiling) | 1674 | 2326 | 651 | 28.0% |
+| **prefill 512 (> ceiling)** | 2438 | 2445 | **7 us** | **0.3%** |
+
+That is the absolute saving holding at 635-1074 us across a 5.5x range of step
+time while its *share* runs 0.3% to 44% — the same fact the fit above
+established, seen on one model. A share bound therefore fires exactly where the
+step is small, which is not a defect. **The check is the last row instead**:
+above the capture ceiling vLLM dispatches no graph either way, so a `none` row
+must measure zero, and `_MAX_NONE_BRANCH_SAVED_SHARE = 0.05` aborts when it
+does not. On Qwen3-30B-A3B's real sweep both `none` rows come in at -1.4 and
+-0.1 us. If that control fails, the toggle is changing something other than
+graph replay and no other row is trustworthy.
+
+Why the saving falls as the batch grows: at one sequence the kernels are short
+and the CPU cannot enqueue fast enough, so every launch adds latency; at 128 the
+kernels are long and launches hide behind execution. So it is a decaying curve
+rather than a constant, which is why the per-capture-size table is the right
+shape and there is nothing to model.
 
 **The fallback is the opposite of skew's.** Skew's is `alpha = 0` — no data, no
 correction — and that is right, because a guessed alpha is worse than none.
 Here the direction and rough size of the missing term are established, so
-silence would hide a known 2-3% bias. `_step_ratio` warns once per bundle
+silence would hide a known 2-3% bias. `_step_saved_ns` warns once per bundle
 instead. Silence is precisely what let this term stay invisible for four
 months.
 
