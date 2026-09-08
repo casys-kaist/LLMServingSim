@@ -3,7 +3,7 @@ vllm_version: 0.28.0
 cuda_version: '13.0'
 gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-09-07T01:01:59+00:00'
+profiled_at: '2026-09-08T05:51:13+00:00'
 architecture: qwen3
 architecture_sha256: 09b91fc5b2056bac024b5de9f166786814fe636b2eebd68b4217e861e599554a
 model: Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -25,6 +25,9 @@ category_provenance:
   skew:
     vllm_version: 0.28.0
     profiled_at: '2026-09-06T02:48:59+00:00'
+  step:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-08T05:51:13+00:00'
 engine_effective:
   load_format: dummy
   enforce_eager: true
