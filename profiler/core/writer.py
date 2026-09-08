@@ -15,6 +15,7 @@ Also here:
 
 from __future__ import annotations
 
+import shutil
 import csv
 import datetime
 import os
@@ -662,6 +663,7 @@ def persist_meta(
     *,
     records_engine: bool = True,
     records_attention_grid: bool = True,
+    records_skew: bool = True,
     measured_categories: tuple[str, ...] = (),
 ) -> None:
     """Write ``variant_root/meta.yaml`` describing the profile session.
@@ -681,6 +683,14 @@ def persist_meta(
     19,839,182, and the simulator reads that block size whenever
     ``--block-size`` is omitted. A shrunk single-category engine is not
     authoritative either, for the same reason.
+
+    ``records_skew`` -- same restraint for ``skew_profile``, which
+    ``_skew_meta_block`` derives from *this run's* args. A run that swept no
+    skew would replace the recorded grid with one its own defaults describe and
+    no ``skew.csv`` in the bundle matches. Every ``slice`` is such a run, and
+    the block also needs ``attention_max_kv`` resolved, which a slice does not
+    do -- so leaving it ungated made ``slice --group step`` crash in
+    ``_build_grid`` on ``None // 2`` after the sweep had already succeeded.
 
     ``records_attention_grid`` -- only a run that swept attention knows which
     axes were fired. A ``per_sequence`` refresh regenerating the block from its
@@ -782,7 +792,11 @@ def persist_meta(
             or _attention_grid_spec(args, eff_mnbt, eff_msq)
         ),
         "measurement_iterations": args.measurement_iterations,
-        "skew_profile": _skew_meta_block(args),
+        "skew_profile": (
+            _skew_meta_block(args)
+            if records_skew
+            else prior.get("skew_profile") or None
+        ),
         "skew_fit": _skew_fit_block(variant_root, args.tp_degrees),
     }
     variant_root.mkdir(parents=True, exist_ok=True)
@@ -866,6 +880,17 @@ def replicate_tp_stable(
                 key_fields=["layer", "sequences"],
                 layer_whitelist=stable_seq,
             )
+
+        # ``step.csv`` is tp_stable as a whole file rather than per layer: the
+        # saving is ``kernel_count x launch_cost`` and a rank runs the same
+        # number of kernels at every TP degree -- only shapes shard. Checked on
+        # Qwen3-32B by measuring both degrees, where ``step_us`` drops to
+        # 0.50-0.56x while ``saved_us`` holds at 0.963x. It is a copy and not a
+        # merge because there is no layer column to whitelist on.
+        src_step = tp1_dir / "step.csv"
+        if src_step.exists():
+            shutil.copyfile(src_step, dst_dir / "step.csv")
+            log.debug("replicated step.csv -> tp%d", tp)
 
 
 def _replicate_layer_file(

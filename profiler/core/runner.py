@@ -464,9 +464,11 @@ def run_slice(
         # A graph-enabled boot is not authoritative for the shapes the
         # simulator runs, and this run swept no attention grid, so it may
         # stamp neither -- exactly as --only-skew may not.
+        replicate_tp_stable(variant_root, arch, args.tp_degrees)
         persist_meta(args, arch_path, engine_kwargs, variant_root, {},
                      records_engine=False,
                      records_attention_grid=False,
+                     records_skew=False,
                      measured_categories=("step",))
         log.done(variant_root)
         return
@@ -539,6 +541,10 @@ def run_slice(
         {tp: limits} if records_engine else None,
         records_engine=records_engine,
         records_attention_grid=(group == "attention"),
+        # A category slice sweeps no skew either, and ``_skew_meta_block``
+        # derives its grid from this run's args, which are the defaults
+        # unless the caller happened to repeat every SKEW_* factor.
+        records_skew=False,
         measured_categories=(group,),
     )
     if not records_engine:
