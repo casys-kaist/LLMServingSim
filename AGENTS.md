@@ -751,41 +751,48 @@ graph capture allocates memory a checkpoint that only just fits under
 per-category `slice` refresh. A failed boot logs and keeps the bundle rather
 than losing it.
 
-**It works on an MoE model, and the guard that said otherwise tested the
-wrong quantity.** The sweep used to abort above a 20% share of a step, on the
-reading that forcing `CUDAGraphMode.NONE` through the V1 runner routes an MoE
-block onto a path computing **every** expert — a 62% "saving" at one token,
-with the arithmetic that all 128 experts' weights are 58.0 GB and at 1597 GB/s
-that is 36,293 us. **It does not reproduce.** Measured as a block of graph
-forwards against a block of no-graph forwards — which also rules out a
-per-switch cost, since the block and alternating figures agree to within 5% —
-Qwen3-30B-A3B's one-token step is 2.0 ms, not 34.5 ms, and its saving is in
-line with every other shape:
+**It does not work on an MoE model, and the sweep refuses rather than
+guessing.** Forcing `CUDAGraphMode.NONE` through the V1 runner does not merely
+skip graph replay on an MoE block — it routes onto a path that computes
+**every** expert. Measured on Qwen3-30B-A3B at full depth, one token: 7,777 us
+with replay against 33,412 us with NONE, a **76.7%** "saving" where the dense
+models show 1-4%. The arithmetic identifies it exactly: all 128 experts'
+weights are 57.98 GB, which at this card's 1597.6 GB/s is 36,293 us, and
+33,412 is **92%** of that, while the correct top-8 path is 3.62 GB and
+2,268 us. Read as launch overhead it would be 66 us per launch against a real
+1.7. `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts with that arithmetic in the
+message; an MoE bundle carries no `step.csv` and the simulator warns.
 
-| shape | graph | no graph | saving | share |
-|---|---|---|---|---|
-| decode n=1 | 1141 us | 2042 us | 901 us | 44.1% |
-| decode n=8 | 1647 | 2721 | 1074 | 39.5% |
-| decode n=32 | 2269 | 3083 | 814 | 26.4% |
-| decode n=128 | 5594 | 6229 | 635 | 10.2% |
-| prefill 256 (= ceiling) | 1674 | 2326 | 651 | 28.0% |
-| **prefill 512 (> ceiling)** | 2438 | 2445 | **7 us** | **0.3%** |
+**That bound is only meaningful at full depth, and a depth bug once disarmed
+it.** `spin_up`'s default resolves `minimal_layer_count_for(config, ALL_AXES)`,
+which is **1** for any model whose blocks are all alike — Llama, Qwen3,
+Qwen3-30B-A3B — so the step pass booted one layer unless the caller happened to
+pass `--num-hidden-layers`. Two things went wrong together:
 
-That is the absolute saving holding at 635-1074 us across a 5.5x range of step
-time while its *share* runs 0.3% to 44% — the same fact the fit above
-established, seen on one model. A share bound therefore fires exactly where the
-step is small, which is not a defect. **The check is the last row instead**:
-above the capture ceiling vLLM dispatches no graph either way, so a `none` row
-must measure zero, and `_MAX_NONE_BRANCH_SAVED_SHARE = 0.05` aborts when it
-does not. On Qwen3-30B-A3B's real sweep both `none` rows come in at -1.4 and
--0.1 us. If that control fails, the toggle is changing something other than
-graph replay and no other row is trustworthy.
+- the saving it measures is `kernel_count x launch_cost` and the kernel count
+  scales with depth, so a 1-layer number does not transfer (it reads ~87% of
+  its own step against ~2% at full depth);
+- and at 1 layer the whole MoE weight is 1.21 GB, so reading every expert
+  costs 757 us and hides inside the framework term. The same model measures a
+  44% share there, which *is* ordinary overhead at that depth, so the 20%
+  bound reads as a false positive and looks worth removing.
 
-Why the saving falls as the batch grows: at one sequence the kernels are short
-and the CPU cannot enqueue fast enough, so every launch adds latency; at 128 the
-kernels are long and launches hide behind execution. So it is a decaying curve
-rather than a constant, which is why the per-capture-size table is the right
-shape and there is nothing to model.
+It was removed on that reading, an invalid `step.csv` was written, and the
+error only surfaced when the depth was fixed and the share jumped to 76.7%.
+`_full_depth_args` pins the step pass to the checkpoint's own
+`num_hidden_layers`, overriding an explicit `--num-hidden-layers` because that
+flag exists to make the *other* categories fit and they are unaffected by
+depth. Llama-3.1-8B and Qwen3-32B were measured at full depth already — their
+`step_us` at one token, 12,817 and 48,538 us, sits against 1-layer floors of
+931 and 1,584 — so only Qwen3-30B-A3B was affected.
+
+The sweep's own control is separate and additional:
+`_MAX_NONE_BRANCH_SAVED_SHARE = 0.05` on the `none` rows, which sit above the
+capture ceiling where vLLM dispatches no graph either way and so must measure
+zero (Qwen3-30B-A3B's come in at -62 and -32 us). That is what says the toggle
+reaches the dispatch at all: a version patching only the V2 runner measured
+-1 us on this model and passed every plausibility test by measuring nothing.
+The share bound cannot catch that and the control cannot catch the expert path.
 
 **The fallback is the opposite of skew's.** Skew's is `alpha = 0` — no data, no
 correction — and that is right, because a guessed alpha is worse than none.

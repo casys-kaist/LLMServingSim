@@ -339,21 +339,32 @@ per model — and it is **TP-invariant**, since each rank runs the same *number*
 of kernels whatever the TP degree, so one measurement at TP=1 serves all of
 them.
 
-**MoE models work.** An earlier bound aborted the sweep whenever the saving
-exceeded 20% of a step, on the reading that forcing the no-graph mode on an MoE
-block computes *every* expert rather than the selected ones — Qwen3-30B-A3B
-measured a 62% "saving", and 34,510 us is what reading all 128 experts costs
-(58.0 GB at 1597 GB/s). That does not reproduce: measured as a block of graph
-forwards against a block of no-graph forwards, the one-token step is 2.0 ms
-rather than 34.5, and its saving (901 us) is in line with every other shape.
-The share is large there only because the step is small — 44% at one sequence,
-10% at 128, for a saving that moves 901 -> 635 us.
+**MoE models are not supported and the sweep says so.** Forcing the no-graph
+mode on an MoE block routes it onto a path that computes *every* expert rather
+than the selected ones, so the two columns stop being the same computation.
+Measured on Qwen3-30B-A3B at full depth, one token: 7,777 us with replay
+against 33,412 us with NONE, a 76.7% "saving" against the dense models' 1-4%.
+All 128 experts' weights are 57.98 GB, which at 1597.6 GB/s is 36,293 us, and
+33,412 is 92% of that; the correct top-8 path is 2,268 us. A plausibility bound
+aborts with that arithmetic in the message, so MoE bundles have no `step.csv`
+and the simulator warns once.
 
-So the check is the sweep's own control instead: above the capture ceiling vLLM
-dispatches no graph either way, so a `none` row must measure **zero**, and the
-sweep aborts when it does not. Qwen3-30B-A3B's real sweep puts both `none` rows
-at -1.4 and -0.1 us, which is what says the toggle measures graph replay and
-nothing else.
+**The sweep boots the checkpoint's real depth, and that is load-bearing for
+the bound above.** `spin_up`'s default shrinks to
+`minimal_layer_count_for(config, ALL_AXES)`, which is 1 for any model whose
+blocks are all alike. At 1 layer the saving does not transfer (the kernel count
+scales with depth) *and* the whole MoE weight is 1.21 GB, so reading every
+expert costs 757 us and hides inside the framework term — the same model then
+measures a 44% share that really is ordinary overhead, which makes the
+plausibility bound look like a false positive. Both errors have to be present
+to write a bad number, and both were.
+
+There is a second, independent check on the `none` rows: they sit above the
+capture ceiling where vLLM dispatches no graph either way, so they must measure
+**zero**. Qwen3-30B-A3B's come in at -62 and -32 us. That is what says the
+toggle reaches the dispatch at all, which no plausibility bound can tell you —
+a version patching only the V2 runner measured -1 us and passed everything by
+measuring nothing.
 
 #### Measuring the machine: `profiler hardware`
 
