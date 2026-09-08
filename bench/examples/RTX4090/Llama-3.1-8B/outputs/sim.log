@@ -10,8 +10,8 @@
                               Input configuration                               
 
   • Cluster config             : bench/examples/RTX4090/Llama-3.1-8B/config.json
-  • Run ID                     : run_1788812518520436_236277
-  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1788812518520436_236277
+  • Run ID                     : run_1788893524912895_347508
+  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1788893524912895_347508
   • Dataset                    : workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
   • Max num seqs               : 256
   • Max batched tokens         : 2048
@@ -34,7 +34,6 @@
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Starting simulation...
 
-[20:21:58.631] [TraceGenerator] WARNING  No step.csv for RTX4090/meta-llama/Llama-3.1-8B/bf16 tp1: the simulator will predict eager execution, which is 2-3% slower than the compiled + cudagraph path production runs. Re-profile without --skip-step to correct it.
 [1.0s] Avg prompt throughput: 8780.0 tokens/s, Avg generation throughput: 38.0 tokens/s
         ├─Running Instance[0]: 9 reqs, Waiting: 2 reqs, Total # 1 NPUs, Each NPU Memory Usage 16464.51 MB (66.994 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 9069)
         └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used 
@@ -592,7 +591,7 @@ All Request Has Been Exited
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Simulation results...
 
-Total simulation time: 0h 0m 15.531s
+Total simulation time: 0h 0m 16.198s
 ────────────────────────────── Throughput Results ──────────────────────────────
 Total requests:                                                     300
 Total clocks (ns):                                                  183708435238
