@@ -794,6 +794,45 @@ silence would hide a known 2-3% bias. `_step_saved_ns` warns once per bundle
 instead. Silence is precisely what let this term stay invisible for four
 months.
 
+**A DP example's committed accuracy is a single draw, and the tail's error
+bar is wide.** Twelve identical-flag runs of the dp+ep example -- same weights,
+same workload, same flags -- spread as follows on the truth side alone:
+
+| | min | max | spread | sd/mean |
+|---|---|---|---|---|
+| TTFT mean | 1086.5 | 1270.7 | 16.9% | 5.8% |
+| TTFT p50 | 163.1 | 185.2 | 13.5% | 3.8% |
+| **TTFT p90** | **5332.6** | **6511.8** | **22.1%** | **7.4%** |
+| TTFT p99 | 9781.8 | 10476.6 | 7.1% | 2.5% |
+
+The cause is which member's batch pairs with which in a DP round, which
+depends on arrival timing the engine does not control. **That spread is the
+engine's, not the simulator's** -- the simulator is deterministic and returns
+the same clock every time -- so no single run is "the" truth and a one-run
+comparison cannot resolve anything below it. TPOT and latency are far tighter,
+and the run *span* is deterministic to 0.05%.
+
+**Which run is committed therefore decides the number, and the committed one
+is not representative.** Ranking the twelve by summed relative distance to
+their own median, `q30_028_real` comes 9th of 12 (distance 0.223 against the
+medoid's 0.017). Against it the simulator reads TTFT mean **-0.9%** and p90
+**+8.9%**; against the twelve-run median, **+9.8%** and **+12.0%**. TPOT is
++1.3 to +1.5% either way.
+
+The spread being the engine's does not make the gap a draw, though: an
+unbiased simulator would land near the median and any run would then read
++-8% in either direction. This one sits above 9 of the 12, so roughly +10% of
+it is bias and the rest is which run got committed.
+
+Which is also why the truth run is not chosen by agreement. The four runs that
+put the simulator inside 1% -- `rep6`, `rep4`, `q30_028_real`, `rep3` -- rank
+11th, 10th, 9th and 12th of 12 on representativeness: **selecting a truth run
+by how well the simulator matches it selects for the least representative
+run**, which is exactly how a compensating error gets written into a committed
+figure. `q30_028_real` stays because it is what was measured and recorded
+first, not because it agrees; the spread is recorded here so nobody reads its
+tail figure as resolved.
+
 ### hardware.yaml: the machine's own facts, measured
 A cluster config mixes two kinds of statement:
 
