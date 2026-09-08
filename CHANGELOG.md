@@ -21,8 +21,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
   | | TTFT mean | TTFT p50 | TPOT mean | span |
   |---|---|---|---|---|
-  | BALANCED (uniform closed form) | +8.5% | +7.2% | +6.0% | +4.8% |
-  | **CUSTOM (measured curve)** | **+3.0%** | **+2.1%** | **+1.9%** | **+0.3%** |
+  | BALANCED (uniform closed form) | +8.3% | +6.5% | +6.0% | +4.8% |
+  | **CUSTOM (measured curve)** | **+2.8%** | **+2.1%** | **+1.9%** | **+0.3%** |
 
   Nothing is fitted: the curve is linear between the batch sizes the recording
   run visited and clamped at both ends, since there is nothing below one token
