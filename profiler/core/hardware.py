@@ -45,20 +45,47 @@ from typing import Any
 
 from profiler.core import logger as log
 
-# Message sizes to benchmark. The one that matters is what a decode step
-# actually all-reduces -- the simulator attaches an ALLREDUCE to ``o_proj`` and
-# ``down_proj`` sized ``total_len x hidden x fp``, which is 1.31 MB for
-# Qwen3-32B at 128 sequences in bf16 -- so the sweep brackets that rather than
-# reporting a peak from a large-message benchmark.
+# Message sizes to benchmark, as **charged traffic per rank** -- the quantity
+# ASTRA-Sim's model multiplies by ``1/BW``. At N=2 all three collectives it
+# emits reduce to ``charged/BW + 2L``:
+#
+#   AllReduce      2(N-1) * total/N  ->  total
+#   AllGather        (N-1) * chunk   ->  chunk
+#   ReduceScatter    (N-1) * total/N ->  total/2
+#
+# so one axis serves all three, and measured they very nearly share one curve:
+# AllGather/AllReduce is 0.94-1.16 (median 1.04) and ReduceScatter/AllReduce
+# 1.00-1.14 (median 1.09) across this range. That is what makes a single
+# (bandwidth, latency) pair defensible for a simulator that emits all three.
+#
+# The range brackets what the simulator actually emits rather than reporting a
+# peak from a large-message benchmark: a TP all-reduce on ``o_proj`` /
+# ``down_proj`` is 1.31 MB for Qwen3-32B at 128 sequences in bf16, an EP
+# dispatch on a Qwen3-30B-A3B decode round is 0.54 MB, and a full 2048-token
+# prefill chunk's combine is ~8.9 MB.
 _SIZES_BYTES = (
     10_240,          # latency-bound floor
-    81_920,
+    40_960,
+    139_264,         # an EP dispatch at 32 decodes per member
     327_680,
+    557_056,         # an EP dispatch at 128 decodes per member
+    1_114_112,
     1_310_720,       # a decode step at 128 seqs x hidden 5120, bf16
+    2_228_224,
     5_242_880,
+    8_912_896,       # a 2048-token prefill chunk's EP combine
     16_777_216,
-    20_971_520,      # a full 2048-token prefill chunk at hidden 5120
+    20_971_520,
 )
+
+# Which collectives to sweep. All three, because the simulator emits all three
+# and one pair has to serve them.
+_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter")
+
+# Collectives per captured graph, and replays per timing. The graph is the
+# point -- see ``_worker``.
+_GRAPH_OPS = 20
+_GRAPH_REPLAYS = 5
 
 # ASTRA-Sim's analytical model is ``t = 2L + size/BW`` for a Ring AllReduce at
 # N=2 (``BasicTopology::compute_communication_delay``, hops=1 on
@@ -153,7 +180,32 @@ def probe_spec() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> None:
-    """One rank of the all-reduce benchmark. Spawned by ``measure_interconnect``."""
+    """One rank of the collective benchmark. Spawned by ``measure_interconnect``.
+
+    Times each collective **inside a CUDA graph**, because that is how
+    production issues them: vLLM replays a captured graph for every batch in
+    the capture range, so no per-call Python launch happens at all. The
+    difference is not small at the sizes the simulator emits.
+
+    Measured on two PCIe-linked RTX PRO 6000, an all-reduce of 10 KB:
+
+        a sync around every call   36.1 us
+        back to back, one sync     25.0 us
+        replayed from a graph      16.2 us
+
+    The three converge above ~5 MB (0.95-0.99 of each other) and diverge by
+    2.2x at the floor, so which one is measured decides the *latency*
+    parameter and barely touches the bandwidth one. Fitting the isolated
+    numbers put ``link_latency`` at 16,100 ns, and that pair then over-charged
+    an EP dispatch at a decode round by **1.46x** while being accurate to
+    0.97 on a prefill chunk -- the signature of a latency term carrying a
+    per-call cost the graph does not pay. The graphed numbers fit to
+    0.97-1.05 across every collective and size the simulator emits.
+
+    A sync-per-call measurement is kept alongside as ``us_isolated``: it is
+    what an eager engine pays, and the gap between the two is the launch
+    overhead the cudagraph term (``step.csv``) accounts for separately.
+    """
     import time
 
     import torch
@@ -162,30 +214,91 @@ def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> Non
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     dist.init_process_group("nccl", rank=rank, world_size=world)
     torch.cuda.set_device(rank)
+    dev = f"cuda:{rank}"
     results = []
     for nbytes in sizes:
-        buf = torch.empty(nbytes // 2, dtype=torch.bfloat16,
-                          device=f"cuda:{rank}")
-        buf.fill_(1.0)
-        for _ in range(_WARMUP):                    # NCCL channel setup
-            dist.all_reduce(buf)
-        torch.cuda.synchronize()
-        dist.barrier()
-        samples = []
-        for _ in range(_ITERS):
+        n = max(1, nbytes // 2)                     # bf16 elements
+        # Each collective is shaped so ASTRA-Sim charges ``nbytes`` for it:
+        # AllReduce on a buffer of that size, AllGather contributing it per
+        # rank, ReduceScatter consuming ``world`` times it.
+        ar = torch.ones(n, dtype=torch.bfloat16, device=dev)
+        ag_in = torch.ones(n, dtype=torch.bfloat16, device=dev)
+        ag_out = torch.empty(n * world, dtype=torch.bfloat16, device=dev)
+        rs_in = torch.ones(n * world, dtype=torch.bfloat16, device=dev)
+        rs_out = torch.empty(n, dtype=torch.bfloat16, device=dev)
+        ops = {
+            "all_reduce": lambda: dist.all_reduce(ar),
+            "all_gather": lambda: dist.all_gather_into_tensor(ag_out, ag_in),
+            "reduce_scatter": lambda: dist.reduce_scatter_tensor(rs_out, rs_in),
+        }
+        for name in _COLLECTIVES:
+            fn = ops[name]
+            for _ in range(_WARMUP):                # NCCL channel setup
+                fn()
             torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            dist.all_reduce(buf)
-            torch.cuda.synchronize()
-            samples.append((time.perf_counter() - t0) * 1e6)
-        if rank == 0:
-            results.append({
-                "bytes": nbytes,
-                "us": round(statistics.median(samples), 2),
-                "us_min": round(min(samples), 2),
-                "n": len(samples),
-            })
-        del buf
+            dist.barrier()
+
+            iso = []
+            for _ in range(_ITERS):
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                fn()
+                torch.cuda.synchronize()
+                iso.append((time.perf_counter() - t0) * 1e6)
+
+            graphed = None
+            try:
+                # Capture on a side stream first, as torch requires, then a
+                # graph holding _GRAPH_OPS calls so the replay's own launch
+                # cost is amortised out of the per-collective figure.
+                side = torch.cuda.Stream()
+                side.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(side):
+                    for _ in range(3):
+                        fn()
+                torch.cuda.current_stream().wait_stream(side)
+                torch.cuda.synchronize()
+                dist.barrier()
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    for _ in range(_GRAPH_OPS):
+                        fn()
+                torch.cuda.synchronize()
+                dist.barrier()
+                reps = []
+                for _ in range(3):
+                    a = torch.cuda.Event(enable_timing=True)
+                    b = torch.cuda.Event(enable_timing=True)
+                    torch.cuda.synchronize()
+                    a.record()
+                    for _ in range(_GRAPH_REPLAYS):
+                        graph.replay()
+                    b.record()
+                    torch.cuda.synchronize()
+                    reps.append(a.elapsed_time(b) * 1e3
+                                / (_GRAPH_REPLAYS * _GRAPH_OPS))
+                graphed = round(statistics.median(reps), 2)
+                del graph
+            except Exception as exc:                # noqa: BLE001
+                # A vLLM/NCCL build that cannot capture a collective leaves
+                # the isolated number, and the fit says so rather than
+                # silently using a different target.
+                if rank == 0:
+                    log.warning("Graph capture failed for %s at %d B: %s",
+                                name, nbytes, exc)
+
+            if rank == 0:
+                results.append({
+                    "collective": name,
+                    "bytes": nbytes,
+                    "us": graphed if graphed is not None
+                          else round(statistics.median(iso), 2),
+                    "us_graphed": graphed,
+                    "us_isolated": round(statistics.median(iso), 2),
+                    "us_isolated_min": round(min(iso), 2),
+                    "n": len(iso),
+                })
+        del ar, ag_in, ag_out, rs_in, rs_out
         torch.cuda.empty_cache()
     if rank == 0:
         Path(out_path).write_text(json.dumps(results))
@@ -209,12 +322,16 @@ def _fit(samples: list[dict]) -> dict[str, Any]:
     lo_lat, hi_lat, step_lat = 0, 40_000, 100          # ns
     lo_bw, hi_bw, step_bw = 1.0, 400.0, 0.01           # GB/s
 
+    usable = [s for s in samples if s.get("us")]
+    if not usable:
+        return {"error": "no usable samples"}
+    usable = sorted(usable, key=lambda s: s["bytes"])
+
     best = None
-    bw = lo_bw
     # Bandwidth first from the largest sample, where the term it governs
     # dominates, then a joint refinement -- a full 2-D grid over both at this
     # resolution would be 16M points for no gain.
-    big = samples[-1]
+    big = usable[-1]
     bw_seed = big["bytes"] / (big["us"] * 1e3)
     for bw_i in range(-200, 201):
         bw = bw_seed * (1 + bw_i * 0.001)
@@ -222,25 +339,39 @@ def _fit(samples: list[dict]) -> dict[str, Any]:
             continue
         for lat in range(lo_lat, hi_lat + 1, step_lat):
             err = sum(((2 * lat + s["bytes"] / bw) / 1e3 / s["us"] - 1) ** 2
-                      for s in samples)
+                      for s in usable)
             if best is None or err < best[0]:
                 best = (err, lat, bw)
     _, lat, bw = best
 
-    resid = [{"bytes": s["bytes"],
-              "err_pct": round(100 * ((2 * lat + s["bytes"] / bw) / 1e3 / s["us"] - 1), 1)}
-             for s in samples]
+    def _err(s):
+        return round(100 * ((2 * lat + s["bytes"] / bw) / 1e3 / s["us"] - 1), 1)
+
+    resid = [{"collective": s.get("collective", "all_reduce"),
+              "bytes": s["bytes"], "err_pct": _err(s)} for s in usable]
     worst = max(resid, key=lambda r: abs(r["err_pct"]))
+    per_coll = {}
+    for r in resid:
+        per_coll.setdefault(r["collective"], []).append(abs(r["err_pct"]))
+    target = ("graphed" if all(s.get("us_graphed") for s in usable)
+              else "isolated" if not any(s.get("us_graphed") for s in usable)
+              else "mixed (graph capture failed for some sizes)")
     out = {
-        "model": "astra-sim analytical: t = 2*latency + bytes/bandwidth "
-                 "(Ring AllReduce, N=2, FullyConnected 1 hop)",
+        "model": "astra-sim analytical: t = 2*latency + charged_bytes/bandwidth "
+                 "(Ring, N=2, FullyConnected 1 hop). charged_bytes is what the "
+                 "model multiplies by 1/BW: total for AllReduce, the per-rank "
+                 "chunk for AllGather, total/N for ReduceScatter -- all equal "
+                 "at N=2, which is why one pair can serve the three.",
         "objective": "minimise relative error over the whole sweep",
+        "timing": target,
         "bandwidth_gbps": round(bw, 2),
         "latency_ns": round(lat),
         "residual_pct_by_size": resid,
         "worst_residual": worst,
         "mean_abs_residual_pct": round(
             sum(abs(r["err_pct"]) for r in resid) / len(resid), 1),
+        "mean_abs_residual_pct_by_collective": {
+            k: round(sum(v) / len(v), 1) for k, v in sorted(per_coll.items())},
     }
     if lat in (lo_lat, hi_lat):
         out["warning"] = (f"latency landed on a search bound ({lat} ns); the "
@@ -249,7 +380,7 @@ def _fit(samples: list[dict]) -> dict[str, Any]:
 
 
 def measure_interconnect(npus: int) -> dict[str, Any] | None:
-    """Benchmark an all-reduce across ``npus`` GPUs, or explain why not.
+    """Benchmark the collectives across ``npus`` GPUs, or explain why not.
 
     Returns None with the reason logged when fewer than two GPUs are visible:
     a link has two ends, so one card cannot measure it, and inventing a number
@@ -280,8 +411,11 @@ def measure_interconnect(npus: int) -> dict[str, Any] | None:
 
     return {
         "npus": world,
-        "collective": "all_reduce",
+        "collectives": list(_COLLECTIVES),
         "dtype": "bfloat16",
+        "timing": "each collective replayed from a CUDA graph, which is how "
+                  "production issues it; us_isolated is the same call with a "
+                  "sync around it, i.e. what an eager engine pays.",
         "note": "npus is what was measured; a cluster config asking for more "
                 "is extrapolating, and an 8-GPU NVLink domain is not this "
                 "physics.",
@@ -313,12 +447,13 @@ def _defaults(spec: dict, inter: dict | None) -> dict[str, Any]:
     """
     d: dict[str, Any] = {}
     if inter:
+        colls = "+".join(c.replace("_", "") for c in _COLLECTIVES)
+        frm = (f"{colls} across {inter['npus']} npus, "
+               f"{inter['fit'].get('timing', 'graphed')}")
         d["link_bw"] = {"value": inter["fit"]["bandwidth_gbps"],
-                        "source": "measured",
-                        "from": f"all_reduce across {inter['npus']} npus"}
+                        "source": "measured", "from": frm}
         d["link_latency"] = {"value": inter["fit"]["latency_ns"],
-                             "source": "measured",
-                             "from": f"all_reduce across {inter['npus']} npus"}
+                             "source": "measured", "from": frm}
     d["npu_mem"] = {
         "mem_size": {"value": round(spec["memory_total_gib"]),
                      "source": "spec", "unit": "GiB"},
@@ -387,11 +522,16 @@ def run_hardware(hardware: str, out_root: Path, npus: int = 2) -> tuple[Path, bo
         inter = measure_interconnect(npus)
     if inter:
         fit = inter["fit"]
-        log.info("all_reduce fit: link_bw=%.2f GB/s  link_latency=%d ns  "
-                 "(worst residual %+.1f%% at %d bytes)",
-                 fit["bandwidth_gbps"], fit["latency_ns"],
+        log.info("collective fit (%s): link_bw=%.2f GB/s  link_latency=%d ns  "
+                 "mean |residual| %.1f%%  (worst %+.1f%% on %s at %d bytes)",
+                 fit.get("timing", "?"), fit["bandwidth_gbps"],
+                 fit["latency_ns"], fit["mean_abs_residual_pct"],
                  fit["worst_residual"]["err_pct"],
+                 fit["worst_residual"].get("collective", "?"),
                  fit["worst_residual"]["bytes"])
+        for coll, err in fit.get(
+                "mean_abs_residual_pct_by_collective", {}).items():
+            log.info("  %-15s mean |residual| %.1f%%", coll, err)
     else:
         log.error(
             "The interconnect was NOT measured: fewer than two GPUs are "
