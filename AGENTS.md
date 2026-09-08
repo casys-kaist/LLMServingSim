@@ -1831,8 +1831,8 @@ fixed:
 
 | | TTFT mean | TTFT p50 | TPOT mean | span |
 |---|---|---|---|---|
-| BALANCED (uniform closed form) | +8.5% | +7.2% | +6.0% | +4.8% |
-| **CUSTOM (measured curve)** | **+3.0%** | **+2.1%** | **+1.9%** | **+0.3%** |
+| BALANCED (uniform closed form) | +8.3% | +6.5% | +6.0% | +4.8% |
+| **CUSTOM (measured curve)** | **+2.8%** | **+2.1%** | **+1.9%** | **+0.3%** |
 
 Four things to know.
 
