@@ -331,7 +331,6 @@ perf/<hw>/
       moe.csv                            ep, tokens, activated_experts, time_us  (MoE only)
       skew.csv                           raw heterogeneous-decode shots        (skew enabled)
       skew_fit.csv                       fitted per-bucket alpha table         (skew enabled)
-      step.csv                           the cudagraph term, per capture size  (step enabled)
 ```
 
 **A refresh rewrites only what it measured.** `meta.yaml` describes more than
@@ -592,268 +591,86 @@ which tile padding and SM imbalance do not bound). Rows with
   `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
   other category and refreshes just `skew.csv` + `skew_fit.csv`.
 
-### The step sweep: the cudagraph term the per-layer profile cannot contain
-Every latency in a bundle is measured with `enforce_eager=True`
-(`profiler/core/config.py`), because `layerwise_profile` builds its tree from
-per-module CUDA events and `torch.compile` fuses those boundaries away. There
-is no version of the profiler that measures a compiled model per layer.
-Production runs the compiled + cudagraph path. So the sum of profiled layers
-predicts **eager** execution, and the gap to production is a term nothing in
-`dense.csv` or `attention.csv` can express.
+### There is no cudagraph correction, and why the one there was is gone
+For four months the simulator subtracted a per-step "cudagraph saving" it read
+from a `step.csv` the profiler swept, on the premise that **the sum of profiled
+layers predicts eager execution** and production runs the compiled + cudagraph
+path. Both halves of that premise are false, and the correction was
+compensating a second error rather than modelling a real term.
 
-It is not small and it is not new. Measured on RTXPRO6000/Llama-3.1-8B, the
-simulator matches an *eager* truth to **+0.5%** and sits **+5.3%** off the
-cudagraph truth the bench example actually runs. The flag has been there since
-`3012eb18` (2026-04-26), the first release of the vLLM-based profiler — i.e. as
-old as the current cost model.
+**What the profiled sum actually is.** `layerwise_profile` builds its tree from
+per-module CUDA events and `_cumulative_cuda_time` sums **leaf kernel
+durations**, so a bundle's per-layer latencies are kernel time -- not the wall
+time of an eager engine. Summed for a shape and compared against that shape's
+measured kernel total on the live engine, the simulator's trace lands within
+half a percent (Llama-3.1-8B at one sequence: trace 11,360 us against 11,311
+measured).
 
-**Why it only surfaced with the 0.28 upgrade.** There were two errors of
-opposite sign, and vLLM removed one of them. Both versions measured today on
-the same GPU with the same real weights:
+**And a production step is kernel time too.** A saturated engine replaying a
+captured graph is essentially back-to-back kernels, and the residual does not
+survive to the run level. Measured at matched concurrency against real vLLM
+runs -- the truth's own `running / gen_throughput` on pure-decode ticks against
+the same quantity from the simulator's log:
 
-| | sim | eager truth | cudagraph truth | sim vs eager | sim vs production |
-|---|---|---|---|---|---|
-| 0.19 | 6836.9 | 7487.3 | 7103.5 | **-8.7%** | **-3.8%** |
-| 0.28 | 6853.9 | 6819.9 | 6522.1 | **+0.5%** | **+5.1%** |
+| model | sim / truth decode step |
+|---|---|
+| Llama-3.1-8B, TP=1 | **0.993** |
+| Qwen3-32B, TP=2 | **1.000** |
+| Qwen3-30B-A3B, DP2+EP2 | 0.944 |
 
-The simulator sums kernel time and has no framework/dispatch term; under 0.19
-that was worth -8.7%, and the cudagraph blindness (+5.4%) cancelled most of it.
-vLLM 0.28 cut its own non-kernel time by 8.9% (the eager truth moved 7487 ->
-6820 while the *profiled kernel latencies did not move at all* — Llama dense
-p50 1.035, i.e. slightly slower), so the first error vanished and the second
-became visible. **The upgrade did not introduce the error; it removed the
-coincidence.** Same house pattern as the MoE compensating errors and the 3x
-skew.
+That is with **no** step correction and the measured link below. The two dense
+models are exact. A microbenchmark does show a residual of 2-5% between a
+pipelined graph replay and the kernel sum, but it is `sample_tokens` and batch
+assembly per forward, which a real engine overlaps -- so it is not a term the
+simulator is missing.
 
-**Which branch a batch takes is vLLM's rule, not ours.**
-`v1/cudagraph_dispatcher.py:272`, under the default
-`cudagraph_mode=FULL_AND_PIECEWISE` (documented at
-`config/compilation.py:630`):
+**What `step.csv` measured instead.** `saved_us` was
+`isolated_no_graph_wall - isolated_graph_wall`, both timed with a
+`cuda.synchronize()` around every forward. That charges a per-call launch and
+drain neither production nor the profiled sum pays: on Llama-3.1-8B at one
+sequence, the same step reads 13,031 us isolated, 11,685 pipelined and 11,311
+as kernel time. Subtracting the difference between two isolated numbers from a
+total that is already kernel time takes the simulator *below* production.
 
-```
-num_tokens > max_cudagraph_capture_size   -> NONE       (no graph at all)
-else, uniform decode                       -> FULL       (one graph per step)
-else                                        -> PIECEWISE  (graphs per piece)
-```
+**Why it looked like it worked.** It was cancelling an over-charged
+interconnect. `hardware.yaml`'s `link_latency` was fitted on an all-reduce
+sweep timed the same isolated way, which put it at 16,100 ns where the graphed
+measurement says **6,600** -- so every collective was charged 1.24-1.51x at the
+sizes the simulator emits. Removing both:
 
-and `uniform_decode` is `gpu_model_runner.py:3990`:
-`max_num_scheduled_tokens == 1 + num_spec` and
-`num_tokens == max_num_scheduled_tokens * num_reqs` — every request submits the
-same query length and none is a prefill chunk. The ceiling is the *same*
-quantity that already decides DP round padding, so
-`_cudagraph_capture_ceiling` lives in `serving/core/utils.py` and both readers
-import it rather than restating it.
-
-The boundary shows in the measurement. `prefill 256` (at the ceiling) saves
-456 us; `prefill 264`, eight tokens over, saves **14 us** — statistically zero,
-which is also the control proving the measurement hook does what it claims.
-
-**What is measured is an absolute saving, not a ratio.** Fitted against shapes
-spanning 2.4x in step time:
-
-| model | RMS residual on the saving | as a share of a step |
+| | step.csv + old link | measured link, no step.csv |
 |---|---|---|
-| constant ratio (r = 0.9719) | 227 us | 0.99% |
-| **constant saving (s = 589 us)** | **96 us** | **0.42%** |
+| Llama-3.1-8B (no collectives) | TPOT +0.0%, span -1.1% | TPOT +1.6%, span +0.7% |
+| Qwen3-32B (TP=2) | TPOT +0.3%, span +0.6% | TPOT **-1.2%**, span **-1.1%** |
+| Qwen3-30B-A3B (DP2+EP2) | TPOT -2.0%, span -4.2% | TPOT **+0.5%**, span **-2.3%** |
 
-The ratio model is wrong in a structured way — it under-predicts on short steps
-and over-predicts on long ones — because the saving is
-`kernel_count x launch_cost` and the kernel count belongs to the **model**, not
-the batch. Two models confirm it independently:
+The two collective-carrying models are better without either correction, and
+Llama -- which has no collectives to over-charge -- is the one that wanted the
+subtraction. Its remaining +1.6% is **not** a uniform per-step term: its decode
+step is already 0.993, so the residual is in its prefill steps, and a flat
+subtraction is the wrong shape for it.
 
-| model | layers | entries/step | saving | us/launch |
-|---|---|---|---|---|
-| Llama-3.1-8B | 32 | 324 | 587 us | 1.81 |
-| Qwen3-32B | 64 | 644 | 1068 us | 1.66 |
+**Do not rebuild it.** Three specific things to know if the idea comes back:
 
-**And the simulator has to subtract it, not scale by it.** `_load_step_tables`
-used to turn each row into `step_us / (step_us + saved_us)` and
-`_emit_layer` multiplied every layer by that. On a dense model the two
-readings agree, because the simulator's predicted step lands within a percent
-of the profiler's `step_us`. On an MoE model they do not: the profiler boots at
-`load_format: dummy`, a random router degenerates to picking the same `top_k`
-experts for every token, and `step_us` is then several times smaller than the
-step production runs — so a ratio built from it, applied to the simulator's own
-larger step, inflates the correction. `saved_us` is launch overhead and carries
-no weight-value dependence at all.
+- **The premise has to be re-derived, not assumed.** "Profiled sum = eager
+  wall" was written down once and never checked against a measured kernel
+  total. It is checkable in one rpc.
+- **Isolated timing is not production timing**, for a collective or a step.
+  The gap is 1.4-2.2x at the small end and vanishes above ~5 MB, so a fit that
+  spans both regimes will absorb it into whichever parameter is
+  size-independent -- the latency one.
+- **An end-to-end agreement is not a measurement.** Sweeping `link_latency`
+  against the Qwen3-32B example puts its error minimum at 14,000-16,100 ns and
+  its TTFT mean at exactly 0.0% at 16,100, which is how the fitted value came
+  to look confirmed. The NCCL measurement says 6,600. Two different wrong
+  methods agreed, and that is why nothing caught it for four months.
 
-`_apply_step_correction` now runs as a post-pass over the finished trace, where
-the denominator is the trace's *own* predicted total:
-`scale = 1 - saved / total`, which is the same subtraction distributed in
-proportion to each layer's time and keeps every row positive. It is divided by
-`pp_size`, since the saving is `kernel_count x launch_cost` measured on a whole
-model and a pipeline stage launches only its own slice. `_STEP_SCALE_FLOOR`
-clamps at 0.25 with a one-shot warning: a saving that exceeds a quarter of the
-predicted work means the bundle's `step.csv` describes a different model.
+There is also a practical reason the sweep was never going to hold: it needs a
+full-depth boot with graph capture, which DeepSeek-V3.2 (654 GB of experts at
+fp8) and GLM-5 cannot do on one card at all, and sharding to fit does not work
+-- it removes GPU work while leaving the host cost alone, so the same shapes
+read a 4.5% saving share at ep=1, 32% at ep=2 and 59% at ep=8.
 
-Sub-batch interleaving puts two batches in one trace, so the correction is
-applied per `misc` tag — each is its own forward.
-
-`1068/587 = 1.82` against a layer ratio of 2.0, and 1.66-1.81 us per launch is
-what a CUDA launch costs. **That is why it cannot be a constant** — a model with
-twice the layers saves twice as much.
-
-**The grid is vLLM's capture-size list, read off the engine**
-(`[1, 2, 4, 8, 16, 24, 32, 40, ..., 248, 256]`), not a sweep of our choosing:
-vLLM pads a batch up to the next captured size and replays *that* graph, so a
-measurement taken anywhere else describes no batch the engine runs. Padding is
-partial in practice — an off-grid decode came within +0.1 to +1.3% of its
-bucket, because input prep, sampling and output processing still scale with the
-real batch — so the round-up governs the correction while the base cost stays
-on the profiled curves at the real size.
-
-**The saving is TP-invariant, so it is measured once at TP=1.** Each rank runs
-the same *number* of kernels whatever the TP degree; only shapes shard. Checked
-on Qwen3-32B by measuring both (one GPU each, shapes sharded via
-`hf_overrides`): `step_us` drops to 0.50-0.56x as expected while `saved_us`
-holds at **0.963x** (FULL) and **1.077x** (PIECEWISE, over the 45 of 63 cases
-where both savings clear 3x their own sem). Same category as `tp_stable`.
-
-**How it is measured: paired, inside one boot.** vLLM lets a single forward be
-run without graph replay in an otherwise normal engine, so the two modes can be
-alternated rather than compared across boots.
-`profiler/core/hooks/cudagraph_hook.py` patches that in;
-`Extension.step_time_paired` alternates. It matters: booting twice puts the two
-modes in different engines and boot-to-boot drift came out at **1.4 percentage
-points** against an effect of 2-5%, while the paired standard error is
-**0.1-0.2%**. The same quantity measured twice across boots disagreed by more
-than it is worth.
-
-**Both runners have to be patched, and they do not share a chokepoint.** vLLM
-0.28 reaches the cudagraph decision by different objects depending on the
-runner:
-
-| runner | route | force-eager argument |
-|---|---|---|
-| `v1.worker.gpu.model_runner` (V2) | `dispatch_cg_and_sync_dp` -> `CudaGraphManager.dispatch` | `need_eager=True` |
-| `v1.worker.gpu_model_runner` (V1) | `CudagraphDispatcher.dispatch` | `valid_modes={NONE}` |
-
-and which one a model gets is `VllmConfig._is_default_v2_model_runner_model`:
-`is_default_v2_architecture or not model_config.is_moe`. So **every MoE and
-hybrid model takes V1**, where a V2-only patch is completely inert -- the V1
-runner does not call `dispatch_cg_and_sync_dp` even once. A first version
-patched only V2 and measured Qwen3-30B-A3B's saving at **-1 us** against
-Llama's 587, which is indistinguishable from "cudagraphs buy nothing on this
-model". Both dense models happened to be V2, so nothing looked wrong.
-
-`_Toggle.consulted` counts how often a patched dispatch actually ran, and
-`step_time_paired` **raises** when it is zero: two columns of the same
-execution give a saving of zero that reads exactly like a real one, and a
-version that reaches the decision by a third route must fail loudly rather than
-write zeros. This is the same class of trap as the sampler shim -- work that
-never enters the tree leaves nothing for coverage to report.
-
-**On by default, skippable for two real reasons.** The forwards are cheap
-(~16 ms outside `layerwise_profile` against ~372 ms inside), but the pass needs
-a second engine boot with graphs *on* — minutes on a large model, and vLLM's
-graph capture allocates memory a checkpoint that only just fits under
-`enforce_eager` may not have. `--skip-step` exists for that and for a
-per-category `slice` refresh. A failed boot logs and keeps the bundle rather
-than losing it.
-
-**It does not work on an MoE model, and the sweep refuses rather than
-guessing.** Forcing `CUDAGraphMode.NONE` through the V1 runner does not merely
-skip graph replay on an MoE block — the NONE column is a *different
-computation*, and a large one. Measured on Qwen3-30B-A3B at full depth, one
-token: 7,777 us with replay against 33,412 us with NONE, a **76.7%** "saving"
-where the dense models show 1-4%. Read as launch overhead that is 66 us per
-launch against a real 1.7. `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts on it;
-an MoE bundle carries no `step.csv` and the simulator warns.
-
-**What the extra 4.3x is has not been identified**, and this section used to
-say it was the NONE path computing **every** expert, on the strength of the
-arithmetic: all 128 experts' weights are 57.98 GB, which at this card's
-1597.6 GB/s is 36,293 us, and 33,412 is 92% of that, while the correct top-8
-path is 3.62 GB and 2,268 us. Two measurements refute it. The two columns
-launch the **same number of kernels** — 283 against 283 — which a different
-set of experts could not do. And the cost does not scale with the expert
-count: `E = 8` reads 25,858 us against `E = 32`'s 19,878, where reading every
-expert would make the larger model 4x the smaller, not 0.77x. The 92%
-agreement is a coincidence: an arithmetic match is not an identification
-until the axis it predicts has been varied.
-
-None of that changes the guard, which is why it stays: the bound asks only
-whether the two columns are the same computation, and 76.7% says they are not
-whatever the reason. **A lead, not a claim:** on this same model a routing
-histogram change swaps grouped-GEMM kernel variants (see the gate-stats
-section), so the NONE branch may be selecting different MoE kernels rather
-than doing more work. That has not been measured.
-
-**That bound is only meaningful at full depth, and a depth bug once disarmed
-it.** `spin_up`'s default resolves `minimal_layer_count_for(config, ALL_AXES)`,
-which is **1** for any model whose blocks are all alike — Llama, Qwen3,
-Qwen3-30B-A3B — so the step pass booted one layer unless the caller happened to
-pass `--num-hidden-layers`. Two things went wrong together:
-
-- the saving it measures is `kernel_count x launch_cost` and the kernel count
-  scales with depth, so a 1-layer number does not transfer (it reads ~87% of
-  its own step against ~2% at full depth);
-- and the same model measures a 44% share at 1 layer, which at that depth
-  *is* ordinary overhead, so the 20% bound reads as a false positive and looks
-  worth removing.
-
-It was removed on that reading, an invalid `step.csv` was written, and the
-error only surfaced when the depth was fixed and the share jumped to 76.7%.
-`_full_depth_args` pins the step pass to the checkpoint's own
-`num_hidden_layers`, overriding an explicit `--num-hidden-layers` because that
-flag exists to make the *other* categories fit and they are unaffected by
-depth. Llama-3.1-8B and Qwen3-32B were measured at full depth already — their
-`step_us` at one token, 12,817 and 48,538 us, sits against 1-layer floors of
-931 and 1,584 — so only Qwen3-30B-A3B was affected.
-
-The sweep's own control is separate and additional:
-`_MAX_NONE_BRANCH_SAVED_SHARE = 0.05` on the `none` rows, which sit above the
-capture ceiling where vLLM dispatches no graph either way and so must measure
-zero (Qwen3-30B-A3B's come in at -62 and -32 us). That is what says the toggle
-reaches the dispatch at all: a version patching only the V2 runner measured
--1 us on this model and passed every plausibility test by measuring nothing.
-The share bound cannot catch that and the control cannot catch the expert path.
-
-**The fallback is the opposite of skew's.** Skew's is `alpha = 0` — no data, no
-correction — and that is right, because a guessed alpha is worse than none.
-Here the direction and rough size of the missing term are established, so
-silence would hide a known 2-3% bias. `_step_saved_ns` warns once per bundle
-instead. Silence is precisely what let this term stay invisible for four
-months.
-
-**A DP example's committed accuracy is a single draw, and the tail's error
-bar is wide.** Twelve identical-flag runs of the dp+ep example -- same weights,
-same workload, same flags -- spread as follows on the truth side alone:
-
-| | min | max | spread | sd/mean |
-|---|---|---|---|---|
-| TTFT mean | 1086.5 | 1270.7 | 16.9% | 5.8% |
-| TTFT p50 | 163.1 | 185.2 | 13.5% | 3.8% |
-| **TTFT p90** | **5332.6** | **6511.8** | **22.1%** | **7.4%** |
-| TTFT p99 | 9781.8 | 10476.6 | 7.1% | 2.5% |
-
-The cause is which member's batch pairs with which in a DP round, which
-depends on arrival timing the engine does not control. **That spread is the
-engine's, not the simulator's** -- the simulator is deterministic and returns
-the same clock every time -- so no single run is "the" truth and a one-run
-comparison cannot resolve anything below it. TPOT and latency are far tighter,
-and the run *span* is deterministic to 0.05%.
-
-**Which run is committed therefore decides the number, and the committed one
-is not representative.** Ranking the twelve by summed relative distance to
-their own median, `q30_028_real` comes 9th of 12 (distance 0.223 against the
-medoid's 0.017). Against it the simulator reads TTFT mean **-0.9%** and p90
-**+8.9%**; against the twelve-run median, **+9.8%** and **+12.0%**. TPOT is
-+1.3 to +1.5% either way.
-
-The spread being the engine's does not make the gap a draw, though: an
-unbiased simulator would land near the median and any run would then read
-+-8% in either direction. This one sits above 9 of the 12, so roughly +10% of
-it is bias and the rest is which run got committed.
-
-Which is also why the truth run is not chosen by agreement. The four runs that
-put the simulator inside 1% -- `rep6`, `rep4`, `q30_028_real`, `rep3` -- rank
-11th, 10th, 9th and 12th of 12 on representativeness: **selecting a truth run
-by how well the simulator matches it selects for the least representative
-run**, which is exactly how a compensating error gets written into a committed
-figure. `q30_028_real` stays because it is what was measured and recorded
-first, not because it agrees; the spread is recorded here so nobody reads its
-tail figure as resolved.
 
 ### hardware.yaml: the machine's own facts, measured
 A cluster config mixes two kinds of statement:
@@ -867,13 +684,18 @@ The first has to stay the user's — describing hardware nobody owns is the poin
 of the simulator. The second, for hardware that *is* owned and is being
 validated against, should be measured, and was not: the committed examples
 carried `link_latency: 20000`, fitted against a vLLM 0.19 truth. Measured with
-NCCL it is **16,100 ns**, and the fitted value over-charged a decode-sized
-all-reduce by **10.4%**.
+NCCL it is **6,600 ns**.
 
 Worse than the error was its mobility. A value nobody had measured was free to
 absorb whatever else was mis-modelled — lowering it to 12,000 closed Qwen3-32B's
-error from 7.8% to 1.2% *without* any step correction, which looks like a fix
-and is a second compensating pair. Only a measurement separates the two terms.
+error from 7.8% to 1.2%, which looks like a fix and is a compensating pair.
+Only a measurement separates the two terms, and **an end-to-end agreement is
+not one**: sweeping `link_latency` against the Qwen3-32B example puts its error
+minimum at 14,000-16,100 ns and its TTFT mean at exactly 0.0% at 16,100. The
+first NCCL measurement landed at 16,100 too, which read as confirmation — but
+it was timed with a `cuda.synchronize()` around every call, so it had absorbed
+the same per-call cost the end-to-end fit was absorbing. Two different wrong
+methods agreeing is the hardest kind of error to see.
 
 `python -m profiler hardware --hardware <hw> --npus 2` writes
 `profiler/perf/<hw>/hardware.yaml`: one file per hardware folder, shared by
@@ -883,19 +705,57 @@ every model bundle under it. Three sections:
   PCIe generation and width, driver, power limit, and `memory_bw_gbps` derived
   from the reported clock and bus width rather than hardcoded (12,481 MHz x
   512 bit / 8 x 2 = 1597.6 GB/s, against the 1597 the configs carried).
-- **`measured`** — the NCCL all-reduce sweep, seven sizes x 100 iterations, with
-  the raw samples kept alongside the fit.
+- **`measured`** — the NCCL sweep: **all three collectives** the simulator
+  emits (AllReduce, AllGather, ReduceScatter), twelve sizes each, timed **two
+  ways** with the raw samples kept alongside the fit.
 - **`defaults`** — what a cluster config inherits, each entry carrying its own
   `source`: `measured`, `spec`, or `assumed`. A run logs every inherited value
   with that provenance, which is the whole point: `link_latency: 20000` survived
   four months because nothing in a run's output said whether it had been
   measured.
 
-**The fit minimises relative error over the whole sweep.** ASTRA-Sim's
-analytical model is `t = 2L + size/BW` for a Ring AllReduce at N=2
-(`BasicTopology::compute_communication_delay`, hops=1 on FullyConnected), and
-two parameters cannot follow NCCL's real curve — it switches algorithm and
-channel count with message size. Two alternatives were measured and rejected:
+**One pair serves all three collectives, and that is measured rather than
+assumed.** ASTRA-Sim charges, at N=2 on a FullyConnected 1-hop topology,
+`2(N-1) * total/N` for AllReduce, `(N-1) * chunk` for AllGather and
+`(N-1) * total/N` for ReduceScatter — all of which reduce to
+`charged/BW + 2L`, so one axis (the charged traffic) serves the three. Swept on
+that axis they very nearly share one curve: AllGather/AllReduce is 0.94-1.16
+(median 1.04) and ReduceScatter/AllReduce 1.00-1.14 (median 1.09) from 10 KB to
+21 MB. That is what makes a single pair defensible for a simulator that emits
+all three, and it is why the sweep measures all three rather than extrapolating
+from one.
+
+**Each collective is timed inside a CUDA graph, because that is how production
+issues it.** vLLM replays a captured graph for every batch in the capture
+range, so no per-call Python launch happens. The same all-reduce of 10 KB:
+
+| timing | us |
+|---|---|
+| a `cuda.synchronize()` around every call | 36.1 |
+| back to back, one sync at the end | 25.0 |
+| **replayed from a graph** | **16.2** |
+
+The three converge above ~5 MB (0.95-0.99 of each other) and diverge by 2.2x at
+the floor, so which one is measured decides the **latency** parameter and
+barely touches the bandwidth one. Fitting the isolated numbers put
+`link_latency` at 16,100 ns; that pair then charged 1.24-1.51x of real NCCL at
+the sizes the simulator emits while being accurate to 0.97 on a prefill chunk
+— the signature of a latency term carrying a cost the graph does not pay. The
+graphed fit lands at **15.92 GB/s / 6,600 ns** and prices every collective the
+simulator emits to within 5%:
+
+| | old pair | measured pair |
+|---|---|---|
+| EP dispatch, decode (557 KB) | 1.46 | **1.04** |
+| EP combine, decode (524 KB) | 1.39 | **0.99** |
+| TP all-reduce, Qwen3-32B decode (1.31 MB) | 1.24 | **1.05** |
+| EP dispatch, prefill chunk (8.9 MB) | 0.97 | **0.97** |
+
+Two independent runs of the sweep give 15.92 / 6,600 and 15.90 / 6,600, with
+the 36 graphed samples reproducing at a median ratio of 1.0004.
+
+**The objective is still relative error over the whole sweep.** Two
+alternatives were measured and rejected:
 
 | objective | mean \|err\| | max \|err\| |
 |---|---|---|
@@ -906,10 +766,11 @@ channel count with message size. Two alternatives were measured and rejected:
 Anchoring was worse and wrong in kind: the size it anchored on was a *model's*
 (1.31 MB is Qwen3-32B at 128 sequences, hidden 5120), and a hardware file must
 not privilege one model's shape. Plain least squares is dominated by the
-largest sample — 20 MB against 10 KB is a 2000x lever on the squared residual.
-The residual at every size is recorded rather than smoothed away; the worst is
-+7.1% at 327 KB, where NCCL changes algorithm and the model's shape cannot
-follow.
+largest sample — 21 MB against 10 KB is a 2000x lever on the squared residual.
+The residual at every size is recorded rather than smoothed away, per
+collective as well as overall (AllGather 3.8%, ReduceScatter 4.8%, AllReduce
+6.0%), because a reader deciding whether to trust the number for their message
+size needs to see it.
 
 **Three inheritance rules** (`serving/core/hardware_defaults.py`, applied at
 both config load sites):
@@ -1882,10 +1743,10 @@ question.
 **`moe.csv` is not affected.** It is profiled under `enforce_eager=True`,
 where the same forcing reads 1.05 and no kernel swap happens. And the
 end-to-end +1.9% TPOT with MoE at ~72% of a step bounds any `moe.csv` error to
-about ±2.4%. What this does add is another reason the cudagraph `step.csv`
-term is unmeasured on MoE models: the compiled path's MoE cost depends on the
-routing histogram through kernel selection, which an eager per-layer profile
-cannot express by construction.
+about ±2.4%. What this does add is a reason to be wary of *any* attempt to
+model the compiled path's MoE cost from an eager per-layer profile: it depends
+on the routing histogram through kernel selection, which such a profile cannot
+express by construction.
 
 ### The EP all-to-all is emitted as AllGather + ReduceScatter
 An MoE dispatch/combine **is** an all-to-all, but it has several
@@ -2313,6 +2174,23 @@ Two more rules for the same reason:
   span of the simulator's own CSV, deterministic to 0.05% on the simulator and
   0.05% on the engine, against a TTFT p90 whose engine-side spread is 22%
   across twelve identical runs.
+- **A DP example's committed accuracy is a single draw, and the tail's error
+  bar is wide.** Twelve identical-flag runs of the dp+ep example -- same
+  weights, same workload, same flags -- spread on the truth side alone:
+
+  | | min | max | spread | sd/mean |
+  |---|---|---|---|---|
+  | TTFT mean | 1086.5 | 1270.7 | 16.9% | 5.8% |
+  | TTFT p50 | 163.1 | 185.2 | 13.5% | 3.8% |
+  | **TTFT p90** | **5332.6** | **6511.8** | **22.1%** | **7.4%** |
+  | TTFT p99 | 9781.8 | 10476.6 | 7.1% | 2.5% |
+
+  The cause is which member's batch pairs with which in a DP round, which
+  depends on arrival timing the engine does not control. That spread is the
+  **engine's**, not the simulator's -- the simulator is deterministic and
+  returns the same clock every time -- so no single run is "the" truth and a
+  one-run comparison cannot resolve anything below it. TPOT and latency are
+  far tighter, and the run *span* is deterministic to 0.05%.
 - **Compare against a *representative* truth run, and pick it by
   representativeness rather than agreement.** `bench/results/` holds twelve
   identical-flag DP+EP runs; ranking them by summed relative distance to their

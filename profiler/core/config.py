@@ -875,7 +875,6 @@ class ProfileArgs:
     measurement_iterations: int = 3
     """N timed forwards per shot, averaged."""
 
-    skip_step: bool = False
     """If True, skip the step sweep (step.csv will not be written and the
     simulator applies no cudagraph correction -- it then predicts eager
     execution, which is 2-5% slower than production on a dense model).

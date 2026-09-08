@@ -31,10 +31,6 @@ from __future__ import annotations
 from typing import Any
 
 from profiler.core.hooks.batch import Shot, assemble_scheduler_output
-from profiler.core.hooks.cudagraph_hook import (
-    capture_sizes,
-    graph_dispatch_patched,
-)
 from profiler.core.hooks.moe_hook import (
     ExpertRoute,
     force_moe_routing,
@@ -139,95 +135,6 @@ class Extension:
 
         samples = extract_samples(summary, slice_, iterations=iterations)
         return [s.as_dict() for s in samples]
-
-    def capture_sizes(self) -> list[int]:
-        """The token counts this engine captured a graph for, ascending.
-
-        The step sweep enumerates exactly these, because vLLM pads a batch up
-        to the next one and replays *that* graph -- a measurement taken
-        anywhere else describes no batch the engine runs.
-        """
-        return capture_sizes(self.model_runner)
-
-    def step_time_paired(
-        self,
-        shot_dict: dict[str, Any],
-        iterations: int = 60,
-        warmups: int = 5,
-    ) -> dict[str, list[float]]:
-        """Time one batch with and without graph replay, alternating.
-
-        Returns ``{"graph": [...], "none": [...]}`` in microseconds, one entry
-        per pair, measured with CUDA events around ``execute_model`` plus
-        ``sample_tokens`` -- the whole step, with no profiler in the way.
-
-        Alternating inside one engine is the point: the two modes otherwise
-        need two boots, and boot-to-boot drift (1.4pp measured) swamps the
-        effect (2-5%). Paired, the standard error is 0.1-0.2%.
-
-        Both sides run *compiled* kernels; only graph replay differs. The
-        compile half of the term needs its own boot at
-        ``enforce_eager=True``.
-
-        Batch assembly is deliberately outside the timed region, and rebuilt
-        per forward so prior-iteration KV writes do not bleed into the next
-        measurement -- the same rule ``fire`` follows.
-        """
-        import torch
-
-        shot = Shot.hydrate(shot_dict)
-        iterations = max(1, int(iterations))
-        wrap_sampler_for_profiling(self.model_runner)
-
-        def _fresh_batch():
-            batch, _ = assemble_scheduler_output(shot, self.model_runner)
-            return batch
-
-        def _one() -> float:
-            batch = _fresh_batch()
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            torch.cuda.synchronize()
-            start.record()
-            out = self.model_runner.execute_model(batch)
-            if out is None:
-                self.model_runner.sample_tokens(None)
-            end.record()
-            torch.cuda.synchronize()
-            return start.elapsed_time(end) * 1000.0     # ms -> us
-
-        graph: list[float] = []
-        none: list[float] = []
-        with graph_dispatch_patched() as toggle:
-            toggle.consulted = 0
-            # Warm both paths: the no-graph path compiles its own kernels on
-            # first use, and charging that to the first pair would bias it.
-            for forced in (False, True):
-                toggle.force_none = forced
-                for _ in range(max(1, int(warmups))):
-                    _one()
-            for _ in range(iterations):
-                toggle.force_none = False
-                graph.append(_one())
-                toggle.force_none = True
-                none.append(_one())
-            consulted = toggle.consulted
-        if consulted == 0:
-            # Neither runner's dispatch ran, so nothing was toggled and both
-            # columns are the same execution. A saving of zero measured this
-            # way is indistinguishable from a real one -- which is how the
-            # V2-only patch read -1 us on every MoE model. Fail instead.
-            raise RuntimeError(
-                "step_time_paired: no cudagraph dispatch was intercepted, so "
-                "the two columns are the same execution and the saving is "
-                "meaningless. The runner is "
-                f"{type(self.model_runner).__module__}; the hook patches both "
-                "vllm.v1.worker.gpu.model_runner.dispatch_cg_and_sync_dp (V2) "
-                "and vllm.v1.cudagraph_dispatcher.CudagraphDispatcher.dispatch "
-                "(V1), so a vLLM version that reaches the decision by a third "
-                "route needs a third patch."
-            )
-        return {"graph": graph, "none": none, "dispatches": consulted}
 
     def coverage(
         self,
