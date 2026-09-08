@@ -180,24 +180,27 @@ If you only changed the alpha fit (`fit_alpha.py`), you can use
 ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
 without rerunning the rest.
 
-### If you touched the step sweep or `hardware.yaml`
+### If you touched `hardware.yaml`
 
-Both feed the simulator, so a change there can move every clock in
-`validate.sh` even though the files live under `profiler/`:
+It feeds the simulator, so a change there can move every clock in
+`validate.sh` even though the file lives under `profiler/`.
+`python -m profiler hardware` prints the fitted `link_bw` / `link_latency`,
+the mean residual and the worst one, plus a per-collective breakdown; the
+residual per size is kept in the file. Two things to check:
 
-- **`profiler/core/step.py`, `hooks/cudagraph_hook.py`** — the cudagraph
-  correction. Re-measure one bundle and check the branch structure survives:
-  `FULL` and `PIECEWISE` should show a saving of hundreds of microseconds and
-  `NONE` should show **statistically zero**, because above the capture ceiling
-  vLLM dispatches no graph either way and the toggle can save nothing. A `NONE`
-  row with a real saving means the hook is intercepting something it should
-  not; a `FULL` row near zero means it is intercepting nothing — check the
-  `dispatches` count, which the sweep raises on when it is zero.
-- **`profiler/core/hardware.py`** — the interconnect fit. `python -m profiler
-  hardware` prints the fitted `link_bw` / `link_latency` and the worst
-  residual; the residual per size is kept in the file. A fit whose worst
-  residual jumps is a fit that moved, and every cluster config on that hardware
-  inherits it.
+- **Every collective's mean residual should be single-digit percent.** One
+  `(bandwidth, latency)` pair has to serve AllReduce, AllGather and
+  ReduceScatter, which is defensible because at N=2 they very nearly share one
+  curve on the charged-traffic axis (AllGather/AllReduce 0.94-1.16,
+  ReduceScatter/AllReduce 1.00-1.14). If one collective's residual is far worse
+  than the others, that assumption has stopped holding on this interconnect.
+- **The samples must be the graphed ones.** Each is timed both inside a CUDA
+  graph -- how production issues it -- and with a sync around every call, and
+  the two differ by 1.4-2.2x at the small end. Fitting the isolated numbers put
+  `link_latency` at 16,100 ns where the graphed measurement says 6,600, and
+  that pair then over-charged an EP dispatch at a decode round by 1.46x. The
+  file records `fit.timing`; if it says anything but `graphed`, graph capture
+  failed for some sizes and the fit is against the wrong target.
 
 Two GPUs are needed for the second one. Without them the command writes the
 spec section, records `interconnect: null`, and exits non-zero.
