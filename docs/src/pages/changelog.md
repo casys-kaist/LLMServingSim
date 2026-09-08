@@ -9,6 +9,45 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- **`bench run --record-gate-stats` + `serving --gate-stats`: the MoE gate's
+  distinct-expert count, measured instead of assumed.** The simulator prices an
+  MoE block at the coupon-collector expectation for a *uniform* gate,
+  `E * (1 - ((E-k)/E)**n)`. A trained gate concentrates on popular experts, so
+  the real count is lower and the concentration lives in the weights where no
+  closed form can reach it. Measured on Qwen3-30B-A3B over 110,640 real gate
+  calls: **0.87x** of the uniform model through the middle of the range,
+  **0.94x** at a saturated decode, exactly **1.000** at one token where both
+  readings are just `k`. `--record-gate-stats` turns on the
+  `VLLM_MOE_ACTIVATED_LOG` patch and reduces its per-call log to one curve in
+  `gate_stats.json`; `--expert-routing-policy CUSTOM --gate-stats <path>` reads
+  it back. Against a real DP=1 vLLM run, holding everything else fixed:
+
+  | | TTFT mean | TTFT p50 | TPOT mean | span |
+  |---|---|---|---|---|
+  | BALANCED (uniform closed form) | +8.5% | +7.2% | +6.0% | +4.8% |
+  | **CUSTOM (measured curve)** | **+3.0%** | **+2.1%** | **+1.9%** | **+0.3%** |
+
+  Nothing is fitted: the curve is linear between the batch sizes the recording
+  run visited and clamped at both ends, since there is nothing below one token
+  and the count is bounded by `E` above. `num_experts` and
+  `num_experts_per_tok` are recorded and checked on load -- a curve from
+  another checkpoint is refused rather than rescaled -- and anything missing or
+  mismatched falls back to the closed form with one warning, because a guessed
+  concentration is worse than a closed form that at least knows the right `E`.
+  Recording needs `--enforce-eager` (the patch's `.unique()` is a
+  data-dependent shape and cannot be captured into a cudagraph), which costs
+  nothing in fidelity: the gate's top-k output is a function of the weights and
+  the input, not of how the forward runs. vLLM's dummy batches repeat one token
+  id and route as one token -- `distinct = 8` at 128 tokens where a real batch
+  measures 120.6 -- so they are dropped, or they would drag the curve down at
+  exactly the cudagraph capture sizes. **Forcing the *truth* to be uniform
+  instead does not work and was not shipped**: on a non-EP configuration under
+  cudagraphs it reads 0.700x of the real gate's TPOT, because flattening the
+  per-expert histogram lands the grouped GEMM on a different kernel variant --
+  an in-situ profile of 8 real decode steps shows a `MoeFCGemm` instantiation
+  appearing with 144 calls and another dropping to zero, with attention
+  unchanged as the control. `./serving/validate.sh`: 70/70 scenarios and all 9
+  bench-example digests unchanged.
 - **`scripts/patches/`, applied by `docker-vllm.sh` at container start.** Two
   one-line fixes to the installed vLLM, both idempotent and both no-ops on a
   vLLM that already carries them.
