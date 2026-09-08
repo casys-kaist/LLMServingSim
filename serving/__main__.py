@@ -477,7 +477,21 @@ def main():
                         'BALANCED (default; analytical pigeonhole approximation of '
                         'a trained load-balanced learned gate), '
                         'RR (round-robin), RAND (uniform random per token), '
-                        'CUSTOM (user-defined)')
+                        'CUSTOM (the measured distinct-expert count from '
+                        '--gate-stats, falling back to BALANCED when none is '
+                        'given)')
+    parser.add_argument('--gate-stats', type=str, default=None,
+                        help='path to a gate_stats.json (or the bench run '
+                        'directory holding one) recorded by '
+                        '`bench run --record-gate-stats`. Read only under '
+                        '--expert-routing-policy CUSTOM, where it replaces the '
+                        'uniform-gate closed form with the real gate\'s '
+                        'measured distinct-expert count. A trained gate '
+                        'concentrates on popular experts, so the closed form '
+                        'over-counts -- on Qwen3-30B-A3B by 13%% through the '
+                        'middle of the range and 6%% at a saturated decode. A '
+                        'missing, unreadable or mismatched file falls back to '
+                        'the closed form with a warning.')
     parser.add_argument('--enable-block-copy', action=argparse.BooleanOptionalAction,
                         default=True,
                         help='Replay one transformer block\'s trace across every '
@@ -574,6 +588,13 @@ def main():
 
     args = parser.parse_args()
     
+    # Resolved against the repo root, not ``astra-sim/``. Every other path the
+    # simulator reads is a repo-relative literal in code and carries its own
+    # ``../``; this one comes from the user, who typed it against the directory
+    # they are standing in -- which is ``cwd``, captured before the chdir above.
+    if args.gate_stats and not os.path.isabs(args.gate_stats):
+        args.gate_stats = os.path.join(cwd, args.gate_stats)
+
     args.run_id = resolve_run_id(args.run_id)
     run_paths = build_run_paths(astra_sim, args.run_id, args.inputs_root)
     args.inputs_root = run_paths.inputs_root
@@ -1060,7 +1081,8 @@ def main():
                                        inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(
                                        schedulers[instance_id].spec.N
-                                       if schedulers[instance_id].spec else 0))
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                         generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                        inst_id, inst2npu_mapping[inst_id],
                                        inst_cfg["enable_local_offloading"],
@@ -1166,7 +1188,8 @@ def main():
                                            inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(
                                        schedulers[instance_id].spec.N
-                                       if schedulers[instance_id].spec else 0))
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                             generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                            inst_id, inst2npu_mapping[inst_id],
                                            inst_cfg["enable_local_offloading"],
@@ -1212,7 +1235,8 @@ def main():
                                    inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(
                                        schedulers[instance_id].spec.N
-                                       if schedulers[instance_id].spec else 0))
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                     generate_graph(new_req, instance["hardware"], instance["num_npus"], node_id,
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],

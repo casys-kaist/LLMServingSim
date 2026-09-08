@@ -1,7 +1,57 @@
+import json
+import os
 import random
+from bisect import bisect_left
 from dataclasses import dataclass
 from math import comb
 from .logger import get_logger
+
+# path -> parsed payload (or None when it could not be read). One process
+# reads a given gate_stats.json once, however many instances consult it.
+_GATE_STATS_CACHE = {}
+
+# A GateRouter is built per batch, so every message about the curve has to be
+# one-shot or it lands thousands of times in one run.
+_GATE_STATS_REPORTED = set()
+
+
+def _report_once(logger, key, level, fmt, *args):
+    if key in _GATE_STATS_REPORTED:
+        return
+    _GATE_STATS_REPORTED.add(key)
+    getattr(logger, level)(fmt, *args)
+
+
+def load_gate_stats(path):
+    """Read a ``gate_stats.json`` written by ``bench run --record-gate-stats``.
+
+    Returns ``None`` for a missing or unusable file rather than raising: the
+    documented behaviour when no measurement exists is to fall back to the
+    closed form, and that has to hold for a path that turns out to be wrong as
+    much as for one that was never passed.
+    """
+    if path in _GATE_STATS_CACHE:
+        return _GATE_STATS_CACHE[path]
+    payload = None
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        curve = [(int(n), float(mean)) for n, mean, _cnt in raw["curve"]]
+        curve.sort()
+        if curve:
+            payload = {
+                "model": raw.get("model"),
+                "num_experts": int(raw.get("num_experts") or 0),
+                "num_experts_per_tok": int(raw.get("num_experts_per_tok") or 0),
+                "n_calls": int(raw.get("n_calls") or 0),
+                "tokens": [c[0] for c in curve],
+                "activated": [c[1] for c in curve],
+                "path": path,
+            }
+    except (OSError, ValueError, KeyError, TypeError):
+        payload = None
+    _GATE_STATS_CACHE[path] = payload
+    return payload
 
 
 @dataclass
@@ -31,7 +81,14 @@ class GateRouter:
                               auxiliary loss. Deterministic.
         RR                  — deterministic round-robin per token.
         RAND                — uniform random per token (seedable).
-        CUSTOM              — user-supplied ``_custom_gate_function``.
+        CUSTOM              — the **measured** distinct-expert count, read
+                              from a ``gate_stats.json`` recorded by
+                              ``bench run --record-gate-stats``. Falls back to
+                              BALANCED's closed form when no usable file is
+                              given, since a trained gate's concentration
+                              cannot be guessed. Per-token call sites
+                              (``route``) still go through
+                              ``_custom_gate_function``.
 
     ``block_copy``: simulator-side optimization that emits one
     transformer block's trace and replays it ``num_hidden_layers``
@@ -59,6 +116,8 @@ class GateRouter:
         block_copy=True,
         n_group=1,
         topk_group=1,
+        gate_stats=None,
+        model_name=None,
     ):
         self.instance_id = instance_id
         self.E = int(num_local_experts)
@@ -99,6 +158,98 @@ class GateRouter:
                 f"Supported: {', '.join(self._SUPPORTED_POLICIES)}"
             )
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
+
+        # The measured distinct-expert curve, or None. Resolved here so a bad
+        # path is reported once at construction rather than per layer, and so
+        # ``route_ep`` has a plain "is there a curve" question to ask.
+        self.gate_curve = None
+        if self.routing_policy == "CUSTOM":
+            self.gate_curve = self._resolve_gate_curve(gate_stats, model_name)
+            if self.gate_curve is None:
+                _report_once(
+                    self.logger, ("nocurve", self.instance_id), "warning",
+                    "expert routing CUSTOM with no usable gate_stats.json -- "
+                    "using BALANCED's closed form. Record one with "
+                    "`bench run --record-gate-stats --enforce-eager`.")
+            else:
+                _report_once(
+                    self.logger, ("curve", self.gate_curve["path"]), "info",
+                    "expert routing CUSTOM: measured curve over %d batch "
+                    "sizes from %d gate calls (%s)",
+                    len(self.gate_curve["tokens"]), self.gate_curve["n_calls"],
+                    self.gate_curve["path"])
+
+    def _resolve_gate_curve(self, gate_stats, model_name):
+        """Load and vet a gate-stats path against *this* model.
+
+        The distinct count is a property of these weights and this ``E``, so a
+        curve from another checkpoint is worse than the closed form -- which at
+        least knows the right ``E``. A mismatch therefore refuses rather than
+        rescaling: there is no defensible way to map one model's concentration
+        onto another's expert count.
+        """
+        if not gate_stats:
+            return None
+        path = os.fspath(gate_stats)
+        if os.path.isdir(path):
+            path = os.path.join(path, "gate_stats.json")
+        stats = load_gate_stats(path)
+        if stats is None:
+            _report_once(self.logger, ("unreadable", path), "warning",
+                         "gate stats: could not read %s", path)
+            return None
+        if stats["num_experts"] and stats["num_experts"] != self.E:
+            _report_once(self.logger, ("E", path), "warning",
+                         "gate stats: %s was measured at num_experts=%d, this "
+                         "model has %d -- ignoring it",
+                         path, stats["num_experts"], self.E)
+            return None
+        if stats["num_experts_per_tok"] and stats["num_experts_per_tok"] != self.k:
+            _report_once(self.logger, ("k", path), "warning",
+                         "gate stats: %s was measured at top_k=%d, this model "
+                         "has %d -- ignoring it",
+                         path, stats["num_experts_per_tok"], self.k)
+            return None
+        # Compared on the basename, because the two sides legitimately spell
+        # the same checkpoint differently: bench is routinely pointed at a
+        # local directory (``/data/model/Qwen3-30B-A3B-Instruct-2507``) while
+        # the simulator names the repo (``Qwen/Qwen3-30B-A3B-Instruct-2507``).
+        # The checks that actually protect correctness are ``E`` and ``top_k``
+        # above; this one is a typo guard, so it must not reject a real match.
+        if model_name and stats["model"]:
+            measured = os.path.basename(stats["model"].rstrip("/"))
+            asked = os.path.basename(model_name.rstrip("/"))
+            if measured != asked:
+                _report_once(self.logger, ("model", path), "warning",
+                             "gate stats: %s was measured on %s, this run is "
+                             "%s -- ignoring it", path, stats["model"],
+                             model_name)
+                return None
+        return stats
+
+    def _measured_activated(self, n):
+        """Distinct experts a real gate reaches at ``n`` tokens, interpolated.
+
+        Linear between the two neighbouring measured batch sizes, and
+        **clamped** at both ends rather than extrapolated. Below the first
+        point there is nothing under it -- the curve starts at one token, where
+        the count is exactly ``k`` and both models agree. Above the last, the
+        count is bounded by ``E`` and the curve is already flat there (0.90 to
+        0.97 of ``E`` across every prefill-sized batch measured), so extending
+        the last slope would push it past the ceiling for no reason.
+        """
+        xs = self.gate_curve["tokens"]
+        ys = self.gate_curve["activated"]
+        if n <= xs[0]:
+            return ys[0]
+        if n >= xs[-1]:
+            return ys[-1]
+        i = bisect_left(xs, n)
+        if xs[i] == n:
+            return ys[i]
+        x0, x1 = xs[i - 1], xs[i]
+        y0, y1 = ys[i - 1], ys[i]
+        return y0 + (y1 - y0) * (n - x0) / (x1 - x0)
 
     @staticmethod
     def expert_owner(expert_id, ep_size, num_experts):
@@ -228,7 +379,12 @@ class GateRouter:
         remainder = total_len % ep_size
         source_tokens = [base + (1 if r < remainder else 0) for r in range(ep_size)]
 
-        if self.routing_policy == "BALANCED":
+        # CUSTOM joins BALANCED here: both answer the per-rank
+        # (local_tokens, activated_experts) pair without a per-token draw, and
+        # differ only in where the distinct count comes from -- a closed form
+        # or the measured curve. Both are deterministic in ``total_len``, which
+        # is what keeps ``block_copy`` safe for either.
+        if self.routing_policy in ("BALANCED", "CUSTOM"):
             local_tokens, activated_counts = self._balanced_route_ep(
                 total_len, ep_size, source_tokens,
             )
@@ -302,6 +458,16 @@ class GateRouter:
         n = max(0, int(total_len))
         if n == 0:
             activated_per_rank = 0
+        elif self.gate_curve is not None:
+            # The measured count is the gate's *global* distinct count -- the
+            # router selects from all E experts whatever the EP degree -- so
+            # the per-rank figure is that divided by the degree, exactly as
+            # the closed form's ``E_rank * (1 - miss)`` is ``E * (1 - miss)``
+            # divided by it.
+            activated_per_rank = min(
+                E_rank,
+                max(1, int(round(self._measured_activated(n) / ep_size))),
+            )
         else:
             miss = ((E - min(k, E)) / E) ** n
             activated_per_rank = min(
