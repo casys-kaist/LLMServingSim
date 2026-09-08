@@ -2259,6 +2259,71 @@ website (not the README).
 - Include the exact command used for validation and note any output CSV path in PRs
 - Describe which simulation mode is affected and the config/dataset used
 
+## Comparing against a bench run: the metric definitions
+
+**Never compute TTFT from a `requests.jsonl` by hand.** Use
+`bench/core/validate.py::_bench_latencies`, which is what `bench validate` and
+every committed `summary.txt` use. Computing it ad hoc is how several hours got
+spent chasing a +27% median TTFT error that did not exist.
+
+`requests.jsonl` carries a **mixed clock domain**:
+
+| field | clock | set where |
+|---|---|---|
+| `arrival_time` | wall-clock **epoch** seconds | frontend entry |
+| `queued_ts`, `scheduled_ts`, `first_token_ts`, `last_token_ts` | process **monotonic** | engine lifecycle |
+
+So the three metrics are
+
+    TTFT    = (first_token_ts - arrival) * 1000
+    TPOT    = (last_token_ts - first_token_ts) / (output_toks - 1) * 1000
+    latency = (last_token_ts  - arrival) * 1000
+
+and **`arrival` is `arrival_time` shifted into the monotonic domain**, not
+`queued_ts`:
+
+    offset  = min over requests of (queued_ts - arrival_time)
+    arrival = arrival_time + offset
+
+`bench_epoch_to_monotonic_offset` derives the offset that way because
+`queued_ts = arrival_time + offset + pickup` with `pickup >= 0`, so the minimum
+over a few hundred requests bounds it from above by `min(pickup)` and lands
+within a couple of milliseconds.
+
+**Why `queued_ts` is wrong.** `QUEUED` is stamped inside
+`Scheduler.add_request`, which runs at a loop boundary, so a request arriving
+mid-step is registered only when the in-flight step ends. Measured on
+RTXPRO6000/Qwen3-30B-A3B, `queued_ts - arrival_time` is p50 **21.7 ms** / p90
+61.6 ms -- the same distribution as the simulator's own
+wait-for-the-in-flight-batch term (p50 22.5, p90 62.4), because it is the same
+physical wait. The simulator starts from the workload's arrival time and keeps
+that wait, so anchoring the truth at `queued_ts` drops it from vLLM's TTFT only
+and charges the simulator for a term it modelled correctly.
+
+**It is worth 18% of a 124 ms TTFT and 0.07% of a 32 s latency**, which is why
+it shows up as a large TTFT error beside a TPOT and latency that look fine. On
+the DP+EP example, computing TTFT against `queued_ts` reads a **+22 to +30%**
+median error where the correct anchor reads **+3.5%** -- and TPOT and span are
+unaffected either way, since neither uses an arrival timestamp.
+
+Two more rules for the same reason:
+
+- **`span` is the one metric to trust when a DP example's tail looks wrong.**
+  It is `max(last_token_ts) - min(queued_ts)` on the truth side and the same
+  span of the simulator's own CSV, deterministic to 0.05% on the simulator and
+  0.05% on the engine, against a TTFT p90 whose engine-side spread is 22%
+  across twelve identical runs.
+- **Compare against a *representative* truth run, and pick it by
+  representativeness rather than agreement.** `bench/results/` holds twelve
+  identical-flag DP+EP runs; ranking them by summed relative distance to their
+  own median puts `q30_real_rep7` first at 0.010 and the committed
+  `q30_028_real` **ninth at 0.254**, 25x further out. Against the medoid the
+  same simulator reads TTFT mean -1.8% and p90 -3.7%; against the committed
+  run, -11.7% and -8.4%. The runs that agree *best* with the simulator rank
+  11th, 10th, 9th and 12th, so choosing by agreement selects the least
+  representative run -- which is exactly how a compensating error gets written
+  into a published figure.
+
 ## Testing & Validation
 
 No unit-test suite. The simulator is deterministic, so validation is exact
