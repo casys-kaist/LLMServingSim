@@ -264,26 +264,49 @@ class GateRouter:
     def _balanced_route_ep(self, total_len, ep_size, source_tokens):
         """Closed-form per-rank load for a perfectly-balanced learned gate.
 
-        Pigeonhole model for the activated-expert count:
-          * total expert-token pairs = ``total_len * k``
-          * split evenly across EP ranks
-          * ``pairs_per_rank       = total_len * k / ep_size``
-          * ``activated_per_rank   = min(pairs_per_rank, experts_per_rank)``
-            — each owned expert fires as long as there are enough
-            pairs to go around; beyond saturation the count is
-            capped at ``E / ep_size``.
+        The activated-expert count is a **distinct**-expert count, so it has to
+        allow for two tokens picking the same expert. A token takes ``k`` of
+        the ``E`` experts, so a given expert is missed by one token with
+        probability ``(E - k) / E`` and by all ``n`` of them with that raised
+        to the ``n``:
 
-        Group-limited routing does not change that: it restricts *which*
-        experts a given token may pick, not how many pairs the batch
-        produces, and a balanced gate still spreads those pairs over every
-        expert. What it does change is how many ranks one token reaches,
-        which is ``_hit_probs``.
+            activated_per_rank = (E / ep) * (1 - ((E - k) / E) ** n)
+
+        It reduces correctly at both ends: ``n = 1`` gives exactly ``k`` (one
+        token, ``k`` distinct experts) and large ``n`` approaches ``E / ep``.
+
+        This used to count expert-token *pairs* instead --
+        ``min(round(n * k / ep), E / ep)`` -- which is the collision-free
+        count and saturates far too early. On Qwen3-30B-A3B at ep=1 (E=128,
+        k=8) it hit the cap at **n = 16**, where the real expectation is 82 of
+        128, so every decode step from 16 sequences up was charged the whole
+        MoE weight matrix. Measured against a real DP=1 run with real weights,
+        that put the simulator's decode step at **+56% at 16 sequences**,
+        +45% at 24, +22% at 32, +13% at 48 -- and -3% at 119, which is why it
+        was invisible in a saturated run's TPOT and showed up as a TTFT tail
+        instead: mid-size batches are what the ramp and the queue drain run at.
+
+        The same distinction is the one ``_hit_probs`` already makes for how
+        many *ranks* a token reaches, where modelling independent draws read
+        ~1% low. Here the collision-free reading is worth 56%.
+
+        Group-limited routing does not change the formula: it restricts *which*
+        experts a given token may pick, not the per-expert selection
+        probability of a balanced gate. What it does change is how many ranks
+        one token reaches, which is ``_hit_probs``.
         """
         k = self.k
-        E_rank = max(1, self.E // ep_size)
+        E = max(1, self.E)
+        E_rank = max(1, E // ep_size)
 
-        pairs_per_rank = (total_len * k) / ep_size
-        activated_per_rank = min(int(round(pairs_per_rank)), E_rank)
+        n = max(0, int(total_len))
+        if n == 0:
+            activated_per_rank = 0
+        else:
+            miss = ((E - min(k, E)) / E) ** n
+            activated_per_rank = min(
+                E_rank, max(1, int(round(E_rank * (1.0 - miss))))
+            )
         activated_counts = [activated_per_rank] * ep_size
 
         if ep_size <= 1:
