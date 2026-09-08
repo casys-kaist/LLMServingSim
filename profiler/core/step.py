@@ -74,22 +74,39 @@ _NONE_OVERSHOOT = (1.05, 4.0)
 _PAIRS = 60
 _WARMUPS = 5
 
-# Largest share of a step that graph replay can plausibly save. The saving is
-# ``kernel_count x launch_cost``, so on the models where it has been checked it
-# is 2-4% (Llama-3.1-8B 587 us of a 14 ms step, Qwen3-32B 1068 us of 50 ms).
-# Anything far above that is not launch overhead and the two columns are not the
-# same computation.
+# The sweep's own control, and the only check on it worth having.
 #
-# The bound earns its place. On an MoE model, forcing ``CUDAGraphMode.NONE``
-# through the V1 runner does not merely skip graph replay -- it routes the MoE
-# block onto a path that computes **every** expert. Measured on
-# Qwen3-30B-A3B at one token: 7,820 us with replay against 34,510 us with NONE,
-# a 62% "saving". Reading all 128 experts' weights is 58.0 GB, which at this
-# card's 1597 GB/s is 36,293 us; the correct top-8 path is 3.6 GB and 2,268 us.
-# The NONE column matches reading every expert almost exactly. That is a
-# different algorithm, not the same kernels without a graph, and recording it
-# would have priced a decode step at 4x.
-_MAX_PLAUSIBLE_SAVED_SHARE = 0.20
+# Above the capture ceiling vLLM dispatches no graph either way, so forcing
+# ``CUDAGraphMode.NONE`` there cannot change anything: a ``none`` row must
+# measure a saving of zero. Measured on Qwen3-30B-A3B at ``prefill 512``, it
+# does -- 7 us of a 2,445 us step, 0.3%. If that row shows a real saving, the
+# toggle is changing something other than graph replay and no other row in the
+# sweep can be trusted.
+#
+# This replaces a bound on the *share* of a step the saving could be, which
+# tested the wrong quantity. The saving is ``kernel_count x launch_cost``, a
+# fixed cost, while the step it comes out of is not -- so the share is large
+# exactly when the step is small, and a 20% bound fired on measurements that
+# were fine. On Qwen3-30B-A3B the absolute saving holds at 635-1074 us across a
+# 5.5x range of step time while its share runs 0.3% to 44%:
+#
+#     decode n=1    1141 -> 2042 us     901 us    44.1%
+#     decode n=8    1647 -> 2721 us    1074 us    39.5%
+#     decode n=32   2269 -> 3083 us     814 us    26.4%
+#     decode n=128  5594 -> 6229 us     635 us    10.2%
+#     prefill 256   1674 -> 2326 us     651 us    28.0%
+#     prefill 512   2438 -> 2445 us       7 us     0.3%   <- the control
+#
+# The share bound was written from a reading of that n=1 case as "forcing NONE
+# routes an MoE block onto a path that computes every expert", on the strength
+# of a 62% figure and the arithmetic that all 128 experts' weights are 58.0 GB
+# = 36,293 us at this card's bandwidth. **That does not reproduce.** Measured
+# as a block of graph forwards against a block of no-graph forwards (which also
+# rules out a per-switch cost, since the block and alternating figures agree to
+# within 5%), the n=1 step is 2.0 ms rather than 34.5 ms and its saving is in
+# line with every other shape. Whatever produced 34,510 us, it was not this
+# code path.
+_MAX_NONE_BRANCH_SAVED_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -282,21 +299,21 @@ def sample_step(llm, args: ProfileArgs, limits, tp: int,
         sd = statistics.stdev(pairs) if len(pairs) > 1 else 0.0
         step = statistics.median(res["graph"])
         share = saved / (step + saved) if step + saved > 0 else 0.0
-        if share > _MAX_PLAUSIBLE_SAVED_SHARE:
+        if case.branch == "none" and share > _MAX_NONE_BRANCH_SAVED_SHARE:
             log.error(
-                "Step case %s: turning graph replay off changed the step by "
-                "%.1f%% (%.0f us of %.0f), far past what launch overhead can "
-                "be. The two columns are not the same computation -- on an MoE "
-                "model, forcing NONE routes the block onto a path that computes "
-                "every expert. Aborting rather than writing a number that "
-                "would price a decode step several times over.",
-                case.key(), 100 * share, saved, step + saved,
+                "Step case %s is above the capture ceiling, where vLLM "
+                "dispatches no graph either way -- so forcing NONE cannot "
+                "change anything, and this row must measure zero. It measured "
+                "%.0f us of %.0f (%.1f%%). The toggle is changing something "
+                "other than graph replay, which makes every other row in the "
+                "sweep untrustworthy. Aborting.",
+                case.key(), saved, step + saved, 100 * share,
             )
             raise RuntimeError(
-                f"step sweep: saving is {100 * share:.1f}% of the step at "
-                f"{case.key()}, above the {100 * _MAX_PLAUSIBLE_SAVED_SHARE:.0f}% "
-                f"bound. Forcing CUDAGraphMode.NONE is not measuring graph "
-                f"replay alone on this model. See _MAX_PLAUSIBLE_SAVED_SHARE."
+                f"step sweep: the NONE-branch control at {case.key()} saved "
+                f"{100 * share:.1f}% (bound {100 * _MAX_NONE_BRANCH_SAVED_SHARE:.0f}%). "
+                f"Forcing CUDAGraphMode.NONE is not measuring graph replay "
+                f"alone here. See _MAX_NONE_BRANCH_SAVED_SHARE."
             )
         rows.append({
             "branch": case.branch,
