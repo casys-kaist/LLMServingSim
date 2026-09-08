@@ -28,8 +28,10 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 
+from bench.core import gate_stats as gate_stats_mod
 from bench.core import logger as log
 from bench.core import recorder
 
@@ -95,6 +97,22 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "one), or a synthetic config with no tokenizer at all. "
                         "Not a speed knob: forcing detokenize off separately "
                         "measured 0.18% of run span, i.e. noise.")
+    p.add_argument("--record-gate-stats", action="store_true",
+                   dest="record_gate_stats", default=False,
+                   help="Record the real gate's distinct-expert count per "
+                        "batch size into gate_stats.json, for the simulator's "
+                        "--expert-routing-policy CUSTOM to read back. The "
+                        "simulator otherwise derives that count from a "
+                        "*uniform* gate, which a trained gate undershoots by "
+                        "up to 13%% -- the concentration lives in the weights, "
+                        "so the closed form cannot know it. Needs the "
+                        "VLLM_MOE_ACTIVATED_LOG source patch (applied by "
+                        "scripts/docker-vllm.sh) and --enforce-eager, since "
+                        "the patch's .unique() is a data-dependent shape that "
+                        "cannot be captured into a cudagraph. Eager is no loss "
+                        "of fidelity for this: the gate's top-k output depends "
+                        "on the weights and the input, not on how the forward "
+                        "runs. MoE models only; a dense run writes nothing.")
     p.add_argument("--enforce-eager", action="store_true",
                    dest="enforce_eager", default=False,
                    help="Run vLLM eager, with torch.compile and cudagraphs "
@@ -201,6 +219,22 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
 
     from bench.core.stat_logger import BenchStatLogger
 
+    gate_log = None
+    if args.record_gate_stats:
+        if not args.enforce_eager:
+            raise SystemExit(
+                "--record-gate-stats needs --enforce-eager: the source patch "
+                "calls .unique() on the router's output, whose shape is "
+                "data-dependent and cannot be captured into a cudagraph. The "
+                "gate's top-k output does not depend on the execution mode, so "
+                "the recorded curve still describes a compiled run."
+            )
+        gate_log = output_dir / "moe_activated.jsonl"
+        gate_log.unlink(missing_ok=True)
+        # Read by the patched select_experts inside the *worker* process, which
+        # inherits this environment, so it has to be set before the engine boots.
+        os.environ["VLLM_MOE_ACTIVATED_LOG"] = str(gate_log)
+
     engine_args = AsyncEngineArgs(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -297,6 +331,23 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
     recorder.write_requests(output_dir, records)
     header, rows = BenchStatLogger.downsample_to_csv_rows(args.tick_seconds)
     recorder.write_timeseries(output_dir, header, rows)
+
+    if gate_log is not None:
+        payload = gate_stats_mod.write(
+            output_dir, gate_log, args.model, _num_experts(engine))
+        if payload is None:
+            log.warning(
+                "--record-gate-stats: %s holds no usable row. Either this is "
+                "a dense model, or the VLLM_MOE_ACTIVATED_LOG patch is not "
+                "installed in this vLLM (scripts/docker-vllm.sh applies it). "
+                "No gate_stats.json written -- the simulator will use its "
+                "closed form, which is the documented fallback.", gate_log)
+        else:
+            log.success(
+                "gate stats: %d calls over %d batch sizes -> %s",
+                payload["n_calls"], len(payload["curve"]),
+                output_dir / gate_stats_mod.FILENAME)
+
     log.success(
         "%d requests, %d timeseries rows -> %s",
         len(records), len(rows), output_dir,
@@ -475,6 +526,30 @@ def _resolved_config(engine) -> dict:
             fields = _config_fields(value)
             out[name] = fields if fields else sub
     return out
+
+
+def _num_experts(engine) -> int:
+    """The checkpoint's routed-expert count, whichever key it declares.
+
+    The families disagree: Mixtral and Qwen3-MoE write ``num_local_experts`` /
+    ``num_experts``, DeepSeek and GLM write ``n_routed_experts``. Recorded so a
+    reader can refuse a curve measured on a different ``E`` -- the distinct
+    count means nothing without it. 0 for a dense model, which is also what
+    makes the aggregate come back empty.
+    """
+    try:
+        cfg = engine.vllm_config.model_config.hf_config
+    except AttributeError:
+        return 0
+    for holder in (getattr(cfg, "text_config", None), cfg):
+        if holder is None:
+            continue
+        for key in ("n_routed_experts", "num_local_experts", "num_experts",
+                    "moe_num_experts"):
+            value = getattr(holder, key, None)
+            if value:
+                return int(value)
+    return 0
 
 
 def _kv_cache_facts(engine) -> dict:
