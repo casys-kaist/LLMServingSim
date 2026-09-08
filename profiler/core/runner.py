@@ -340,9 +340,26 @@ def run_full(
         # layer count, so a 1-layer engine measures a term that does not
         # transfer -- it read 87% of the step there against ~2% at full depth.
         if not args.skip_step:
+        # The stack has to be the checkpoint's **real** depth, which
+        # ``spin_up``'s default does not give: it resolves
+        # ``minimal_layer_count_for(config, ALL_AXES)``, and that is **1** for
+        # any model whose blocks are all alike -- Llama, Qwen3, Qwen3-30B-A3B.
+        # The saving is ``kernel_count x launch_cost`` and the kernel count
+        # scales with the layer count, so a 1-layer engine measures a term that
+        # does not transfer: it reads ~87% of its own step against ~2% at full
+        # depth. Qwen3-30B-A3B's first step.csv was measured that way and its
+        # ``saved_us`` came out 526 us where the real term, read off a
+        # production run's ``running / gen_throughput``, is 2.92 ms.
+        #
+        # An explicit ``--num-hidden-layers`` is overridden here rather than
+        # respected, because it exists to make the *other* categories fit and
+        # they are unaffected by depth. If the full stack will not boot with
+        # graphs on, the sweep fails and the bundle survives -- which is the
+        # honest outcome, since a shrunk measurement would be silently wrong.
+            step_args = _full_depth_args(args)
             with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
                            f"for the step sweep"):
-                llm, _, tmpdir = spin_up(args, tp, cudagraphs=True)
+                llm, _, tmpdir = spin_up(step_args, tp, cudagraphs=True)
                 step_limits = probe_limits(llm, args)
             try:
                 from profiler.core.step import sample_step
@@ -422,6 +439,26 @@ def run_full(
 # Slice refresh
 # ---------------------------------------------------------------------------
 
+def _full_depth_args(args: ProfileArgs) -> ProfileArgs:
+    """``args`` with ``num_hidden_layers`` pinned to the checkpoint's own.
+
+    Only the step sweep wants this. Every other category measures a per-layer
+    latency that the simulator multiplies, so a shrunk stack is right there and
+    is what makes the sweeps affordable. The step term is per *step*, and its
+    size is the launch count, so it needs every layer.
+    """
+    full = (args.model_config or {}).get("num_hidden_layers")
+    try:
+        full = int(full)
+    except (TypeError, ValueError):
+        return args
+    if full <= 0 or full == args.num_hidden_layers:
+        return args
+    log.info("step sweep: booting the full %d-layer stack (the saving is "
+             "kernel_count x launch_cost, so depth is the measurement)", full)
+    return dataclasses.replace(args, num_hidden_layers=full)
+
+
 def run_slice(
     arch_path: Path,
     args: ProfileArgs,
@@ -453,9 +490,13 @@ def run_slice(
         from profiler.core.step import sample_step
 
         tp_root = variant_root / f"tp{tp}"
+        # Full depth, for the reason spelled out in ``run_full``'s step pass:
+        # the saving scales with the kernel count and a uniform model's
+        # ``minimal_layer_count_for`` is 1.
+        step_args = _full_depth_args(args)
         with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
                        f"for the step sweep"):
-            llm, engine_kwargs, tmpdir = spin_up(args, tp, cudagraphs=True)
+            llm, engine_kwargs, tmpdir = spin_up(step_args, tp, cudagraphs=True)
             limits = probe_limits(llm, args)
         try:
             sample_step(llm, args, limits, tp, tp_root)
