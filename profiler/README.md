@@ -339,15 +339,21 @@ per model — and it is **TP-invariant**, since each rank runs the same *number*
 of kernels whatever the TP degree, so one measurement at TP=1 serves all of
 them.
 
-**MoE models are not supported yet and the sweep says so.** Forcing the
-no-graph mode on an MoE block routes it onto a path that computes *every*
-expert rather than the selected ones, so the two columns stop being the same
-computation: Qwen3-30B-A3B measured a 62% "saving" against the dense models'
-2-4%, and 34,510 us is exactly what reading all 128 experts (58.0 GB at
-1597 GB/s = 36,293 us) costs. A plausibility bound aborts the sweep with that
-arithmetic in the message rather than writing a number that would price a
-decode step at 4x. MoE bundles therefore have no `step.csv` and the simulator
-warns once.
+**MoE models work.** An earlier bound aborted the sweep whenever the saving
+exceeded 20% of a step, on the reading that forcing the no-graph mode on an MoE
+block computes *every* expert rather than the selected ones — Qwen3-30B-A3B
+measured a 62% "saving", and 34,510 us is what reading all 128 experts costs
+(58.0 GB at 1597 GB/s). That does not reproduce: measured as a block of graph
+forwards against a block of no-graph forwards, the one-token step is 2.0 ms
+rather than 34.5, and its saving (901 us) is in line with every other shape.
+The share is large there only because the step is small — 44% at one sequence,
+10% at 128, for a saving that moves 901 -> 635 us.
+
+So the check is the sweep's own control instead: above the capture ceiling vLLM
+dispatches no graph either way, so a `none` row must measure **zero**, and the
+sweep aborts when it does not. Qwen3-30B-A3B's real sweep puts both `none` rows
+at -1.4 and -0.1 us, which is what says the toggle measures graph replay and
+nothing else.
 
 #### Measuring the machine: `profiler hardware`
 
