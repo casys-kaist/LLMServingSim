@@ -1740,6 +1740,54 @@ read ~1% low even with no grouping. Don't "simplify" it back — the difference
 is measurable, and the grouped and ungrouped cases must not have two different
 answers to one question.
 
+### `activated_experts` is a distinct count, not a pair count
+
+A token takes `k` of the `E` experts, so two tokens can pick the same one and
+the number of *distinct* experts a batch activates is not `n * k`. Per EP rank:
+
+    activated_per_rank = (E / ep) * (1 - ((E - k) / E) ** n)
+
+which is exact for a balanced gate: an expert is missed by one token with
+probability `(E - k) / E` and by all `n` of them with that raised to the `n`.
+It reduces correctly at both ends — `n = 1` gives exactly `k`, and large `n`
+approaches `E / ep`.
+
+`_balanced_route_ep` used to count expert-token **pairs**,
+`min(round(n * k / ep), E / ep)`, which is the collision-free reading and
+saturates far too early. On Qwen3-30B-A3B at ep=1 (`E` 128, `k` 8) it hit the
+cap at **n = 16**, where the true expectation is 82 of 128:
+
+| n | pairs (old) | distinct (new) |
+|---|---|---|
+| 1 | 8 | 8 |
+| 4 | 32 | 29 |
+| 8 | 64 | 52 |
+| **16** | **128** | **82** |
+| 32 | 128 | 112 |
+| 64 | 128 | 126 |
+| 128 | 128 | 128 |
+
+So every decode step from 16 sequences up was charged the whole MoE weight
+matrix. Measured against a real DP=1 run with real weights — no EP collective,
+no DP round pairing, so the step cost is the only thing under test:
+
+| sequences | sim step | truth step | error |
+|---|---|---|---|
+| 16 | 43.72 ms | 27.99 ms | **+56%** |
+| 24 | 44.98 | 31.06 | +45% |
+| 32 | 46.27 | 37.94 | +22% |
+| 48 | 47.85 | 42.29 | +13% |
+| 119 | 52.61 | 54.33 | -3% |
+
+Which is why it was invisible in a saturated run's TPOT and surfaced as a TTFT
+tail: a saturated run sits at 128 sequences, where the two readings agree, and
+the mid-size batches are what the ramp and the queue drain run at. Fixing it
+moves the DP=1 run's span from +6.0% to +3.7%.
+
+This is the same distinction `_hit_probs` already makes for how many *ranks* a
+token reaches, where modelling independent draws read ~1% low. Here the
+collision-free reading was worth 56%.
+
 ### The EP all-to-all is emitted as AllGather + ReduceScatter
 An MoE dispatch/combine **is** an all-to-all, but it has several
 implementations and vLLM picks one with `--all2all-backend`. Its default is
