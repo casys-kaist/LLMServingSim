@@ -753,15 +753,31 @@ than losing it.
 
 **It does not work on an MoE model, and the sweep refuses rather than
 guessing.** Forcing `CUDAGraphMode.NONE` through the V1 runner does not merely
-skip graph replay on an MoE block — it routes onto a path that computes
-**every** expert. Measured on Qwen3-30B-A3B at full depth, one token: 7,777 us
-with replay against 33,412 us with NONE, a **76.7%** "saving" where the dense
-models show 1-4%. The arithmetic identifies it exactly: all 128 experts'
-weights are 57.98 GB, which at this card's 1597.6 GB/s is 36,293 us, and
-33,412 is **92%** of that, while the correct top-8 path is 3.62 GB and
-2,268 us. Read as launch overhead it would be 66 us per launch against a real
-1.7. `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts with that arithmetic in the
-message; an MoE bundle carries no `step.csv` and the simulator warns.
+skip graph replay on an MoE block — the NONE column is a *different
+computation*, and a large one. Measured on Qwen3-30B-A3B at full depth, one
+token: 7,777 us with replay against 33,412 us with NONE, a **76.7%** "saving"
+where the dense models show 1-4%. Read as launch overhead that is 66 us per
+launch against a real 1.7. `_MAX_PLAUSIBLE_SAVED_SHARE = 0.20` aborts on it;
+an MoE bundle carries no `step.csv` and the simulator warns.
+
+**What the extra 4.3x is has not been identified**, and this section used to
+say it was the NONE path computing **every** expert, on the strength of the
+arithmetic: all 128 experts' weights are 57.98 GB, which at this card's
+1597.6 GB/s is 36,293 us, and 33,412 is 92% of that, while the correct top-8
+path is 3.62 GB and 2,268 us. Two measurements refute it. The two columns
+launch the **same number of kernels** — 283 against 283 — which a different
+set of experts could not do. And the cost does not scale with the expert
+count: `E = 8` reads 25,858 us against `E = 32`'s 19,878, where reading every
+expert would make the larger model 4x the smaller, not 0.77x. The 92%
+agreement is a coincidence: an arithmetic match is not an identification
+until the axis it predicts has been varied.
+
+None of that changes the guard, which is why it stays: the bound asks only
+whether the two columns are the same computation, and 76.7% says they are not
+whatever the reason. **A lead, not a claim:** on this same model a routing
+histogram change swaps grouped-GEMM kernel variants (see the gate-stats
+section), so the NONE branch may be selecting different MoE kernels rather
+than doing more work. That has not been measured.
 
 **That bound is only meaningful at full depth, and a depth bug once disarmed
 it.** `spin_up`'s default resolves `minimal_layer_count_for(config, ALL_AXES)`,
@@ -772,10 +788,9 @@ pass `--num-hidden-layers`. Two things went wrong together:
 - the saving it measures is `kernel_count x launch_cost` and the kernel count
   scales with depth, so a 1-layer number does not transfer (it reads ~87% of
   its own step against ~2% at full depth);
-- and at 1 layer the whole MoE weight is 1.21 GB, so reading every expert
-  costs 757 us and hides inside the framework term. The same model measures a
-  44% share there, which *is* ordinary overhead at that depth, so the 20%
-  bound reads as a false positive and looks worth removing.
+- and the same model measures a 44% share at 1 layer, which at that depth
+  *is* ordinary overhead, so the 20% bound reads as a false positive and looks
+  worth removing.
 
 It was removed on that reading, an invalid `step.csv` was written, and the
 error only surfaced when the depth was fixed and the share jumped to 76.7%.
