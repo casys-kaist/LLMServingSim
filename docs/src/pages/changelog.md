@@ -8,6 +8,71 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Removed
+- **The cudagraph step correction, and the `step.csv` it read.** It rested on
+  the premise that the sum of profiled per-layer latencies predicts *eager*
+  execution while production replays a cudagraph, so a measured saving had to
+  be subtracted. Both halves are false. `layerwise_profile` sums leaf **kernel**
+  durations, so the trace total is kernel time (Llama-3.1-8B at one sequence:
+  trace 11,360 us against 11,311 measured), and a saturated engine replaying a
+  graph is essentially back-to-back kernels -- at matched concurrency against
+  real vLLM runs the uncorrected simulator's decode step is **0.993** on
+  Llama-3.1-8B and **1.000** on Qwen3-32B.
+
+  What `step.csv` measured was the difference between two *isolated* wall times
+  -- a `cuda.synchronize()` around every forward -- which charges a per-call
+  launch and drain neither production nor the profiled sum pays: the same step
+  reads 13,031 us isolated, 11,685 pipelined and 11,311 as kernel time.
+  Subtracting that from a total already equal to production took the simulator
+  below it.
+
+  It looked like it worked because it was cancelling an over-charged
+  interconnect (see below). With both fixed, the two collective-carrying
+  examples are better without either correction and Llama -- which has no
+  collectives to over-charge -- is the one that wanted the subtraction; its
+  remaining +1.6% TPOT is not a uniform per-step term, since its decode step is
+  already 0.993, so a flat subtraction is the wrong shape for it.
+
+  Removed: `profiler/core/step.py`, `profiler/core/hooks/cudagraph_hook.py`,
+  `--skip-step` / `SKIP_STEP`, `slice --group step`, the four committed
+  `step.csv` files, and the simulator's `_apply_step_correction` /
+  `_step_saved_ns` / `_load_step_tables`. Every clock the correction touched is
+  rerecorded. AGENTS.md keeps the account of why, including the three traps
+  worth knowing before rebuilding it.
+
+### Changed
+- **`hardware.yaml` measures every collective the simulator emits, inside a
+  CUDA graph.** The sweep was one AllReduce curve timed with a
+  `cuda.synchronize()` around every call, and the pair it fitted --
+  `link_bw 16.37` / `link_latency 16,100 ns` -- then charged **1.24-1.51x** of
+  real NCCL at the sizes the simulator emits while being accurate to 0.97 on a
+  prefill chunk. That is the signature of a latency term carrying a per-call
+  cost a graph replay does not pay: the same 10 KB all-reduce reads 36.1 us
+  isolated, 25.0 back-to-back and **16.2 replayed from a graph**.
+
+  It now sweeps AllReduce, AllGather and ReduceScatter over twelve sizes on the
+  **charged-traffic** axis -- the quantity ASTRA-Sim multiplies by `1/BW`, which
+  at N=2 is `total`, `chunk` and `total/N` respectively -- and times each both
+  ways. One `(bandwidth, latency)` pair remains defensible because on that axis
+  the three nearly share a curve (AllGather/AllReduce 0.94-1.16,
+  ReduceScatter/AllReduce 1.00-1.14). The fit is against the graphed numbers and
+  lands at **15.92 GB/s / 6,600 ns**, pricing every collective the simulator
+  emits to within 5% where the old pair was 1.24-1.46x. Two independent runs
+  give 15.92/6,600 and 15.90/6,600, with the 36 graphed samples reproducing at a
+  median ratio of 1.0004. Per-collective residuals are recorded alongside the
+  overall one (AllGather 3.8%, ReduceScatter 4.8%, AllReduce 6.0%).
+
+  **An end-to-end agreement is not a measurement**, and this is the worked
+  example: sweeping `link_latency` against the Qwen3-32B example puts its error
+  minimum at 14,000-16,100 ns and its TTFT mean at exactly 0.0% at 16,100, and
+  the isolated NCCL sweep landed at 16,100 too. Two different wrong methods
+  agreed, which is why nothing caught it for four months.
+
+  Effect on the committed examples: Qwen3-30B-A3B's TTFT P90 **+17.3% ->
+  +6.7%** and TPOT mean **+2.8% -> +0.6%**; Qwen3-32B moves from +0.3% to
+  -1.2% TPOT; Llama-3.1-8B, which emits no collectives, is unchanged by this
+  and moves only from losing the step correction.
+
 ### Added
 - **`bench run --record-gate-stats` + `serving --gate-stats`: the MoE gate's
   distinct-expert count, measured instead of assumed.** The simulator prices an
