@@ -196,7 +196,6 @@ def run_full(
     # depth), and it is what the provenance stamp has to record -- not the
     # flag, the firing.
     skew_measured = False
-    step_measured = False
 
     for tp in args.tp_degrees:
         # Skip TPs with nothing non-tp_stable to do. The post-pass
@@ -328,57 +327,6 @@ def run_full(
                 finally:
                     spin_down(llm, tmpdir)
 
-        # Step sweep: the cudagraph term. Its own boot, because it is the one
-        # pass that needs graphs *on* -- with them on, ``layerwise_profile``
-        # has no per-module boundaries to attribute time to, so every other
-        # category needs them off. Inside that engine the sweep turns replay
-        # off per forward (``need_eager``), which is what lets both modes be
-        # compared without boot-to-boot drift swamping a 2-5% effect.
-        #
-        # The stack is the deepest one, not a shrunk axis set: the saving is
-        # ``kernel_count x launch_cost`` and the kernel count scales with the
-        # layer count, so a 1-layer engine measures a term that does not
-        # transfer -- it read 87% of the step there against ~2% at full depth.
-        if not args.skip_step:
-        # The stack has to be the checkpoint's **real** depth, which
-        # ``spin_up``'s default does not give: it resolves
-        # ``minimal_layer_count_for(config, ALL_AXES)``, and that is **1** for
-        # any model whose blocks are all alike -- Llama, Qwen3, Qwen3-30B-A3B.
-        # The saving is ``kernel_count x launch_cost`` and the kernel count
-        # scales with the layer count, so a 1-layer engine measures a term that
-        # does not transfer: it reads ~87% of its own step against ~2% at full
-        # depth. Qwen3-30B-A3B's first step.csv was measured that way and its
-        # ``saved_us`` came out 526 us where the real term, read off a
-        # production run's ``running / gen_throughput``, is 2.92 ms.
-        #
-        # An explicit ``--num-hidden-layers`` is overridden here rather than
-        # respected, because it exists to make the *other* categories fit and
-        # they are unaffected by depth. If the full stack will not boot with
-        # graphs on, the sweep fails and the bundle survives -- which is the
-        # honest outcome, since a shrunk measurement would be silently wrong.
-            step_args = _full_depth_args(args)
-            with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
-                           f"for the step sweep"):
-                llm, _, tmpdir = spin_up(step_args, tp, cudagraphs=True)
-                step_limits = probe_limits(llm, args)
-            try:
-                from profiler.core.step import sample_step
-                sample_step(llm, args, step_limits, tp, tp_root)
-                step_measured = True
-            except Exception as exc:                      # noqa: BLE001
-                # A graph-enabled boot allocates capture memory a checkpoint
-                # that only just fits under enforce_eager may not have. Losing
-                # the correction is a documented degradation; losing the whole
-                # bundle to it is not.
-                log.warning(
-                    "Step sweep failed (%s); bundle keeps its per-layer data "
-                    "and the simulator will predict eager execution. Re-run "
-                    "with --skip-step to silence, or lower "
-                    "--gpu-memory-utilization to make room for graph capture.",
-                    exc,
-                )
-            finally:
-                spin_down(llm, tmpdir)
 
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
@@ -418,8 +366,6 @@ def run_full(
         c.name for c in categories_for(arch, args.tp_degrees[0]))
     if skew_measured:
         measured += ("skew",)
-    if step_measured:
-        measured += ("step",)
     # And what it is entitled to *describe*. A skew-only run sweeps no
     # attention grid, so regenerating that block from its own defaults would
     # replace the recorded axes with a spec no CSV in the bundle matches --
@@ -439,24 +385,6 @@ def run_full(
 # Slice refresh
 # ---------------------------------------------------------------------------
 
-def _full_depth_args(args: ProfileArgs) -> ProfileArgs:
-    """``args`` with ``num_hidden_layers`` pinned to the checkpoint's own.
-
-    Only the step sweep wants this. Every other category measures a per-layer
-    latency that the simulator multiplies, so a shrunk stack is right there and
-    is what makes the sweeps affordable. The step term is per *step*, and its
-    size is the launch count, so it needs every layer.
-    """
-    full = (args.model_config or {}).get("num_hidden_layers")
-    try:
-        full = int(full)
-    except (TypeError, ValueError):
-        return args
-    if full <= 0 or full == args.num_hidden_layers:
-        return args
-    log.info("step sweep: booting the full %d-layer stack (the saving is "
-             "kernel_count x launch_cost, so depth is the measurement)", full)
-    return dataclasses.replace(args, num_hidden_layers=full)
 
 
 def run_slice(
@@ -470,49 +398,16 @@ def run_slice(
     arch = load_architecture(arch_path)
     variant_root = _variant_root(out_root, args)
 
-    if group != "step" and group not in CATEGORY_BY_NAME:
+    if group not in CATEGORY_BY_NAME:
         raise ValueError(
             f"unknown group {group!r}; must be one of "
-            f"{sorted(CATEGORY_BY_NAME) + ['step']}"
+            f"{sorted(CATEGORY_BY_NAME)}"
         )
     if tp not in args.tp_degrees:
         raise ValueError(
             f"tp={tp} is not in the session's tp_degrees ({args.tp_degrees})"
         )
 
-    if group == "step":
-        # The step sweep is not a Category -- it measures a whole forward and
-        # attributes it to no layer -- so it cannot go through the loop below.
-        # It gets its own branch rather than a fake Category, and it is worth
-        # having here: the sweep needs an engine with graphs *on*, so before
-        # this the only way to refresh it was a full re-profile, several hours
-        # for a sweep that takes minutes.
-        from profiler.core.step import sample_step
-
-        tp_root = variant_root / f"tp{tp}"
-        # Full depth, for the reason spelled out in ``run_full``'s step pass:
-        # the saving scales with the kernel count and a uniform model's
-        # ``minimal_layer_count_for`` is 1.
-        step_args = _full_depth_args(args)
-        with log.stage(f"TP={tp}  booting vLLM engine with cudagraphs "
-                       f"for the step sweep"):
-            llm, engine_kwargs, tmpdir = spin_up(step_args, tp, cudagraphs=True)
-            limits = probe_limits(llm, args)
-        try:
-            sample_step(llm, args, limits, tp, tp_root)
-        finally:
-            spin_down(llm, tmpdir)
-        # A graph-enabled boot is not authoritative for the shapes the
-        # simulator runs, and this run swept no attention grid, so it may
-        # stamp neither -- exactly as --only-skew may not.
-        replicate_tp_stable(variant_root, arch, args.tp_degrees)
-        persist_meta(args, arch_path, engine_kwargs, variant_root, {},
-                     records_engine=False,
-                     records_attention_grid=False,
-                     records_skew=False,
-                     measured_categories=("step",))
-        log.done(variant_root)
-        return
 
     category_cls = CATEGORY_BY_NAME[group]
     category = category_cls()

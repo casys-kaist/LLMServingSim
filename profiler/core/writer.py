@@ -561,7 +561,7 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
 # an ordinary keyed table. ``skew_fit`` is deliberately absent: it is derived
 # from skew.csv by the fit, and a slice refresh rewrites it without measuring
 # anything, so stamping it would claim a measurement that never happened.
-_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew", "step")
+_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew")
 
 
 def _tp_degrees_present(variant_root: Path, measured: list[int]) -> list[int]:
@@ -881,16 +881,6 @@ def replicate_tp_stable(
                 layer_whitelist=stable_seq,
             )
 
-        # ``step.csv`` is tp_stable as a whole file rather than per layer: the
-        # saving is ``kernel_count x launch_cost`` and a rank runs the same
-        # number of kernels at every TP degree -- only shapes shard. Checked on
-        # Qwen3-32B by measuring both degrees, where ``step_us`` drops to
-        # 0.50-0.56x while ``saved_us`` holds at 0.963x. It is a copy and not a
-        # merge because there is no layer column to whitelist on.
-        src_step = tp1_dir / "step.csv"
-        if src_step.exists():
-            shutil.copyfile(src_step, dst_dir / "step.csv")
-            log.debug("replicated step.csv -> tp%d", tp)
 
 
 def _replicate_layer_file(

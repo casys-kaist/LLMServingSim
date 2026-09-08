@@ -5,7 +5,6 @@ from .utils import *
 from .utils import (
     _load_architecture, _stack_module, get_architecture, get_layer_stack,
     num_experts as utils_num_experts, config_weight_dtype, config_kv_cache_dtype,
-    _cudagraph_capture_ceiling,
 )
 import pandas as pd
 import yaml
@@ -112,8 +111,6 @@ class TraceCtx:
     ep_total: int      # total EP degree across DP group
     tp_dim: list       # involved_dim for TP collectives (ALLREDUCE), None = all dims
     ep_dim: list       # involved_dim for EP collectives (ALLTOALL), None = all dims
-    cudagraph_capture_ceiling: int  # largest token count vLLM replays a graph
-                                    # for; see _cudagraph_mode_for
     num_speculative_tokens: int  # draft length N; the drafter runs N times per
                                  # step, so this is how many passes to emit
     dp_sum_total_len: int  # sum of total_len across DP group (0 = DP inactive). Captures the post-AG gathered size for MoE compute; dummy batches are pre-padded to max by serving/__main__.py so the sum reflects vLLM's CUDA-graph padding.
@@ -477,56 +474,6 @@ def _build_moe_table(df):
     return out
 
 
-def _load_step_tables(root: str, tps: list[int]) -> dict:
-    """Read every ``tp<N>/step.csv`` into ``{tp: {branch: {tokens: saved_ns}}}``.
-
-    What is read out is the **absolute saving**, which is what the CSV stores
-    and what the measurement says is the physically meaningful quantity: the
-    term is ``kernel_count x launch_cost``, so it belongs to the model rather
-    than to the step it is a fraction of. Measured on Qwen3-30B-A3B across a
-    5.5x range of step time, the saving holds at 635-1074 us while its *share*
-    swings from 0.3% to 44%.
-
-    It used to derive ``step/(step+saved)`` and multiply every layer by that.
-    On a dense model the two readings agree, because the simulator's predicted
-    step lands within a percent of the profiler's ``step_us``. On an MoE model
-    they do not: the profiler boots at ``load_format: dummy``, a random router
-    degenerates to picking the same ``top_k`` experts for every token, and
-    ``step_us`` is then several times smaller than the step production runs --
-    so a ratio built from it, applied to the simulator's own larger step,
-    inflates the correction. ``saved_us`` is launch overhead and carries no
-    weight-value dependence at all.
-
-    A branch keeps one entry per captured token count. Where a branch has
-    several rows at the same count (the FULL sweep fires two kv lengths, since
-    launch count should not depend on kv and that is worth checking rather than
-    assuming) their savings are averaged.
-    """
-    out: dict = {}
-    for tp in tps:
-        path = os.path.join(root, f"tp{tp}", "step.csv")
-        if not os.path.exists(path):
-            continue
-        acc: dict = {}
-        try:
-            df = pd.read_csv(path)
-        except Exception:                                  # noqa: BLE001
-            continue
-        for row in df.itertuples(index=False):
-            step = float(getattr(row, "step_us", 0.0) or 0.0)
-            saved = float(getattr(row, "saved_us", 0.0) or 0.0)
-            if step + saved <= 0:
-                continue
-            branch = str(getattr(row, "branch", "")).strip()
-            toks = int(getattr(row, "num_tokens", 0) or 0)
-            if not branch or toks <= 0:
-                continue
-            acc.setdefault(branch, {}).setdefault(toks, []).append(
-                saved * 1000.0)                        # us -> ns
-        if acc:
-            out[tp] = {b: {t: sum(v) / len(v) for t, v in d.items()}
-                       for b, d in acc.items()}
-    return out
 
 
 def _load_perf_db(hardware, model, variant, tp_needed, model_type,
@@ -589,10 +536,6 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         # block size). None on a dense model. Read here rather than per
         # lookup: it is a constant of the checkpoint, and the catalog says
         # which kernels are subject to it.
-        # Per-TP cudagraph correction, keyed by branch and captured token
-        # count. Empty when the bundle was profiled with --skip-step, which
-        # _step_saved_ns warns about rather than silently ignoring.
-        "step": _load_step_tables(root, sorted(available_tps)),
         "key_saturation": (
             _stack_module().probe_key_saturation(
                 _stack_module().text_config(model_config))
@@ -1410,9 +1353,6 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
         dp_min_total_len=dp_min_total_len,
         num_speculative_tokens=num_speculative_tokens,
-        cudagraph_capture_ceiling=_cudagraph_capture_ceiling(
-            runtime_max_num_seqs or 0, runtime_max_num_batched_tokens or 0,
-            num_speculative_tokens),
     )
 
 
@@ -1491,175 +1431,6 @@ def _layer_category(perf_db, layer_name):
         if _catalog_has(perf_db, cat, layer_name):
             return cat
     return None
-
-
-# ---------------------------------------------------------------------------
-# Step correction: the cudagraph term the per-layer profile cannot contain
-# ---------------------------------------------------------------------------
-# Every latency in a bundle is measured with ``enforce_eager=True``, because
-# ``layerwise_profile`` builds its tree from per-module CUDA events and
-# torch.compile fuses those boundaries away. Production runs the compiled +
-# cudagraph path. So the sum of profiled layers predicts *eager* execution --
-# measured end to end at +0.5% against an eager truth on Llama-3.1-8B and
-# -1.1% on Qwen3-32B -- and is 2-3% slow against the cudagraph truth those
-# examples actually run.
-#
-# ``profiler/core/step.py`` measures the difference on vLLM's own capture-size
-# grid and writes ``tp<N>/step.csv``. Which branch a batch takes is vLLM's
-# rule, not ours (``v1/cudagraph_dispatcher.py:272``, documented at
-# ``config/compilation.py:630``):
-#
-#     num_tokens > max_cudagraph_capture_size   -> NONE       (no graph)
-#     else, uniform decode                      -> FULL       (one graph/step)
-#     else                                       -> PIECEWISE  (graphs per piece)
-#
-# ``uniform_decode`` is ``gpu_model_runner.py:3990``:
-# ``max_num_scheduled_tokens == 1 + num_spec`` and
-# ``num_tokens == max_num_scheduled_tokens * num_reqs`` -- every request
-# submits the same query length and none is a prefill chunk.
-#
-# **What is applied is a ratio, but it is looked up per case rather than held
-# constant.** The measured quantity is an absolute saving: fitted against
-# shapes spanning 2.4x in step time, a constant saving leaves an RMS residual
-# of 96 us against 227 us for a constant ratio, because the saving is
-# ``kernel_count x launch_cost`` and the kernel count belongs to the model, not
-# the batch. A ratio still works as the *operation*, since the trace ->
-# ASTRA-Sim pipeline is proportional (scaling layers by 0.974 moved the
-# simulator's median ITL by -2.59%), and the simulator's own step is close to
-# the no-graph step it was calibrated against -- so the ratio a case implies
-# for its own step is the right multiplier here. It has to come from the
-# matching case, though, not from an average.
-#
-# The lookup rounds ``num_tokens`` **up** into the capture grid, because vLLM
-# pads a batch to the next captured size and replays that graph. Padding is
-# partial in practice -- an off-grid decode came within +0.1 to +1.3% of its
-# bucket, since input prep, sampling and output processing still scale with the
-# real batch -- so the round-up governs the correction while the base cost
-# stays on the profiled curves at the real size.
-_step_missing_warned: set = set()
-
-
-def _cudagraph_mode_for(ctx, bctx) -> str:
-    """Which cudagraph mode vLLM would dispatch for this batch."""
-    ceiling = ctx.cudagraph_capture_ceiling
-    if not ceiling or bctx.total_len > ceiling:
-        return "none"
-    if bctx.prefill_chunk == 0 and bctx.n_decode > 0:
-        return "full"
-    return "piecewise"
-
-
-def _step_saved_ns(ctx, bctx) -> float:
-    """Nanoseconds the cudagraph path saves this rank on this batch.
-
-    Returns 0.0 -- and warns once per bundle -- when the bundle carries no
-    step data. That is deliberately noisy: unlike skew, where no data means no
-    correction because a guessed alpha is worse than none, here the direction
-    and rough size of the missing term are established, so silence would hide
-    a known 2-3% bias. It is exactly the silence that made the term invisible
-    until an engine upgrade removed the offsetting error.
-
-    Divided by ``pp_size`` because the saving is ``kernel_count x
-    launch_cost`` and it was measured on a whole model at ``pp_size 1``: a
-    pipeline stage launches its own slice of the kernels, so charging each
-    stage the whole model's saving would subtract it ``pp_size`` times over.
-    """
-    table = ctx.perf_db.get("step", {}).get(ctx.tp_size)
-    if not table:
-        key = (ctx.perf_db["hardware"], ctx.perf_db["model"],
-               ctx.perf_db["variant"], ctx.tp_size)
-        if key not in _step_missing_warned:
-            _step_missing_warned.add(key)
-            logger.warning(
-                "No step.csv for %s/%s/%s tp%d: the simulator will predict "
-                "eager execution, which is 2-3%% slower than the compiled + "
-                "cudagraph path production runs. Re-profile without "
-                "--skip-step to correct it.",
-                *key,
-            )
-        return 0.0
-    mode = _cudagraph_mode_for(ctx, bctx)
-    rows = table.get(mode)
-    if not rows:
-        return 0.0
-    # Round up into the capture grid: vLLM pads a batch to the next captured
-    # size and replays *that* graph, so there is nothing between two grid
-    # points to interpolate -- the round-up is the rule, not an approximation.
-    toks = sorted(rows)
-    hi = next((t for t in toks if t >= bctx.total_len), toks[-1])
-    return float(rows[hi]) / max(1, int(ctx.pp_size or 1))
-
-
-# Floor on the step correction. The saving is a fixed launch cost while the
-# step it comes out of is not, so on a small enough batch it is a large share
-# -- 44% of a one-sequence decode on Qwen3-30B-A3B, which is real. What is
-# *not* credible is a saving that exceeds the work: that means the bundle's
-# step.csv describes a different model than the one being simulated.
-_STEP_SCALE_FLOOR = 0.25
-_step_floor_warned: set = set()
-
-
-def _apply_step_correction(ctx, rows, bctx_by_tag) -> None:
-    """Subtract the cudagraph saving from a finished trace, in place.
-
-    The saving is an absolute number of nanoseconds, so it is taken out of the
-    trace's own predicted total rather than applied as a per-layer ratio --
-    ``scale = 1 - saved / total`` distributes it in proportion to each layer's
-    time, which is the same subtraction and keeps every row positive.
-
-    Doing it here rather than inside ``_emit_layer`` is what makes the
-    denominator the *simulator's* step instead of the profiler's ``step_us``.
-    Those differ on an MoE model by several times -- see
-    ``_load_step_tables``.
-
-    Rows carrying a batch tag are corrected per tag: sub-batch interleaving
-    puts two batches in one trace and each is its own forward.
-    """
-    saved_by_tag: dict = {}
-    total_by_tag: dict = {}
-    for i, row in enumerate(rows):
-        if len(row) < 11:
-            continue                                   # EXPERT / PIM marker
-        tag = row[10]
-        total_by_tag[tag] = total_by_tag.get(tag, 0) + int(row[1])
-    if not total_by_tag:
-        return
-    for tag in total_by_tag:
-        bctx = bctx_by_tag.get(tag)
-        if bctx is None:
-            continue
-        saved_by_tag[tag] = _step_saved_ns(ctx, bctx)
-    if not any(saved_by_tag.values()):
-        return
-    scale_by_tag = {}
-    for tag, saved in saved_by_tag.items():
-        total = total_by_tag.get(tag, 0)
-        if total <= 0 or saved <= 0:
-            continue
-        scale = 1.0 - saved / total
-        if scale < _STEP_SCALE_FLOOR:
-            key = (ctx.perf_db["hardware"], ctx.perf_db["model"], ctx.tp_size)
-            if key not in _step_floor_warned:
-                _step_floor_warned.add(key)
-                logger.warning(
-                    "Step correction for %s/%s tp%d wanted to remove %.0f ns "
-                    "from a %.0f ns step (scale %.3f); clamped to %.2f. A "
-                    "saving that large against the predicted work means the "
-                    "bundle's step.csv describes a different model.",
-                    key[0], key[1], key[2], saved, total, scale,
-                    _STEP_SCALE_FLOOR,
-                )
-            scale = _STEP_SCALE_FLOOR
-        scale_by_tag[tag] = scale
-    if not scale_by_tag:
-        return
-    for i, row in enumerate(rows):
-        if len(row) < 11:
-            continue
-        scale = scale_by_tag.get(row[10])
-        if scale is None or scale >= 1.0:
-            continue
-        rows[i] = (row[0], str(max(1, int(round(int(row[1]) * scale))))) + row[2:]
 
 
 def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer_num=None,
@@ -2558,7 +2329,6 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
     _emit_drafter(ctx, bctx, rows, str(batch.batch_id))
     _emit_pp_pd_power(ctx, bctx)
 
-    _apply_step_correction(ctx, rows, {'NONE': bctx})
 
     return rows, block_starts
 
@@ -2659,7 +2429,6 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
 
     _emit_pp_pd_power(ctx, bctx1)
 
-    _apply_step_correction(ctx, rows, {'BATCH_1': bctx1, 'BATCH_2': bctx2})
 
     # Sub-batch interleaving leaves both sub-batches mid-block at every
     # group edge, so there is no single tensor to hand to the next stage.

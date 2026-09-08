@@ -78,7 +78,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **resume** | `--force` (default is resume) |
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
-| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp,step}`. `--tp-refresh N` needs `N` to be in `--tp` too |
+| **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
 
 The five that decide how long a run takes, in rough order of effect:
 
@@ -287,92 +287,6 @@ Crank any factor above 2.0 to coarsen that axis and cut profile time
 for denser sampling in axes where accuracy matters. The effective
 values land in `meta.yaml::skew_profile.factors`.
 
-#### Step sweep
-
-The profiler measures every latency with `enforce_eager=True` — it has no
-choice, because `layerwise_profile` builds its tree from per-module CUDA events
-and `torch.compile` fuses those boundaries away. Production runs the compiled +
-cudagraph path, so the sum of profiled layers predicts *eager* execution and is
-2-3% slow against what a serving run actually does. The step sweep measures
-that gap into `step.csv`.
-
-```bash
-SKIP_STEP=1                         # skip the sweep — the simulator then predicts
-                                    # eager execution and warns once per bundle.
-```
-
-On by default and cheap in forwards (~16 ms each outside `layerwise_profile`
-against ~372 ms inside), but it needs a **second engine boot with cudagraphs
-on**, which is why the switch exists: graph capture allocates memory a
-checkpoint that only just fits under `enforce_eager` may not have, and a
-per-category `slice` refresh has no reason to pay the boot. A failed boot logs
-and keeps the bundle rather than losing it.
-
-What it records is an absolute saving in microseconds, per branch, on **vLLM's
-own capture-size grid** — the engine is asked for `cudagraph_capture_sizes` and
-the sweep fires exactly those, because vLLM pads a batch up to the next
-captured size and replays *that* graph. Which branch a batch takes is vLLM's
-rule (`v1/cudagraph_dispatcher.py:272`):
-
-| `num_tokens` vs `max_cudagraph_capture_size` | batch | branch |
-|---|---|---|
-| over | anything | `NONE` — no graph at all |
-| under | uniform decode | `FULL` — one graph per step |
-| under | prefill or mixed | `PIECEWISE` — graphs per piece |
-
-Measured on RTXPRO6000/Llama-3.1-8B: `FULL` saves 587 us, `PIECEWISE` 482 us,
-`NONE` **5 us** — statistically zero, which is the control that says the
-measurement hook does what it claims.
-
-That control is load-bearing, and so is a second one. vLLM 0.28 has two model
-runners that reach the cudagraph decision by *different objects* — MoE and
-hybrid models take the V1 runner, everything else V2 — so a hook that patches
-one covers half the models and reads a saving of ~0 on the rest, which looks
-exactly like "cudagraphs buy nothing here". The sweep counts how often it
-actually intercepted a dispatch and **fails** when that is zero, rather than
-writing zeros.
-
-The saving scales with the model's kernel count, not with the batch: Qwen3-32B
-(64 layers, 644 entries/step) saves 1068 us against Llama's 587 (32 layers,
-324 entries), i.e. 1.66-1.81 us per launch on both. So it has to be measured
-per model — and it is **TP-invariant**, since each rank runs the same *number*
-of kernels whatever the TP degree, so one measurement at TP=1 serves all of
-them.
-
-**MoE models are not supported and the sweep says so.** Forcing the no-graph
-mode on an MoE block makes the two columns stop being the same computation.
-Measured on Qwen3-30B-A3B at full depth, one token: 7,777 us with replay
-against 33,412 us with NONE, a 76.7% "saving" against the dense models' 1-4%.
-Read as launch overhead that is 66 us per launch against a real 1.7. A
-plausibility bound aborts on it, so MoE bundles have no `step.csv` and the
-simulator warns once.
-
-**What the extra 4.3x is has not been identified**, and this README used to
-claim it was the NONE path computing *every* expert — all 128 experts' weights
-are 57.98 GB, 36,293 us at 1597.6 GB/s, and 33,412 is 92% of that. Two
-measurements refute it: the two columns launch the **same number of kernels**
-(283 against 283), which a different set of experts could not do, and the cost
-does not scale with the expert count (`E = 8` reads 25,858 us against
-`E = 32`'s 19,878, where reading every expert would make the larger model 4x
-the smaller). The agreement is a coincidence. None of it changes the guard,
-which asks only whether the two columns are the same computation.
-
-**The sweep boots the checkpoint's real depth, and that is load-bearing for
-the bound above.** `spin_up`'s default shrinks to
-`minimal_layer_count_for(config, ALL_AXES)`, which is 1 for any model whose
-blocks are all alike. At 1 layer the saving does not transfer (the kernel count
-scales with depth) *and* the whole MoE weight is 1.21 GB, so reading every
-expert costs 757 us and hides inside the framework term — the same model then
-measures a 44% share that really is ordinary overhead, which makes the
-plausibility bound look like a false positive. Both errors have to be present
-to write a bad number, and both were.
-
-There is a second, independent check on the `none` rows: they sit above the
-capture ceiling where vLLM dispatches no graph either way, so they must measure
-**zero**. Qwen3-30B-A3B's come in at -62 and -32 us. That is what says the
-toggle reaches the dispatch at all, which no plausibility bound can tell you —
-a version patching only the V2 runner measured -1 us and passed everything by
-measuring nothing.
 
 #### Measuring the machine: `profiler hardware`
 
@@ -899,19 +813,3 @@ python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000     --tp 1,2 --t
 
 Otherwise it exits with `tp=2 is not in the session's tp_degrees ([1])`.
 
-`--group step` is the one group that is not a per-layer category: it measures a
-whole forward and attributes it to no layer, so it takes its own branch and
-boots the engine with cudagraphs **on**. It is here because the sweep takes
-minutes while a full re-profile takes hours, and refreshing the cudagraph term
-was otherwise only possible as part of one. It stamps neither `engine_*` nor
-`attention_grid` in `meta.yaml` — a graph-enabled boot is not the engine whose
-shapes the simulator runs, and this run sweeps no attention grid — exactly as
-`--only-skew` may not.
-
-```bash
-python -m profiler slice meta-llama/Llama-3.1-8B \
-    --hardware RTXPRO6000 --tp-refresh 1 --group step
-```
-
-The saving is TP-invariant, so it is measured at TP=1 and replicated into the
-other `tp<N>/` folders by the writer.
