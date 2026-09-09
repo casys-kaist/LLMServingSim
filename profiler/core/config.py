@@ -704,6 +704,34 @@ def resolve_architecture_by_model_type(
 # Profile session args (CLI, no yaml)
 # ---------------------------------------------------------------------------
 
+#: Default geometric factor for every swept axis.
+#:
+#: Every sweep axis is geometric, and the factor is the one knob that trades
+#: shots for resolution. sqrt(2) rather than 2.0 or some other value below it,
+#: for three reasons that hold on all of them:
+#:
+#: 1. **A doubling grid is a strict subset of it.** ``_geometric_grid``
+#:    accumulates in float and rounds only for output, so the even powers land
+#:    exactly: 0, 1, 2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256.
+#:    A refresh from x2 therefore *reuses every prior row* and fires only the
+#:    odd steps -- 99.9% of Llama-3.1-8B's 37,962 attention rows survive,
+#:    against 37.9% at 1.5, which orphans 23,579 of them outside the grid its
+#:    own ``meta.yaml`` declares.
+#: 2. **The resolution is needed.** A doubling grid's blend over-charges the
+#:    middle of an interval wherever the kernel is not linear across it: up to
+#:    12.7% on ``n_decode`` between 64 and 128 on a mixed batch (see
+#:    ``attention_n_factor``), and ~3x on a sparse model's decode.
+#: 3. **It costs about 1.4x the shots**, not 2x -- one extra value per
+#:    doubling.
+#:
+#: A bundle records the factor it was swept at, per axis, in
+#: ``meta.yaml::attention_grid``. **Refreshing one axis of an existing bundle
+#: means restating the others**, or the defaults silently re-grid them: the
+#: RTXPRO6000 Llama/Qwen bundles are at 1.5 on chunk and kv, everything else
+#: at 2.0.
+SQRT2 = 2.0 ** 0.5
+
+
 @dataclass(frozen=True)
 class ProfileArgs:
     """One profiling session's settings.
@@ -840,8 +868,8 @@ class ProfileArgs:
     attention grid, so it is opt-in: pass the ``1 + N`` values you intend to
     simulate. Published N for the four modern families are 3, 4 and 5.
     """
-    attention_chunk_factor: float = 2.0
-    """Geometric factor for the prefill-token axis. Default 2.0 (doubling);
+    attention_chunk_factor: float = SQRT2
+    """Geometric factor for the prefill-token axis. Default ``SQRT2``;
     override via --attention-chunk-factor.
 
     It was briefly 1.5, on an end-to-end A/B that turned out to be confounded.
@@ -852,25 +880,71 @@ class ProfileArgs:
     off**, so the execution mode matches what the profiler can measure, the
     two grids read |err| p50 2.7% (x2) against 3.4% (x1.5 union) -- the
     advantage is gone and slightly reversed. Do not lower this again without
-    an A/B whose truth matches the bundle's vLLM version *and* runs eager."""
-    attention_kv_factor: float = 2.0
-    """Geometric factor for the prefill-key and kv_decode axes. Default 2.0;
-    override via --attention-kv-factor. See the note above."""
-    attention_n_factor: float = 2.0
+    an A/B whose truth matches the bundle's vLLM version *and* runs eager.
+
+    That is an argument against 1.5, not against ``SQRT2``, and the two are
+    not interchangeable: 1.5 lands on none of the doubling grid's values above
+    2, so it *replaces* a bundle's measurements, while ``SQRT2`` interleaves
+    with them. What the A/B refutes is the claim that a denser chunk axis pays
+    for a re-measure on its own; it says nothing about the value to sweep a
+    *new* bundle at.
+
+    **Every committed RTXPRO6000 Llama/Qwen bundle is at 1.5 on this axis and
+    on kv** -- `meta.yaml` records `chunk_factor: 1.5, kv_factor: 1.5` -- and
+    every other bundle is at 2.0. So a `slice --group attention` refresh at
+    the defaults would silently re-grid those two axes as well as the one
+    being refreshed. Pass the bundle's own `--attention-chunk-factor` /
+    `--attention-kv-factor` (and `--attention-max-kv` and `--max-num-seqs`,
+    which the meta also records) to refresh one axis without moving the
+    others."""
+    attention_kv_factor: float = SQRT2
+    """Geometric factor for the prefill-key and kv_decode axes. Default
+    ``SQRT2``; override via --attention-kv-factor. See the note above."""
+    attention_n_factor: float = SQRT2
     """Geometric factor for the n_decode axis. Override via
     --attention-n-factor.
 
-    The only one of the four attention axes that had no knob, while the skew
-    sweep's own n axis has had ``--skew-n-factor`` all along. It stays at
-    doubling by default because on dense attention that axis is smooth --
-    per-sequence decode cost on Llama-3.1-8B runs 23.25 / 22.79 / 22.25 /
-    22.14 us at n = 16 / 32 / 64 / 128 -- so a denser sweep costs 50% more
-    shots for nothing. A sparse model needs it lower: DeepSeek-V3.2's
-    per-sequence cost drops ~3x between n=64 and n=128 at **every** kv
-    (48.63 -> 15.64 us/seq at kv=256, 7.57 -> 3.45 at kv=8192), and a doubling
-    grid interpolates straight across that step.
-    """
+    **Below doubling, because the axis is smooth only on a *pure decode*
+    batch.** It was 2.0 on exactly that evidence -- per-sequence decode cost
+    on Llama-3.1-8B is flat and slightly falling, 6.60 / 6.33 / 5.94 / 5.81 /
+    5.70 us at n = 16 / 32 / 64 / 128 / 256 (kv 2076) -- and that measurement
+    is right. It just does not describe a **mixed** batch, where the same
+    model rises **37%** across the same doubling:
 
+        n_decode      16    32    64    72    80    88    96   104   112   128
+        pure  us/seq 6.60  6.33  5.94    -     -     -     -     -     -  5.81
+        mixed us/seq 9.18  9.28  8.99  9.33  9.45  9.47 10.39 11.03 11.55 12.31
+
+    (chunk 273, kv 2076, one prefill sequence; the mixed figures subtract the
+    chunk's own 13.2 us.) The curve is flat to n=88 and then climbs, so a
+    doubling grid's linear blend between 64 and 128 over-charges the middle by
+    up to **12.7%** -- blend 954.2 us against a measured 846.3 at n=88, 1081.3
+    against 1010.3 at n=96. ``SQRT2`` puts a profiled point at **91**, i.e. on
+    the knee.
+
+    That is where a real run lives: matching Llama-3.1-8B's steps against a
+    vLLM run one for one, the simulator is exact at n_decode 0 and 32 (both
+    grid points: 0.983-1.032) and 5-12% slow at 64-127, with attention 54.8%
+    of such a step. It is the largest identified piece of that example's
+    +4.8% TTFT.
+
+    Note what kind of evidence this is. The chunk and kv factors were lowered
+    once on an end-to-end A/B and reverted when that turned out confounded
+    (see ``attention_chunk_factor``); this is not that. It is the
+    interpolation error of the modelled quantity, measured against the same
+    engine in the same run, so no vLLM version or execution mode enters it.
+
+    A sparse model needs it lower still: DeepSeek-V3.2's per-sequence cost
+    drops ~3x between n=64 and n=128 at **every** kv (48.63 -> 15.64 us/seq at
+    kv=256, 7.57 -> 3.45 at kv=8192).
+
+    **1.5 is the wrong way to get that resolution**, even though it is
+    denser. It lands on none of the doubling grid's values above 2, so it
+    discards what a bundle already holds -- 37.9% reuse and 23,579 orphaned
+    rows on Llama-3.1-8B, against ``SQRT2``'s 99.9% and 19 -- and needs
+    37,696 new shots where ``SQRT2`` needs 28,272. Measured at 2.19 shot/s
+    that is 4.8 h against 3.6 h, for a grid that is no better placed.
+    """
     # Measurement averaging
     measurement_iterations: int = 3
     """N timed forwards per shot, averaged."""
@@ -897,18 +971,34 @@ class ProfileArgs:
     # default 2.0 (doubling) is what ships today; crank higher
     # (e.g. 4.0) to coarsen the sweep and cut profile time when the
     # target workload doesn't stress every axis.
+    # The skew axes stay at 2.0 rather than following ``SQRT2``, and the
+    # reason is that density is not free here the way it is on the attention
+    # grid. ``fit_alpha`` derives one bucket per *profiled value* on ``n`` and
+    # ``kp``, so halving the step doubles the bucket count and halves the
+    # samples behind each alpha -- the fit already sits at ~2 samples per
+    # bucket, which is why the simulator reads the pooled ``alpha_default``
+    # for every mixed batch. ``pc`` is keyed by its raw value and a runtime
+    # chunk lands on a grid point only by coincidence, so a denser pc axis
+    # buys nothing at all. The one axis where density *would* pool samples is
+    # ``kvs``, inside its log-4x ``kv_big`` bin; lower that one alone if the
+    # skew fit needs support where a workload actually sits.
     skew_n_factor: float = 2.0
     """Geometric factor for the skew n (total decode count) axis.
-    Default 2.0 (doubling). Override via --skew-n-factor."""
+    Default 2.0 (doubling). Override via --skew-n-factor. See the note
+    above: one bucket is derived per profiled value on this axis."""
     skew_pc_factor: float = 2.0
     """Geometric factor for the skew pc (prefill chunk) axis.
-    Default 2.0. Override via --skew-pc-factor."""
+    Default 2.0. Override via --skew-pc-factor. Keyed raw by the fit, so
+    a runtime lookup misses it regardless of density."""
     skew_kp_factor: float = 2.0
     """Geometric factor for the skew kp (prefill history) axis.
-    Default 2.0. Override via --skew-kp-factor."""
+    Default 2.0. Override via --skew-kp-factor. One bucket per profiled
+    value, as with ``skew_n_factor``."""
     skew_kvs_factor: float = 2.0
     """Geometric factor for the skew kvs (small-decode kv) axis.
-    Default 2.0. Override via --skew-kvs-factor."""
+    Default 2.0. Override via --skew-kvs-factor. The one skew axis whose
+    values share a bucket (log-4x ``kv_big`` bins), so lowering this one
+    pools more samples per alpha instead of splitting them."""
 
     only_skew: bool = False
     """If True, skip dense/per_sequence/attention/moe categories and

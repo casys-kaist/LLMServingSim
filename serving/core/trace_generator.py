@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from .request import *
@@ -1135,6 +1136,18 @@ def _lookup_attention_with_skew(
     # end is higher.
     if t_max <= t_mean and not _key_saturates(perf_db, layer):
         return max(1, int(round(t_mean)))
+    # The skew term is the one part of an attention lookup that cannot be
+    # reconstructed from the trace: the row carries only the blended result,
+    # so a residual that is really alpha x an over-long lever looks like a
+    # grid error. Log both endpoints and the alpha that joined them.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "skew %s: pc=%d key=%d n=%d kv %d/%d/%d -> t_mean=%.1f "
+            "t_max=%.1f alpha=%.4f out=%.1f", layer, prefill_chunk,
+            int(prefill_key), n_decode, kv_decode_min, kv_decode_mean,
+            kv_decode_max, t_mean / 1000.0, t_max / 1000.0, alpha,
+            (t_mean + alpha * (t_max - t_mean)) / 1000.0,
+        )
     return max(1, int(round(t_mean + alpha * (t_max - t_mean))))
 
 
@@ -2301,10 +2314,27 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
     # a per-shape error -- but nothing in a normal run needs it.
     logger.debug(
         "Batch #%d shape: total_len=%d prefill_chunk=%d n_decode=%d "
-        "n_prefill=%d", batch.batch_id, batch.total_len, bctx.prefill_chunk,
+        "n_prefill=%d prefill_key=%d kv_mean=%d kv_max=%d kv_min=%d "
+        "q_len=%d", batch.batch_id, batch.total_len, bctx.prefill_chunk,
         bctx.n_decode, len(batch.requests) - bctx.n_decode,
+        round(bctx.prefill_key), bctx.kv_decode_mean, bctx.kv_decode_max,
+        bctx.kv_decode_min, bctx.decode_q_len,
         extra={"node_id": node_id, "instance_id": instance_id},
     )
+
+    # The batch's exact composition, so a shape the simulator got wrong can be
+    # re-fired at the profiler verbatim rather than approximated by the grid
+    # coordinate it was looked up at. Guarded on the level so the list -- up to
+    # max_num_seqs entries -- costs nothing in a normal run.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Batch #%d compose: decode_k=%s prefill=%s", batch.batch_id,
+            ",".join(str(k) for k in batch.decode_k_list),
+            ",".join(f"{c}:{k}" for c, k in zip(
+                batch.prefill_q_list,
+                batch.prefill_k_list)),
+            extra={"node_id": node_id, "instance_id": instance_id},
+        )
 
     # Line index at which each transformer block starts, used to cut
     # pipeline stages on block boundaries (see _pp_stage_boundaries).

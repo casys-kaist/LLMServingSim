@@ -128,6 +128,16 @@ ATTENTION_CHUNK_FACTOR=2.0
 # Geometric factor for kv_prefill / kv_decode axes. 2.0 is doubling;
 # lower for denser long-context coverage.
 ATTENTION_KV_FACTOR=2.0
+# Geometric factor for the n_decode axis. sqrt(2) (the default) rather than
+# doubling, because the axis is smooth only on a *pure decode* batch: on
+# Llama-3.1-8B the per-sequence cost is flat there (6.60/6.33/5.94/5.81 us at
+# n=16/32/64/128) while a **mixed** batch rises 37% across the same doubling
+# (8.99 -> 12.31 us/seq) with a knee near n=88 -- so a doubling grid's blend
+# over-charges the middle by up to 12.7%, and a real run's prefill steps sit
+# there. sqrt(2) rather than any other value below 2 because it makes the
+# doubling grid a strict subset, so a refresh reuses every prior row instead
+# of orphaning it. Raise it to 2.0 if the sweep is too slow.
+ATTENTION_N_FACTOR=1.4142135623730951
 # Query tokens per decode sequence. "1" is ordinary decoding. A
 # speculative-decoding verification step submits 1 + num_speculative_tokens
 # queries per sequence against that sequence's own KV, which is a different
@@ -217,6 +227,7 @@ done
 [[ -n "${ATTENTION_MAX_KV:-}" ]]       && cmd+=(--attention-max-kv "$ATTENTION_MAX_KV")
 [[ -n "${ATTENTION_CHUNK_FACTOR:-}" ]] && cmd+=(--attention-chunk-factor "$ATTENTION_CHUNK_FACTOR")
 [[ -n "${ATTENTION_KV_FACTOR:-}" ]]    && cmd+=(--attention-kv-factor "$ATTENTION_KV_FACTOR")
+[[ -n "${ATTENTION_N_FACTOR:-}" ]]     && cmd+=(--attention-n-factor "$ATTENTION_N_FACTOR")
 [[ -n "${ATTENTION_DECODE_Q_LENS:-}" ]] && cmd+=(--attention-decode-q-lens "$ATTENTION_DECODE_Q_LENS")
 [[ -n "${MEASUREMENT_ITERATIONS:-}" ]] && cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
 [[ -n "${SKIP_SKEW:-}" ]]              && cmd+=(--skip-skew)
