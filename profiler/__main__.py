@@ -57,6 +57,7 @@ from typing import Any
 
 from profiler.core import logger as log
 from profiler.core.config import (
+    SQRT2,
     ProfileArgs,
     detect_model_type,
     read_model_config,
@@ -222,22 +223,31 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "neither a prefill chunk of the same size nor that many "
                         "single-token decodes. Opt-in because it multiplies the "
                         "attention grid.")
-    p.add_argument("--attention-chunk-factor", type=float, default=2.0,
+    p.add_argument("--attention-chunk-factor", type=float, default=SQRT2,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
                         "2.0 (default) is doubling; lower for a denser grid.")
-    p.add_argument("--attention-kv-factor", type=float, default=2.0,
+    p.add_argument("--attention-kv-factor", type=float, default=SQRT2,
                    dest="attention_kv_factor",
                    help="Geometric factor for the prefill-key and kv_decode "
-                        "axes. 2.0 (default) is doubling.")
-    p.add_argument("--attention-n-factor", type=float, default=2.0,
+                        "axes. sqrt(2) (default); 2.0 is doubling and is a "
+                        "strict subset of it, so a coarse sweep can be "
+                        "densified later without re-measuring.")
+    p.add_argument("--attention-n-factor", type=float, default=SQRT2,
                    dest="attention_n_factor",
-                   help="Geometric factor for the n_decode axis. 2.0 "
-                        "(default) is doubling, which is right for dense "
-                        "attention -- that axis is smooth there. Lower it on "
-                        "a sparse model: DeepSeek-V3.2's per-sequence decode "
-                        "cost drops ~3x between n=64 and n=128 at every kv, "
-                        "and doubling interpolates across the step.")
+                   help="Geometric factor for the n_decode axis. sqrt(2) "
+                        "(default): the axis is smooth on a *pure decode* "
+                        "batch -- Llama-3.1-8B's per-sequence cost is flat at "
+                        "6.60/6.33/5.94/5.81 us for n=16/32/64/128 -- but a "
+                        "**mixed** batch rises 37%% across the same doubling "
+                        "(8.99 -> 12.31 us/seq), with a knee near n=88 that "
+                        "sqrt(2) samples at 91, so a doubling grid's blend "
+                        "over-charges the middle by up to 12.7%%. Lower still "
+                        "on a sparse model: DeepSeek-V3.2's per-sequence cost "
+                        "drops ~3x between n=64 and n=128 at every kv. Raise "
+                        "it to 2.0 if the sweep is too slow -- that grid is a "
+                        "subset, so the missing points can be added later "
+                        "without re-measuring what is already there.")
     p.add_argument("--measurement-iterations", type=int, default=3,
                    dest="measurement_iterations",
                    help="Timed forwards per shot (averaged). A single sample "
@@ -453,7 +463,7 @@ def _build_profile_args(
         ) or (1,),
         attention_chunk_factor=ns.attention_chunk_factor,
         attention_kv_factor=ns.attention_kv_factor,
-        attention_n_factor=getattr(ns, "attention_n_factor", 2.0),
+        attention_n_factor=getattr(ns, "attention_n_factor", SQRT2),
         measurement_iterations=ns.measurement_iterations,
         skip_skew=getattr(ns, "skip_skew", False),
         skew_n_factor=getattr(ns, "skew_n_factor", 2.0),

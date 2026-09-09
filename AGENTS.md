@@ -888,6 +888,107 @@ gap is noise -- and wrong for a saturating kernel, where the gap is negative
 for essentially every case, so a sparse skew sweep would have had almost every
 row dropped as `nan`.
 
+### Every swept axis is geometric at sqrt(2), and 1.5 is a dead end
+`SQRT2 = 2.0 ** 0.5` in `profiler/core/config.py` is the default factor for
+all three attention axes. What picks it over 1.5 -- which is *coarser*, not
+finer, since 1.5 > sqrt(2) -- is that `_geometric_grid` accumulates in float
+and rounds only for output, so the even powers land exactly:
+
+```
+sqrt(2)  0, 1, 2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256
+x2       0, 1, 2,    4,    8,     16,     32,     64,      128,      256   <- a strict subset
+1.5      0, 1, 2, 3, 5, 8, 11, 17, 26, 38, 58, 86, 130, 195, 256          <- shares {0,1,2,8}
+```
+
+A doubling grid is therefore a **subset** of the sqrt(2) grid, and that is
+what makes density a decision you can defer: sweep a new bundle at 2.0, and
+the missing points can be added later by firing only them. 1.5 has no such
+relation in either direction -- on the chunk axis it shares exactly
+`{0, 16, 2048}` with both 2.0 and sqrt(2) -- so **a 1.5 bundle is a dead end
+on that axis**: any later change to it is a full re-measure. Llama-3.1-8B's
+attention refresh reuses **99.9%** of its 37,962 rows at sqrt(2) against
+**37.9%** at 1.5, which would orphan 23,579 of them outside the grid its own
+`meta.yaml` declares.
+
+Per doubling sqrt(2) gives 2 points and 1.5 gives 1.71, so sqrt(2) is denser
+on every axis (chunk 16 values against 14, prefill_key 23 against 20, kv 22
+against 20, n_decode 17 against 15) and costs 1.64x a 1.5 grid's shots across
+the four.
+
+**The accuracy case is specific to `n_decode`, and it does not extend to
+chunk or kv.** That axis is smooth on a *pure decode* batch -- per-sequence
+cost on Llama-3.1-8B is flat and slightly falling, 6.60 / 6.33 / 5.94 / 5.81
+us at n = 16 / 32 / 64 / 128 -- which is what a doubling grid was chosen on,
+and that measurement is right. It just does not describe a **mixed** batch,
+where the same model rises 37% across the same interval (chunk 273, kv 2076,
+one prefill sequence):
+
+| n_decode | 16 | 32 | 64 | 72 | 80 | 88 | 96 | 104 | 112 | 128 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pure us/seq | 6.60 | 6.33 | 5.94 | | | | | | | 5.81 |
+| mixed us/seq | 9.18 | 9.28 | 8.99 | 9.33 | 9.45 | 9.47 | 10.39 | 11.03 | 11.55 | 12.31 |
+
+The curve is flat to n=88 and then climbs, so the blend across a 64 -> 128
+bracket over-charges the middle. Scored against those measured values, with a
+profiled point at 91 standing in for what sqrt(2) samples:
+
+| n | measured us | x2 blend | err | sqrt(2) blend | err |
+|---|---|---|---|---|---|
+| 72 | 671.8 | 700.4 | +4.3% | 670.0 | -0.3% |
+| 80 | 756.0 | 825.4 | +9.2% | 764.7 | +1.2% |
+| **88** | 833.4 | 950.5 | **+14.1%** | 859.4 | +3.1% |
+| 96 | 997.4 | 1075.5 | +7.8% | 986.9 | -1.1% |
+| 104 | 1147.1 | 1200.6 | +4.7% | 1134.1 | -1.1% |
+| 112 | 1293.6 | 1325.6 | +2.5% | 1281.3 | -1.0% |
+
+Worst |err| 14.1% -> 3.1%; attention is 54.8% of such a step, so the
+step-level bias is 7.7% against 1.7%. And that is where a real run's error
+was: matching Llama-3.1-8B's steps against a vLLM run one for one, the
+simulator is exact at n_decode 0 and 32 (both grid points, 0.983-1.032) and
+5-12% slow at 64-127, at every chunk size from 256 to 1792. A layer
+decomposition puts the excess in `attention`. Everything else was ruled out
+first -- skew is worth 0.4 points, `n_prefill` 2.0 points, and every other
+layer is within a percent across the two shapes.
+
+**Note what that table is and is not.** It is arithmetic on measured values,
+so it bounds the interpolation error of the modelled quantity; it is not an
+end-to-end result, and how much of Llama's +4.8% TTFT it recovers is settled
+only by re-running the refreshed bundle against the truth. This is still a
+different kind of evidence from the one that reverted `attention_chunk_factor`
+-- that was an end-to-end A/B confounded by the bundle and the truth being on
+different vLLM versions, while this is measured against the same engine in the
+same run.
+
+**For chunk and kv there is no accuracy evidence at all**, and the one A/B
+there says density did *not* help: on a 0.28-eager truth the x2 grid read
+|err| p50 2.7% against the 1.5 union's 3.4%. sqrt(2) on those axes is an
+operational choice -- future refreshes stay incremental -- not an accuracy
+one. Do not let the `n_decode` result launder a claim about them.
+
+**The skew axes stay at 2.0** rather than following the default, because
+density is not free there. `fit_alpha` derives one bucket per *profiled value*
+on `n` and `kp`, so halving the step doubles the bucket count and halves the
+samples behind each alpha, and the fit already sits at ~2 samples per bucket.
+`pc` is keyed by its raw value and a runtime chunk lands on a grid point only
+by coincidence, so a denser pc axis buys nothing. The one axis where density
+would pool samples is `kvs`, inside its log-4x `kv_big` bin.
+
+**A refresh has to restate the other axes.** Every committed RTXPRO6000
+Llama/Qwen bundle carries `chunk_factor: 1.5, kv_factor: 1.5` and
+`max_num_seqs: 256`, and every other bundle is at 2.0, so
+`slice --group attention` at the defaults silently re-grids axes besides the
+one being refreshed -- and a lower `--max-num-seqs` silently *narrows* the
+grid through the feasibility filters. Pass the bundle's own
+`--attention-chunk-factor`, `--attention-kv-factor`, `--attention-max-kv` and
+`--max-num-seqs`, all of which `meta.yaml` records.
+
+**A long sweep prints a heartbeat.** The rich progress bar needs a TTY and the
+sink writes its CSV only after the last shot, so a run redirected to a file
+used to show nothing at all between "firing N" and "done" -- which reads
+exactly like a hang, and was misdiagnosed as one twice (the GPU also sits at
+0-4% throughout, because the cost is the profiler's event tree, not the
+forward). `_fire_one_category` logs count, rate and ETA every 1% of shots.
+
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
 (strict `>`, not `>=`) so that `n = MSQ` **pure** cases (no prefill chunk) fit.

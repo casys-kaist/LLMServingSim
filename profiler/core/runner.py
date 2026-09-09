@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import dataclasses
+import time
 
 from profiler.core import logger as log
 from profiler.core.categories import (
@@ -143,8 +144,13 @@ def _fire_one_category(
         return
 
     label = f"TP={tp}  {category.label}"
+    # A long sweep is otherwise unobservable: the progress bar needs a TTY and
+    # the sink only writes its CSV after the last shot, so a run redirected to
+    # a file shows nothing between "firing N" and "done". Heartbeat at INFO.
+    heartbeat = max(1, len(shots) // 100)
+    t_start = time.monotonic()
     with log.progress(label, total=len(shots)) as bar:
-        for shot in shots:
+        for done, shot in enumerate(shots, start=1):
             raw = llm.collective_rpc(
                 "fire",
                 args=(shot.as_dict(), catalog_slice, category.name,
@@ -164,6 +170,13 @@ def _fire_one_category(
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
             bar.advance(1)
+            if done % heartbeat == 0 or done == len(shots):
+                rate = done / max(1e-9, time.monotonic() - t_start)
+                log.info(
+                    "%s: %d/%d shots (%.1f%%), %.2f shot/s, eta %.1f min",
+                    category.label, done, len(shots), 100.0 * done / len(shots),
+                    rate, (len(shots) - done) / rate / 60.0,
+                )
 
     sink.flush()
     log.success("%s → %s", category.label, sink.path)
