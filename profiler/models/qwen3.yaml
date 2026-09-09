@@ -64,7 +64,17 @@ catalog:
     qk_norm:
       vllm: RMSNorm
       within: [Qwen3Attention, Qwen3MoeAttention]
-      tp_stable: true
+      # NOT tp_stable, even though the sibling `layernorm` is the same class.
+      # The weight is `RMSNorm(head_dim)` and is indeed TP-invariant, but what
+      # costs time is the tensor it walks: `qwen3.py` applies q_norm/k_norm to
+      # `q`/`k` of size `num_heads * head_dim`, and `self.num_heads =
+      # self.total_num_heads // tp_size` -- this rank's heads only. So the work
+      # halves at TP=2 while `layernorm`, which normalises the replicated
+      # hidden state, does not. Declaring it stable charged the TP=1 figure at
+      # every degree: measured at TP=2 it is 0.52-0.63x of that (45.0 us
+      # against 87.0 at 2048 tokens), i.e. ~2x over, worth +0.6 pp of a
+      # Qwen3-32B mixed step. The tell is that a TP=2 re-measure of a genuinely
+      # stable layer reproduces (`layernorm` 1.00-1.03) while this one does not.
     rotary_emb:
       vllm: RotaryEmbedding
     o_proj:

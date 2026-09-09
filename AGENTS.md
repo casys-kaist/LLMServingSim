@@ -368,6 +368,34 @@ profiled before those columns existed holds one kernel and it is `attention`.
 `tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1 and
 replicated into other `tp<N>/` folders by the writer.
 
+**`tp_stable` is about the tensor a layer walks, not the weight it owns.** The
+test is whether the *work* is TP-invariant, and a norm's weight can be
+replicated while its input is sharded. Qwen3's `qk_norm` was declared stable on
+the strength of `RMSNorm(head_dim)` -- head_dim does not depend on TP -- but
+`qwen3.py` applies q_norm/k_norm to `q`/`k` of size `num_heads * head_dim`
+where `self.num_heads = self.total_num_heads // tp_size`, i.e. this rank's
+heads. So the work halves at TP=2 while the sibling `layernorm`, which
+normalises the replicated hidden state, does not. Declaring it stable charged
+the TP=1 figure at every degree: a TP=2 re-measure reads **0.52-0.63x** of it
+(45.0 us against 87.0 at 2048 tokens on Qwen3-32B), worth +0.6 pp of a mixed
+step.
+
+The audit that settles it for a new catalog is one question per entry: what
+does the kernel read? Every other `tp_stable` entry in the shipped catalogs
+passes -- `layernorm` / `final_layernorm` / MTP norms walk the residual hidden
+state (replicated); DeepSeek's `mla_a_layernorm` walks the q/kv latent behind a
+**`ReplicatedLinear`**; its `indexer_k_norm` walks a `head_dim` slice of a
+`MergedColumnParallelLinear` that passes **`disable_tp=True`**; and `sampler`
+runs on logits that `LogitsProcessor._gather_logits` has already all-gathered
+to full vocab. Qwen3.5's and MiniMax-M3's q/k norms are not bound at all (their
+kernels are fused into `fusedMiniMaxM3QNormRopeKVInsertKernel` and friends), so
+the question does not arise there.
+
+The measurement that catches it needs a **control**: re-measure a genuinely
+stable layer at the same degree in the same run. `layernorm` re-swept at TP=2
+reads 1.00-1.03 while `qk_norm` reads 0.52 -- without the control, a 0.52 could
+be the machine rather than the flag.
+
 The profiler Docker uses **vLLM v0.28.0** (`vllm/vllm-openai:v0.28.0`, or
 `v0.28.0-cu129` on a CUDA 12.9 host). The MoE hook forges expert routing by
 patching `_compute_routing` on the live router instance — every symbol under
@@ -2357,6 +2385,19 @@ whether a change can affect the simulator, the paths to check are
    the profile tree holds only modules that launch a kernel of their own, and
    the module tree cannot tell you which those are. Every one of the four
    modern families had at least one such entry.
+
+**Two scenarios' clocks are chaotic with respect to cost, and
+`moe_dp_tp_pp_uneven` is the worst.** Its config is DP + TP + PP with uneven
+members and **10 requests**, so the total is a handful of DP rounds and which
+side of a round-pairing discontinuity the run lands on. Scaling one layer that
+is 1.4% of a step -- `qk_norm` -- by factors of 1.00 / 0.95 / 0.90 / 0.75 /
+0.52 moves the total clock by 0 / -0.08% / **+8.8%** / +3.5% / **+11.2%**:
+non-monotone, and a 0.07%-of-step perturbation moving it 8.8%. The requests all
+complete with identical token counts and TTFT moves the *expected* way
+(0.94-0.99x for a cheaper step) while latency jumps 12%, so it is the schedule
+that flips, not the cost. Keep the scenario -- it is a behaviour check, and it
+found two real DP hangs -- but do not read its baseline as a cost regression:
+any change to a profiled latency will flip it arbitrarily.
 
 A scenario whose clock equals an existing one exercises flag parsing and
 nothing else. Several knobs only bite once the KV cache is saturated, which is
