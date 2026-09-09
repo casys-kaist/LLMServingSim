@@ -6,7 +6,9 @@ is the simulator wrong about?** A tick's `running / gen_throughput` averages
 over ~16 steps of mixed kinds, and a tick that carries any prefill says nothing
 about how much, or in which of its steps.
 
-This inserts one line per `execute_model` call into `$VLLM_STEP_SHAPE_LOG`:
+This inserts one line per `execute_model` call into
+`$VLLM_STEP_SHAPE_LOG.<pid>` -- one file per process, because every rank of a
+TP group and every engine of a DP group calls `execute_model`:
 
     {"t": .., "num_tokens": .., "n_reqs": .., "n_prefill": ..,
      "prefill_tokens": ..}
@@ -60,7 +62,14 @@ BLOCK = '''        # --- llmservingsim step-shape log ---
                     "n_prefill": sum(1 for _v in _lss_ns.values() if _v > 1),
                     "prefill_tokens": sum(_v for _v in _lss_ns.values() if _v > 1),
                 }
-                with open(_lss_os.environ["VLLM_STEP_SHAPE_LOG"], "a") as _lss_f:
+                # One file per process. Every rank of a TP group and every
+                # engine of a DP group calls execute_model, so a shared path
+                # interleaves their lines and the interval between two
+                # consecutive ones stops being any step's duration -- which
+                # read as prefill steps costing 7-9x what they do.
+                _lss_p = "%s.%d" % (
+                    _lss_os.environ["VLLM_STEP_SHAPE_LOG"], _lss_os.getpid())
+                with open(_lss_p, "a") as _lss_f:
                     _lss_f.write(_lss_json.dumps(_lss_rec) + chr(10))
             except Exception:
                 pass
