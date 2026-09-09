@@ -10,8 +10,8 @@
                               Input configuration                               
 
   • Cluster config             : bench/examples/RTXPRO6000/Llama-3.1-8B/config.json
-  • Run ID                     : run_1788893449297701_347241
-  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1788893449297701_347241
+  • Run ID                     : run_1788942806853754_361262
+  • ASTRA-Sim inputs root      : /app/LLMServingSim/astra-sim/inputs/runs/run_1788942806853754_361262
   • Dataset                    : workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
   • Max num seqs               : 128
   • Max batched tokens         : 2048
@@ -234,7 +234,7 @@ All Request Has Been Exited
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Simulation results...
 
-Total simulation time: 0h 0m 10.645s
+Total simulation time: 0h 0m 9.801s
 ────────────────────────────── Throughput Results ──────────────────────────────
 Total requests:                                                     300
 Total clocks (ns):                                                  64480599506
