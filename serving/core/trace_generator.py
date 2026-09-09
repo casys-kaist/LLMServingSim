@@ -2294,6 +2294,17 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
         [r.id for r in batch.requests],
         extra={"node_id": node_id, "instance_id": instance_id},
     )
+    # The shape, for matching a step against a real run's own per-step record
+    # (vLLM logs `num_tokens, n_reqs, n_prefill, prefill_tokens`). At DEBUG
+    # because it is diagnostic: `total_len` alone mixes a prefill chunk with
+    # the decodes riding alongside it, and that distinction is what localises
+    # a per-shape error -- but nothing in a normal run needs it.
+    logger.debug(
+        "Batch #%d shape: total_len=%d prefill_chunk=%d n_decode=%d "
+        "n_prefill=%d", batch.batch_id, batch.total_len, bctx.prefill_chunk,
+        bctx.n_decode, len(batch.requests) - bctx.n_decode,
+        extra={"node_id": node_id, "instance_id": instance_id},
+    )
 
     # Line index at which each transformer block starts, used to cut
     # pipeline stages on block boundaries (see _pp_stage_boundaries).
