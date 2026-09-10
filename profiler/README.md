@@ -740,12 +740,10 @@ the **target's** nodes. That happens whenever the guard is missing or wrong —
 the drafter's modules are the same classes as the target's, and so is
 DeepSeek's shared expert against a dense layer's `mlp`. Qwen3.8-27B's
 `mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms with a
-perfectly smooth monotone curve. Dump the tree and read the ancestor chains:
-
-```bash
-python3 .claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4 RMSNorm    # drafter
-python3 .claude/dump_m3_tree.py 4                              # per regime
-```
+perfectly smooth monotone curve. Dump the profile tree and read the ancestor
+chains: boot at the depth in question -- with `--profile-mtp` for a drafter --
+and print every node's class with its ancestor path, once per batch regime,
+filtered to the class under suspicion.
 
 ### Sanity-check a fresh bundle against a bandwidth bound
 

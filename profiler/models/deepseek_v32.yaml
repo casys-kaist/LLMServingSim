@@ -54,11 +54,10 @@
 #    reachable by class, and together with the ropes they were the whole
 #    unattributed remainder: coverage goes from 99.4-99.8% to 100%.
 #
-# Re-derive with ``.claude/dump_module_tree.py`` (module structure),
-# ``.claude/dump_m3_tree.py`` (profile tree per regime) and
-# ``.claude/check_coverage.py`` (what the catalog still fails to bind -- the
-# authority, since a module that launches no kernel of its own never appears
-# in the profile tree at all).
+# Re-derive from three dumps: the module structure, the profile tree per batch
+# regime, and what the catalog still fails to bind. The last is the authority,
+# since a module that launches no kernel of its own never appears in the
+# profile tree at all -- ``profiler coverage`` reports it.
 
 
 model_types:

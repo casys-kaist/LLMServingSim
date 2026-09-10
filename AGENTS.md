@@ -422,9 +422,10 @@ path already calls `execute_model` then `sample_tokens(None)` inside one
 `layerwise_profile` context. **`profiler coverage --profile-mtp` is how the
 `mtp:` sections were written** — it names the unbound nodes with their ancestor
 paths, so the profile tree is the source, as for every other block. For the
-opposite failure — an entry that binds *too much* — dump the tree with
-`.claude/dump_mtp_tree.py <config-rel> <n_layers> [class-filter]`; coverage
-cannot see it, because over-matching leaves nothing unbound.
+opposite failure — an entry that binds *too much* — dump the profile tree
+itself: boot at the depth in question and print every node's class with its
+ancestor path, filtered to the class you suspect. Coverage cannot see that
+failure, because over-matching leaves nothing unbound.
 
 The `mtp` category has **one** axis, the pass's token count: the loop's passes
 are decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`), where tokens
@@ -617,8 +618,9 @@ which tile padding and SM imbalance do not bound). Rows with
   rows into **1,554 cells**, and the cells real batches land in hold **2 to 5
   rows each**; the three-axis key makes **117 cells** from the same rows and the
   ones real batches land in hold **8 to 171**. Scored on the 1,084 measured
-  batches, joined **per batch** so a finer key gets no free pass
-  (`.claude/axis_set_ab.py`):
+  batches, joined **per batch** so a finer key gets no free pass — fit each
+  candidate from the same `skew.csv` under the same estimator, floor and clip,
+  then score every measured batch through it:
 
   | keying | cells hit | \|err\| p50 Llama/q32 | lever-weighted \|err\| |
   |---|---|---|---|
@@ -1188,8 +1190,8 @@ Names beyond this table are per-family and live in the catalogs
 **`calculate_sizes` in `memory_model.py` raises on a name it does not know**,
 so a new family needs its tensor-size formulas added there before it can be
 simulated at all. Every name in every shipped catalog has one today — 26 for
-Qwen3.5 and DeepSeek/GLM, 21 for MiniMax-M3 — which `.claude/chk_sizes.py`
-checks by calling `calculate_sizes` for each.
+Qwen3.5 and DeepSeek/GLM, 21 for MiniMax-M3 — which is checkable in seconds
+by calling `calculate_sizes` for every name in every shipped catalog.
 
 ### Trace generator structure
 `trace_generator.py` walks the architecture yaml's `blocks:` section to emit
@@ -1326,13 +1328,14 @@ intended fallback -- a cell fitted on two samples is noise, and the pooled
 constant carries the whole sweep behind one number.
 
 **Judge a candidate keying on measured batches, not on end-to-end agreement.**
-`.claude/shots_from_log.py` turns a `--log-level DEBUG` sim log into a shots
-file for every corrected batch (the `skew ...` line follows its batch's
-`compose:` line) and `.claude/alpha_all.py` fires each three ways exactly as
-`skew.py` defines it, so the batch's true alpha and its true lever are
-measured and it is not in `skew.csv`. `.claude/cell_residual.py` then weights
-each cell's error by the time the run actually puts through it -- one cell
-carried 50% of Llama's lever, so a per-cell average is not the same statement.
+The instrument is three steps, and the DEBUG `skew ...` line exists to make the
+first one possible: parse a `--log-level DEBUG` sim log into a shots file for
+every corrected batch (that line follows its batch's `compose:` line), fire
+each shot on the live engine three ways exactly as `skew.py` defines them, and
+weight each cell's error by the time the run actually puts through it. Firing
+them is what makes the batch's true alpha and true lever *measured* while
+keeping it out of `skew.csv`; weighting by the run's own time is what stops a
+per-cell average misleading, since one cell carried 50% of Llama's lever.
 Three earlier attempts to predict a keying change from a summary statistic got
 it wrong in order (the median per-bucket alpha said -7 points, the unweighted
 mean said free, the run said -5.7), and a 20-batch ground truth was not enough
@@ -1702,8 +1705,8 @@ Sizing DeepSeek-V3.2 as GQA read 1,748,992 bytes/token where MLA caches 78,324.
 
 **Verify a new family's shapes against its published parameter count.** It is
 the one number that catches a wrong shape anywhere in the stack, and it is
-public. `.claude/check_param_count.py` sums `calculate_sizes`' weights over the
-catalog and the resolved stack: DeepSeek-V3.2-Exp comes to 671.878B, and minus
+public. Summing `calculate_sizes`' weights over the catalog and the resolved
+stack: DeepSeek-V3.2-Exp comes to 671.878B, and minus
 the DSA indexer (0.852B) that is 671.026B — V3's published 671B, with the
 difference being exactly what V3.2 adds.
 
@@ -1995,7 +1998,7 @@ run to +3.4% / +2.5%, sum |err| 21.7% -> 8.4%.
 (`max_total_len` when the round is padded, the real minimum otherwise), divided
 by `tp_size` under sequence-parallel MoE, where each EP rank holds
 `total_len / tp`. The `N = 2` case is checked against real NCCL
-(`.claude/moecomm.py` times AllGather/ReduceScatter at the exact MoE sizes;
+(time AllGather/ReduceScatter with real NCCL at the exact MoE sizes;
 ASTRA-Sim's ring model is otherwise accurate to 0.90x on decode and 0.94x on
 prefill, so the ragged assumption was the whole gap). **`N > 2` rests on the
 ring derivation, not on measurement** — it needs four GPUs, and the competing
@@ -2502,7 +2505,8 @@ emitted, and the stacks are 60-78 deep.
 - **Don't add a layer name to a catalog without a `calculate_sizes` formula.**
   `memory_model.calculate_sizes` **raises** on an unknown name, so the model
   becomes unsimulable rather than merely mis-sized. Every shipped catalog is
-  covered; `.claude/chk_sizes.py` re-checks it in seconds
+  covered, and calling `calculate_sizes` for every name in every one of them
+  re-checks that in seconds
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
   into the container's site-packages by `scripts/compile.sh`, so editing

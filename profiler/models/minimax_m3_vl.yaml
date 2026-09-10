@@ -60,9 +60,9 @@
 # mixed shot the non-sparse block's parent node is 597.4 us against 597.3 for
 # the sum of its bound children, and the sparse block's 213.1 against 213.3.
 #
-# Re-derive with ``.claude/dump_module_tree.py`` (module structure) and
-# ``.claude/dump_m3_tree.py`` (profile tree per regime -- the authority, since
-# a module that launches no kernel of its own never appears in it).
+# Re-derive from two dumps: the module structure, and the profile tree per
+# batch regime -- the latter is the authority, since a module that launches no
+# kernel of its own never appears in it.
 
 
 model_types:

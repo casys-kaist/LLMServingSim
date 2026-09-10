@@ -973,9 +973,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
     `GemmaRMSNorm` and `ColumnParallelLinear` nodes -- `mtp_norms` recorded
     **1287 us at one sequence** for two RMSNorms, with a perfectly smooth
     monotone curve. `profiler coverage` cannot see this: it reports only what
-    is *un*bound, and over-matching leaves nothing unbound. Use
-    `.claude/dump_mtp_tree.py <config-rel> <n_layers> [class-filter]`, which
-    prints each node's ancestor chain.
+    is *un*bound, and over-matching leaves nothing unbound. Dump the profile
+    tree instead and read each node's ancestor chain.
 - **Fixed: every top-level profiled latency was inflated under vLLM 0.28.**
   Each profile node divides by **its parent's** invocation count to get a
   per-call figure, and the top level has no parent node to read that from.
@@ -1216,9 +1215,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   Qwen3.8-27B against the 16 we asked for. A filter off by 49x either emits
   shots the cache cannot hold or silently drops ones it can. At 16 the
   arithmetic is the old constant exactly, so nothing already profiled moves
-  (`.claude/check_block_size.py`: `dense` and `moe` fire one request and so
-  can never reach the filter; `per_sequence` and `attention` fire n and
-  tighten by 8 and 263 shots at 784)
+  (`dense` and `moe` fire one request and so can never reach the filter;
+  `per_sequence` and `attention` fire n and tighten by 8 and 263 shots at 784)
 - Per-layer timings are normalized by **parent invocations x how many times the
   block sequence emits the layer**, not by the profiled node's `invocations`.
   vLLM merges every same-class sibling under one parent into a single node,
