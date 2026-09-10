@@ -360,15 +360,16 @@ memorisation. This one writes 75–109 cells at **175 to 578 rows each**, with a
 The last row is the one that decides it, because these score the fit against
 the rows it was fitted on. What decides whether
 the table is *right* is a held-out measurement: fire the batches a real run
-actually built, at their exact kv lists, and compare. `.claude/shots_from_log.py`
-turns a `--log-level DEBUG` sim log into a shots file for every corrected
-batch, and `.claude/alpha_all.py` fires each three ways exactly as `skew.py`
-defines it. Weight each cell's error by the time the run puts through it
-(`.claude/cell_residual.py`) — on Llama-3.1-8B one cell carries 50% of the
-run's whole skew lever, so a per-cell average is not the same statement. And
-a 20-batch ground truth is not enough: it ranked two candidate keyings
-2.34% / 0.25%, 209 batches said 0.77% / 0.52%, and only the complete 1,084
-gave the answer the code now carries.
+actually built, at their exact kv lists, and compare. Three steps, and the
+DEBUG `skew ...` line exists to make the first one possible — parse a
+`--log-level DEBUG` sim log into a shots file for every corrected batch, fire
+each on the live engine three ways exactly as `skew.py` defines them, and
+weight each cell's error by the time the run puts through it. That last step
+matters: on Llama-3.1-8B one cell carries 50% of the run's whole skew lever, so
+a per-cell average is not the same statement. And a 20-batch ground truth is
+not enough — it ranked two candidate keyings 2.34% / 0.25%, 209 batches said
+0.77% / 0.52%, and only the complete 1,084 gave the answer the code now
+carries.
 :::
 
 ## Skip / refresh modes

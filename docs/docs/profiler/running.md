@@ -451,11 +451,10 @@ python -m profiler coverage <model> --hardware <hw> --profile-mtp
 Coverage catches an entry that binds *nothing*. It cannot catch the
 opposite — an entry that binds the **target's** layers as well, because
 the drafter's modules are the same classes as the target's and
-over-matching leaves nothing unbound. That one needs the tree:
-
-```bash
-python3 .claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4 RMSNorm
-```
+over-matching leaves nothing unbound. That one needs the profile tree
+itself: boot with `--profile-mtp` at the depth in question and print every
+node's class with its ancestor path, filtered to the class you suspect
+(`RMSNorm`, say).
 
 Read the ancestor chains before trusting an `mtp.csv`. Qwen3.8-27B's
 `mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms while

@@ -44,8 +44,8 @@
 #    prefill, pure decode, and mixed each pick their own. All of them are
 #    bound; whichever the batch reaches is the one that reports a time.
 #
-# Re-derive with ``.claude/dump_tree_by_shot.py`` if a vLLM upgrade moves any
-# of these names.
+# Re-derive by dumping the profile tree once per shot if a vLLM upgrade moves
+# any of these names.
 
 
 # Every HF ``model_type`` this catalog serves: the VL wrapper's name and the
@@ -134,8 +134,8 @@ catalog:
     # to pin ``within`` to -- the drafter's nodes arrive at the **top level**,
     # siblings of the target's ``Qwen3_5ForCausalLM``. So the guards here are
     # exclusions: ``not_within`` on the two classes that do appear. Verified
-    # against a live tree (``.claude/dump_mtp_tree.py Qwen/Qwen3.8-27B 4``),
-    # which reports the drafter as VocabParallelEmbedding, GemmaRMSNorm x3,
+    # against a live tree dumped from a 4-layer ``--profile-mtp`` boot, which
+    # reports the drafter as VocabParallelEmbedding, GemmaRMSNorm x3,
     # ColumnParallelLinear, Qwen3_5DecoderLayer, GemmaRMSNorm at the root.
     mtp_fc:
       # 2h -> h, and ColumnParallelLinear rather than DeepSeek's plain

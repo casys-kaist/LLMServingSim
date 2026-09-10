@@ -648,10 +648,13 @@ DeepSeek's two rope modules, its fused indexer q-rope/quant kernel and the
 indexer's own glue. Every one of those had a plausible-looking catalog that
 measured nothing there.
 
-To *locate* a gap rather than detect it, the throwaway scripts under `.claude/`
-print the raw trees — `dump_module_tree.py` the module tree and KV cache group
-layout, `dump_m3_tree.py` the profile tree with full ancestor chains, once per
-regime.
+To *locate* a gap rather than detect it, print the raw trees. Two dumps
+answer different questions, and a throwaway script for each is worth writing:
+the **module** tree with the KV cache group layout, which says what exists, and
+the **profile** tree with full ancestor chains, once per regime, which says
+what actually launched a kernel. The second is the authority — a module that
+launches nothing never becomes a profile node, so binding it measures
+nothing.
 
 ### 4. Try profiling
 
