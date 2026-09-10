@@ -266,11 +266,15 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
   the attention kernel: a lookup at the batch's mean decode kv, blended
   toward a second lookup at its max only when a non-zero bucket-specific
-  alpha applies, resolved from `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
-  `pc` used raw) are read from meta so the simulator automatically
-  picks up whatever resolution the profiler ended up with. When meta
-  predates the skew_fit block a pooled fallback constant is used —
-  the simulator stays usable against older profile runs.
+  alpha applies, resolved from `meta.yaml::skew_fit`. The three bucket axes
+  (`n`, `pc`, `lev = (t_max - t_mean) / t_mean`) are read from meta, so the
+  simulator picks up whatever resolution the profiler ended up with -- `n`'s
+  edges are derived from the batch sizes the sweep fired. Two different
+  fallbacks, and they are not the same value: a cell missing from a real
+  fit reads that kernel's pooled `alpha_default`, but a meta with **no**
+  `skew_fit` block gets `alpha = 0` — no correction at all, rather than a
+  constant borrowed from another GPU. Either way the simulator stays
+  usable against older profile runs.
 - `_hydrate_skew_fit_tables()` — on load, walks each TP's
   `bucket_table:` pointer and reads `tp<N>/skew_fit.csv` into the
   in-memory `alpha_by_bucket` map that `_skew_alpha` consults.

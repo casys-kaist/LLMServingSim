@@ -168,18 +168,23 @@ The second lookup only happens when a non-zero alpha applies. A batch
 with one decode, or with every decode at the same length, or resolving
 to `alpha = 0`, returns `t_mean` directly.
 
-The bucket key is built from five axes:
-`pc | n_label | skew_rate_label | kv_big_label | kp_label`
+The bucket key is built from three axes, plus the kernel:
+`[{layer}|]{n_label}|{pc_label}|{lev_label}`
 
-- `pc`: prefill chunk size (bucket per profiled value).
-- `n_label`: `n_decode` value (bucket per profiled value).
-- `skew_rate_label`: normalized skew rate, fixed [0,1] scheme.
-- `kv_big_label`: log-4× bins of the long KV.
-- `kp_label`: `kv_prefill` value (bucket per profiled value).
+- `n_label`: the batch size, one bucket per profiled `n` split at the
+  geometric midpoints — so a runtime `n` reads the nearest profiled size on a
+  log scale. It cannot be coarsened: alpha differs 2.1–2.5× between two
+  adjacent profiled sizes, and a run never schedules past `max_num_seqs`, so a
+  bucket spanning two of them averages in a regime the runtime cannot enter.
+- `pc_label`: the prefill chunk, four coarse bins (`pc0` / `pcS` / `pcM` /
+  `pcL`). Alpha's dependence on it is a single step at `pc = 0 → pc > 0`.
+- `lev_label`: `(t_max - t_mean) / t_mean`, the endpoint gap in units of the
+  batch's own cost. It costs nothing here — both lookups are already done
+  before an alpha is needed.
 
-The bucket axis definitions live in
-`meta.yaml::skew_fit.bucket_axes`, so widening the profile sweep
-lights up finer resolution without any simulator code change.
+`n`'s edges are derived from the sweep and live in
+`meta.yaml::skew_fit.bucket_axes`, so a wider profile lights up finer
+resolution without any simulator code change.
 
 If the skew sweep wasn't run (`SKIP_SKEW=1` at profile time), the
 simulator applies **no** correction (`alpha = 0`, i.e. `t_mean`).

@@ -388,12 +388,12 @@ decoder block hurts.
 ## Validation against known references
 
 LLMServingSim is validated end-to-end against real vLLM. On the four
-bundled configurations, TPOT means land within 1.7% and end-to-end
-latency means within 2.2%; TTFT means span +1.3% to -13.6%, which is a
-small absolute difference on a metric with small absolute values. The
-RTX 4090 run — the one whose card saturates and whose `mem_util` is
-calibrated to the measured KV block count — is inside 1% on every
-metric. Numbers and plots are on
+bundled configurations **every one of the 15 metrics lands inside 5%**:
+TPOT and end-to-end latency means are inside 2%, TTFT means span -2.3%
+to +3.7%, and the largest single error anywhere is +4.5% (the MoE run's
+TTFT P99). The RTX 4090 run — the one whose card saturates and whose
+`mem_util` is calibrated to the measured KV block count — is inside
+1.1% on every metric. Numbers and plots are on
 **[Validation](/docs/validation)**; the harness that produces them is
 **[Bench CLI](/docs/reference/bench-cli)**. Complete real logs for
 those runs are committed under

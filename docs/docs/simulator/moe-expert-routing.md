@@ -153,7 +153,7 @@ Per-token call sites (`GateRouter.route`, used at EP=1 by nothing in the
 simulator today) still go through `_custom_gate_function`, which is the
 plug-in hook for driving routing from something else entirely.
 
-:::note Why not force the *truth* to be uniform instead
+:::note[Why not force the *truth* to be uniform instead]
 A bench mode that replaced the real gate's assignment was tried, and it
 does not answer this question. On a non-EP configuration under
 cudagraphs it reads **0.700x** of the real gate's TPOT -- flattening the

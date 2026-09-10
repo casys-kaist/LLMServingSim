@@ -82,26 +82,21 @@ skew_profile:
 skew_fit:
   enabled: true
   bucket_axes:
-    pc: raw pc value (profiled grid point)
-    n_bins: [0, 2, 4, 8, 16, 32, 64, 128, 256, 1000000]
-    n_labels: [n<=2, n<=4, n<=8, n<=16, n<=32, n<=64, n<=128, n<=256, n>256]
-    skew_rate_bins: [-0.01, 0.05, 0.15, 0.4, 0.7, 1.01]
-    skew_rate_labels: [sr<=5%, sr<=15%, sr<=40%, sr<=70%, sr>70%]
-    kv_big_bins: [0, 1024, 4096, 16384, 65536, 131072, 1000000000]
-    kv_big_labels: [kvB<=1k, kvB<=4k, kvB<=16k, kvB<=64k, kvB<=128k, kvB>128k]
-    kp_bins: [-1, 0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 81915, 1000000000]
-    kp_labels: [kp=0, kp<=512, kp<=1k, kp<=2k, kp<=4k, kp<=8k, kp<=16k, kp<=32k, kp<=64k,
-      kp<=81915, kp>81915]
+    axes: [n, pc, lev]
+    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
+    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
+    pc_bins: [-1, 1, 256, 1024, 1000000000]
+    pc_labels: [pc0, pcS, pcM, pcL]
+    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
+    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
     1:
-      method: per_bucket_wls_5axis
+      method: per_bucket_median_3axis_n_pc_lev
       n_samples: 62996
       alpha_default: 0.1985
-      alpha_default_by_layer:
-        attention: -0.0054
-        indexer: 0.2237
+      alpha_default_by_layer: {attention: -0.0054, indexer: 0.2237}
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0022
-      rel_err_p90: 0.0525
-      rel_err_p99: 0.2774
-      signed_mean: -0.0003
+      rel_err_p50: 0.0041
+      rel_err_p90: 0.1334
+      rel_err_p99: 0.4102
+      signed_mean: -0.0

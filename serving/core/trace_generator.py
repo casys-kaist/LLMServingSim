@@ -143,7 +143,9 @@ class BatchCtx:
     n_decode: int       # number of decode requests
     kv_decode_mean: int # mean decode kv length (4D grid carries one value)
     kv_decode_max: int  # max decode kv length (for skew correction)
-    kv_decode_min: int  # min decode kv length (for skew_rate in skew correction)
+    kv_decode_min: int  # min decode kv length; the skew key no longer
+                        # reads it, but the DEBUG batch-shape and skew
+                        # lines print it so a shape can be re-fired
     lm_head_len: int    # number of sequences
     decode_lens: list   # per-PIM-channel decode lengths (None if no PIM)
     channel_split: int  # PIM channel split factor
@@ -234,8 +236,21 @@ def _read_skew_fit_csv(path):
     the alpha was fitted on. A CSV written before that column existed holds one
     kernel, and its keys stay unprefixed — which is what ``_skew_alpha`` falls
     back to for ``attention`` and only for ``attention``.
+
+    A CSV written against the previous axes (``pc`` raw, ``skew_rate``,
+    ``kv_big``, ``kp``) has none of the columns this builds a key from, so it
+    is refused wholesale rather than half-read: every batch then reads that
+    bundle's pooled ``alpha_default``, which is what its mixed batches already
+    got.
     """
     df = pd.read_csv(path)
+    if not {"n_label", "pc_label", "lev_label"} <= set(df.columns):
+        logger.warning(
+            "skew_fit: %s was fitted against the previous bucket axes; "
+            "ignoring its table and using the pooled alpha. Re-run "
+            "`profiler slice --group skew` or refit from skew.csv.", path,
+        )
+        return {}, {}
     has_layer = "layer" in df.columns
     alphas: dict = {}
     counts: dict = {}
@@ -244,10 +259,7 @@ def _read_skew_fit_csv(path):
         if isinstance(raw, str) and raw:
             key = raw
         else:
-            key = (
-                f"pc={int(row.pc)}|{row.n_label}|{row.skew_rate_label}"
-                f"|{row.kv_big_label}|{row.kp_label}"
-            )
+            key = f"{row.n_label}|{row.pc_label}|{row.lev_label}"
             if has_layer:
                 key = f"{row.layer}|{key}"
         alphas[key] = float(row.alpha)
@@ -906,7 +918,7 @@ def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
 # SM-imbalance costs the uniform measurement misses. The skew profile
 # (profiler/.../tp<N>/skew.csv + the fitted ``skew_fit`` block in
 # meta.yaml, with the bucket alpha table spilled to
-# ``tp<N>/skew_fit.csv``) captures that as a 5-axis lookup table of
+# ``tp<N>/skew_fit.csv``) captures that as a 3-axis lookup table of
 # alpha values where
 #
 #     t_skew = t_mean + alpha * (t_max - t_mean)
@@ -915,13 +927,14 @@ def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
 # labels come from ``meta.yaml::skew_fit.bucket_axes`` so the profiler
 # can widen any axis (e.g. raise ``max_num_seqs`` above 128) without a
 # coordinated code change here. The ``_DEFAULT_SKEW_AXES`` block below
-# is used as a fallback only when the meta predates that field (which
-# is why its shape still matches the original hard-coded scheme).
+# is used as a fallback only when the meta carries no ``bucket_axes``
+# at all; a bundle fitted against the previous five axes has the field
+# but not this shape, and is handled by returning its pooled alpha.
 #
 # The fallback, used when a bundle carries no skew profile at all, is
 # **0**: apply no correction you have not measured. It used to be
 # 0.093, a constant no bundle in the repo reproduces — the measured
-# pooled value for Llama-3.1-8B on RTXPRO6000 is 0.0543, and resolving
+# pooled value for Llama-3.1-8B on RTXPRO6000 is 0.0535, and resolving
 # a saturated RTX 4090 run's own batches against that bucket table
 # gives alpha p50 0.059. A scalar cannot serve this parameter anyway:
 # the endpoint gap ``(t_max - t_mean) * num_layers`` is ~12.6 ms on a
@@ -931,17 +944,28 @@ def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
 # omitting it.
 _ATTN_SKEW_ALPHA_FALLBACK: float = 0.0
 
+# These mirror ``profiler/core/fit_alpha.py``'s fixed edges. They are used only
+# when a bundle's meta carries no ``bucket_axes``; a bundle fitted against the
+# previous five axes carries a ``bucket_axes`` without ``lev_bins``, and
+# ``_skew_alpha`` reads its pooled default rather than building a key nothing
+# can match.
 _DEFAULT_SKEW_AXES: dict = {
-    "n_bins": (0, 2, 4, 8, 16, 32, 64, 128, 1_000_000),
-    "n_labels": (
-        "n<=2", "n<=4", "n<=8", "n<=16", "n<=32", "n<=64", "n<=128", "n>128",
-    ),
-    "kv_big_bins": (0, 1024, 4096, 16384, 1_000_000_000),
-    "kv_big_labels": ("kvB<=1k", "kvB<=4k", "kvB<=16k", "kvB>16k"),
-    "skew_rate_bins": (-0.01, 0.05, 0.15, 0.40, 0.70, 1.01),
-    "skew_rate_labels": ("sr<=5%", "sr<=15%", "sr<=40%", "sr<=70%", "sr>70%"),
-    "kp_bins": (-1, 0, 2048, 1_000_000_000),
-    "kp_labels": ("kp=0", "kp<=2k", "kp>2k"),
+    "axes": ("n", "pc", "lev"),
+    # ``n`` gets one bucket per profiled batch size, split at the geometric
+    # midpoints so a runtime n reads the nearest profiled size. The real
+    # edges are derived from the sweep (so they follow whatever max_num_seqs
+    # it ran at) and read back from meta.yaml::skew_fit.bucket_axes. These
+    # are only the fallback. The axis cannot be coarsened: alpha differs
+    # 2.1-2.5x between two adjacent profiled sizes, and a run never schedules
+    # past max_num_seqs, so a bucket spanning two of them averages in a
+    # regime the runtime cannot enter.
+    "n_bins": (0, 3, 6, 11, 23, 45, 91, 181, 1_000_000_000),
+    "n_labels": ("n=2", "n=4", "n=8", "n=16", "n=32", "n=64",
+                 "n=128", "n>128"),
+    "pc_bins": (-1, 1, 256, 1024, 1_000_000_000),
+    "pc_labels": ("pc0", "pcS", "pcM", "pcL"),
+    "lev_bins": (0.0, 0.25, 0.75, 1.5, 3.0, 1_000_000_000.0),
+    "lev_labels": ("lev0", "lev1", "lev2", "lev3", "lev4"),
 }
 
 
@@ -977,22 +1001,25 @@ def _skew_alpha(
     tp: int,
     pc: int,
     n: int,
-    skew_rate: float,
-    kv_big: int,
-    kp: int,
+    lev: float,
     layer: str = "attention",
 ) -> float:
     """Resolve alpha for a specific batch from the profile's
     ``skew_fit`` meta block.
 
+    The key is ``{layer}|{n_label}|{pc_label}|{lev_label}``, where
+    ``lev = (t_max - t_mean) / t_mean`` -- the endpoint gap in units of the
+    batch's own cost. It costs nothing here: both lookups are already done
+    before an alpha is needed. See ``profiler/core/fit_alpha.py`` for why
+    these three axes and not the five this used to build.
+
     Lookup order:
-        1. meta.yaml::skew_fit.per_tp[tp].alpha_by_bucket[bucket_key]
-           (hydrated from ``tp<N>/skew_fit.csv`` when the meta points
-           at a CSV instead of inlining the mapping). The bucket_key is
-           ``{layer}|pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}``,
-           built against ``skew_fit.bucket_axes`` if present — which
-           lets the profiler widen axes (more n bins, finer kp bins)
-           without a simulator-side code change.
+        1. meta.yaml::skew_fit.per_tp[tp].alpha_by_bucket[bucket_key],
+           hydrated from ``tp<N>/skew_fit.csv``, with the bins read from
+           ``skew_fit.bucket_axes``. A bundle fitted before the axes changed
+           carries no ``axes`` list; nothing then matches and every batch
+           falls through to that bundle's pooled default, which is what its
+           mixed batches already got.
         2. The unprefixed key, **only for ``attention``**: a bundle
            profiled before skew.csv had a ``layer`` column holds one
            kernel and it is that one.
@@ -1028,16 +1055,19 @@ def _skew_alpha(
     axes = _resolve_skew_axes(fit_block, entry)
     if layer is None:
         layer = "attention"
-    sr = max(0.0, min(1.0, float(skew_rate)))
+    if "n_bins" not in axes or "lev_bins" not in axes:
+        # Fitted before the axes changed: no key this builds can match.
+        per_layer = entry.get("alpha_default_by_layer") or {}
+        if layer in per_layer:
+            return float(per_layer[layer])
+        if layer == "attention":
+            return float(entry.get("alpha_default",
+                                   _ATTN_SKEW_ALPHA_FALLBACK))
+        return 0.0
     n_label = _bucket_label(axes["n_bins"], axes["n_labels"], int(n))
-    sr_label = _bucket_label(
-        axes["skew_rate_bins"], axes["skew_rate_labels"], sr,
-    )
-    kvb_label = _bucket_label(
-        axes["kv_big_bins"], axes["kv_big_labels"], int(kv_big),
-    )
-    kp_label = _bucket_label(axes["kp_bins"], axes["kp_labels"], int(kp))
-    bucket = f"pc={int(pc)}|{n_label}|{sr_label}|{kvb_label}|{kp_label}"
+    pc_label = _bucket_label(axes["pc_bins"], axes["pc_labels"], int(pc))
+    lev_label = _bucket_label(axes["lev_bins"], axes["lev_labels"], float(lev))
+    bucket = f"{n_label}|{pc_label}|{lev_label}"
     alphas = entry.get("alpha_by_bucket") or {}
     key = f"{layer}|{bucket}"
     if key in alphas:
@@ -1080,7 +1110,7 @@ def _key_saturates(perf_db, layer):
 def _lookup_attention_with_skew(
     perf_db, tp, prefill_chunk, prefill_key,
     n_decode, kv_decode_mean, kv_decode_max, kv_decode_min,
-    layer="attention", decode_q_len=1, kv_prefill=0,
+    layer="attention", decode_q_len=1,
 ):
     """Attention lookup with skew correction applied.
 
@@ -1104,27 +1134,20 @@ def _lookup_attention_with_skew(
     # No skew → no correction (also saves a redundant lookup).
     if n_decode <= 1 or kv_decode_max == kv_decode_mean:
         return max(1, int(round(t_mean)))
-    # skew_rate ∈ [0, 1]; = nb / n exactly for a bimodal batch.
-    # Fallback to 0.5 (balanced) when kv_max == kv_min (shouldn't
-    # reach here due to the short-circuit above, but defensive).
-    kv_gap = kv_decode_max - kv_decode_min
-    skew_rate = (kv_decode_mean - kv_decode_min) / kv_gap if kv_gap > 0 else 0.5
-    # ``kv_prefill`` here, not the new key coordinate: the skew bucket's
-    # ``kp`` axis is binned from skew.csv's own ``kp`` column, which is the
-    # case's prefill context. Feeding it a different quantity would miss
-    # every bucket. Aligning the two is a follow-up that needs a re-sweep to
-    # mean anything -- and AGENTS.md already records that the ``pc`` axis is
-    # keyed raw, so mixed batches fall through to the pooled alpha regardless.
-    alpha = _skew_alpha(
-        perf_db, tp, prefill_chunk, n_decode, skew_rate, kv_decode_max,
-        kv_prefill, layer,
-    )
-    if alpha == 0.0:
-        return max(1, int(round(t_mean)))
+    # Both endpoints first: the bucket key's third axis is the gap between
+    # them, in units of t_mean. Resolving alpha before t_max is known was the
+    # shape the five-axis key needed; this one prices the lever it will be
+    # multiplied by, which is the whole reason it transfers.
     t_max = _lookup_attention(
         perf_db, tp, prefill_chunk, prefill_key, n_decode, kv_decode_max,
         layer, decode_q_len,
     )
+    lev = (t_max - t_mean) / t_mean if t_mean > 0 else 0.0
+    alpha = _skew_alpha(
+        perf_db, tp, prefill_chunk, n_decode, lev, layer,
+    )
+    if alpha == 0.0:
+        return max(1, int(round(t_mean)))
     # A negative endpoint gap means the batch's longest decode is *cheaper*
     # than its mean one. On a dense kernel that cannot happen -- cost rises
     # with kv -- so it is an interpolation artifact at the axis boundary and
@@ -1466,7 +1489,6 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
-            bctx.kv_prefill,
         )
     elif category == "mtp":
         # Keyed on the pass's token count. The profiler sweeps this category on
@@ -2050,7 +2072,6 @@ def _layer_latency_for_power(ctx, bctx, layer_name):
             _prefill_key_for(ctx.perf_db, bctx, layer_name),
             bctx.n_decode, bctx.kv_decode_mean, bctx.kv_decode_max,
             bctx.kv_decode_min, layer_name, bctx.decode_q_len,
-            bctx.kv_prefill,
         )
     if category == "linear_attention":
         return _lookup_linear_attention(

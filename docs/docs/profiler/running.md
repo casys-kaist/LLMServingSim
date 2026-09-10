@@ -638,6 +638,19 @@ TP=1 resumed from its existing CSVs in seconds.
 The Rich-based logger renders per-step progress bars; redirect
 stdout with `--silent` for a quieter run.
 
+Those bars need a TTY, so a run redirected to a file shows nothing while a
+sweep is in flight — and since the sink only writes its CSV at the end, that
+looks exactly like a hang. It usually is not: the cost is the torch profiler's
+event tree rather than the forward, so the GPU sits at 0–4% throughout. Every
+long sweep therefore also logs a plain heartbeat every 1% of its shots,
+carrying the count, the rate and an ETA:
+
+```
+TP=1  skew: 2560/13476 cases (19.0%), 3.41 case/s, eta 53.4 min
+```
+
+Both the per-category sweeps and the skew sweep print it.
+
 ## Output
 
 Profile data lands at:
