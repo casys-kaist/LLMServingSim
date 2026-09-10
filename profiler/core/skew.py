@@ -45,6 +45,7 @@ Downstream pipeline:
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -561,6 +562,11 @@ def sample_skew(
 
     label = f"TP={tp}  skew"
     rows: list[dict] = []
+    # The rich bar needs a TTY and the CSV only flushes every 20 cases, so a
+    # run redirected to a file shows nothing between "firing N" and "done" --
+    # which reads exactly like a hang. Same heartbeat as the main categories.
+    heartbeat = max(1, len(cases) // 100)
+    t_start = time.monotonic()
     with log.progress(label, total=len(cases)) as bar:
         for i, case in enumerate(cases):
             try:
@@ -578,6 +584,15 @@ def sample_skew(
             # Save incrementally every 20 rows so a crash doesn't lose data
             if (i + 1) % 20 == 0:
                 _flush_rows(out, rows)
+            done = i + 1
+            if done % heartbeat == 0 or done == len(cases):
+                elapsed = max(1e-9, time.monotonic() - t_start)
+                rate = done / elapsed
+                log.info(
+                    "%s: %d/%d cases (%.1f%%), %.2f case/s, eta %.1f min",
+                    label, done, len(cases), 100.0 * done / len(cases),
+                    rate, (len(cases) - done) / max(1e-9, rate) / 60.0,
+                )
 
     if rows:
         df = _flush_rows(out, rows)
