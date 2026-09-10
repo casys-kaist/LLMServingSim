@@ -16,7 +16,7 @@ profiler/                     Python package — `python -m profiler ...`
     engine.py                 vLLM lifecycle (spin_up, probe_limits, spin_down)
     categories.py             Dense / PerSequence / Attention / LinearAttention / Expert
     skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
-    fit_alpha.py              per-kernel 5-axis alpha fit, data-derived bucket axes
+    fit_alpha.py              per-kernel 3-axis per-cell-median alpha fit
     writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
     stack.py                  per-layer block composition from the HF config  *
     catalog_path.py           model_type -> yaml resolution                   *
@@ -450,9 +450,9 @@ tp<N>/
   skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
                          ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
                          t_max_us, t_skew_us, alpha)                  (skew-enabled runs)
-  skew_fit.csv           fitted per-bucket alpha table (pc, n_label,
-                         skew_rate_label, kv_big_label, kp_label,
-                         alpha, n_samples)                            (skew-enabled runs)
+  skew_fit.csv           fitted per-cell alpha table (layer, n_label,
+                         pc_label, lev_label, alpha, n_samples)
+                                                                      (skew-enabled runs)
 ```
 
 Times are in microseconds.
@@ -563,8 +563,9 @@ Two tiers make up `skew.csv`:
 
 - **Tier 1** — factorial over `(n, ratio, pc, kp, kvs)` at a single
   representative skew factor (`_SKEW_REP = 4.0`). Gives the bulk of the
-  rows and covers every (pc, n_bin, kv_big_bin, kp_bin, skew_rate_bin)
-  cell the fit discriminates on.
+  rows, and covers the (n, pc, lev) cells the fit discriminates on --
+  `lev` comes out of each row's own two timings, so the sweep populates
+  it by varying `kvs` and `ratio` rather than by having an axis for it.
 - **Tier 2** — skew-axis sweep at a handful of anchor pivots with
   `skew ∈ {1.5, 2.0, 4.0, 8.0, 16.0}`. The only source of rows with
   `skew ≠ 4.0`; covers how alpha saturates as the outlier decode
@@ -575,8 +576,10 @@ enough along kvs.)
 
 ### Density knobs
 
-All five axes are user-controllable via per-axis geometric factors
-(defaults 2.0 = doubling):
+Four of the five sweep axes are user-controllable via per-axis
+geometric factors (defaults 2.0 = doubling). `ratio` has none -- it is a
+unitless shape fraction, not a scale, so coarsening it geometrically
+would not mean anything:
 
 | Variable | Axis | Effect |
 |---|---|---|
@@ -590,31 +593,64 @@ more accurate alpha near the fine structure. The effective values
 hit `meta.yaml::skew_profile.factors` so you can tell later which
 density produced which CSV.
 
-### 5-axis alpha fit
+### 3-axis alpha fit
 
 `fit_alpha.py` runs right after profiling and groups rows by a
-5-tuple bucket key:
+3-tuple bucket key, prefixed with the kernel:
 
 ```
-pc | n_label | skew_rate_label | kv_big_label | kp_label
+[{layer}|]{n_label}|{pc_label}|{lev_label}
 ```
 
-Each cell gets a weighted-LS alpha. Axis ablation on the widened
-~13k-sample dataset selected this 5-axis scheme (test p50 / p90 /
-p99 ≈ 2.7 / 14.8 / 44.1 % on TP=1 vs 3.5 / 16.4 / 39.9 for the
-previous 3-axis fit).
+Each cell's alpha is the **median** of its per-row alphas, clipped to
+`[-0.2, 1.0]`; a cell with fewer than 20 rows is not written and its
+batches read the kernel's pooled `alpha_default`. The median rather
+than a weighted-LS fit because `dts = t_skew - t_mean` is a difference
+of two nearly-equal measurements, so its noise scales with `t_mean` and
+weighting by `dtm^2` over-trusts the largest-gap rows.
 
-**Bucket axes are data-driven.** `n` and `kp` bins are derived one
-per unique profiled value (with a sentinel-bin for `kp=0` and an
-overflow bin for runtime values beyond the sweep); `kv_big` uses a
-log-4x doubling scheme adapted to the observed max; `skew_rate` is a
-normalised [0, 1] metric with fixed bin edges; `pc` is used raw (not
-bucketed) so every profiled grid point becomes its own alpha column.
-This means widening the sweep (raising `MAX_NUM_SEQS` above 128 or
-`ATTENTION_MAX_KV`, whose default is now the model's own context) lights up proper resolution on the
-affected axis without any code change — the fitter writes the axes it
-used into `meta.yaml::skew_fit.bucket_axes` and the simulator reads
-them from there.
+The `rel_err_p50` in `meta.yaml` roughly **doubled** when this replaced
+the previous 5-axis fit (0.011-0.013 -> 0.021-0.026), and that is not a
+regression. The old fit wrote a cell per distinct coordinate with no
+support floor -- 3,952-21,665 cells at 2.9-3.4 rows each -- so it was
+scoring memorisation; this one writes 75-109 cells at 175-578 rows each.
+The held-out number is the one that moved the right way: the
+lever-weighted residual over 1,084 batches fired on the live engine,
+1.77% -> 0.21-0.26%.
+
+The axes were picked by running **every subset of six candidates end to
+end** -- 64 of them across the three committed bench examples, scored on
+all 15 metrics. `n | pc | lev` summed 4.35 against the previous five
+axes' 7.51; `kv_big` and the dispersion measures are already inside
+`lev`, `kp`'s median over 470 real mixed batches is 0, and `skew_rate`
+is noise.
+
+The sharper reason is support, not ranking. The five-axis key splits one
+sweep's 13,476 rows into **1,554 cells** and the cells real batches land
+in hold **2-5 rows each**; this one makes **117 cells** and the ones real
+batches land in hold **8-171**. Scored per batch on 1,084 measured
+batches, the old key hits **0%** of them once a 20-row floor applies --
+numerically identical to having no table -- and with no floor (what
+shipped) reads |err| p50 4.9% / 9.5% against this key's 1.6% / 3.1%.
+
+**`n` is derived from the sweep; `pc` and `lev` are fixed.** `n` gets one
+bucket per profiled batch size, split at the **geometric midpoints** so a
+runtime `n` reads the nearest profiled size on a log scale -- the same
+rule `decode_q_len` and the MoE `ep` degree use. That axis cannot be
+coarsened: alpha differs 2.1-2.5x between two adjacent profiled sizes
+(measured at 42 coordinates with `nb`/`skew`/`kvs` held identical) and a
+run never schedules past `max_num_seqs`, so a bucket spanning two of them
+averages in a regime the runtime cannot enter. Deriving it is also what
+makes raising `MAX_NUM_SEQS` light up resolution with no code change --
+the fitter writes the axes it used into
+`meta.yaml::skew_fit.bucket_axes` and the simulator reads them from
+there.
+
+`pc` stays four coarse bins because alpha's dependence on it is a single
+step at `pc = 0 -> pc > 0` and flat above it; swept from 2 bins to
+one-per-profiled-value the residual moves 0.71 / 0.49 / 0.51 / 0.50 /
+0.48 / 0.50 / 0.57%, indistinguishable across the middle. `lev` is not a
+swept axis at all, so there is no profiled value to be nearest to.
 
 ### Disabling / re-fitting
 

@@ -8,9 +8,13 @@ description: How LLMServingSim's output compares against real vLLM
 
 LLMServingSim is validated end-to-end against real vLLM on the
 **bundled `(hardware, model)` combos**. The numbers below come from
-running a 300-request ShareGPT replay through both vLLM v0.19.0 and
-the simulator on RTXPRO6000, then comparing the per-request and
-per-tick metrics with `python -m bench validate`.
+running a 300-request ShareGPT replay through both real vLLM and the
+simulator, then comparing the per-request and per-tick metrics with
+`python -m bench validate`. Every figure on this page is read out of the
+committed `bench/examples/<hardware>/<model>/validation/summary.txt`, so it is
+reproducible rather than quoted.
+
+**All four configurations land every one of their 15 metrics inside 5%.**
 
 > **Want to validate your own change?** See
 > **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**
@@ -22,7 +26,7 @@ per-tick metrics with `python -m bench validate`.
 | --- | --- |
 | **Workload** | 300 ShareGPT-derived requests, ~10 sps Poisson arrivals |
 | **Hardware** | RTXPRO6000 and RTX 4090, single node (profile bundles in `profiler/perf/<hardware>/`) |
-| **vLLM version** | `v0.19.0` — what these runs were recorded against. The bench container now pins `v0.28.0`, so re-running them would not reproduce these numbers exactly |
+| **vLLM version** | `v0.28.0` for the three RTXPRO6000 truths, which the bench container pins. The RTX 4090 truth stays on `v0.19.0`: that card is no longer in the machine, so it cannot be re-recorded — see the note under its section |
 | **Block size** | 16 |
 | **Engine flags** | Defaults except where the cluster config dictates otherwise |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
@@ -54,53 +58,73 @@ latency metric moving with it:
 | `mem_util: 0.9` (default) | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
 | `mem_util: 0.833919` (matched) | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
 
-The three RTXPRO6000 configurations peak at 58-97% of their budget on a 96 GB
-card, so they stay at `0.9` — calibrating them would change nothing. If you
-validate against your own vLLM run, check the peak `Each NPU Memory Usage` in
-the heartbeat first: if it approaches `mem_util * 100`, read `num_gpu_blocks`
-from `meta.json` and match it before comparing latency at all.
+The three RTXPRO6000 configurations stay at `0.9`, and the reason is not that
+they are far from the ceiling — Qwen3-32B's pool reaches 97% of its budget.
+It is that **neither side preempts a single request** on any of the three, so
+no scheduling decision depends on where the ceiling is; on the RTX 4090 run the
+simulator preempts 198 times. Calibrating `mem_util` on a run that never
+preempts changes nothing.
+
+Two cautions if you validate against your own vLLM run. Check preemption
+first — `preempted` in the truth's `timeseries.csv` and the simulator's own
+counter — because that, not a percentage, is what says the capacity is
+load-bearing. And do not compare the two occupancy percentages directly: the
+simulator's heartbeat counts cached-but-free blocks in `Each NPU Memory Usage`
+while vLLM's `kv_cache_pct` counts only pinned ones, so the same run reads 71%
+on one side and 28% on the other. Admission uses free blocks on both, so the
+difference is cosmetic — but it is not a 2.5x discrepancy to chase.
 :::
 ## Headline numbers
 
 Mean error vs. real vLLM, per metric, on the four currently bundled
 configurations:
 
-| Hardware | Model | Parallelism | TTFT mean | TPOT mean | Latency mean |
-| --- | --- | --- | --- | --- | --- |
-| RTX 4090   | Llama-3.1-8B                | TP=1 dense      | +0.6% | +0.2% | +0.5% |
-| RTXPRO6000 | Llama-3.1-8B                | TP=1 dense      | -4.0% | -1.0% | -1.8% |
-| RTXPRO6000 | Qwen3-32B                   | TP=2 dense      | +1.3% | +0.8% | +1.0% |
-| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | -13.6% | -1.7% | -2.2% |
+| Hardware | Model | Parallelism | TTFT mean | TPOT mean | Latency mean | worst of 15 |
+| --- | --- | --- | --- | --- | --- | --- |
+| RTX 4090   | Llama-3.1-8B                | TP=1 dense      | +0.3% | +0.2% | +0.3% | +1.1% |
+| RTXPRO6000 | Llama-3.1-8B                | TP=1 dense      | +3.7% | +1.4% | +1.9% | +3.7% |
+| RTXPRO6000 | Qwen3-32B                   | TP=2 dense      | -2.3% | -1.5% | -1.8% | -2.3% |
+| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.9% | +0.6% | +0.6% | +4.5% |
 
-Every number on this page is read out of the committed
-`bench/examples/<hardware>/<model>/validation/summary.txt` files, so it is
-reproducible rather than quoted.
+The last column is the largest absolute error across all fifteen metrics
+(TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
+summary of a run: a mean can be small because two errors cancelled. **Every
+metric of every configuration is inside 5%**, and TPOT and end-to-end latency
+means are inside 2% on all four.
 
-**TPOT means land within 1.7% and end-to-end latency means within 2.2%
-on all four configurations**, and the DP+EP MoE path tracks vLLM as
-tightly as the dense TP path on both. TTFT means are looser: -4.0% on
-the RTXPRO6000 Llama run and -13.6% on the MoE run.
+**TTFT is the loosest metric on every run, and that is structural rather than a
+separate error.** A saturated queue amplifies whatever per-step charge the
+simulator gets wrong: on the RTXPRO6000 Llama run the per-step cost is +1.6%
+against production, which becomes +1.4% TPOT, +4.3% on the average request's
+queue wait (299 of 300 requests wait longer than in vLLM), and +3.7% TTFT — an
+amplification of about 3.1x. So read TTFT as the most sensitive indicator in the
+table, not as an independent defect, and read TPOT as the closest thing to a
+direct test of the cost model.
 
-The RTX 4090 row is the tightest of the four, inside 1% on every metric
-including all percentiles. It is also the only run whose `mem_util` is
-calibrated against the measured KV block count — see the caution above —
-and the only one whose card saturates, so it is the cleanest available
-apples-to-apples comparison.
+The two dense signs differ — Llama over-predicts, Qwen3-32B under-predicts —
+which is what you want from a model that is not tuned per configuration. There
+is no calibration factor anywhere in the pipeline: profiled latencies go in as
+measured.
 
-That TTFT spread is expected rather than alarming, and it is worth
-knowing why before reading the tables. The two sides do not define the
-measurement identically — the simulator stops the clock when the first
-token's *computation* finishes, vLLM when the client *receives* it — and
-TTFT is dominated by queueing, so a small scheduling difference early in
-the run moves the mean a lot. On the MoE run the median TTFT is 138.8 ms
-against 108.6 ms, so a 30 ms absolute difference reads as -21.8%. Judge
-TTFT by its absolute error and its tail, not by percentage of a very
-small number: TTFT P90 through P99 land within 10.9% on every
-configuration, and within 1.0% on the RTX 4090 run.
-
-Per-percentile numbers (median / P90 / P95 / P99) are in the same
-`summary.txt` files under
+Per-percentile numbers are in the same `summary.txt` files under
 [`bench/examples/`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples).
+
+:::caution[The DP+EP row is a single draw, and its tail has a wide error bar]
+The MoE configuration's TTFT tail is not reproducible **on the engine side**.
+Twelve runs of it with identical flags, weights and workload spread 16.9% on
+TTFT mean and 22.1% on TTFT P90, because which data-parallel member's batch
+pairs with which in a round depends on arrival timing vLLM does not control.
+Scoring one fixed simulator output against all twelve gives a TTFT mean
+anywhere from -10.2% to +5.0%.
+
+That spread is vLLM's, not the simulator's — the simulator is deterministic and
+returns the same clock every time. So the committed truth is chosen for
+**representativeness**, by distance to the twelve runs' own median, and not for
+agreement: the runs that agree best with the simulator are the least
+representative ones, which is exactly how a compensating error gets published.
+TPOT, end-to-end latency and the run *span* are far tighter (the span is
+deterministic to 0.05% on both sides) and are the metrics to trust here.
+:::
 
 ## Per-configuration results
 
@@ -112,21 +136,29 @@ Throughput timeline, vLLM (orange) vs. simulator (blue):
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |   65.46 s |   65.82 s | **+0.6%** |
-| TTFT P99      |  137.36 s |  137.70 s | +0.3% |
+| TTFT mean     |   65.49 s |   65.70 s | **+0.3%** |
+| TTFT median   |   60.13 s |   60.36 s | +0.4% |
+| TTFT P99      |  137.36 s |  137.91 s | +0.4% |
 | TPOT mean     |   32.4 ms |   32.5 ms | **+0.2%** |
-| TPOT P99      |   56.0 ms |   56.5 ms | +0.9% |
-| Latency mean  |   86.58 s |   86.98 s | **+0.5%** |
+| TPOT P99      |   56.0 ms |   56.6 ms | +1.1% |
+| Latency mean  |   86.61 s |   86.87 s | **+0.3%** |
 | Latency P99   |  153.63 s |  154.22 s | +0.4% |
 
-The tightest configuration in the set: every metric at every percentile
-lands between +0.2% and +0.9%. Two things make it the cleanest
-comparison available. The 24 GB card genuinely saturates its KV cache,
-so the scheduler is under real memory pressure on both sides rather than
-running with slack; and its `mem_util` is calibrated to the block count
-vLLM actually resolved, so the two are working from the same capacity.
-The latency model itself is untouched — profiled latencies go in as
-measured — so TPOT at +0.2% is a free prediction rather than a fit.
+The tightest configuration in the set: all fifteen metrics land between
++0.2% and +1.1%. Two things make it the cleanest comparison available.
+The 24 GB card genuinely saturates its KV cache — the simulator preempts
+198 times here and zero times on the other three — so the scheduler is
+under real memory pressure on both sides rather than running with slack;
+and its `mem_util` is calibrated to the block count vLLM actually
+resolved, so the two are working from the same capacity. The latency
+model itself is untouched — profiled latencies go in as measured — so
+TPOT at +0.2% is a free prediction rather than a fit.
+
+It is also the one truth still recorded on vLLM `v0.19.0`, because the card has
+since left the machine. Its profile bundle is the matching 0.19 one and its
+cluster config carries `link_bw` / `link_latency` explicitly, since there is no
+interconnect measurement to inherit — a reader can see those two numbers are
+the author's choice rather than measured.
 
 ### RTXPRO6000 — Llama-3.1-8B (TP=1 dense)
 
@@ -134,17 +166,29 @@ measured — so TPOT at +0.2% is a free prediction rather than a fit.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |    7.10 s |    6.82 s | **-4.0%** |
-| TTFT P99      |   19.76 s |   19.36 s | -2.0% |
-| TPOT mean     |   32.5 ms |   32.1 ms | **-1.0%** |
-| TPOT P99      |   37.3 ms |   37.6 ms | +0.6% |
-| Latency mean  |   28.20 s |   27.69 s | **-1.8%** |
-| Latency P99   |   37.64 s |   37.03 s | -1.6% |
+| TTFT mean     |    6.55 s |    6.79 s | **+3.7%** |
+| TTFT median   |    8.43 s |    8.74 s | +3.7% |
+| TTFT P99      |   18.49 s |   19.11 s | +3.4% |
+| TPOT mean     |   31.5 ms |   32.0 ms | **+1.4%** |
+| TPOT P99      |   36.4 ms |   37.1 ms | +1.8% |
+| Latency mean  |   27.04 s |   27.57 s | **+1.9%** |
+| Latency P99   |   36.17 s |   36.84 s | +1.8% |
 
-The same model and parallelism on a 96 GB card, which never fills its KV
-cache (it peaks at 78% of its budget). TPOT stays within 1.0% and
-latency within 1.8%; TTFT is -4.0% on the mean and -8.6% on the median,
-the simulator getting first tokens out slightly early.
+The same model and parallelism on a 96 GB card. It never preempts, though its
+block pool does reach 79% of budget. This run is the one whose residual is
+fully localised, and it is a single term: the simulator's charge for one decode
+step is **1.6% above production**, measured on one controlled uniform-kv shape
+(production 26.04 ms against the simulator's 26.47 at n=128, kv 1190). The
+saturated queue then amplifies it — +1.4% TPOT, +4.3% queue wait, +3.7% TTFT.
+
+Two measured causes, neither of them the cost model being wrong about a kernel.
+`dense.csv` records only the **prefill** token layout, because the profiler
+packs a shot's tokens into one request, and the same token count spread over
+decode sequences measures 2-4% cheaper on the projections (`down_proj` at
+0.998-1.002 is the control that says this is a layout effect, not a scale
+factor). And the per-layer figures come from a 1-layer boot, which reads
+attention 1.1% high against a real 32-layer depth. Both are properties of how a
+bundle is measured rather than of the simulator, and both are still open.
 
 ### RTXPRO6000 — Qwen3-32B (TP=2 dense)
 
@@ -152,18 +196,26 @@ the simulator getting first tokens out slightly early.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |   36.91 s |   37.37 s | **+1.3%** |
-| TTFT P99      |   93.35 s |   94.21 s | +0.9% |
-| TPOT mean     |   80.3 ms |   81.0 ms | **+0.8%** |
-| TPOT P99      |   97.1 ms |   98.4 ms | +1.3% |
-| Latency mean  |   90.41 s |   91.33 s | **+1.0%** |
-| Latency P99   |  126.34 s |  127.93 s | +1.3% |
+| TTFT mean     |   35.62 s |   34.80 s | **-2.3%** |
+| TTFT median   |   39.47 s |   38.80 s | -1.7% |
+| TTFT P99      |   89.43 s |   87.35 s | -2.3% |
+| TPOT mean     |   77.4 ms |   76.3 ms | **-1.5%** |
+| TPOT P99      |   94.3 ms |   92.4 ms | -2.0% |
+| Latency mean  |   87.17 s |   85.61 s | **-1.8%** |
+| Latency P99   |  120.69 s |  118.63 s | -1.7% |
 
-TP=2 exercises the dense ALLREDUCE collective on `o_proj` /
-`down_proj`. The most uniformly accurate of the RTXPRO6000 runs: every
-metric at every percentile lands between +0.8% and +1.7%, and all of
-them are positive — the simulator over-predicts by a small, consistent
-margin rather than drifting.
+TP=2 exercises the dense ALLREDUCE collective on `o_proj` / `down_proj`, whose
+price comes from the NCCL sweep in `hardware.yaml` rather than from a fit — the
+measured pair is 15.92 GB/s / 6,600 ns, and it charges this run's 1.31 MB
+decode all-reduce at 1.05x of real NCCL. The most uniformly behaved run of the
+four: all fifteen metrics land between -1.5% and -2.3%, all of them negative,
+so the simulator under-predicts by a small consistent margin rather than
+drifting. Its block pool is also the fullest of the four at 97% of budget, and
+it still preempts on neither side.
+
+Note the sign: this run is *under* where Llama-3.1-8B on the same card is
+*over*. Nothing in the pipeline is tuned per configuration, so the two
+residuals are independent rather than a single bias.
 
 ### RTXPRO6000 — Qwen3-30B-A3B-Instruct-2507 (DP=2 × EP=2 MoE)
 
@@ -171,21 +223,33 @@ margin rather than drifting.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |    1.09 s |    0.94 s | **-13.6%** |
-| TTFT P99      |    9.59 s |    9.49 s | -1.0% |
-| TPOT mean     |   47.3 ms |   46.5 ms | **-1.7%** |
-| TPOT P99      |   53.3 ms |   53.0 ms | -0.5% |
-| Latency mean  |   32.34 s |   31.65 s | **-2.2%** |
-| Latency P99   |   43.90 s |   43.09 s | -1.8% |
+| TTFT mean     |    1.11 s |    1.14 s | **+2.9%** |
+| TTFT median   |    0.17 s |    0.17 s | +2.4% |
+| TTFT P99      |    9.78 s |   10.22 s | +4.5% |
+| TPOT mean     |   47.2 ms |   47.4 ms | **+0.6%** |
+| TPOT P99      |   53.1 ms |   54.2 ms | +2.1% |
+| Latency mean  |   32.29 s |   32.50 s | **+0.6%** |
+| Latency P99   |   43.78 s |   43.92 s | +0.3% |
 
-The disaggregated path: data-parallel across two instances,
-expert-parallel within each, with wave-synchronized collectives. TPOT
-and latency hold to -1.7% and -2.2%, but TTFT reads -13.6% on the mean
-and -21.8% on the median. The absolute numbers explain most of that: the
-median is 138.8 ms against 108.6 ms, a 30 ms difference on the smallest
-values in the whole set. The tail, where absolute queueing dominates,
-comes back to -1.0% at P99. This run has the *most* memory headroom of
-the four (52% of budget), so its TTFT error is not a capacity effect.
+The disaggregated path: data-parallel across two instances, expert-parallel
+within each, with wave-synchronized collectives. TPOT and end-to-end latency
+hold to +0.6%, which is the tightest pair in the set after the RTX 4090 run —
+the DP+EP path tracks vLLM as closely as the dense TP path.
+
+Its TTFT tail (+4.5% at P99) is the widest error on the page, and it is also
+the one number here that a single vLLM run cannot pin down: see the caution
+under the headline table for the 22.1% engine-side spread across twelve
+identical runs, and why the committed truth is chosen for representativeness
+rather than for agreement. This run also has the most memory headroom of the
+four (59% of budget), so nothing about it is a capacity effect.
+
+Three modelling details it exercises that the dense runs do not, each measured
+rather than assumed: a DP round is padded only while it fits the CUDA-graph
+capture range; the EP dispatch/combine is **ragged**, so its cost is
+`gathered - min` rather than the average rank's share; and the number of
+distinct experts a batch activates is read from a measured gate curve
+(`--gate-stats`) rather than from the uniform closed form, which runs 0.87x of
+it through the middle of the range.
 
 ## Reproducing locally
 

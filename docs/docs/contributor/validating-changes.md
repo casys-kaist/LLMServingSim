@@ -143,10 +143,10 @@ Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 - Three PNGs: `latency.png` (per-request latency CDF), `throughput.png`
   (throughput timeline), `requests.png` (running / waiting curves).
 
-The committed reference baselines land within 1.7% on TPOT means and
-2.2% on end-to-end latency means; TTFT means span +1.3% to -13.6%
-— see **[Validation](/docs/validation)** for the per-configuration
-table.
+The committed reference baselines land **every one of their 15 metrics
+inside 5%**: TPOT and end-to-end latency means inside 2%, and the worst
+single metric anywhere is +4.5% — see
+**[Validation](/docs/validation)** for the per-configuration table.
 **A regression beyond ~5% against those baselines is a blocker.**
 Smaller movements need an explanation in the PR description (e.g.,
 "this fixes an under-counting bug; the new error is closer to ground
@@ -154,8 +154,12 @@ truth than the old").
 
 Compare against the numbers in
 `bench/examples/<hardware>/<model>/validation/summary.txt`, not against the ~5%
-figure in the abstract: TTFT already sits at -13.6% on the MoE
-configuration, so "within 5%" is not a bar it currently clears.
+figure in the abstract. All four configurations currently clear 5% on every
+metric, so a metric crossing it is a real regression rather than the status
+quo. One caveat on the MoE configuration: its TTFT tail has a **22.1%
+engine-side spread** across twelve identical vLLM runs, so judge that one on
+TPOT, end-to-end latency and the run span, which are deterministic to 0.05% on
+both sides.
 
 For deeper detail on the validation methodology, see
 [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).

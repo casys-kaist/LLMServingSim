@@ -243,7 +243,7 @@ three measurements:
 | `t_mean_us` | Latency at all-decodes-uniform-at-mean kv |
 | `t_max_us` | Latency at all-decodes-uniform-at-max kv |
 | `t_skew_us` | Latency at the actual bimodal mix |
-| `alpha` | `(t_skew - t_mean) / (t_max - t_mean)`. **Not clamped** — 14-20% of rows are negative and 2-5% exceed 1, as the sample rows above show. `nan` when `t_max <= t_mean`, and the fit drops those |
+| `alpha` | `(t_skew - t_mean) / (t_max - t_mean)`. **Not clamped** — 14-20% of rows are negative and 2-5% exceed 1, as the sample rows above show. `nan` when `t_max <= t_mean`, and the fit drops those. The *fitted* value in `skew_fit.csv` is a cell median and is clipped to `[-0.2, 1.0]`; this raw column is not |
 
 Methodology: **[Skew & alpha fit](./skew-alpha-fit)**.
 
@@ -253,27 +253,24 @@ The fitted per-bucket alpha table the simulator actually consumes
 at run time:
 
 ```
-layer,pc,n_label,skew_rate_label,kv_big_label,kp_label,alpha,n_samples
-attention,0,n<=128,sr<=15%,kvB<=16k,kp=0,0.0322,4
-attention,0,n<=128,sr<=15%,kvB<=1k,kp=0,0.0323,4
+layer,n_label,pc_label,lev_label,alpha,n_samples
+attention,n=128,pc0,lev3,0.0589,38
+attention,n=128,pcM,lev4,0.008,171
 ...
 ```
 
 | Column | Meaning |
 | --- | --- |
 | `layer` | Which attention-category kernel this alpha was fitted on |
-| `pc` | Prefill chunk bucket (raw value) |
-| `n_label` | `n_decode` bucket label |
-| `skew_rate_label` | Skew-rate bucket label. The rate itself *is* clipped to [0, 1], unlike alpha — fixed bins `sr<=5%` / `sr<=15%` / `sr<=40%` / `sr<=70%` / `sr>70%` |
-| `kv_big_label` | Big-KV bucket (log-4× bins) |
-| `kp_label` | `kv_prefill` bucket label |
-| `alpha` | Fitted weighted-LS alpha for this bucket |
-| `n_samples` | Number of `skew.csv` rows that contributed |
+| `n_label` | Batch-size bucket. One per profiled `n`, split at the geometric midpoints so a runtime `n` reads the nearest profiled size on a log scale |
+| `pc_label` | Prefill-chunk bucket: `pc0` / `pcS` (≤256) / `pcM` (≤1024) / `pcL` |
+| `lev_label` | Bucket on `lev = (t_max - t_mean) / t_mean`, the endpoint gap in units of the batch's own cost: `lev0` (≤0.25) … `lev4` (>3.0) |
+| `alpha` | The **median** of this cell's per-row alphas, clipped to `[-0.2, 1.0]` |
+| `n_samples` | Number of `skew.csv` rows that contributed. A cell under 20 is not written |
 
-Labels are the human-readable comparison strings the fitter emits
-(`n<=128`, `kvB<=4k`, `kp=0`), not slugs — the simulator rebuilds them
-from `meta.yaml::skew_fit.bucket_axes` and joins them into the key
-`{layer}|pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, so they have to
+Labels are the human-readable comparison strings the fitter emits, not slugs —
+the simulator rebuilds them from `meta.yaml::skew_fit.bucket_axes` and joins
+them into the key `[{layer}|]{n_label}|{pc_label}|{lev_label}`, so they have to
 match character for character.
 
 The `layer` prefix is what keeps a sparse kernel from inheriting the dense
@@ -281,10 +278,11 @@ one's alpha. A table written before the column existed has unprefixed keys, and
 the simulator falls back to those for `attention` **only** — any other kernel
 gets no correction rather than a borrowed one.
 
-Because the axes are recorded in the meta rather than hardcoded,
-widening the profile sweep lights up finer resolution with no
-simulator-side change: `n` and `kp` get one bin per unique profiled
-value, and `kv_big` extends its log-4x bins to the observed maximum.
+`n`'s edges are derived from what the sweep fired, which is why they are
+recorded in the meta rather than hardcoded: a sweep at `max_num_seqs 512` gets
+a bucket for 512 with no simulator-side change. `pc` and `lev` are fixed —
+alpha's dependence on `pc` is one step at `pc = 0 → pc > 0` and flat above it,
+and `lev` is not a swept axis at all.
 
 ## `meta.yaml`
 
@@ -348,25 +346,24 @@ skew_profile:
 skew_fit:
   enabled: true
   bucket_axes:
-    pc: raw pc value (profiled grid point)
-    n_bins: [0, 2, 4, 8, 16, 32, 64, 128, 256, 1000000]
-    n_labels: [n<=2, n<=4, n<=8, n<=16, n<=32, n<=64, n<=128, n<=256, n>256]
-    skew_rate_bins: [-0.01, 0.05, 0.15, 0.4, 0.7, 1.01]
-    skew_rate_labels: [sr<=5%, sr<=15%, sr<=40%, sr<=70%, sr>70%]
-    kv_big_bins: [0, 1024, 4096, 16384, 1000000000]
-    kv_big_labels: [kvB<=1k, kvB<=4k, kvB<=16k, kvB>16k]
-    kp_bins: [-1, 0, 512, 1024, 2048, 4096, 8192, 1000000000]
-    kp_labels: [kp=0, kp<=512, kp<=1k, kp<=2k, kp<=4k, kp<=8k, kp>8k]
+    axes: [n, pc, lev]
+    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
+    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
+    pc_bins: [-1, 1, 256, 1024, 1000000000]
+    pc_labels: [pc0, pcS, pcM, pcL]
+    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
+    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
     1:
-      method: per_bucket_wls_5axis
-      n_samples: 13016
-      alpha_default: 0.057
+      method: per_bucket_median_3axis_n_pc_lev
+      n_samples: 13476
+      alpha_default: 0.0535
+      alpha_default_by_layer: {attention: 0.0535}
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0121
-      rel_err_p90: 0.0609
-      rel_err_p99: 0.3578
-      signed_mean: 0.005
+      rel_err_p50: 0.0259
+      rel_err_p90: 0.1259
+      rel_err_p99: 0.349
+      signed_mean: -0.0046
 ```
 
 ### Identity and provenance
@@ -441,7 +438,7 @@ recorded here.
 | --- | --- |
 | `engine_effective.max_num_batched_tokens` / `.max_num_seqs` | One-shot warning when the runtime CLI exceeds the sweep bounds, since lookups will extrapolate |
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
-| `skew_fit.bucket_axes` | Building the bucket key per batch. Falls back to module defaults for bundles written before these were recorded |
+| `skew_fit.bucket_axes` | Building the bucket key per batch. A bundle with no `bucket_axes` at all falls back to the module defaults; one fitted against the previous five axes has the field but no `lev_bins`, and is detected and skipped. Either way its cells are unreachable and every batch reads the pooled `alpha_default` |
 | `skew_fit.per_tp[tp].alpha_by_bucket` or `.bucket_table` | The alpha table, hydrated from `tp<N>/skew_fit.csv` when the meta points at a CSV |
 | `skew_fit.per_tp[tp].alpha_default` | Fallback for a bucket absent from the table, pooled over every kernel. Used for `attention` only |
 | `skew_fit.per_tp[tp].alpha_default_by_layer` | Per-kernel fallback, `{layer: alpha}`. What a sparse kernel's unfitted buckets resolve to; absent means no correction |

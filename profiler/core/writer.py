@@ -393,14 +393,10 @@ def _skew_fit_block(variant_root: Path, tp_degrees: list[int]) -> dict:
 def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
     """Write one TP's per-bucket alpha table to CSV.
 
-    Bucket keys in the fit dict are pipe-delimited strings produced by
-    ``profiler.fit_alpha._bucket_key``. We split them back into their
-    components for analyst-friendly columns. The simulator reassembles
-    the key from these columns.
-
-    Six parts means the key carries the attention kernel's name as a prefix,
-    which is how a sparse-attention model keeps its indexer's alpha off its
-    attention kernel; five means a fit that predates the prefix, all of it the
+    Keys are the pipe-delimited strings ``profiler.fit_alpha._bucket_key``
+    builds: ``[{layer}|]{n_label}|{pc_label}|{lev_label}``. They are split into
+    columns so the table can be read by eye; the simulator reassembles the key
+    from the labels. A key with no layer prefix predates the prefix and is the
     ``attention`` kernel.
     """
     alphas = fit_entry.get("alpha_by_bucket") or {}
@@ -413,46 +409,30 @@ def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
     for key, alpha in alphas.items():
         parts = key.split("|")
         layer = "attention"
-        if len(parts) == 6:
+        if len(parts) == 4:
             layer, *parts = parts
-        if len(parts) != 5 or not parts[0].startswith("pc="):
-            # Don't silently drop malformed rows — keep the raw key.
+        if len(parts) != 3:
+            # Don't silently drop a malformed row -- keep the raw key.
             rows.append({
-                "layer": layer,
-                "pc": "", "n_label": "", "skew_rate_label": "",
-                "kv_big_label": "", "kp_label": "",
-                "alpha": float(alpha),
-                "n_samples": int(counts.get(key, 0)),
-                "raw_key": key,
+                "layer": layer, "n_label": "", "pc_label": "",
+                "lev_label": "", "alpha": float(alpha),
+                "n_samples": int(counts.get(key, 0)), "raw_key": key,
             })
             continue
-        pc_token, n_label, sr_label, kvb_label, kp_label = parts
-        try:
-            pc = int(pc_token.split("=", 1)[1])
-        except (IndexError, ValueError):
-            pc = pc_token
+        n_label, pc_label, lev_label = parts
         rows.append({
             "layer": layer,
-            "pc": pc,
             "n_label": n_label,
-            "skew_rate_label": sr_label,
-            "kv_big_label": kvb_label,
-            "kp_label": kp_label,
+            "pc_label": pc_label,
+            "lev_label": lev_label,
             "alpha": float(alpha),
             "n_samples": int(counts.get(key, 0)),
         })
 
-    rows.sort(key=lambda r: (
-        r["layer"],
-        r["pc"] if isinstance(r["pc"], int) else 1 << 30,
-        r["n_label"], r["skew_rate_label"],
-        r["kv_big_label"], r["kp_label"],
-    ))
-    fieldnames = [
-        "layer", "pc", "n_label", "skew_rate_label", "kv_big_label",
-        "kp_label", "alpha", "n_samples",
-    ]
-    # Preserve the optional raw_key column if any row needed it.
+    rows.sort(key=lambda r: (r["layer"], r["n_label"], r["pc_label"],
+                             r["lev_label"]))
+    fieldnames = ["layer", "n_label", "pc_label", "lev_label",
+                  "alpha", "n_samples"]
     if any("raw_key" in r for r in rows):
         fieldnames.append("raw_key")
     with csv_path.open("w", newline="", encoding="utf-8") as f:

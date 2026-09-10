@@ -51,7 +51,7 @@ LLMServingSim/
 │   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
 │   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
-│   │   ├── fit_alpha.py        # per-kernel 5-axis weighted-LS alpha fit
+│   │   ├── fit_alpha.py        # per-kernel 3-axis per-cell-median alpha fit
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
 │   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
 │   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
@@ -311,7 +311,7 @@ Attribution: the base layerwise-profile methodology (worker-extension hook into
 vLLM's `layerwise_profile()`, single-GPU TP emulation via `hf_overrides`) is
 adapted from [@waneon](https://github.com/waneon). The unified 4D attention
 sweep, the heterogeneous-decode skew sweep in `profiler/core/skew.py`, and
-the 5-axis weighted-LS alpha fit in `profiler/core/fit_alpha.py` are
+the 3-axis per-cell-median alpha fit in `profiler/core/fit_alpha.py` are
 developed in this repo.
 
 Each run produces a per-category CSV bundle:
@@ -588,24 +588,114 @@ which tile padding and SM imbalance do not bound). Rows with
 
 - **Sweep structure**: Tier 1 is a factorial over `(n, ratio, pc, kp, kvs)`
   at `_SKEW_REP = 4.0`; Tier 2 adds a skew-axis sweep at a handful of anchor
-  pivots (`skew ∈ {1.5, 2, 4, 8, 16}`). Any CLI `SKEW_<axis>_FACTOR`
-  (default 2.0) coarsens that axis geometrically — higher = faster, lower
-  = denser. Factors and grid specs land in `meta.yaml::skew_profile`.
-- **Fit**: `fit_alpha.py` groups rows by the 5-axis key
-  `pc | n_label | skew_rate_label | kv_big_label | kp_label` and runs a
-  weighted least-squares fit per cell. Axis ablation on the widened
-  ~13k-sample dataset picked the 5-axis scheme (test p50/p90 ≈ 2.7% / 14.8%
-  on TP=1 vs 3.5% / 16.4% for the previous 3-axis fit).
-- **Data-driven bucket axes**: `n` and `kp` get one bucket per unique
-  profiled value (`kp=0` sentinel + overflow), `kv_big` uses log-4x bins
-  extended to the observed max, `skew_rate` is a fixed normalised [0, 1]
-  scheme, and `pc` is keyed raw. Derived axes are written to
-  `meta.yaml::skew_fit.bucket_axes`; the simulator reads them from there
-  so widening the profile sweep lights up finer resolution without any
-  simulator code change.
+  pivots (`skew ∈ {1.5, 2, 4, 8, 16}`). Four of the five carry a CLI
+  `SKEW_<axis>_FACTOR` (default 2.0) that coarsens them geometrically —
+  higher = faster, lower = denser; `ratio` has none, being a unitless shape
+  fraction rather than a scale. Factors and grid specs land in
+  `meta.yaml::skew_profile`.
+- **Fit**: `fit_alpha.py` groups rows by the 3-axis key
+  `[{layer}|]{n_label}|{pc_label}|{lev_label}` and takes the **median** of the
+  cell's per-row alphas. `lev = (t_max - t_mean) / t_mean` is the endpoint gap
+  in units of the batch's own cost, and it costs nothing to compute at either
+  end: the fit has both timings in the row and the simulator has both lookups
+  in hand before it needs an alpha. A cell below `_MIN_BUCKET_ROWS` (20) is not
+  written and its batches read the layer's pooled `alpha_default`; a cell that
+  is written is clipped to `_ALPHA_CLIP` (`[-0.2, 1.0]`).
+
+  The axes were chosen by running **every subset of six candidate axes end to
+  end** — 64 of them x the three committed bench examples, scored on all 15
+  metrics. Summed mean |err|: `n | pc | lev` 4.35, `n | pc | disp` 4.43,
+  `n | pc` 4.55, `n | pc | kp` 4.82, the old five 7.51, `lev` alone 8.5.
+  `kv_big` and `disp` are already inside `lev`; `kp` acts only through the
+  additive prefill term alpha cancels (over all 470 mixed batches of the two
+  dense examples its median is **0**); `skew_rate` is noise. Read that for the
+  ranking only: every arm of it ran at the coarse `n` bins that were later
+  replaced, so it ranks axis sets under a defect all of them shared.
+
+  **The previous five axes could not be hit at runtime, which is the claim that
+  does not depend on that sweep.** The five-axis key splits one sweep's 13,476
+  rows into **1,554 cells**, and the cells real batches land in hold **2 to 5
+  rows each**; the three-axis key makes **117 cells** from the same rows and the
+  ones real batches land in hold **8 to 171**. Scored on the 1,084 measured
+  batches, joined **per batch** so a finer key gets no free pass
+  (`.claude/axis_set_ab.py`):
+
+  | keying | cells hit | \|err\| p50 Llama/q32 | lever-weighted \|err\| |
+  |---|---|---|---|
+  | `n \| pc \| lev` | **73% / 66%** | **1.6% / 3.1%** | **1.2% / 1.7%** |
+  | the five, 20-row floor | **0% / 0%** | 1.5% / 5.3% | 2.5% / 5.1% |
+  | the five, no floor (what shipped) | 88% / 90% | 4.9% / 9.5% | 3.8% / 6.3% |
+  | pooled constant, no table | — | 1.5% / 5.3% | 2.5% / 5.1% |
+
+  With a support floor the old table is **numerically identical to having no
+  table**. Without one — which is what shipped, since the previous fit had
+  neither a floor nor a clip — it hits, but reads cells fitted on two to five
+  shots. So the previous tuning's "optimum" was an optimum over the sweep's own
+  rows, which is the same fact as the doubled self-eval below. **Do not weight
+  a keying comparison by cells the scheme itself defines**: that rewards a finer
+  key for having almost nothing left to score, and it is why an earlier run of
+  this comparison ranked the five axes *first*. On Llama the pooled constant's
+  per-batch median (1.5%) still edges the table's (1.6%) while the
+  lever-weighted measure prefers the table two to one — one cell carries half
+  that run's skew lever, so the two statistics genuinely disagree there.
+
+  **Median rather than weighted least squares.** WLS is optimal when the noise
+  on `dts = t_skew - t_mean` is homoscedastic, but `dts` is a difference of two
+  nearly-equal measurements, so its noise scales with `t_mean` and `dtm^2`
+  over-trusts the largest-gap rows — exactly where one noisy shot dominates.
+  Measured both ways through the whole pipeline, median wins on the sweep's own
+  rows (Llama `rel_err_p50` 0.0588 -> 0.0308) *and* end to end. That A/B
+  swapped only the estimator, at the `n` bins of the time; the shipped fit's
+  own self-eval is 0.0259.
+
+  **The self-eval `rel_err_p50` roughly doubled with this change, and that is
+  correct.** Do not read it as a regression. The previous fit wrote a cell for
+  every distinct 5-axis coordinate with **no support floor at all** — 3,952 to
+  21,665 cells over the same 13k-63k rows, i.e. 2.9 to 3.4 rows behind each
+  "fit" — so its 0.011-0.013 was measuring memorisation. This one writes
+  75-109 cells at 175 to 578 rows each and reads 0.021-0.026. What moved in the
+  right direction is the held-out number: the lever-weighted residual over
+  1,084 batches measured on the live engine, **1.77% -> 0.21-0.26%**, and the
+  64-subset end-to-end score, 7.51 -> 4.35. A self-eval on a table with three
+  rows per cell cannot distinguish the two.
+- **`n` is derived from the sweep; `pc` and `lev` are fixed.** `_derive_n_axis`
+  puts one bucket per profiled batch size and splits at the **geometric
+  midpoints**, so a runtime `n` reads the profiled size nearest to it on a log
+  scale — the same rule `decode_q_len` and the MoE `ep` degree already use, and
+  the right one for a grid the sweep spaces geometrically. Deriving it is what
+  makes the axis follow `max_num_seqs`: a sweep at 256 gets a bucket for 256, a
+  sweep at 512 one for 512, and neither pools two profiled sizes.
+
+  That axis cannot be coarsened. Alpha differs **2.1-2.5x** between two
+  adjacent profiled sizes — measured at 42 coordinates with `nb` / `skew` /
+  `kvs` held identical (Llama tp1 0.0531 at n=128 against 0.0215 at n=256;
+  Qwen3-32B tp2 0.1119 against 0.0537) — and a run never schedules past
+  `max_num_seqs`, so a bucket spanning 128 and 256 charges real batches the
+  average of their own regime and one they cannot enter. On Llama that cell
+  held 38 rows at n=128 (median 0.0589) and 37 at n=256 (0.0219) and its
+  pooled median came out **0.0258**, against the **0.0539** measured on 224 of
+  the run's own n=128 batches. Scored against 1,084 batches measured on the
+  live engine, the lever-weighted alpha residual is **1.77%** of the two dense
+  examples' spans pooled that way against **0.21-0.26%** with one bucket per
+  profiled size.
+
+  `pc` stays four coarse bins because alpha's dependence on it is a single step
+  at `pc = 0 -> pc > 0` (Qwen3-32B 0.0674 against 0.023-0.026) and flat above
+  it. Swept at 2 / 3 / 4 / 5 / 6 / 8 bins and at one-per-profiled-value, the
+  residual reads 0.71 / 0.49 / **0.51** / 0.50 / 0.48 / 0.50 / 0.57% — the
+  middle five are indistinguishable and only the two extremes are worse, so
+  finer `pc` buys nothing and one bin loses a real step. `lev` is not a swept
+  axis at all (it is derived from each row's own two timings), so there is no
+  profiled value to be nearest to; splitting its five bins finer only divides
+  the support (0.35% -> 0.73-1.71%).
+
+  The axes are written to `meta.yaml::skew_fit.bucket_axes` with an explicit
+  `axes` list and the simulator reads them from there. A bundle fitted before
+  this change carries no `axes` key; nothing then matches and every batch falls
+  back to that bundle's pooled `alpha_default`.
 - **Storage**: the full (bucket → alpha) mapping spills to
-  `tp<N>/skew_fit.csv` with columns `pc, n_label, skew_rate_label,
-  kv_big_label, kp_label, alpha, n_samples`. `meta.yaml::skew_fit.per_tp[tp]`
+  `tp<N>/skew_fit.csv` with columns `layer, n_label, pc_label, lev_label,
+  alpha, n_samples`. `meta.yaml::skew_fit.per_tp[tp]`
   keeps only a summary (`method`, `n_samples`, `alpha_default`,
   `rel_err_p50/p90/p99`, `signed_mean`, `bucket_table` pointer). This
   turns meta.yaml from ~3100 lines into ~100 lines per variant. The
@@ -995,11 +1085,13 @@ one. Do not let the `n_decode` result launder a claim about them.
 
 **The skew axes stay at 2.0** rather than following the default, because
 density is not free there. `fit_alpha` derives one bucket per *profiled value*
-on `n` and `kp`, so halving the step doubles the bucket count and halves the
-samples behind each alpha, and the fit already sits at ~2 samples per bucket.
-`pc` is keyed by its raw value and a runtime chunk lands on a grid point only
-by coincidence, so a denser pc axis buys nothing. The one axis where density
-would pool samples is `kvs`, inside its log-4x `kv_big` bin.
+on `n`, so halving that step doubles the bucket count and halves the samples
+behind each alpha. And a denser `pc` buys nothing measurable: alpha's
+dependence on it is one step at `pc = 0 -> pc > 0`, and swept from 2 bins to
+one-per-profiled-value the residual moves 0.71 / 0.49 / 0.51 / 0.50 / 0.48 /
+0.50 / 0.57% — indistinguishable across the middle. `kvs` and `kp` are not
+bucket axes at all now, so density there only pools samples inside the cells
+that exist, which is the one direction that helps.
 
 **A refresh has to restate the other axes.** Every committed RTXPRO6000
 Llama/Qwen bundle carries `chunk_factor: 1.5, kv_factor: 1.5` and
@@ -1015,7 +1107,9 @@ sink writes its CSV only after the last shot, so a run redirected to a file
 used to show nothing at all between "firing N" and "done" -- which reads
 exactly like a hang, and was misdiagnosed as one twice (the GPU also sits at
 0-4% throughout, because the cost is the profiler's event tree, not the
-forward). `_fire_one_category` logs count, rate and ETA every 1% of shots.
+forward). `_fire_one_category` logs count, rate and ETA every 1% of shots, and
+`skew.sample_skew` does the same -- it is a separate fire loop, so it needed
+its own, and it is the longest single sweep in a run after `attention`.
 
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
@@ -1208,71 +1302,42 @@ second lookup at `kv_decode_max`. `alpha` is resolved from
 after a single lookup for `n_decode <= 1`, for a batch whose decode kv
 lengths are all equal, or for `alpha == 0` (the default with no skew
 profile). The bucket key
-is `pc={pc}|{n_label}|{sr_label}|{kvb_label}|{kp_label}`, built against
+is `[{layer}|]{n_label}|{pc_label}|{lev_label}`, built against
 `skew_fit.bucket_axes` from the meta (falling back to module defaults for
-older profiles). `_hydrate_skew_fit_tables()` reads each TP's `skew_fit.csv`
-into the in-memory `alpha_by_bucket` map on first load.
+older profiles). `lev = (t_max - t_mean) / t_mean` costs nothing here: both
+lookups are already done before an alpha is needed, which is why the axis is
+free at this end and derived from the row's own timings at the other.
+`_hydrate_skew_fit_tables()` reads each TP's `skew_fit.csv` into the in-memory
+`alpha_by_bucket` map on first load.
 
-**Mixed batches deliberately read the pooled alpha, not the bucket table.**
-`pc` is the one axis keyed by its exact value -- the other four go through the
-bin labels in `bucket_axes`, which absorb any runtime value, while
-`fit_alpha.py` groups `pc` by the value itself. A runtime chunk is
-`min(remaining prompt, budget left after the decodes)` and lands on the
-profiled `{0, 16, ..., 2048}` only by coincidence (it asked for
-`pc = 1921, 369, 371, 536 ...` on the Qwen3-32B workload), so **every** `pc > 0`
-lookup misses its bucket and falls through to `alpha_default`: 208 of 2092
-resolutions on that workload, all 208 of them. `pc = 0` -- pure decode -- is a
-grid point, so those hit.
+**Every axis is binned now, so a mixed batch hits its cell.** `pc` used to be
+keyed by its *exact* value while the other four went through bin labels, and a
+runtime chunk is `min(remaining prompt, budget left after the decodes)` -- so
+it landed on the profiled `{0, 16, ..., 2048}` only by coincidence and **208
+of 208** `pc > 0` lookups on the Qwen3-32B workload fell through to
+`alpha_default`. Bracketing `pc` and blending the two neighbouring profiled
+values was tried instead and measured worse on two different sweeps; binning
+it is what fixed the miss without that.
 
-That reads like a bug and it is not one to fix. Bracketing `pc` and blending
-the two neighbouring profiled values was implemented and **measured twice, on
-two different skew sweeps**, and it is worse on both:
+What is left is a support question rather than a keying one: 66-73% of the
+measured real batches hit a written cell, and the rest read the layer's pooled
+`alpha_default` because their cell is under the 20-row floor. That is the
+intended fallback -- a cell fitted on two samples is noise, and the pooled
+constant carries the whole sweep behind one number.
 
-| RTXPRO6000/Qwen3-30B-A3B DP+EP | TTFT mean | TTFT p50 | TTFT P90 | paired p50 | \|err\| p50 |
-|---|---|---|---|---|---|
-| pooled `alpha_default` (today) | **-2.6%** | **-3.7%** | **-0.1%** | **-2.5%** | **9.7%** |
-| per-bucket, bracketed | -8.2% | -7.0% | -10.5% | -5.6% | 12.0% |
-
-(Against the true arrival anchor -- see `bench/core/validate.py::_bench_arrival_ts`.
-The direction is the plain one: the simulator already sits slightly under, and
-the per-bucket table removes attention time, so it goes further under.)
-
-The mechanism, instrumented per lookup (`.claude/probe_dtm.py` records each
-skew-corrected lookup's alpha and its lever arm `dtm = t_max - t_mean`):
-
-- the bucket table delivers **0.709x** the pooled skew contribution over the
-  run's 3,059 corrected lookups (30.77 ms against 43.39 ms), which is the whole
-  5.7-point move -- less attention time, faster sim, more negative TTFT error
-- its dtm-weighted mean alpha is **0.0429** against the pooled **0.0659**
-- and at the cells this workload visits, **51% of the per-bucket alphas are
-  negative** -- `t_skew < t_mean` in the two samples that fitted them, which
-  only measurement noise produces
-
-So the table's resolution exceeds its statistical support here: the true alpha
-is ~0.065 and the per-bucket noise is larger than that, while the pooled
-constant carries 17,325 samples behind one number. Two mechanisms that sound
-right and are **not** the cause, both checked and refuted: the runtime does not
-apply alpha at a larger lever than it was fitted on (runtime/fitted dtm is
-0.40x at the median, never above 1.22x), and alpha is not negatively correlated
-with dtm (+0.117).
-
-Do not predict this from a summary statistic. Three attempts got it wrong in
-order: the *median* per-bucket alpha (0.030) forced as a constant says the
-change costs 7 points, the unweighted *mean* over mixed lookups (0.065 against
-the 0.0659 it replaces) says it is free, and the run says -5.7. Only the
-end-to-end run settles it.
-
-What would make the table usable is samples at the cells this workload visits
--- `pc >= 512, kp = 0, n <= 128, kvB <= 16k, sr <= 40%`. Widening tier 2 across
-the grid does **not** do that: it improved the pooled fit (`rel_err` p50
-1.23% -> 0.95%, p90 6.10% -> 5.72%, and TTFT mean -1.2% -> -0.2% because the
-pooled value is what gets read) but occupancy at those cells did not move,
-because a new `skew` value at a given `(nb, n)` lands in a different `sr` label
-and `kv_big = kvs * skew` scatters across `kvB` labels. Buckets went 3,979 ->
-5,976 and the <= 2-sample share 52% -> 61%. The axis that would actually pool
-samples there is `kvs` inside its log-4x `kv_big` bin -- `--skew-kvs-factor`
-below 2.0 -- since `n` and `pc` bins are derived one-per-profiled-value and
-only make more thin buckets.
+**Judge a candidate keying on measured batches, not on end-to-end agreement.**
+`.claude/shots_from_log.py` turns a `--log-level DEBUG` sim log into a shots
+file for every corrected batch (the `skew ...` line follows its batch's
+`compose:` line) and `.claude/alpha_all.py` fires each three ways exactly as
+`skew.py` defines it, so the batch's true alpha and its true lever are
+measured and it is not in `skew.csv`. `.claude/cell_residual.py` then weights
+each cell's error by the time the run actually puts through it -- one cell
+carried 50% of Llama's lever, so a per-cell average is not the same statement.
+Three earlier attempts to predict a keying change from a summary statistic got
+it wrong in order (the median per-bucket alpha said -7 points, the unweighted
+mean said free, the run said -5.7), and a 20-batch ground truth was not enough
+either: it ranked the schemes 2.34 / 0.25%, 209 batches said 0.77 / 0.52%, and
+only the complete 1,084 gave the answer the code now carries.
 
 Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as
