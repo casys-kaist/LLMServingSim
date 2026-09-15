@@ -44,6 +44,10 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    help="Filename prefix for plots / summary.")
     p.add_argument("--title", default="vLLM vs LLMServingSim",
                    help="Plot title suffix.")
+    p.add_argument("--equiv-margin", type=float, default=0.10,
+                   dest="equiv_margin",
+                   help="Equivalence band for the summary's TOST test, as a "
+                        "fraction of the vLLM mean (default: 0.10 = +/-10%%).")
     p.add_argument("--log-level", default="INFO",
                    dest="log_level",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -113,6 +117,7 @@ def run(args: argparse.Namespace) -> int:
         summary_path = plots.write_summary(
             output_dir, args.prefix,
             bench_ttft, sim_ttft, bench_tpot, sim_tpot, bench_lat, sim_lat,
+            equiv_margin=args.equiv_margin,
         )
     log.success("Wrote plots + summary -> %s", output_dir)
     log.info("Summary: %s", summary_path)

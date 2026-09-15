@@ -67,6 +67,7 @@ LLMServingSim/
 │   │   ├── stat_logger.py      # custom vLLM StatLoggerBase that fills timeseries
 │   │   ├── validate.py         # bench-vs-sim comparison entry point
 │   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
+│   │   ├── stats.py            # KS + TOST equivalence tests for the summary (stdlib only)
 │   │   └── logger.py           # Rich-based logger + stdio capture
 │   ├── results/                # output: bench/results/<run_id>/ (gitignored)
 │   ├── examples/               # committed end-to-end runs, keyed <hardware>/<model>/
@@ -696,6 +697,8 @@ equality against recorded results:
    them in the same commit.
 3. For profiler changes: edit `MODEL` / `HARDWARE` in `profiler/profile.sh`
    and run `./profiler/profile.sh` from the repo root inside the vLLM container.
+4. `python3 -m bench.core.stats` self-checks the KS / TOST tests that
+   `summary.txt` reports (stdlib only, no bench run needed).
 
 A scenario whose clock equals an existing one exercises flag parsing and
 nothing else. Several knobs only bite once the KV cache is saturated, which is

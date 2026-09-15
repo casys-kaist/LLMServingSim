@@ -102,6 +102,43 @@ Per-percentile numbers (median / P90 / P95 / P99) are in the same
 `summary.txt` files under
 [`bench/examples/`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples).
 
+## Statistical tests
+
+A mean error is a point estimate; it does not say whether the two sides
+are the same distribution, nor whether the agreement is tighter than the
+run's own noise. Each `summary.txt` therefore carries two tests per
+metric, over the same 300 requests — a two-sample Kolmogorov-Smirnov
+test on the full CDF, and a TOST equivalence test of the sim mean
+against a ±10% band around vLLM's (see
+**[`bench validate`](/docs/reference/bench-cli#statistical-tests)**):
+
+| Hardware / Model | Metric | KS D | KS p | TOST p | Equivalent (±10%) |
+| --- | --- | --- | --- | --- | --- |
+| RTX 4090 Llama-3.1-8B   | TTFT    | 0.053 | 0.776 | 0.036 | yes |
+|                         | TPOT    | 0.050 | 0.838 | 0.000 | yes |
+|                         | Latency | 0.017 | 1.000 | 0.006 | yes |
+| RTXPRO6000 Llama-3.1-8B | TTFT    | 0.117 | 0.031 | 0.210 | no  |
+|                         | TPOT    | 0.090 | 0.167 | 0.000 | yes |
+|                         | Latency | 0.067 | 0.504 | 0.000 | yes |
+| RTXPRO6000 Qwen3-32B    | TTFT    | 0.057 | 0.709 | 0.100 | no  |
+|                         | TPOT    | 0.057 | 0.709 | 0.000 | yes |
+|                         | Latency | 0.063 | 0.571 | 0.000 | yes |
+| RTXPRO6000 Qwen3-30B-A3B | TTFT   | 0.247 | 0.000 | 0.579 | no  |
+|                         | TPOT    | 0.160 | 0.001 | 0.000 | yes |
+|                         | Latency | 0.070 | 0.441 | 0.000 | yes |
+
+**TPOT and end-to-end latency are statistically equivalent to vLLM
+within ±10% on all four configurations**, and KS cannot distinguish the
+latency distributions on any of them (p from 0.441 to 1.000).
+
+TTFT is the metric that does not clear the bar, for the reason the
+section above gives: it is dominated by queueing, so its spread is large
+relative to a ±10% band. `Equivalent: no` there is a statement about
+*power*, not about error — the RTXPRO6000 Qwen3-32B run has a +1.3% mean
+difference and still returns `no`, because with 300 requests the test
+cannot rule out a >10% gap. Only the MoE run fails on substance: KS
+p = 0.000 says its TTFT distribution genuinely differs.
+
 ## Per-configuration results
 
 ### RTX 4090 — Llama-3.1-8B (TP=1 dense)

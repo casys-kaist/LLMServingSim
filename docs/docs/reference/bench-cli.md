@@ -126,6 +126,7 @@ into a subdirectory of the bench run.
 | `--output-subdir` | string | `validation` | Subdirectory under `--bench-dir` for plots and summary |
 | `--prefix` | string | `""` | Filename prefix for the generated files |
 | `--title` | string | `vLLM vs LLMServingSim` | Plot title suffix |
+| `--equiv-margin` | float | `0.10` | Equivalence band for the summary's TOST test, as a fraction of the vLLM mean |
 | `--log-level` | choice | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ### Output
@@ -135,8 +136,31 @@ into a subdirectory of the bench run.
   <prefix>_throughput.png     prompt + generation throughput, both sides
   <prefix>_requests.png       running / waiting counts over time
   <prefix>_latency.png        TTFT / TPOT / latency CDFs
-  <prefix>_summary.txt        mean and P50 / P90 / P95 / P99 per metric, with diff%
+  <prefix>_summary.txt        mean and P50 / P90 / P95 / P99 per metric, with diff%,
+                              then the statistical tests below
 ```
+
+### Statistical tests
+
+The percentile table says how far apart two numbers are; it cannot say
+whether the difference is inside the run's own noise. The second block
+of `summary.txt` adds two tests per metric, computed with the standard
+library only (no scipy):
+
+| Column | Test | Reading |
+| --- | --- | --- |
+| `KS D`, `KS p` | Two-sample Kolmogorov-Smirnov | The largest gap between the two CDFs, over the whole distribution rather than five percentiles. `p < 0.05` means the distributions differ |
+| `TOST p`, `Equivalent` | Two one-sided tests, Welch standard error, normal approximation | `p < 0.05` means the sim mean is provably *inside* `±--equiv-margin` of the vLLM mean |
+
+A plain difference test is the wrong tool for a validation run: with a
+few hundred requests it rejects on a 0.5% gap, so "significantly
+different" stops meaning "wrong". TOST inverts the question — it is the
+test that can *confirm* a match, and the margin is the accuracy you are
+claiming. `Equivalent: no` means the run does not prove accuracy at that
+margin; for a high-variance metric like TTFT that can happen even when
+the mean difference is small, because the band is narrow relative to the
+spread.
+
 
 ### Matched metric definitions
 

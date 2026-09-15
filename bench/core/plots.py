@@ -6,13 +6,16 @@ directory; plus a plain-text summary table:
     <prefix>_throughput.png     prompt + gen throughput (sim vs vLLM)
     <prefix>_requests.png       running / waiting requests (sim vs vLLM)
     <prefix>_latency.png        TTFT / TPOT / latency CDFs (sim vs vLLM)
-    <prefix>_summary.txt        TTFT / TPOT / latency at mean/median/p90/p95/p99
+    <prefix>_summary.txt        TTFT / TPOT / latency at mean/median/p90/p95/p99,
+                                then the KS / TOST tests from stats.py
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence
+
+from bench.core import stats
 
 # matplotlib is imported lazily inside each helper so the module is
 # importable in environments without matplotlib (e.g. CLI --help).
@@ -118,17 +121,25 @@ def plot_latency_cdfs(output_dir: Path, prefix: str,
 def write_summary(output_dir: Path, prefix: str,
                   bench_ttft: Sequence[float], sim_ttft: Sequence[float],
                   bench_tpot: Sequence[float], sim_tpot: Sequence[float],
-                  bench_latency: Sequence[float], sim_latency: Sequence[float]
+                  bench_latency: Sequence[float], sim_latency: Sequence[float],
+                  equiv_margin: float = 0.10,
                   ) -> Path:
-    """Write a plain-text TTFT/TPOT/Latency table with sim-vs-vLLM diff%."""
+    """Write a plain-text TTFT/TPOT/Latency table with sim-vs-vLLM diff%.
+
+    Followed by the statistical tests (see ``bench/core/stats.py``): a
+    two-sample KS test per metric, and a TOST equivalence test of the
+    sim mean against a +/-``equiv_margin`` band around the vLLM mean.
+    """
     lines: list[str] = []
     header = f"{'Metric':<25}{'vLLM':>12}{'Sim':>12}{'Diff%':>10}"
     lines.append(header)
     lines.append("-" * len(header))
 
-    for name, va, sa in [("TTFT", bench_ttft, sim_ttft),
-                         ("TPOT", bench_tpot, sim_tpot),
-                         ("Latency", bench_latency, sim_latency)]:
+    metrics = [("TTFT", bench_ttft, sim_ttft),
+               ("TPOT", bench_tpot, sim_tpot),
+               ("Latency", bench_latency, sim_latency)]
+
+    for name, va, sa in metrics:
         for stat_label, fn in _STATS:
             v = fn(va) if va else float("nan")
             s = fn(sa) if sa else float("nan")
@@ -138,6 +149,8 @@ def write_summary(output_dir: Path, prefix: str,
                 f"{v:>12.1f}{s:>12.1f}{diff:>+9.1f}%"
             )
         lines.append("")
+
+    lines += stats.summary_lines(metrics, equiv_margin)
 
     out = output_dir / _name(prefix, "summary.txt")
     out.write_text("\n".join(lines))

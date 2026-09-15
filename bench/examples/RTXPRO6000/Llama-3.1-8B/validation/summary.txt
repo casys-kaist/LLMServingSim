@@ -17,3 +17,12 @@ Latency Median                29615.6     29248.8     -1.2%
 Latency P90                   35450.7     34821.9     -1.8%
 Latency P95                   36617.4     36137.7     -1.3%
 Latency P99                   37638.8     37027.3     -1.6%
+
+Metric                      n(vLLM/Sim)    KS D     KS p  Mean diff%   TOST p  Equivalent
+-----------------------------------------------------------------------------------------
+TTFT                            300/300   0.117    0.031       -4.0%    0.210          no
+TPOT                            300/300   0.090    0.167       -1.0%    0.000         yes
+Latency                         300/300   0.067    0.504       -1.8%    0.000         yes
+
+KS: p < 0.05 means the distributions differ.
+TOST: p < 0.05 means the sim mean is inside +/-10% of the vLLM mean.
