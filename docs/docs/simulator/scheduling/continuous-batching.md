@@ -17,7 +17,7 @@ optionally chunked prefill. This page walks through the rules.
 
 ## Two phases, one scheduler
 
-`Scheduler.schedule()` in `serving/core/scheduler.py` follows vLLM V1's
+`Scheduler.schedule()` in `llmservingsim/serving/core/scheduler.py` follows vLLM V1's
 shape and runs in two phases per step:
 
 | Phase | Queue | Behaviour |

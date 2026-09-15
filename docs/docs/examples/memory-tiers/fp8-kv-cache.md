@@ -39,7 +39,7 @@ sidebar_position: 3
 > | `RTXPRO6000` | `Qwen/Qwen3-30B-A3B-Instruct-2507` | `bf16` |
 >
 > To use this example today, profile the `-kvfp8` variant first
-> with `KV_CACHE_DTYPE=fp8 ./profiler/profile.sh` (see
+> with `KV_CACHE_DTYPE=fp8 ./llmservingsim/profiler/profile.sh` (see
 > **[Profiler → Adding hardware](/docs/profiler/adding-hardware)**)
 > and rerun.
 
@@ -75,7 +75,7 @@ flag, not a config field. Example using the bundled simple config:
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
   --dtype bfloat16 --kv-cache-dtype fp8 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \

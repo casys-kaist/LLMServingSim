@@ -10,7 +10,7 @@ LLMServingSim is validated end-to-end against real vLLM on the
 **bundled `(hardware, model)` combos**. The numbers below come from
 running a 300-request ShareGPT replay through both vLLM v0.19.0 and
 the simulator on RTXPRO6000, then comparing the per-request and
-per-tick metrics with `python -m bench validate`.
+per-tick metrics with `python -m llmservingsim.bench validate`.
 
 > **Want to validate your own change?** See
 > **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**
@@ -210,15 +210,15 @@ committed artifacts without editing a script.
 The validation step regenerates the throughput / latency / requests
 plots and the headline summary. To rerun vLLM itself (instead of
 reusing the committed artifacts under
-`bench/examples/<hardware>/<model>/vllm/`), use `python -m bench run` from
+`bench/examples/<hardware>/<model>/vllm/`), use `python -m llmservingsim.bench run` from
 inside the vLLM container; see
-[`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md)
+[`llmservingsim/bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/llmservingsim/bench/README.md)
 for the full layout.
 
 ## What's next
 
 - **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**:
-  `./serving/validate.sh` — the check you run before opening a PR, and
+  `./llmservingsim/serving/validate.sh` — the check you run before opening a PR, and
   how to report a number that moved.
 - **[Simulator → Reading the output](/docs/simulator/reading-output)**:
   what every column in the per-request CSV means and how to derive

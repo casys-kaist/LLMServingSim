@@ -7,7 +7,7 @@ title: Onboarding
 
 This page walks you through the dev environment from a fresh clone
 to a working simulator run. The goal: by the end you should be able
-to edit a Python file in `serving/`, rerun a simulation, and see
+to edit a Python file in `llmservingsim/serving/`, rerun a simulation, and see
 your change reflected in the output CSV.
 
 If you only plan to read code (not run it), skip to **[Codebase
@@ -86,7 +86,7 @@ The fastest "is everything working?" check is the bundled
 single-instance trace:
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
     --cluster-config configs/cluster/single_node_single_instance.json \
     --dataset workloads/example_trace.jsonl \
     --output outputs/onboarding_smoke.csv \
@@ -114,12 +114,12 @@ If you got that, the simulator is working. If you got an error, see
 Time to actually edit something. A safe first edit: bump the default
 log interval so you can see throughput updates more often.
 
-Open `serving/__main__.py` and find the `--log-interval` arg
+Open `llmservingsim/serving/__main__.py` and find the `--log-interval` arg
 (it defaults to `1.0`). Change the default to `0.5`, save, and rerun
 the smoke command from step 4. You should see twice as many
 throughput log lines.
 
-Revert the change (`git checkout serving/__main__.py`) when you're
+Revert the change (`git checkout llmservingsim/serving/__main__.py`) when you're
 done playing.
 
 ## 6. Read the next pages

@@ -289,7 +289,7 @@ skew_fit:
 | `profiler_version` / `vllm_version` / `cuda_version` | Versions the bundle was produced with. Kernel timings shift a few percent across CUDA driver versions, so this is the field to check before trusting a mixed comparison |
 | `gpu` | The **driver's** device name, verbatim |
 | `hardware` | The `--hardware` label, i.e. the folder name and the value a cluster config's `hardware` field must match. Distinct from `gpu` |
-| `architecture` / `architecture_sha256` | Which `profiler/models/*.yaml` was used, and its hash — so you can tell whether a catalog edit invalidates the bundle |
+| `architecture` / `architecture_sha256` | Which `llmservingsim/profiler/models/*.yaml` was used, and its hash — so you can tell whether a catalog edit invalidates the bundle |
 | `model` / `variant` / `tp_degrees` | What was profiled |
 | `measurement_iterations` | Timed forwards averaged per shot |
 

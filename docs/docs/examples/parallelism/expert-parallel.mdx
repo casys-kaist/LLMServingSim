@@ -65,7 +65,7 @@ constraint `ep_size` divides `num_local_experts` is checked at startup.
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_moe_single_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -79,7 +79,7 @@ python -m serving \
   trained gate (deterministic, fast)
 - `RR`: per-token round-robin
 - `RAND`: per-token uniform random (seedable)
-- `CUSTOM`: pluggable in `serving/core/gate_function.py`
+- `CUSTOM`: pluggable in `llmservingsim/serving/core/gate_function.py`
 
 ## Expected output
 

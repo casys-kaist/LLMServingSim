@@ -55,7 +55,7 @@ validate_example() {
     sim_log_rel="$(repo_relative_path "$sim_log")"
 
     local cmd=(
-        "$PYTHON" -m bench validate
+        "$PYTHON" -m llmservingsim.bench validate
         --bench-dir "$vllm_dir_rel"
         --sim-csv "$sim_csv_rel"
         --sim-log "$sim_log_rel"

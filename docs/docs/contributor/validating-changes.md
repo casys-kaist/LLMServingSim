@@ -8,18 +8,18 @@ title: Validating your changes
 The project does not ship a unit-test suite. The simulator is
 **deterministic** instead — the same cluster config, workload and flags
 reproduce the same makespan exactly — so validation is equality against
-recorded results rather than eyeballing plots. `serving/validate.sh`
+recorded results rather than eyeballing plots. `llmservingsim/serving/validate.sh`
 runs that comparison for you.
 
 ## 1. Run the validation script (every PR)
 
 ```bash
-./serving/validate.sh
+./llmservingsim/serving/validate.sh
 ```
 
 Two stages, about eight minutes total:
 
-1. **Behaviour** — every scenario in `serving/validate-baselines.txt`,
+1. **Behaviour** — every scenario in `llmservingsim/serving/validate-baselines.txt`,
    compared against its recorded `Total clocks (ns)`. Every cluster
    config, every parallelism shape (TP, PP, DP and their combinations, EP),
    prefix caching and the tiers below it, the scheduler flags, both routing
@@ -47,10 +47,10 @@ refactor that moves any of these numbers is not behaviour-preserving.
 Useful variations:
 
 ```bash
-./serving/validate.sh --clocks-only     # skip the slow accuracy stage
-./serving/validate.sh dp moe_dp_pp      # just these scenarios, while iterating
-./serving/validate.sh --list            # scenario names
-./serving/validate.sh --help            # all options
+./llmservingsim/serving/validate.sh --clocks-only     # skip the slow accuracy stage
+./llmservingsim/serving/validate.sh dp moe_dp_pp      # just these scenarios, while iterating
+./llmservingsim/serving/validate.sh --list            # scenario names
+./llmservingsim/serving/validate.sh --help            # all options
 ```
 
 Run it from the repo root inside the simulator container.
@@ -78,7 +78,7 @@ diff.
 
 If the change is intended, land the new truth in the same PR:
 
-1. `./serving/validate.sh --update`, then commit `serving/validate-baselines.txt`.
+1. `./llmservingsim/serving/validate.sh --update`, then commit `llmservingsim/serving/validate-baselines.txt`.
 2. If a `sim.csv` changed, also run `./bench/examples/validate.sh` and commit
    the regenerated `outputs/sim.csv`, `validation/summary.txt` and the three
    plots for each affected example. A changed `sim.csv` makes those plots and
@@ -135,9 +135,9 @@ figure in the abstract: TTFT already sits at -13.6% on the MoE
 configuration, so "within 5%" is not a bar it currently clears.
 
 For deeper detail on the validation methodology, see
-[`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).
+[`llmservingsim/bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/llmservingsim/bench/README.md).
 
-## 4. Profiler-side changes (if you touched `profiler/`)
+## 4. Profiler-side changes (if you touched `llmservingsim/profiler/`)
 
 Profiler changes don't show up in the simulator until you regenerate
 the perf bundle. Run a small profile to confirm your edit doesn't
@@ -146,15 +146,15 @@ break the pipeline:
 ```bash
 # Inside the vLLM container
 MODEL=meta-llama/Llama-3.1-8B HARDWARE=RTXPRO6000 \
-    ./profiler/profile.sh
+    ./llmservingsim/profiler/profile.sh
 ```
 
 Then verify the simulator still loads it cleanly:
-`./serving/validate.sh --clocks-only single`.
+`./llmservingsim/serving/validate.sh --clocks-only single`.
 
 If you only changed the alpha fit (`fit_alpha.py`), you can use
 `SKIP_DENSE=1 SKIP_PER_SEQUENCE=1 SKIP_ATTENTION=1 SKIP_MOE=1
-ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
+ONLY_SKEW=1 ./llmservingsim/profiler/profile.sh` to refresh just `skew_fit.csv`
 without rerunning the rest.
 
 ## What "this should reproduce" looks like in a PR
@@ -166,7 +166,7 @@ key number from the output. Examples:
 > TTFT MAPE 2.1% (was 2.3%), TPOT MAPE 1.7% (unchanged), throughput
 > 1.2% (was 1.4%).
 
-> Validation: `./serving/validate.sh` → all 58 scenarios match their
+> Validation: `./llmservingsim/serving/validate.sh` → all 58 scenarios match their
 > baselines, all 4 `sim.csv` byte-identical.
 
 This gives the reviewer something to rerun, and gives you (and
@@ -176,9 +176,9 @@ future readers of the git log) a record of what was checked.
 
 If your contribution adds a feature that no bundled scenario
 exercises, **add a scenario as part of the PR.** Add a line to the
-`SCENARIOS` list in `serving/validate.sh` (and a
+`SCENARIOS` list in `llmservingsim/serving/validate.sh` (and a
 `configs/cluster/<your_scenario>.json` if no bundled config fits), then
-record its baseline with `./serving/validate.sh --update <name>` and commit
+record its baseline with `./llmservingsim/serving/validate.sh --update <name>` and commit
 both. That makes the feature reproducible for the next contributor instead
 of relying on them to think of it.
 
@@ -188,7 +188,7 @@ check the new number differs from the closest existing one, and if it does
 not, find a configuration where the flag actually bites (turning the KV
 cache saturated with `--npu-memory-utilization` is usually enough).
 
-`serving/run.sh` is a menu of one example per feature, not a test suite —
+`llmservingsim/serving/run.sh` is a menu of one example per feature, not a test suite —
 adding to it does not get your case validated.
 
 For features that need a custom workload (a new agentic dataset, a

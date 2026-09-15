@@ -5,7 +5,7 @@ Used by `serving/core/pim_model.py` to derive memory capacity, bandwidth, and
 read latency, and to look up the calibrated PIM attention latency model.
 
 Enable PIM by setting `pim_config` in the cluster config's `cpu_mem` section and
-passing `--enable-attn-offloading` to `python -m serving`.
+passing `--enable-attn-offloading` to `python -m llmservingsim.serving`.
 
 Full schema, including which keys are inert:
 [Reference → PIM config](https://llmservingsim.ai/docs/reference/pim-config).

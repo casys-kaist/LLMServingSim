@@ -16,7 +16,7 @@ the simulator consumes, with proper tokenization for prefix caching.
 From the vLLM Docker container at `/workspace`:
 
 ```bash
-python -m workloads.generators sharegpt \
+python -m llmservingsim.workloads.generators sharegpt \
   --model meta-llama/Llama-3.1-8B \
   --source shibing624/sharegpt_gpt4 \
   --num-reqs 300 --sps 10 --seed 42 \

@@ -324,7 +324,7 @@ whitelisted in code, so this takes two steps:
    bundled file and edit it rather than starting from scratch, so the
    inert DRAMSim3 fields stay well-formed.
 2. **Add a `"<name>": {"slope": ..., "intercept": ...}` entry to the
-   `attn_model` dict in `serving/core/pim_model.py`.** The key is the
+   `attn_model` dict in `llmservingsim/serving/core/pim_model.py`.** The key is the
    filename stem. Without it, `estimate_with_linear` raises
    `ValueError: Unknown PIM spec: <name>` the first time an
    offloaded attention layer is emitted.
@@ -340,13 +340,13 @@ The structural DRAMSim3 timings can come from a JEDEC datasheet, but
 
 ## Where this is used
 
-- **`serving/core/pim_model.py`**: parses the INI flat, derives
+- **`llmservingsim/serving/core/pim_model.py`**: parses the INI flat, derives
   capacity / bandwidth / read latency, and evaluates the linear
   attention latency model.
-- **`serving/core/config_builder.py`**: instantiates one `PIMModel`
+- **`llmservingsim/serving/core/config_builder.py`**: instantiates one `PIMModel`
   per node that sets `cpu_mem.pim_config`, and overwrites that node's
   `cpu_mem.mem_bw` / `mem_latency` from it.
-- **`serving/core/trace_generator.py`**: with
+- **`llmservingsim/serving/core/trace_generator.py`**: with
   `--enable-attn-offloading`, wraps PIM attention in
   `PIM <channel>` / `PIM END` markers ahead of the NPU attention
   kernel.

@@ -16,7 +16,7 @@ arbitrary; each has bitten the project at least once.
 - **No enforced formatter.** Don't run black / ruff format on a
   whole file unless you're rewriting it. Style noise hides real
   diffs.
-- **Imports**: keep minimal and consistent. `serving/` modules use
+- **Imports**: keep minimal and consistent. `llmservingsim/serving/` modules use
   relative imports (`from .scheduler import …`).
 - **English only** in code, comments, log messages, and docstrings.
   Korean / other-language identifiers and comments will be flagged
@@ -24,7 +24,7 @@ arbitrary; each has bitten the project at least once.
 - **Docstrings**: optional. If you write one, make it a single line
   that explains *why* the function exists, not *what it does*. The
   signature already says what.
-- **No top-level prints.** Use `serving/core/logger.py` (already
+- **No top-level prints.** Use `llmservingsim/serving/core/logger.py` (already
   imported as `logger` in most files):
   ```python
   logger.info(...)
@@ -202,7 +202,7 @@ The short version (full process is on
 - **One logical change per commit.** Don't bundle a refactor with
   a feature.
 - **PR description includes the validation command you ran**, so
-  the reviewer can rerun it — usually `./serving/validate.sh`, plus the
+  the reviewer can rerun it — usually `./llmservingsim/serving/validate.sh`, plus the
   report table if anything moved.
 
 ## What's next

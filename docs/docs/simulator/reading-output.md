@@ -27,7 +27,7 @@ instance id,request id,model,input,output,arrival,end_time,latency,queuing_delay
 ```
 
 The bundled `outputs/example_*_run.csv` files (one per scenario in
-`serving/run.sh`) are good examples to skim.
+`llmservingsim/serving/run.sh`) are good examples to skim.
 
 ### Column reference
 

@@ -103,7 +103,7 @@ t_predicted = t_mean_lookup(batch.kv_decode_mean)
 ```
 
 That's `_lookup_attention_with_skew` in
-`serving/core/trace_generator.py`. It looks the batch up at its mean
+`llmservingsim/serving/core/trace_generator.py`. It looks the batch up at its mean
 decode kv and blends toward a second lookup at the max only when a
 non-zero alpha applies -- otherwise the mean lookup is returned as is.
 

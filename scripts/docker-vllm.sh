@@ -11,7 +11,7 @@
 #     /workspace/configs/model/       HF model configs
 #
 # The working directory defaults to /workspace so any of the modules
-# can be run via ``python -m profiler``, ``python -m bench``, etc.
+# can be run via ``python -m llmservingsim.profiler``, ``python -m llmservingsim.bench``, etc.
 #
 # The official vllm/vllm-openai image already provides vllm, pydantic,
 # pyyaml, rich, and huggingface_hub — no extra pip installs required.

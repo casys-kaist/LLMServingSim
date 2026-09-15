@@ -45,7 +45,7 @@ sequenceDiagram
 
 ## Stage 1, Loaded into the Router
 
-When `python -m serving --dataset workloads/foo.jsonl` starts up,
+When `python -m llmservingsim.serving --dataset workloads/foo.jsonl` starts up,
 `router.load_requests()` parses the JSONL line by line and builds
 `Request` objects:
 
@@ -94,7 +94,7 @@ The router applies its policy (`--request-routing-policy`):
 | `LOAD` (default) | vLLM-style: pick instance with smallest `waiting * 4 + running` score |
 | `RR` | Pure round-robin |
 | `RAND` | Random uniform |
-| `CUSTOM` | Pluggable in `serving/core/router.py` |
+| `CUSTOM` | Pluggable in `llmservingsim/serving/core/router.py` |
 
 For **prefill/decode disaggregation**, the router only considers
 prefill instances at this stage. Decode instances receive the

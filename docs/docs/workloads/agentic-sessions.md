@@ -89,7 +89,7 @@ lengths in the 1000-3000 token range and tool durations of 50-300 ms
 Run it with the bundled DP+EP MoE config:
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_moe_dp_ep_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl' \
@@ -205,7 +205,7 @@ with agentic sessions.
    at the time of *each* sub-request's release.** A long agent run
    could hop between instances in a multi-instance config. If you
    want sticky session-to-instance affinity, use `CUSTOM` routing
-   (see `serving/core/router.py`).
+   (see `llmservingsim/serving/core/router.py`).
 
 ## What's next
 

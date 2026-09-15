@@ -181,7 +181,7 @@ of skew correction is documented on
 ## Walking the architecture YAML
 
 Each model has an architecture YAML at
-`profiler/models/<model_type>.yaml` (e.g., `llama.yaml`,
+`llmservingsim/profiler/models/<model_type>.yaml` (e.g., `llama.yaml`,
 `qwen3_moe.yaml`). The YAML has:
 
 - A `catalog:` mapping canonical layer names (e.g., `qkv_proj`,

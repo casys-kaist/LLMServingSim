@@ -5,87 +5,93 @@ Guidelines for AI coding agents (Claude Code, Cursor, Copilot, etc.) working in 
 ## Project Context
 
 LLMServingSim 2.0 is a cycle-level LLM serving simulator. It combines a Python frontend
-(`serving/`, run as `python -m serving`) with ASTRA-Sim (C++ analytical network simulator)
-as the backend. The profiling pipeline (`profiler/`) generates per-hardware latency data
-that drives the simulation, and the bench module (`bench/`) runs vLLM end-to-end to
+(`llmservingsim/serving/`, run as `python -m llmservingsim.serving`) with ASTRA-Sim (C++ analytical network simulator)
+as the backend. The profiling pipeline (`llmservingsim/profiler/`) generates per-hardware latency data
+that drives the simulation, and the bench module (`llmservingsim/bench/`) runs vLLM end-to-end to
 validate the simulator against ground truth.
 
 ### Repository structure
 
 ```
 LLMServingSim/
-├── serving/                    # Simulator (`python -m serving`)
-│   ├── __main__.py             # Simulation entry point + main loop
-│   ├── core/                   # Internals
-│   │   ├── scheduler.py        # vLLM-style continuous batching scheduler
-│   │   ├── trace_generator.py  # Builds execution traces from profiled latencies
-│   │   ├── memory_model.py     # Memory tracking, KV cache, tensor sizes
-│   │   ├── graph_generator.py  # Chakra protobuf graph generation
-│   │   ├── controller.py       # IPC with ASTRA-Sim subprocess
-│   │   ├── router.py           # Request routing across instances
-│   │   ├── gate_function.py    # MoE expert token routing
-│   │   ├── config_builder.py   # Cluster config → ASTRA-Sim input files
-│   │   ├── power_model.py      # Power/energy estimation
-│   │   ├── pim_model.py        # PIM device model
-│   │   ├── request.py          # Request/Batch data classes
-│   │   ├── block_pool.py       # Per-tier KV block pool + prefix-cache index
-│   │   ├── kv_cache_manager.py # Tiered KV cache manager (block hashing, allocation)
-│   │   ├── logger.py           # Rich-based logger + stdio capture
-│   │   └── utils.py            # Model config loading, formatting
-│   ├── run.sh                  # One runnable example per feature (a menu, not a suite)
-│   ├── validate.sh             # every scenario vs recorded clocks + bench/examples digests
-│   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
+├── llmservingsim/                       # The Python packages (`pip install -e .`)
+│   ├── serving/                         # Simulator (`python -m llmservingsim.serving`)
+│   │   ├── __main__.py                  # Simulation entry point + main loop
+│   │   ├── core/                        # Internals
+│   │   │   ├── scheduler.py             # vLLM-style continuous batching scheduler
+│   │   │   ├── trace_generator.py       # Builds execution traces from profiled latencies
+│   │   │   ├── memory_model.py          # Memory tracking, KV cache, tensor sizes
+│   │   │   ├── graph_generator.py       # Chakra protobuf graph generation
+│   │   │   ├── controller.py            # IPC with ASTRA-Sim subprocess
+│   │   │   ├── router.py                # Request routing across instances
+│   │   │   ├── gate_function.py         # MoE expert token routing
+│   │   │   ├── config_builder.py        # Cluster config → ASTRA-Sim input files
+│   │   │   ├── power_model.py           # Power/energy estimation
+│   │   │   ├── pim_model.py             # PIM device model
+│   │   │   ├── request.py               # Request/Batch data classes
+│   │   │   ├── block_pool.py            # Per-tier KV block pool + prefix-cache index
+│   │   │   ├── kv_cache_manager.py      # Tiered KV cache manager (block hashing, allocation)
+│   │   │   ├── logger.py                # Rich-based logger + stdio capture
+│   │   │   └── utils.py                 # Model config loading, formatting
+│   │   ├── run.sh                       # One runnable example per feature (a menu, not a suite)
+│   │   ├── validate.sh                  # every scenario vs recorded clocks + bench/examples digests
+│   │   └── validate-baselines.txt       # the recorded values; refresh with validate.sh --update
+│   ├── workloads/                       # ShareGPT/etc → JSONL workload generators
+│   │   └── generators/                  # `python -m llmservingsim.workloads.generators`
+│   ├── profiler/                        # vLLM-based layerwise profiler (`python -m llmservingsim.profiler`)
+│   │   ├── __main__.py                  # CLI dispatch (profile / slice)
+│   │   ├── core/                        # internals
+│   │   │   ├── runner.py                # Orchestration (spin_up → categories → spin_down)
+│   │   │   ├── config.py                # Architecture / ProfileArgs / engine defaults
+│   │   │   ├── engine.py                # vLLM lifecycle (tmpdir-based local config load)
+│   │   │   ├── categories.py            # Dense / PerSequence / Attention / Expert
+│   │   │   ├── skew.py                  # Heterogeneous-decode skew sweep
+│   │   │   ├── fit_alpha.py             # 5-axis weighted-LS alpha fit
+│   │   │   ├── writer.py                # CSV + meta.yaml writer, TP-stable replication
+│   │   │   ├── logger.py                # Rich-based logger + stdio capture
+│   │   │   └── hooks/                   # vLLM-internal-API touchpoints (worker ext, MoE patch, etc.)
+│   │   ├── models/                      # Architecture yamls, one per HF `model_type`
+│   │   ├── v0/                          # Legacy (pre-rewrite) profiler, kept for reference
+│   │   ├── profile.sh                   # Editable user template (MODEL / HARDWARE / TP_DEGREES / …)
+│   │   └── profile-all.sh               # Helper: sweeps several MODELs × TP degrees
+    └── bench/                           # vLLM end-to-end benchmark + sim validation (`python -m llmservingsim.bench`)
+        ├── __main__.py                  # CLI dispatch (run / validate)
+        ├── core/                        # internals
+        │   ├── runner.py                # AsyncLLM driver, captures RequestStateStats
+        │   ├── recorder.py              # writes meta.json / requests.jsonl / timeseries.csv
+        │   ├── stat_logger.py           # custom vLLM StatLoggerBase that fills timeseries
+        │   ├── validate.py              # bench-vs-sim comparison entry point
+        │   ├── plots.py                 # throughput / running-waiting / latency-CDF plot helpers
+        │   └── logger.py                # Rich-based logger + stdio capture
+        ├── results/                     # output: llmservingsim/bench/results/<run_id>/ (gitignored)
+        ├── bench.sh                     # host-side wrapper for `python -m llmservingsim.bench run`
+        └── validate.sh                  # host-side wrapper for `python -m llmservingsim.bench validate`
 ├── configs/
-│   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
-│   ├── model/                  # Model architecture configs (subset of HF config.json)
-│   └── pim/                    # PIM device configs (DRAMSim3 INI format)
-├── workloads/                   # Request trace datasets (.jsonl)
-│   └── generators/             # ShareGPT/etc → JSONL workload generators
-├── profiler/                   # vLLM-based layerwise profiler (`python -m profiler`)
-│   ├── __main__.py             # CLI dispatch (profile / slice)
-│   ├── core/                   # internals
-│   │   ├── runner.py           # Orchestration (spin_up → categories → spin_down)
-│   │   ├── config.py           # Architecture / ProfileArgs / engine defaults
-│   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
-│   │   ├── categories.py       # Dense / PerSequence / Attention / Expert
-│   │   ├── skew.py             # Heterogeneous-decode skew sweep
-│   │   ├── fit_alpha.py        # 5-axis weighted-LS alpha fit
-│   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
-│   │   ├── logger.py           # Rich-based logger + stdio capture
-│   │   └── hooks/              # vLLM-internal-API touchpoints (worker ext, MoE patch, etc.)
-│   ├── models/                 # Architecture yamls, one per HF `model_type`
-│   ├── power/                  # nvidia-smi / IPMI power-logging helpers
-│   ├── perf/                   # Output: perf/<hw>/<model>/<variant>/tp<N>/{dense,per_sequence,attention,moe,skew,skew_fit}.csv
-│   ├── v0/                     # Legacy (pre-rewrite) profiler, kept for reference
-│   ├── profile.sh              # Editable user template (MODEL / HARDWARE / TP_DEGREES / …)
-│   └── profile-all.sh          # Helper: sweeps several MODELs × TP degrees
-├── bench/                      # vLLM end-to-end benchmark + sim validation (`python -m bench`)
-│   ├── __main__.py             # CLI dispatch (run / validate)
-│   ├── core/                   # internals
-│   │   ├── runner.py           # AsyncLLM driver, captures RequestStateStats
-│   │   ├── recorder.py         # writes meta.json / requests.jsonl / timeseries.csv
-│   │   ├── stat_logger.py      # custom vLLM StatLoggerBase that fills timeseries
-│   │   ├── validate.py         # bench-vs-sim comparison entry point
-│   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
-│   │   └── logger.py           # Rich-based logger + stdio capture
-│   ├── results/                # output: bench/results/<run_id>/ (gitignored)
-│   ├── examples/               # committed end-to-end runs, keyed <hardware>/<model>/
-│   │   ├── <hw>/<model>/config.json   # the cluster config the example runs
-│   │   ├── <hw>/<model>/vllm/         # ground truth: meta.json, requests.jsonl, timeseries.csv
-│   │   ├── <hw>/<model>/outputs/      # sim.csv, sim.log
-│   │   ├── <hw>/<model>/validation/   # summary.txt + plots
-│   │   ├── run.sh              # re-run the simulator side: run.sh <hardware>/<model>
-│   │   └── validate.sh         # re-run the comparison: validate.sh <hardware>/<model>
-│   ├── bench.sh                # host-side wrapper for `python -m bench run`
-│   └── validate.sh             # host-side wrapper for `python -m bench validate`
-├── scripts/                    # Shared shell entry points (env / build, not module-specific)
-│   ├── docker-vllm.sh          # vLLM container (profiler + bench)
-│   ├── docker-sim.sh           # simulator container
-│   ├── install-vllm.sh         # bare-metal vLLM install (uv venv)
-│   └── compile.sh              # ASTRA-Sim + Chakra build
-└── astra-sim/                  # ASTRA-Sim C++ backend (submodule)
-    ├── inputs/                 # Generated configs (network, memory, system)
-    └── extern/graph_frontend/chakra/  # Chakra trace converter
+│   ├── cluster/                         # Cluster topology configs (hardware, memory, instances)
+│   ├── model/                           # Model architecture configs (subset of HF config.json)
+│   └── pim/                             # PIM device configs (DRAMSim3 INI format)
+├── workloads/                           # Bulk data, not packaged: request traces (.jsonl)
+│   └── examples/                        # Shell recipes that regenerate them
+├── profiler/                            # Bulk data, not packaged
+│   ├── perf/                            # <hw>/<model>/<variant>/tp<N>/{dense,per_sequence,attention,moe,skew,skew_fit}.csv
+│   └── power/                           # nvidia-smi / IPMI power-logging shell helpers
+├── bench/                               # Bulk data, not packaged
+│   └── examples/                        # committed end-to-end runs, keyed <hardware>/<model>/
+│       ├── <hw>/<model>/config.json     # the cluster config the example runs
+│       ├── <hw>/<model>/vllm/           # ground truth: meta.json, requests.jsonl, timeseries.csv
+│       ├── <hw>/<model>/outputs/        # sim.csv, sim.log
+│       ├── <hw>/<model>/validation/     # summary.txt + plots
+│       ├── run.sh                       # re-run the simulator side: run.sh <hardware>/<model>
+│       └── validate.sh                  # re-run the comparison: validate.sh <hardware>/<model>
+├── pyproject.toml                       # `pip install -e .` for the import paths (not published)
+├── scripts/                             # Shared shell entry points (env / build, not module-specific)
+│   ├── docker-vllm.sh                   # vLLM container (profiler + bench)
+│   ├── docker-sim.sh                    # simulator container
+│   ├── install-vllm.sh                  # bare-metal vLLM install (uv venv)
+│   └── compile.sh                       # ASTRA-Sim + Chakra build
+└── astra-sim/                           # ASTRA-Sim C++ backend (submodule)
+    ├── inputs/                          # Generated configs (network, memory, system)
+    └── extern/graph_frontend/chakra/    # Chakra trace converter
 ```
 
 Per-paper artifact evaluation scripts (the previous `evaluation/`
@@ -94,7 +100,7 @@ are not part of the main branch's tree.
 
 ### Simulation flow
 
-1. `serving/__main__.py` parses CLI args and cluster config
+1. `llmservingsim/serving/__main__.py` parses CLI args and cluster config
 2. `config_builder.py` generates ASTRA-Sim input files (network.yml, system.json, memory_expansion.json)
 3. ASTRA-Sim subprocess is launched
 4. Per iteration:
@@ -126,16 +132,24 @@ scheduler.py → next iteration
 - **CLI flags**: use hyphens (`--cluster-config`, `--max-num-seqs`)
 - **Internal Python**: use underscores (`max_num_seqs`, `enable_chunked_prefill`)
 - **JSON config filenames**: descriptive snake_case (`single_node_pim_instance.json`)
-- **Imports**: keep minimal and consistent; `serving/` modules use relative imports
+- **Imports**: keep minimal and consistent; `llmservingsim/serving/` modules use relative imports
+- **`pip install -e .`** puts the packages on the import path as
+  `llmservingsim.serving`, `llmservingsim.profiler`, `llmservingsim.bench` and
+  `llmservingsim.workloads`, so nothing needs a `PYTHONPATH` and every entry
+  point is `python -m llmservingsim.<pkg>`. Only code and the architecture
+  yamls live in the package; every bulk-data directory keeps its own name at the
+  repository root — `configs/`, `workloads/`, `profiler/{perf,power}/`,
+  `bench/examples/`, `astra-sim/`, `scripts/`, `docs/` and `outputs/`. Those
+  paths are therefore unchanged: the namespace move touched only the code
 - **Comments**: use English only — no Korean or other non-English text in comments, docstrings, or log messages
 
 ## Architecture Patterns
 
-### Profiler (`profiler/`)
+### Profiler (`llmservingsim/profiler/`)
 The profiler uses vLLM's built-in `layerwise_profile()` via a worker extension class to
 capture per-layer CUDA kernel timings from real vLLM execution paths. Architecture is
 dispatched by the HF config's `model_type` field against YAML catalogs under
-`profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
+`llmservingsim/profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
 per-sequence / attention / moe) to vLLM class names.
 
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
@@ -148,8 +162,8 @@ is written to a tmpdir at spin-up so vLLM never needs Hub access.
 Attribution: the base layerwise-profile methodology (worker-extension hook into
 vLLM's `layerwise_profile()`, single-GPU TP emulation via `hf_overrides`) is
 adapted from [@waneon](https://github.com/waneon). The unified 4D attention
-sweep, the heterogeneous-decode skew sweep in `profiler/core/skew.py`, and
-the 5-axis weighted-LS alpha fit in `profiler/core/fit_alpha.py` are
+sweep, the heterogeneous-decode skew sweep in `llmservingsim/profiler/core/skew.py`, and
+the 5-axis weighted-LS alpha fit in `llmservingsim/profiler/core/fit_alpha.py` are
 developed in this repo.
 
 Each run produces a per-category CSV bundle:
@@ -234,7 +248,7 @@ needs mixed-regime data at `n = X`, profile with `MAX_NUM_SEQS ≥ X + 1`.
 ### Canonical layer names (simulator ↔ profiler, unified)
 The simulator consumes the profiler's per-category CSVs directly. Canonical
 layer names match vLLM's own attribute names. `trace_generator` walks the
-`sequence:` section of `profiler/models/<model_type>.yaml`; the table below
+`sequence:` section of `llmservingsim/profiler/models/<model_type>.yaml`; the table below
 lists where each layer appears in the profiler CSVs and how the simulator keys
 the lookup.
 
@@ -399,7 +413,7 @@ compatibility. Both formats can coexist in the same file.
   sort order when dynamically released sub-requests enter the queue
 
 **Time advancement:** When all instances are idle but deferred sub-requests have future
-arrival times (tool calls still running), `serving/__main__.py` advances `current` to the next pending
+arrival times (tool calls still running), `llmservingsim/serving/__main__.py` advances `current` to the next pending
 arrival time to avoid busy-looping.
 
 ### Scheduler and memory model
@@ -527,8 +541,8 @@ TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use
 - `astra-sim/inputs/memory/memory_expansion.json` — remote (CPU) memory config
 
 ### Working directory
-`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the simulator
-resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`, `profiler/`
+`llmservingsim/serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the simulator
+resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`, `llmservingsim/profiler/`
 are relative to the repo root and prefixed with `../` in code.
 
 ### Communication sizes for ASTRA-Sim
@@ -637,12 +651,12 @@ Memory location types: `LOCAL` (NPU) = 1, `REMOTE` (CPU) = 2, `CXL` = 3, `STORAG
 These must match the C++ enum in `astra-sim/astra-sim/system/AstraMemoryAPI.hh`.
 
 ### Docker environments
-- **vLLM container** (used by `python -m profiler`, `python -m bench`, and
-  `python -m workloads.generators`): `vllm/vllm-openai:v0.19.0` (or
+- **vLLM container** (used by `python -m llmservingsim.profiler`, `python -m llmservingsim.bench`, and
+  `python -m llmservingsim.workloads.generators`): `vllm/vllm-openai:v0.19.0` (or
   `v0.19.0-cu130` for CUDA 13.x)
   - Launched via `scripts/docker-vllm.sh`
   - Mounts the **LLMServingSim repo root** as `/workspace`; container cwd
-    is `/workspace`, so `python -m profiler …` etc. work directly
+    is `/workspace`, so `python -m llmservingsim.profiler …` etc. work directly
   - Pre-installs `datasets` and `matplotlib` on first start (extra deps
     used by the workload generator and bench plots; vLLM brings the rest)
   - Set `HF_TOKEN` in `scripts/docker-vllm.sh` for gated-config auto-download
@@ -681,21 +695,21 @@ website (not the README).
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
 
-1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
+1. **`./llmservingsim/serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
    scenario against the `Total clocks (ns)` recorded in
-   `serving/validate-baselines.txt`; stage 2 regenerates each `bench/examples`
+   `llmservingsim/serving/validate-baselines.txt`; stage 2 regenerates each `bench/examples`
    entry's `outputs/sim.csv` and `validation/summary.txt` and checks both md5s.
    Anything that moved is printed as a markdown table for the PR.
    `--clocks-only` skips stage 2, `--list` names the scenarios, `--update`
    rewrites the baselines, `--help` prints the rest.
-   **Run it after every commit that touches `serving/`** — it is cheap enough,
+   **Run it after every commit that touches `llmservingsim/serving/`** — it is cheap enough,
    and it is how the 8-of-19 regression on the perf branch was caught.
 2. For the *size* of an accuracy change, not just its presence:
    `./bench/examples/validate.sh` regenerates `validation/summary.txt` and the
    three plots. A changed `sim.csv` makes those stale, so regenerate and commit
    them in the same commit.
-3. For profiler changes: edit `MODEL` / `HARDWARE` in `profiler/profile.sh`
-   and run `./profiler/profile.sh` from the repo root inside the vLLM container.
+3. For profiler changes: edit `MODEL` / `HARDWARE` in `llmservingsim/profiler/profile.sh`
+   and run `./llmservingsim/profiler/profile.sh` from the repo root inside the vLLM container.
 
 A scenario whose clock equals an existing one exercises flag parsing and
 nothing else. Several knobs only bite once the KV cache is saturated, which is
@@ -712,7 +726,7 @@ scenarios are for.
   (`cd astra-sim/extern/graph_frontend/chakra && pip3 install .`)
 - **Don't commit large files**: generated traces, `.et` files and scratch run
   output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
-  `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
+  `llmservingsim/bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
   pass `--keep-inputs` (or `--save-trace-text`, which implies it), either of
   which can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths

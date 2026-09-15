@@ -72,7 +72,7 @@ The PIM hookup:
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_pim_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --enable-attn-offloading \
@@ -128,7 +128,7 @@ is the bottleneck, compare TPOT against the same workload without
 
 ## Where to learn more
 
-- The PIM device model lives in `serving/core/pim_model.py`; the
+- The PIM device model lives in `llmservingsim/serving/core/pim_model.py`; the
   trace generator emits `PIM {channel}` / `PIM END` markers around
   the offloaded attention block (see
   [Trace file format](/docs/reference/trace-format)).

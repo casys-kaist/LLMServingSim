@@ -9,6 +9,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- `pyproject.toml`, so `pip install -e .` puts the packages on the import path
+  and nothing needs a `PYTHONPATH`. `scripts/docker-sim.sh` installs the
+  checkout the same way, with `--no-deps` since that image's versions are
+  pinned.
 - `docs/scripts/check-rendered.mjs` — scans the built site for source syntax that
   survived into visible text (unparsed admonitions, bold, links, headings, table rows,
   doubled list markers, visible HTML comments, JSX brace leaks), plus a structural
@@ -62,6 +66,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   `get_kv(1) * num_npus` and works before any `MemoryModel` exists
 
 ### Changed
+- **The Python packages moved under an `llmservingsim/` namespace.** `serving/`,
+  `profiler/`, `bench/` and `workloads/` are now
+  `llmservingsim/{serving,profiler,bench,workloads}/`, and every entry point
+  follows: `python -m llmservingsim.serving`, `python -m llmservingsim.profiler`,
+  `python -m llmservingsim.bench`, `python -m llmservingsim.workloads.generators`.
+  The top-level directory names were the package names, which is what made them
+  too generic to publish. **Only code and the architecture yamls moved in.**
+  Every bulk-data directory keeps its own name at the repository root —
+  `configs/`, `workloads/` (the `.jsonl` datasets and the shell recipes that
+  regenerate them), `profiler/perf/`, `profiler/power/`, `bench/examples/`,
+  `astra-sim/`, `scripts/`, `docs/` and `outputs/` — so `--dataset
+  workloads/example_trace.jsonl`, `profiler/perf/<hw>/...` and
+  `./bench/examples/validate.sh` are all unchanged. The only paths that moved
+  are the Python modules and the shell wrappers that sit next to them
+  (`./llmservingsim/serving/validate.sh`,
+  `./llmservingsim/profiler/profile.sh`, ...).
 - The simulator is roughly **11x faster** with byte-identical results. The four
   `bench/examples/` workloads go 16m 40s to 1m 26s in total (per-example 5.2x to 24.6x)
   and the 19 `serving/run.sh` scenarios 18.95 min to 1.94 min, with every

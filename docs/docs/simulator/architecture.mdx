@@ -6,7 +6,7 @@ sidebar_position: 1
 # Architecture overview
 
 LLMServingSim is two pieces glued together: a **Python serving
-frontend** (`serving/`) that does request scheduling, batching, and
+frontend** (`llmservingsim/serving/`) that does request scheduling, batching, and
 trace generation, and a **C++ analytical backend**
 ([ASTRA-Sim](https://github.com/astra-sim/astra-sim)) that simulates
 compute and collective communication on a configurable network.
@@ -19,7 +19,7 @@ cycle-counting engine that returns elapsed time for each batch.
 
 ```mermaid
 flowchart LR
-    subgraph PY["Python frontend (serving/)"]
+    subgraph PY["Python frontend (llmservingsim/serving/)"]
         direction TB
         ROUTER[Router]
         SCHED[Scheduler]
@@ -42,7 +42,7 @@ flowchart LR
 
 | Layer | Lives in | Talks in | Owns |
 | --- | --- | --- | --- |
-| **Python frontend** | `serving/` | Requests, Batches, Traces | Scheduling, prefix caching, memory accounting, trace generation |
+| **Python frontend** | `llmservingsim/serving/` | Requests, Batches, Traces | Scheduling, prefix caching, memory accounting, trace generation |
 | **C++ backend** | `astra-sim/` | Chakra `.et` graphs, cycle counts | Compute kernel timing, collective comm modeling, network topology |
 
 They communicate through a single subprocess pipe with a tiny string
@@ -50,7 +50,7 @@ protocol, see [Python ↔ C++ boundary](#python--c-boundary) below.
 
 ## The 10-step main loop
 
-`serving/__main__.py` drives the simulation. Every iteration of the
+`llmservingsim/serving/__main__.py` drives the simulation. Every iteration of the
 loop ticks the simulated clock forward by however many nanoseconds
 the next batch takes:
 
@@ -112,7 +112,7 @@ flowchart TD
 ## Module map
 
 The Python frontend is split into focused modules under
-`serving/core/`. Each is the subject of a dedicated page in this
+`llmservingsim/serving/core/`. Each is the subject of a dedicated page in this
 section:
 
 | Module | Role | Read more |

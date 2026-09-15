@@ -76,7 +76,7 @@ The `pim_attention_<i>` entry's latency comes from the PIM model
 
 ## The PIM model
 
-`serving/core/pim_model.py` defines `PIMModel`. It's instantiated per
+`llmservingsim/serving/core/pim_model.py` defines `PIMModel`. It's instantiated per
 node when the cluster config has a
 `cpu_mem.pim_config: "<config_name>"` field. The constructor reads
 DRAMSim3 INI files at `configs/pim/<config_name>/`:

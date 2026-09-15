@@ -68,7 +68,7 @@ trace-generation time.
 ### Layer rows
 
 Each row has 11 fields, written as **left-aligned columns** by
-`serving/core/utils.py::_FMT` — a 30-character minimum for `Layername`,
+`llmservingsim/serving/core/utils.py::_FMT` — a 30-character minimum for `Layername`,
 15 for each of the rest, **plus an explicit single space after every
 field but the last**. Nothing is tab-separated.
 

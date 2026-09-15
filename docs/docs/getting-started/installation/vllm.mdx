@@ -11,11 +11,11 @@ import TabItem from '@theme/TabItem';
 This step is **optional**. You only need the vLLM environment if you
 plan to:
 
-- **Profile** a new GPU or model (`python -m profiler`)
-- **Benchmark** real vLLM end-to-end (`python -m bench run`)
-- **Validate** the simulator against vLLM (`python -m bench validate`)
+- **Profile** a new GPU or model (`python -m llmservingsim.profiler`)
+- **Benchmark** real vLLM end-to-end (`python -m llmservingsim.bench run`)
+- **Validate** the simulator against vLLM (`python -m llmservingsim.bench validate`)
 - **Generate** ShareGPT-style workload datasets
-  (`python -m workloads.generators`)
+  (`python -m llmservingsim.workloads.generators`)
 
 If you only want to run pre-profiled simulations on the bundled
 hardware (RTXPRO6000 or RTX 4090), skip this page.
@@ -58,8 +58,8 @@ This:
 
 - Requests all GPUs via `--gpus all`
 - Forwards `HF_TOKEN` from your shell
-- Mounts the repo root to `/workspace` (so `python -m profiler`,
-  `python -m bench`, `python -m workloads.generators` all work)
+- Mounts the repo root to `/workspace` (so `python -m llmservingsim.profiler`,
+  `python -m llmservingsim.bench`, `python -m llmservingsim.workloads.generators` all work)
 - Mounts `~/.cache/huggingface` to share the model cache with the
   host
 - Sets `--shm-size=16g` (vLLM needs this for inter-process tensors)

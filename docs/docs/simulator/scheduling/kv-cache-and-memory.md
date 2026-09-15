@@ -146,7 +146,7 @@ activation peak or CUDA context, `0.9` here buys noticeably more KV cache than
 `0.9` does in vLLM. More cache means less preemption, so the simulated run
 finishes early and every latency metric skews with it.
 
-Set it from the measured run in that case. `python -m bench run` records what
+Set it from the measured run in that case. `python -m llmservingsim.bench run` records what
 vLLM actually resolved in `meta.json`:
 
 ```json

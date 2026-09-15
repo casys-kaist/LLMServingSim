@@ -68,7 +68,7 @@ can grow.
 ### Per-instance prefix caching (default)
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -82,7 +82,7 @@ that prefixes-into a cached block on instance B, no reuse happens.
 ### Shared CPU prefix pool
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --enable-prefix-caching --enable-prefix-sharing --prefix-storage CPU \

@@ -51,9 +51,9 @@ This:
 
   Each is imported by code that runs in this container: `pyyaml` for
   the profiler's `meta.yaml` and architecture catalogs, `pyinstrument`
-  by `serving/__main__.py`, `rich` by the loggers, `pandas` by the
+  by `llmservingsim/serving/__main__.py`, `rich` by the loggers, `pandas` by the
   scheduler / trace generator / PIM model, `numpy` by the scheduler,
-  and `matplotlib` by `bench/core/plots.py`. If you install by hand,
+  and `matplotlib` by `llmservingsim/bench/core/plots.py`. If you install by hand,
   keep the pins.
 - Drops you into a `bash` shell at `/app/LLMServingSim`
 
@@ -96,7 +96,7 @@ success banner to look for. Check the artifact instead:
 ls -l astra-sim/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra
 ```
 
-That is the exact path `serving/__main__.py` launches as a subprocess,
+That is the exact path `llmservingsim/serving/__main__.py` launches as a subprocess,
 so if it exists and is executable, the build worked.
 
 :::tip[ns3 backend]
@@ -109,10 +109,22 @@ different binary:
 
 ## 4. Verify the install
 
-Run the bundled smoke test from inside the simulator container:
+`scripts/docker-sim.sh` already runs `pip install -e . --no-deps`, which puts
+the packages on the import path as `llmservingsim.serving`,
+`llmservingsim.profiler`, `llmservingsim.bench` and `llmservingsim.workloads`.
+Outside the container, do it once in your environment:
 
 ```bash
-python -m serving \
+pip install -e .
+```
+
+Nothing is copied: the packages keep running from the checkout, so `python -m
+llmservingsim.serving` works from any working directory without a `PYTHONPATH`.
+
+Then run the bundled smoke test from inside the simulator container:
+
+```bash
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \

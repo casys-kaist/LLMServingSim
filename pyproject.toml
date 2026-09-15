@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmservingsim"
+version = "2.0.0"
+description = "A cycle-level LLM serving simulator: a Python frontend over ASTRA-Sim"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyyaml",
+    "rich",
+    "pandas",
+    "numpy",
+    "matplotlib",       # bench/core/plots.py, reached by `python -m llmservingsim.bench validate`
+    "huggingface_hub",  # config auto-fetch on a profiler cache miss
+]
+
+[project.urls]
+Homepage = "https://llmservingsim.ai"
+Source = "https://github.com/casys-kaist/LLMServingSim"
+
+[project.optional-dependencies]
+# The profiler and bench need vLLM and its stack, which is installed per
+# environment (scripts/install-vllm.sh, or the container image).
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["llmservingsim*"]
+exclude = ["llmservingsim.profiler.v0*"]
+
+[tool.setuptools.package-data]
+"llmservingsim.profiler" = ["models/*.yaml"]

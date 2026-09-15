@@ -123,7 +123,7 @@ rerun and gives the git log a record of what was checked.
   [@hmchoi](https://github.com/hmchoi)) plus whoever owns the touched
   area. For docs-only PRs, one approval is enough.
 - **What gets blocked vs. nit-picked**:
-  - **Blockers**: an unexplained `./serving/validate.sh` difference,
+  - **Blockers**: an unexplained `./llmservingsim/serving/validate.sh` difference,
     bench regressions beyond ~5%, convention violations from the
     "never do this" list, missing docs for new flags.
   - **Nits**: naming, code style preferences, doc phrasing. The
@@ -169,7 +169,7 @@ PR. The maintainer adds it on merge.
   no test CI to watch: the only workflow is `deploy-docs.yml`, which
   builds the docs site and says nothing about the simulator. If
   something broke that the review missed, the way you find out is by
-  running `./serving/validate.sh` on `main`.
+  running `./llmservingsim/serving/validate.sh` on `main`.
 - **My PR sat for a week with no reviews.** Ping the PR with a
   one-liner. Maintainers do miss notifications.
 - **A reviewer requested changes I disagree with.** Explain your

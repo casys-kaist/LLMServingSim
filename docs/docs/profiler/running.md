@@ -5,7 +5,7 @@ title: Running
 
 # Running the profiler
 
-The profiler is invoked through `profiler/profile.sh`: an editable
+The profiler is invoked through `llmservingsim/profiler/profile.sh`: an editable
 template. You change the variables at the top to whatever you want
 to profile, then run it.
 
@@ -18,14 +18,14 @@ to profile, then run it.
 From inside the vLLM Docker container at `/workspace`:
 
 ```bash
-# Edit the variables at the top of profiler/profile.sh, then:
-./profiler/profile.sh
+# Edit the variables at the top of llmservingsim/profiler/profile.sh, then:
+./llmservingsim/profiler/profile.sh
 ```
 
 The script auto-resolves the model architecture from the HF
 `config.json`'s `model_type` field, you don't specify it on the
 command line. The matching architecture YAML must exist under
-`profiler/models/<model_type>.yaml`. See
+`llmservingsim/profiler/models/<model_type>.yaml`. See
 **[Adding a model architecture](./adding-model-architecture)** if it
 doesn't.
 
@@ -148,15 +148,15 @@ VERBOSITY="--verbose"       # DEBUG + vLLM stdout
 VERBOSITY=""                # default (INFO)
 ```
 
-## Calling `python -m profiler` directly
+## Calling `python -m llmservingsim.profiler` directly
 
 `profile.sh` is a convenience wrapper; every variable in it maps to a
 flag. Call the module yourself when you want to script a sweep, or for
 the `slice` subcommand, which `profile.sh` does not expose at all.
 
 ```bash
-python -m profiler profile <model> --hardware <hw> [options]
-python -m profiler slice   <model> --hardware <hw> --tp-refresh N --group G [options]
+python -m llmservingsim.profiler profile <model> --hardware <hw> [options]
+python -m llmservingsim.profiler slice   <model> --hardware <hw> --tp-refresh N --group G [options]
 ```
 
 `<model>` is an HF-style `<org>/<name>` resolving to
@@ -213,7 +213,7 @@ After a full sweep, iterate on a single category without redoing the
 rest:
 
 ```bash
-python -m profiler slice meta-llama/Llama-3.1-8B \
+python -m llmservingsim.profiler slice meta-llama/Llama-3.1-8B \
     --hardware RTXPRO6000 --tp-refresh 1 --group attention
 ```
 
@@ -229,7 +229,7 @@ architecture YAML has no entries in `catalog.<group>` — asking for
 
 Note `slice` handles only the four uniform categories. The skew sweep
 is not a `--group` value; refresh it with
-`python -m profiler profile ... --only-skew` instead.
+`python -m llmservingsim.profiler profile ... --only-skew` instead.
 
 ## Multi-model batch sweep: `profile-all.sh`
 
@@ -237,10 +237,10 @@ For bringing up a fresh GPU target across multiple models in one
 shot:
 
 ```bash
-./profiler/profile-all.sh
+./llmservingsim/profiler/profile-all.sh
 ```
 
-This wraps `python -m profiler profile` in a loop over a canned
+This wraps `python -m llmservingsim.profiler profile` in a loop over a canned
 list of models (currently `Qwen/Qwen3-32B`,
 `Qwen/Qwen3-30B-A3B-Instruct-2507`, `meta-llama/Llama-3.1-8B`) at
 TP=1 and TP=2. All knobs from `profile.sh` are recognized as
@@ -250,7 +250,7 @@ environment variables:
 HARDWARE=H100 \
 TP_DEGREES=1,2,4 \
 ATTENTION_CHUNK_FACTOR=1.5 \
-./profiler/profile-all.sh
+./llmservingsim/profiler/profile-all.sh
 ```
 
 To change the model list, edit the `MODELS=( ... )` array at the top

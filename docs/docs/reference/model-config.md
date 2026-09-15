@@ -38,7 +38,7 @@ profiler downloads and caches it on first run. The simulator
 
 | Field | Type | Used by | Description |
 | --- | --- | --- | --- |
-| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`. e.g. `llama`, `qwen3`, `qwen3_moe`, `mixtral`, `phimoe` |
+| `model_type` | string | profiler | Picks the architecture YAML at `llmservingsim/profiler/models/<model_type>.yaml`. e.g. `llama`, `qwen3`, `qwen3_moe`, `mixtral`, `phimoe` |
 | `hidden_size` | int | both | Model embedding / hidden dim |
 | `num_hidden_layers` | int | both | Number of decoder blocks |
 | `num_attention_heads` | int | both | Total attention heads (for TP scaling) |
@@ -164,7 +164,7 @@ Llama 3.1.)
    `configs/model/<org>/<name>.json`.
 2. Verify the required fields above are present.
 3. **Add `head_dim` explicitly** if the model has it in its HF config.
-4. Make sure `profiler/models/<model_type>.yaml` exists. If not,
+4. Make sure `llmservingsim/profiler/models/<model_type>.yaml` exists. If not,
    you need a new architecture YAML, see
    **[Profiler → Adding a model architecture](/docs/profiler/adding-model-architecture)**.
 
@@ -179,7 +179,7 @@ Llama 3.1.)
    different naming convention across model families. Pick whichever
    the model's HF config uses; the simulator handles both.
 3. **`model_type` is case-sensitive** and must match a YAML at
-   `profiler/models/<model_type>.yaml` exactly.
+   `llmservingsim/profiler/models/<model_type>.yaml` exactly.
 4. **`max_position_embeddings` silently caps the token budget.** The
    scheduler and trace generator both read it as
    `min(max_num_batched_tokens, max_position_embeddings)`. On a

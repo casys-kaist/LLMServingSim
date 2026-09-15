@@ -11,7 +11,7 @@ import {Activity, MessagesSquare, FilePlus2, FileText} from 'lucide-react';
 A **workload** is a JSONL file that drives the simulator's request
 queue. Each line is either one independent request (flat format) or
 one session with chained sub-requests (agentic format). Both
-`python -m serving --dataset` and `python -m bench run --dataset`
+`python -m llmservingsim.serving --dataset` and `python -m llmservingsim.bench run --dataset`
 consume the same file.
 
 Workload files live under `workloads/` at the repo root. The

@@ -13,7 +13,7 @@ internal mechanics; the configuration angle is on
 
 ## What's modeled
 
-`serving/core/power_model.py::PowerModel` tracks per-node power across
+`llmservingsim/serving/core/power_model.py::PowerModel` tracks per-node power across
 six categories:
 
 | Component | Parameters | When it draws |

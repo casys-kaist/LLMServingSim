@@ -3,7 +3,7 @@
 This directory contains cluster configuration files that define the hardware topology,
 instance layout, memory hierarchy, and interconnect parameters for LLMServingSim.
 
-Pass a config file to `python -m serving` via `--cluster-config configs/cluster/{name}.json`.
+Pass a config file to `python -m llmservingsim.serving` via `--cluster-config configs/cluster/{name}.json`.
 
 ## Configuration format
 

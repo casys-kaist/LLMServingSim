@@ -197,7 +197,7 @@ that was interrupted.
 
 ```text
 FileNotFoundError: Architecture yaml not found for model_type='gemma2'
-at profiler/models/gemma2.yaml. Add profiler/models/gemma2.yaml
+at llmservingsim/profiler/models/gemma2.yaml. Add llmservingsim/profiler/models/gemma2.yaml
 describing the architecture.
 ```
 
@@ -243,7 +243,7 @@ no warning at all.
 
 - For best accuracy, re-profile at the higher
   `--max-num-batched-tokens` (`MAX_NUM_BATCHED_TOKENS=4096
-  ./profiler/profile.sh`).
+  ./llmservingsim/profiler/profile.sh`).
 - Or stay at the profiled bound. Extrapolation is usually fine for
   small overshoots; large ones can drift.
 
@@ -269,7 +269,7 @@ especially with MoE + EP or large prefix caches.
 **Symptom:** Profiler crashes with CUDA OOM partway through the
 attention sweep.
 
-**Fix:** lower `MAX_NUM_BATCHED_TOKENS` in `profiler/profile.sh`,
+**Fix:** lower `MAX_NUM_BATCHED_TOKENS` in `llmservingsim/profiler/profile.sh`,
 or skip the heavy categories with environment variables (see
 [Profiler → Running](/docs/profiler/running)).
 

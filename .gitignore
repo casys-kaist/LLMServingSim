@@ -27,3 +27,4 @@ astra-sim/inputs/runs/
 .copilot/
 .aider*
 .continue/
+*.egg-info/

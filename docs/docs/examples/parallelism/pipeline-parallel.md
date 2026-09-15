@@ -72,7 +72,7 @@ The fields that matter:
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_pp_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -150,8 +150,8 @@ Two things to notice vs. the TP=1 baseline:
 - **[Simulator → Parallelism mechanics](/docs/simulator/parallelism-mechanics)**:
   how `num_npus`, `tp_size`, and `pp_size` are validated and
   threaded through the scheduler / trace generator.
-- The PP `inflight` list lives in `serving/core/scheduler.py`; the
-  stage boundaries are chosen in `serving/core/trace_generator.py`
+- The PP `inflight` list lives in `llmservingsim/serving/core/scheduler.py`; the
+  stage boundaries are chosen in `llmservingsim/serving/core/trace_generator.py`
   (`_pp_stage_boundaries`) and consumed, along with the send/recv
   insertion, in
   `astra-sim/extern/graph_frontend/chakra/src/converter/llm_converter.py`

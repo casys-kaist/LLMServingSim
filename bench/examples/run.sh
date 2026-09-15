@@ -111,7 +111,7 @@ run_example() {
     mkdir -p "$output_dir"
 
     local cmd=(
-        "$PYTHON" -m serving
+        "$PYTHON" -m llmservingsim.serving
         --cluster-config "$config_rel"
         --dataset "$dataset_cli"
         --output "$output_dir_rel/sim.csv"

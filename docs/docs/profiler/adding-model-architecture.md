@@ -7,7 +7,7 @@ title: Adding a model architecture
 
 The profiler dispatches on the HF config's `model_type` field. If
 your model's `model_type` already maps to a YAML under
-`profiler/models/`, you're done, just run `profile.sh`. If not, you
+`llmservingsim/profiler/models/`, you're done, just run `profile.sh`. If not, you
 need to add a YAML.
 
 This page is about that case.
@@ -43,7 +43,7 @@ prologue → pre_attn → post_attn → (mlp_dense | mlp_moe) → head
 If the new model has a genuinely novel block structure, sliding
 window attention, multi-latent attention (MLA, like DeepSeek V3),
 dual MLP decoders, you'll also need to extend
-`serving/core/trace_generator.py` to walk the new sequence and
+`llmservingsim/serving/core/trace_generator.py` to walk the new sequence and
 attach the right collectives. We'll cover that at the end of this
 page.
 
@@ -209,7 +209,7 @@ Look at `vllm/model_executor/models/<model>.py`. Identify:
   layernorms, etc.).
 - For MoE: how experts are arranged.
 
-### 2. Write `profiler/models/gemma2.yaml`
+### 2. Write `llmservingsim/profiler/models/gemma2.yaml`
 
 Start from the closest existing YAML (e.g., `llama.yaml` for a
 Gemma-style dense model) and adjust:
@@ -228,7 +228,7 @@ MODEL="google/gemma-2-9b" \
 HARDWARE="<your-hw>" \
 TP_DEGREES=1 \
 SKIP_SKEW=1 \
-./profiler/profile.sh
+./llmservingsim/profiler/profile.sh
 ```
 
 Start with TP=1 and `SKIP_SKEW=1` for the fastest feedback. The
@@ -254,7 +254,7 @@ In your `cluster_config.json`:
 }
 ```
 
-Run `python -m serving --cluster-config ... --dataset workloads/example_trace.jsonl ...`.
+Run `python -m llmservingsim.serving --cluster-config ... --dataset workloads/example_trace.jsonl ...`.
 
 If anything's off (layer not found, infinite loop, missing collective),
 the simulator will tell you which layer in your YAML it doesn't know
@@ -262,7 +262,7 @@ how to handle. Fix and retry.
 
 ### 5. Commit + open a PR
 
-Once it works, send a PR adding `profiler/models/gemma2.yaml`. Make
+Once it works, send a PR adding `llmservingsim/profiler/models/gemma2.yaml`. Make
 the PR title `Add gemma2 architecture support` and include:
 
 - The HF model id you used to validate.
@@ -271,7 +271,7 @@ the PR title `Add gemma2 architecture support` and include:
 - Whether MoE was tested (or not, Gemma 2 isn't MoE, but other
   additions might be).
 
-## When you also need to touch `serving/core/trace_generator.py`
+## When you also need to touch `llmservingsim/serving/core/trace_generator.py`
 
 Three flags that the YAML alone can't express. Each requires a small
 Python addition:
@@ -311,13 +311,13 @@ without touching Python.
 
 ## Where this gets validated
 
-Once your YAML is in, the bundled `bench/` validation suite is the
+Once your YAML is in, the bundled `llmservingsim/bench/` validation suite is the
 sanity check: run vLLM end-to-end on the new model + run the same
 workload through the simulator + see how close they match. If
 TTFT / TPOT / throughput are all within ~5%, your YAML + (optional)
 trace_generator changes are good.
 
-See [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench) on
+See [`llmservingsim/bench/README.md`](https://github.com/casys-kaist/LLMServingSim/tree/main/llmservingsim/bench) on
 GitHub for the validation methodology and per-model results.
 
 ## What's next

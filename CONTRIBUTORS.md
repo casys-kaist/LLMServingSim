@@ -28,7 +28,7 @@ volunteered their effort to make LLMServingSim better for everyone. 🙏
   - Run-isolated ASTRA-Sim input paths ([#43](https://github.com/casys-kaist/LLMServingSim/pull/43))
   - KV eviction/reload accounting ([#48](https://github.com/casys-kaist/LLMServingSim/pull/48))
   - Clean up intermediate ASTRA-Sim inputs to save storage ([#51](https://github.com/casys-kaist/LLMServingSim/pull/51))
-  - Fix argument shadowing in `serving/__main__.py` ([#53](https://github.com/casys-kaist/LLMServingSim/pull/53))
+  - Fix argument shadowing in `llmservingsim/serving/__main__.py` ([#53](https://github.com/casys-kaist/LLMServingSim/pull/53))
 - **[@Veilwalker](https://github.com/Veilwalker)**
   - Avoid duplicate prefix-cache hit accounting under chunked prefill ([#49](https://github.com/casys-kaist/LLMServingSim/pull/49))
 - **[@zsxh1990](https://github.com/zsxh1990)**
@@ -76,7 +76,7 @@ recognized.
 
 ## Acknowledgments
 
-The base layerwise-profile methodology in `profiler/` is adapted from
+The base layerwise-profile methodology in `llmservingsim/profiler/` is adapted from
 [@waneon](https://github.com/waneon). LLMServingSim builds on
 [ASTRA-Sim](https://github.com/astra-sim/astra-sim) and
 [Chakra](https://github.com/mlcommons/chakra).

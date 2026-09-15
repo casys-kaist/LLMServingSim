@@ -3,10 +3,10 @@ sidebar_position: 1
 title: CLI flags
 ---
 
-# `python -m serving` CLI flags
+# `python -m llmservingsim.serving` CLI flags
 
 Complete reference for every command-line flag accepted by
-`python -m serving`. For the conceptual side of each flag (what it
+`python -m llmservingsim.serving`. For the conceptual side of each flag (what it
 *does* internally), see **[Simulator](/docs/simulator/architecture)**.
 
 :::tip[14 of these can be set per instance]

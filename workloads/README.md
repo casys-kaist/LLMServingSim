@@ -1,7 +1,7 @@
 # workloads
 
-Request workloads consumed by `python -m serving --dataset <...>` and by
-`python -m bench run --dataset <...>`. Static `.jsonl` files live at the
+Request workloads consumed by `python -m llmservingsim.serving --dataset <...>` and by
+`python -m llmservingsim.bench run --dataset <...>`. Static `.jsonl` files live at the
 top level; the `generators/` subpackage produces fresh ones on demand
 and the `examples/` folder ships ready-to-edit invocation templates.
 
@@ -11,7 +11,7 @@ and the `examples/` folder ships ready-to-edit invocation templates.
 workloads/
 ├── *.jsonl                    workload files (flat or agentic; see Format)
 ├── generators/                JSONL generators
-│   ├── __main__.py            python -m workloads.generators <name> ...
+│   ├── __main__.py            python -m llmservingsim.workloads.generators <name> ...
 │   └── sharegpt.py            multi-turn ShareGPT parser (tokenizer + optional vLLM)
 └── examples/                  ready-to-edit per-model invocation templates
     ├── gen-llama-3.1-8b.sh
@@ -78,7 +78,7 @@ of the `sub_requests` key.
 
 ### ShareGPT traces
 
-Generated on demand by `python -m workloads.generators sharegpt --model <hf-id>
+Generated on demand by `python -m llmservingsim.workloads.generators sharegpt --model <hf-id>
 --num-reqs <n> --sps <r>` (see `generators/`). Output files land directly in
 this directory and follow the flat-request format above with `input_tok_ids`
 populated for prefix-cache hashing.
@@ -126,7 +126,7 @@ MODEL="my-org/my-model" ./workloads/examples/gen-qwen3-32b.sh
 For ad-hoc invocations:
 
 ```bash
-python -m workloads.generators sharegpt \
+python -m llmservingsim.workloads.generators sharegpt \
     --model Qwen/Qwen3-32B \
     --num-reqs 300 --sps 10 --seed 42 \
     --output workloads/sharegpt-qwen3-32b-300-sps10.jsonl \
@@ -161,4 +161,4 @@ Full flag reference:
 
 To create a workload manually, write JSON objects to a `.jsonl` file
 following the format above and pass the file path via `--dataset` to
-`python -m serving` or `python -m bench run`.
+`python -m llmservingsim.serving` or `python -m llmservingsim.bench run`.

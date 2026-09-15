@@ -14,7 +14,7 @@ inside the simulator container at `/app/LLMServingSim`.
 ## Run the example
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -61,12 +61,12 @@ The full flag list lives at
 
 ## Try a different scenario
 
-`serving/run.sh` ships a few worked examples, multi-instance,
+`llmservingsim/serving/run.sh` ships a few worked examples, multi-instance,
 prefill/decode disaggregation, MoE with EP, prefix caching, CXL
 memory, PIM offload, and sub-batch interleaving:
 
 ```bash
-./serving/run.sh
+./llmservingsim/serving/run.sh
 ```
 
 Each block in that script is self-contained and ready to copy into

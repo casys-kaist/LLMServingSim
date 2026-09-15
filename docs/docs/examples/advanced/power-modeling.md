@@ -74,7 +74,7 @@ For the field-by-field schema (`base_node_power`, `idle_power`,
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_power_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -164,4 +164,4 @@ ALLREDUCE-bound (worth checking when `tp_size > 1`).
 - **[Simulator → Power model](/docs/simulator/specialized/power-model)**:
   per-component math, NPU state machine, and how
   `standby_duration` factors in.
-- The implementation lives in `serving/core/power_model.py`.
+- The implementation lives in `llmservingsim/serving/core/power_model.py`.

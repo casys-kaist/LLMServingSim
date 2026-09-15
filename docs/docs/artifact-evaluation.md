@@ -38,7 +38,7 @@ the supporting throughput / power / memory / latency parsers under
 > The artifact pre-dates the v1.1.0 directory restructure and the
 > vLLM-based profiler rewrite, so on `ispass26-artifact` you'll see
 > the older layout (`cluster_config/`, `dataset/`, `output/`,
-> `inference_serving/`, `main.py`) instead of the `serving/` /
+> `inference_serving/`, `main.py`) instead of the `llmservingsim/serving/` /
 > `configs/` / `workloads/` / `outputs/` paths that the rest of this
 > site documents. Follow the branch's own README, not this site's
 > Getting Started, while you're inside the artifact.

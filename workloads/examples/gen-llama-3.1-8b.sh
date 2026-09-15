@@ -9,7 +9,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B}"
 
-python3 -m workloads.generators sharegpt \
+python -m llmservingsim.workloads.generators sharegpt \
     --model "$MODEL" \
     --source shibing624/sharegpt_gpt4 \
     --num-reqs 300 --sps 10 --seed 42 \

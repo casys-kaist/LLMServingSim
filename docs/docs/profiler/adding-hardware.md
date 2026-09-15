@@ -70,7 +70,7 @@ For unusual GPU types, you may need to adjust:
 ### 3. Run
 
 ```bash
-./profiler/profile.sh
+./llmservingsim/profiler/profile.sh
 ```
 
 Wait. Drink coffee. Output lands in
@@ -128,7 +128,7 @@ If you have an analytical compute simulator (GEMM-perf, roofline,
 or a cycle-accurate model from a published paper), feed it the
 shapes the profiler would have profiled and dump the same CSV format.
 
-The architecture YAMLs at `profiler/models/<model_type>.yaml`
+The architecture YAMLs at `llmservingsim/profiler/models/<model_type>.yaml`
 declare which kernels you need to time. For each entry in the
 `catalog:` section you need:
 
@@ -275,4 +275,4 @@ The `--dtype` and `--kv-cache-dtype` CLI flags resolve to the right
   you need to produce (or have the profiler produce).
 - **[Adding a model architecture](./adding-model-architecture)** -
   separate concern, only when the model's `model_type` isn't
-  already in `profiler/models/`.
+  already in `llmservingsim/profiler/models/`.

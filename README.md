@@ -16,7 +16,7 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 ## Latest News
 
 - [2026/08] Simulation is **~11x faster** with byte-identical results — the four `bench/examples` runs go 16m 40s → 1m 26s. ([#67](https://github.com/casys-kaist/LLMServingSim/pull/67))
-- [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
+- [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`llmservingsim/serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
 - [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
 
 ## About
@@ -30,7 +30,7 @@ git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
 cd LLMServingSim
 ./scripts/docker-sim.sh           # launch the simulator container
 ./scripts/compile.sh              # build ASTRA-Sim + Chakra
-./serving/run.sh                  # run the example simulations
+./llmservingsim/serving/run.sh                  # run the example simulations
 ```
 
 For installation details, container choices, configuration layout, CLI

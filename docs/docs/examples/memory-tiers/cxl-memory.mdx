@@ -111,7 +111,7 @@ devices in roughly equal chunks, while keeping KV cache on NPU.
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_cxl_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -167,7 +167,7 @@ weights live on CXL. `cxl_mem` is reported per-device.
 
 - Memory location enums (`LOCAL`, `REMOTE`, `CXL`, `STORAGE`) live in
   `astra-sim/astra-sim/system/AstraMemoryAPI.hh` and must match the
-  Python side in `serving/core/memory_model.py`.
+  Python side in `llmservingsim/serving/core/memory_model.py`.
 - The trace generator emits `CXL:{id}` location tags on each layer's
   `weight_loc` field. See
   [Trace file format](/docs/reference/trace-format).

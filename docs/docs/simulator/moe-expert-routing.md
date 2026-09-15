@@ -17,7 +17,7 @@ experts to ranks. This page is about both.
 
 ## The piece that does it: `GateRouter`
 
-`serving/core/gate_function.py` defines `GateRouter`. The trace
+`llmservingsim/serving/core/gate_function.py` defines `GateRouter`. The trace
 generator instantiates one per simulation; on every MoE block it
 calls:
 

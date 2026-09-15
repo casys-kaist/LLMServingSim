@@ -37,7 +37,7 @@ are needed; sub-batch interleaving is a runtime CLI flag.
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_pim_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --enable-attn-offloading \

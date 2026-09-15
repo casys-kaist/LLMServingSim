@@ -62,7 +62,7 @@ The two pieces:
 ## Run
 
 ```bash
-python -m serving \
+python -m llmservingsim.serving \
   --cluster-config 'configs/cluster/single_node_multi_instance.json' \
   --dtype bfloat16 --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
@@ -77,7 +77,7 @@ clarity. Options:
 - `LOAD`: vLLM-style least-loaded — score `waiting * 4 + running`
 - `RR`: pure round-robin
 - `RAND`: random pick
-- `CUSTOM`: pluggable in `serving/core/router.py`
+- `CUSTOM`: pluggable in `llmservingsim/serving/core/router.py`
 
 ## Expected output
 

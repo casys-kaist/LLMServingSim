@@ -14,7 +14,7 @@ every default.
 ## File location
 
 Configs live at `configs/cluster/<name>.json`. The simulator reads
-the file once at startup and `serving/core/config_builder.py`
+the file once at startup and `llmservingsim/serving/core/config_builder.py`
 generates derived ASTRA-Sim input files (`network.yml`,
 `system.json`, `memory_expansion.json`).
 
@@ -194,12 +194,12 @@ Three rules the table cannot show:
 
 ### Runtime overrides (optional)
 
-Exactly **14** of the `python -m serving` flags can be re-specified per
+Exactly **14** of the `python -m llmservingsim.serving` flags can be re-specified per
 instance, letting one cluster run heterogeneous instances — a prefill
 instance with a tight `max_num_seqs` next to a decode instance with a
 wide one, or two instances at different `mem_util`. Every one of them
 is resolved in `_build_instance_runtime_configs()` in
-`serving/__main__.py`.
+`llmservingsim/serving/__main__.py`.
 
 **Precedence** is one level deep, no merging:
 
@@ -391,7 +391,7 @@ already sharded by `tp_size` / `ep_size`):
   far enough fails here, with a message naming the requested bytes,
   the weight bytes, and the shortfall.
 
-Runtime, per instance, in `serving/__main__.py`:
+Runtime, per instance, in `llmservingsim/serving/__main__.py`:
 
 - `dtype` must be one of the five supported values and
   `kv_cache_dtype` one of `auto` / `fp8`.
