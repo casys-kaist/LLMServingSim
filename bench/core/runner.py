@@ -36,6 +36,13 @@ from bench.core import logger as log
 from bench.core import recorder
 
 
+def _positive_int(value: str) -> int:
+    result = int(value)
+    if result <= 0:
+        raise argparse.ArgumentTypeError('must be a positive integer')
+    return result
+
+
 def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", required=True,
                    help="HF model id passed verbatim to vllm.AsyncLLM.")
@@ -68,6 +75,10 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--kv-cache-dtype", default="auto",
                    dest="kv_cache_dtype",
                    help="vLLM kv_cache_dtype.")
+    p.add_argument("--kv-cache-memory-bytes", type=_positive_int, default=None,
+                   help="Explicit per-GPU KV cache budget. Use for capacity-matched "
+                        "controls; verify resolved num_gpu_blocks in meta.json. "
+                        "None keeps vLLM's automatic memory profiling.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
     p.add_argument("--resolve-only", action="store_true", dest="resolve_only",
@@ -96,7 +107,7 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "that directory as --model, the way the profiler boots "
                         "one), or a synthetic config with no tokenizer at all. "
                         "Not a speed knob: forcing detokenize off separately "
-                        "measured 0.18% of run span, i.e. noise.")
+                        "measured 0.18%% of run span, i.e. noise.")
     p.add_argument("--record-gate-stats", action="store_true",
                    dest="record_gate_stats", default=False,
                    help="Record the real gate's distinct-expert count per "
@@ -125,22 +136,19 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "an eager engine. Recording both separates a cost-"
                         "model error from the cudagraph speedup the simulator "
                         "cannot see. On RTXPRO6000/Llama-3.1-8B the same "
-                        "simulator reads TTFT mean +4.9% against the compiled "
-                        "truth and -1.0% against the eager one; on "
-                        "DeepSeek-V3.2 cudagraphs are worth 26% of a decode "
+                        "simulator reads TTFT mean +4.9%% against the compiled "
+                        "truth and -1.0%% against the eager one; on "
+                        "DeepSeek-V3.2 cudagraphs are worth 26%% of a decode "
                         "step.")
     p.add_argument("--load-format", default="auto", dest="load_format",
                    help="vLLM load_format. 'dummy' skips reading weights and "
-                        "initializes them randomly, which is valid ground "
-                        "truth for a *performance* comparison and needs no "
-                        "checkpoint on disk: the replay feeds token ids "
-                        "directly (TokensPrompt) and pins the output length "
-                        "(min_tokens == max_tokens, ignore_eos), so nothing "
-                        "recorded here reads a generated token. Shapes, "
-                        "memory footprint, kernel selection, block counts and "
-                        "scheduling are unchanged; only the token *values* "
-                        "are garbage. Recorded in meta.json so a run can "
-                        "never be mistaken for a real-weights one.")
+                        "initializes them randomly. Useful for controlled "
+                        "dense-kernel diagnostics, but not automatically "
+                        "end-to-end ground truth: verify resolved KV capacity "
+                        "and execution paths, and use real weights or explicit "
+                        "routing controls for MoE. Token IDs and output counts "
+                        "are fixed by replay; routing and scheduling need not "
+                        "be invariant. Recorded in meta.json.")
     p.add_argument("--tick-seconds", type=float, default=1.0,
                    dest="tick_seconds",
                    help="Stat logger downsample interval (timeseries.csv row spacing).")
@@ -245,6 +253,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         max_model_len=args.max_model_len,
         dtype=args.dtype,
         kv_cache_dtype=args.kv_cache_dtype,
+        kv_cache_memory_bytes=args.kv_cache_memory_bytes,
         seed=args.seed,
         load_format=args.load_format,
         skip_tokenizer_init=args.skip_tokenizer_init,
@@ -288,6 +297,20 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         return
 
     try:
+        # Persist boot-time capacity before any requests. An interrupted run
+        # must not lose the facts needed to explain its memory conditions.
+        try:
+            resolved_config = _resolved_config(engine)
+            kv_cache = _kv_cache_facts(engine)
+        except Exception as exc:
+            log.warning("could not snapshot the resolved vLLM config: %s", exc)
+            resolved_config, kv_cache = {}, {}
+        recorder.write_engine_start(output_dir,
+            model=args.model, started_at=started_at,
+            dataset_path=str(args.dataset), dataset_hash=_hash_file(Path(args.dataset)),
+            num_requests=len(requests),
+            engine_kwargs=engine_kwargs_for_meta, kv_cache=kv_cache,
+            resolved_config=resolved_config)
         with log.stage(f"Submitting {len(requests)} requests"):
             records = await _submit_all(
                 engine, requests, SamplingParams, TokensPrompt
@@ -301,14 +324,6 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
     # ------------------------------------------------------------------
     # Persist outputs.
     # ------------------------------------------------------------------
-    # Collecting metadata must never be the thing that loses a completed run.
-    try:
-        resolved_config = _resolved_config(engine)
-        kv_cache = _kv_cache_facts(engine)
-    except Exception as exc:
-        log.warning("could not snapshot the resolved vLLM config: %s", exc)
-        resolved_config, kv_cache = {}, {}
-
     recorder.write_meta(
         output_dir,
         model=args.model,
@@ -428,7 +443,7 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
     fields = (
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
-        "max_model_len", "dtype", "kv_cache_dtype", "seed", "load_format",
+        "max_model_len", "dtype", "kv_cache_dtype", "kv_cache_memory_bytes", "seed", "load_format",
         # Recorded for the same reason load_format is: a run booted from a
         # tokenizer-less config directory should never be mistaken for one
         # booted from the real checkpoint.
@@ -582,7 +597,17 @@ def _kv_cache_facts(engine) -> dict:
 
 def _hardware_facts() -> dict:
     """Which accelerator this ran on, for matching against profiler/perf/<hw>/."""
-    facts = {}
+    facts = {"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            facts["cpu_affinity"] = sorted(os.sched_getaffinity(0))
+        status = Path("/proc/self/status")
+        if status.exists():
+            for line in status.read_text().splitlines():
+                if line.startswith("Mems_allowed_list:"):
+                    facts["numa_mems_allowed"] = line.split(":", 1)[1].strip()
+    except OSError as exc:
+        facts["placement_error"] = f"{type(exc).__name__}: {exc}"
     try:
         import torch
         facts["torch_version"] = torch.__version__
@@ -593,6 +618,7 @@ def _hardware_facts() -> dict:
             props = torch.cuda.get_device_properties(0)
             facts["device_total_memory_bytes"] = props.total_memory
             facts["device_capability"] = f"{props.major}.{props.minor}"
+            facts["device_uuid"] = str(getattr(props, "uuid", "unknown"))
     except Exception as exc:
         facts["error"] = f"{type(exc).__name__}: {exc}"
     return facts

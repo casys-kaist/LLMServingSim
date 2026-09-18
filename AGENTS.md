@@ -2358,6 +2358,15 @@ website (not the README).
 
 ## Comparing against a bench run: the metric definitions
 
+Snapshot resolved engine settings and KV capacity before shutdown. Normal
+serving runs write `engine_start.json` before submitting requests, exclusively;
+use a fresh output directory. This startup snapshot is not a completed run.
+`bench validate` rejects known partial, aborted, resolve-only and perturbed
+diagnostic inputs while retaining legacy request/timeseries compatibility.
+`--kv-cache-memory-bytes` fixes an explicit per-GPU budget, but comparisons must
+still verify resolved block counts. Dummy weights do not establish equivalent
+backend selection, routing or scheduling for a real checkpoint.
+
 **Never compute TTFT from a `requests.jsonl` by hand.** Use
 `bench/core/validate.py::_bench_latencies`, which is what `bench validate` and
 every committed `summary.txt` use. Computing it ad hoc is how several hours got

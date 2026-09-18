@@ -58,8 +58,9 @@ comparison is not apples-to-apples.
 | `--max-model-len` | int | `None` | vLLM `max_model_len`. `None` uses the model's own maximum |
 | `--dtype` | string | `bfloat16` | Model dtype |
 | `--kv-cache-dtype` | string | `auto` | vLLM `kv_cache_dtype` |
+| `--kv-cache-memory-bytes` | int | `None` | Explicit per-GPU KV cache budget for capacity-matched controls. `None` retains automatic memory profiling. Equal memory utilization need not resolve to equal cache capacity across boots; verify `kv_cache.num_gpu_blocks` for every compared run |
 | `--seed` | int | `42` | Sampling seed |
-| `--load-format` | string | `auto` | vLLM `load_format`. `dummy` skips reading weights and initialises them randomly, which is valid ground truth for a **performance** comparison and needs no checkpoint on disk: the replay feeds token ids (`TokensPrompt`) and pins the output length (`min_tokens == max_tokens`, `ignore_eos`), so nothing recorded reads a generated token. Shapes, memory footprint, kernel selection, block counts and scheduling are unchanged; only the token *values* are garbage. Recorded in `meta.json`, so a dummy run can never be mistaken for a real-weights one |
+| `--load-format` | string | `auto` | vLLM `load_format`. `dummy` skips checkpoint reads and initializes random weights. For dense models, fixed-input/fixed-output-length replay makes this useful for controlled performance diagnostics, not automatically interchangeable end-to-end truth. Verify the resolved backend and KV block count on every boot. MoE routing can depend on real weights and activations, so dummy weights need a separate routing control. The load format is recorded in `meta.json` |
 | `--skip-tokenizer-init` | flag | off | Boot without loading a tokenizer. The replay never needs one, so what this buys is benching a checkpoint whose tokenizer is not on disk: point `--model` at the repo's own `configs/model/<org>/<name>.json` **directory** — the way the profiler boots one — and a gated model, or a synthetic shrunk config with no tokenizer at all, runs with no Hub access. Not a speed knob: forcing detokenisation off separately measured 0.18% of run span, i.e. noise |
 | `--enforce-eager` | flag | off | Run vLLM eager, with `torch.compile` and cudagraphs off. **Not** the production configuration — leave it off for the headline comparison. What it buys is a ground truth in the same execution mode the profiler is forced into: `layerwise_profile` builds its tree from module events and compilation fuses the module boundaries away, so every profiled latency describes an eager engine. Recording both separates a cost-model error from the cudagraph speedup the simulator cannot see — on RTXPRO6000/Llama-3.1-8B the same simulator read TTFT mean +4.7% against the compiled truth and −1.0% against the eager one, measured before the skew re-keying took the compiled figure to +3.7%, and on DeepSeek-V3.2 cudagraphs are worth 26% of a decode step. Recorded in `meta.json` |
 | `--record-gate-stats` | flag | off | Record the real gate's **distinct-expert count** per batch size into `gate_stats.json`, for the simulator's `--expert-routing-policy CUSTOM` to read back. The simulator otherwise derives that count from a *uniform* gate, which a trained gate undershoots — on Qwen3-30B-A3B by 13% through the middle of the range and 6% at a saturated decode, because the concentration lives in the weights and no closed form can know it. Needs the `VLLM_MOE_ACTIVATED_LOG` source patch (applied by `scripts/docker-vllm.sh`) and **`--enforce-eager`**: the patch's `.unique()` is a data-dependent shape and cannot be captured into a cudagraph. Eager costs nothing in fidelity here — the gate's top-k output is a function of the weights and the input, not of how the forward runs. MoE models only; a dense run writes nothing and warns |
@@ -76,6 +77,12 @@ the value it settled on is recorded in `meta.json` under
 
 ### Workload and output
 
+Normal serving runs save `engine_start.json` before submitting requests,
+including workload identity, resolved settings and KV capacity. This is not a
+completion marker. Use a fresh output directory: an existing startup snapshot
+is not overwritten. Final results require `meta.json`, `requests.jsonl` and
+`timeseries.csv`; resolved settings are captured while the engine is still alive.
+
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--num-reqs` | int | `0` | Cap on requests taken from the dataset. `0` = replay all |
@@ -89,7 +96,8 @@ the value it settled on is recorded in `meta.json` under
   meta.json          run metadata plus what vLLM *resolved*: kv_cache
                      (num_gpu_blocks, block_size, num_kv_tokens,
                      gpu_memory_utilization), hardware (device name,
-                     total memory, CUDA / torch versions), and
+                     total memory, UUID, CPU affinity, allowed NUMA nodes,
+                     CUDA / torch versions), and
                      resolved_config -- the whole VllmConfig, one key
                      per sub-config
   requests.jsonl     per request: request_id, input_toks, output_toks,
@@ -116,6 +124,10 @@ The dataset is never modified — generation lives in
 `workloads/generators`.
 
 ## `python -m bench validate`
+
+Initialization-only, explicitly aborted and known paced, synchronized or failed
+diagnostic runs are rejected as end-to-end ground truth. Legacy directories
+without metadata remain readable when their request and timeseries files exist.
 
 Loads the bench artifacts plus the simulator's per-request CSV and log
 for the same workload, derives TTFT / TPOT / end-to-end latency on both

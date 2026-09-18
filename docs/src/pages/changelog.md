@@ -9,6 +9,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Fixed
+- Capture benchmark engine settings and KV capacity before shutdown, preserve
+  an exclusive startup snapshot, and reject known incomplete or perturbed
+  validation inputs. Add an explicit KV memory budget and placement metadata;
+  fix percent-sign formatting in CLI help without adding diagnostic hooks.
 - Check skew measurement capacity with the resolved KV block size and the
   largest uniform control, including new-token and context-boundary space.
   Preserve prior skew checkpoints on failed writes and reject corrupt input

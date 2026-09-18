@@ -58,6 +58,7 @@ def run(args: argparse.Namespace) -> int:
     )
 
     bench_dir = Path(args.bench_dir)
+    _require_e2e_control(bench_dir)
     output_dir = bench_dir / args.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -122,6 +123,27 @@ def run(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Bench loaders
 # ---------------------------------------------------------------------------
+
+def _require_e2e_control(directory: Path) -> None:
+    """Reject known partial, paced, or synchronized kernel-diagnostic runs."""
+    meta_path = directory / 'meta.json'
+    if ((directory / 'ABORTED.json').exists()
+            or ((directory / 'engine_start.json').exists() and not meta_path.exists())):
+        raise ValueError('Partial diagnostic run is not end-to-end ground truth')
+    if not meta_path.exists():
+        return  # Preserve legacy request/timeseries-only comparison inputs.
+    meta = json.loads(meta_path.read_text())
+    if meta.get('resolve_only'):
+        raise ValueError('Engine initialization alone is not a completed benchmark')
+    audits = meta.get('step_audit') or []
+    if isinstance(audits, dict):
+        audits = [audits]
+    for audit in audits:
+        if (audit.get('kernel_trace_steps') or audit.get('idle_ms')
+                or audit.get('end_to_end_control_eligible') is False or audit.get('error')):
+            raise ValueError('Synchronized, paced, or failed step diagnostics cannot be used '
+                             'as end-to-end ground truth; use an uninstrumented completed run')
+
 
 def _load_bench_requests(path: Path) -> list[dict]:
     out: list[dict] = []

@@ -1,7 +1,8 @@
 """Bench output writer.
 
-Writes the three artifacts of a bench run::
+Writes a startup snapshot and the completed artifacts of a bench run::
 
+    bench/results/<run_id>/engine_start.json
     bench/results/<run_id>/meta.json
     bench/results/<run_id>/requests.jsonl
     bench/results/<run_id>/timeseries.csv
@@ -18,6 +19,13 @@ from typing import Any
 
 
 META_SCHEMA_VERSION = 1
+
+
+def write_engine_start(output_dir: Path, **fields: Any) -> None:
+    """Preserve resolved capacity early; this is not a completed benchmark."""
+    payload = {"schema_version": META_SCHEMA_VERSION, "status": "engine_initialized", **fields}
+    with (output_dir / "engine_start.json").open('x') as stream:
+        stream.write(json.dumps(payload, indent=2) + '\n')
 
 
 def write_meta(output_dir: Path, **fields: Any) -> None:

@@ -54,7 +54,7 @@ python -m bench run \
     --dtype bfloat16 --kv-cache-dtype auto
 ```
 
-All 15 flags:
+Common flags (see `python -m bench run --help` for the complete set):
 
 | Flag | Default | Notes |
 | --- | --- | --- |
@@ -69,6 +69,7 @@ All 15 flags:
 | `--max-model-len` | model max | vLLM `max_model_len` |
 | `--dtype` | `bfloat16` | note: not inferred from the model config, unlike `python -m serving` |
 | `--kv-cache-dtype` | `auto` | vLLM `kv_cache_dtype` |
+| `--kv-cache-memory-bytes` | unset | Positive per-GPU KV cache budget; otherwise vLLM profiles available memory automatically |
 | `--seed` | `42` | sampling seed |
 | `--tick-seconds` | `1.0` | `timeseries.csv` row spacing; the simulator's `--log-interval` |
 | `--num-reqs` | `0` | cap on requests from the dataset, `0` = all |
@@ -111,11 +112,14 @@ itself takes all seven directly:
 
 ```
 bench/results/<run_id>/
+  engine_start.json    startup snapshot of resolved engine settings, KV capacity
+                       and workload identity; not a completed benchmark
   meta.json            run metadata (model, vLLM version, engine kwargs,
                        dataset hash, wall-clock start/end) plus what vLLM
                        *resolved*: kv_cache (num_gpu_blocks, block_size,
                        num_kv_tokens, gpu_memory_utilization), hardware
-                       (device name, total memory, CUDA/torch), and
+                       (device name, UUID, CPU affinity, allowed NUMA nodes,
+                       total memory, CUDA/torch), and
                        resolved_config (the whole VllmConfig, one key per
                        sub-config). num_gpu_blocks is the KV capacity a
                        simulator has to match; the rest of that budget is
@@ -134,6 +138,14 @@ bench/results/<run_id>/
 ```
 
 ## Latency definitions (sim ↔ bench)
+
+Resolved engine settings are captured before shutdown. Each serving run uses a
+fresh output directory: an existing `engine_start.json` is not overwritten.
+Validation rejects initialization-only, explicitly aborted and known paced or
+synchronized diagnostic runs. Legacy request/timeseries inputs remain readable.
+Equal memory-utilization settings do not guarantee equal KV block counts; check
+`meta.json` even when using an explicit cache budget. Dummy weights are useful
+for controlled diagnostics, not automatically equivalent end-to-end truth.
 
 Both sides report TTFT, TPOT, and end-to-end latency from the same
 reference points so diff% is meaningful:
