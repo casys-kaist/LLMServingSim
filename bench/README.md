@@ -21,10 +21,10 @@ bench/                          Python package — `python -m bench ...`
 ├── bench.sh                    host-side ``python -m bench run`` wrapper
 ├── validate.sh                 host-side ``python -m bench validate`` wrapper
 ├── examples/                   canonical end-to-end runs (committed artifacts)
-│   ├── configs/<model>.json    cluster config used by the simulator side
-│   ├── <model>/vllm/           vLLM bench artifacts (meta.json, requests.jsonl, timeseries.csv)
-│   ├── <model>/outputs/        simulator output (sim.csv, sim.log)
-│   ├── <model>/validation/     `bench validate` output (PDFs + summary.txt)
+│   ├── <hw>/<model>/config.json  cluster config used by the simulator side
+│   ├── <hw>/<model>/vllm/        vLLM bench artifacts (meta.json, requests.jsonl, timeseries.csv)
+│   ├── <hw>/<model>/outputs/     simulator output (sim.csv, sim.log)
+│   ├── <hw>/<model>/validation/  `bench validate` output (PNGs + summary.txt)
 │   ├── run.sh                  rerun the simulator side for any/all examples
 │   └── validate.sh             rerun the validation step for any/all examples
 └── results/                    output root for ad-hoc runs: bench/results/<run_id>/
@@ -189,7 +189,7 @@ Reproducing a canonical example:
 
 ```bash
 # Inside the simulator container:
-./bench/examples/run.sh                       # all four examples
+./bench/examples/run.sh                       # all discovered example configs
 ./bench/examples/run.sh RTXPRO6000/Qwen3-30B-A3B-Instruct-2507   # single example
 
 # Then validate against the committed vLLM artifacts:
@@ -198,7 +198,11 @@ Reproducing a canonical example:
 ```
 
 `run.sh` reads each example's `meta.json` (engine kwargs + dataset path)
-and its own `config.json`, so the
+and its own `config.json`. Both wrappers discover `*/*/config.json` rather
+than a fixed model list; additional stored diagnostics are included too.
+`BLOCK_SIZE` overrides the recorded `kv_cache.block_size`; otherwise the
+recorded value is passed to the simulator. If it is missing, the wrapper
+omits `--block-size` and lets the simulator resolve its default. Thus the
 simulator runs against the exact same workload and engine configuration
 as the original vLLM bench. To regenerate the vLLM side from scratch,
 use `bench/bench.sh` (or `python -m bench run`) from inside the vLLM

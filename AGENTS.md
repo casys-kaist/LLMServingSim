@@ -2449,6 +2449,12 @@ Two more rules for the same reason:
 
 ## Testing & Validation
 
+The example wrappers discover `bench/examples/*/*/config.json`, including
+stored diagnostics beyond the headline benchmarks. Reproduction uses the
+recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
+If that metadata is absent, omit the flag so serving resolves its default;
+do not force a dense-only page size onto sparse or hybrid examples.
+
 No unit-test suite. The simulator is deterministic, so validation is exact
 equality against recorded results:
 

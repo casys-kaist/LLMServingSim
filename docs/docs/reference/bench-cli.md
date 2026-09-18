@@ -16,6 +16,12 @@ Both must run inside the **vLLM container**
 For the resulting accuracy numbers, see
 **[Validation](/docs/validation)**.
 
+The `bench/examples/run.sh` and `validate.sh` wrappers discover stored example
+configs under `bench/examples/*/*/config.json`. With no example argument they
+include diagnostic configs as well as headline benchmarks. Reproduction uses
+`BLOCK_SIZE` if set, otherwise the recorded `kv_cache.block_size`; absent
+metadata leaves the simulator's block-size resolution in control.
+
 ## `python -m bench run`
 
 Strict replay: the runner reads a LLMServingSim-format JSONL workload

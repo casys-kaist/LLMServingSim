@@ -6,6 +6,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Fixed
+- Reproduce example KV block sizes from recorded engine metadata, retaining
+  explicit overrides and simulator fallback for legacy metadata. Discover
+  stored example configs instead of maintaining a fixed benchmark list.
 - Capture benchmark engine settings and KV capacity before shutdown, preserve
   an exclusive startup snapshot, and reject known incomplete or perturbed
   validation inputs. Add an explicit KV memory budget and placement metadata;
