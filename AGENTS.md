@@ -404,6 +404,24 @@ restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
 `FusedMoEFactory` returning a `MoERunner` that owns a `router` (`BaseRouter`)
 and a `RoutedExperts`.
 
+### Vocab-parallel target endpoints
+
+Two all-reduces per dense decoder block are not the complete TP forward.
+For the ordinary vLLM 0.28 target path, `VocabParallelEmbedding.forward`
+reduces the local-vocabulary embedding output, and
+`LogitsProcessor._get_logits` gathers vocabulary-sharded logits before
+sampling. `_shared_tp_collective` emits these once, gated by the catalog
+binding and shared prologue/head placement; it does not infer them for MTP
+or alternative heads. The formulas and scope are documented in
+`docs/docs/simulator/parallelism-mechanics.md`.
+
+Vocabulary padding precedes TP division. The embedding and head weights
+remain per-rank, logits use the configured head dtype, and the sampler reads
+the gathered full vocabulary. Per-sequence tensor sizes use the same head
+row count as their latency lookup, not all scheduled prompt tokens.
+This endpoint contract does not settle idle-DP padding, speculative heads
+or expert dispatch/combine; those require their own audits.
+
 ### Profiling the drafter (MTP)
 A model that drafts with itself keeps its MTP module outside the ordinary
 model, and it **cannot be loaded standalone**: the MTP config's `model_type`

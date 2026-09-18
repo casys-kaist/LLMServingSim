@@ -161,7 +161,7 @@ bench artifacts, the simulator output, and the resulting
 | --- | --- | --- | --- | --- | --- |
 | `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.3% | +0.2% | +0.3% |
 | `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +3.8% | +1.4% | +2.0% |
-| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -2.3% | -1.5% | -1.8% |
+| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -0.4% | +0.1% | -0.1% |
 | `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | +2.8% | +0.5% | +0.5% |
 
 Diff% is `(sim - vLLM) / vLLM × 100`. All runs use `bf16` weights,

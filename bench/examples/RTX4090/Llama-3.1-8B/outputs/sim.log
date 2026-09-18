@@ -10,8 +10,8 @@
                               Input configuration                               
 
   • Cluster config             : bench/examples/RTX4090/Llama-3.1-8B/config.json
-  • Run ID                     : run_1789717189359858_655
-  • ASTRA-Sim inputs root      : /tmp/qwen-commit-validation-84g_baep/inputs
+  • Run ID                     : run_1789717829241509_678
+  • ASTRA-Sim inputs root      : /tmp/qwen-commit-validation-6f3c8j6g/inputs
   • Dataset                    : workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
   • Max num seqs               : 256
   • Max batched tokens         : 2048
@@ -591,10 +591,10 @@ All Request Has Been Exited
 ────────────────────────────────────────────────────────────────────────────────
 ▶ Simulation results...
 
-Total simulation time: 0h 0m 10.894s
+Total simulation time: 0h 0m 11.082s
 ────────────────────────────── Throughput Results ──────────────────────────────
 Total requests:                                                     300
-Total clocks (ns):                                                  183706538086
+Total clocks (ns):                                                  183706509004
 Total latency (s):                                                  183.707
 Total input tokens:                                                 257239
 Preemptions:                                                        198
@@ -614,9 +614,9 @@ Total prefix hit ratio (%):                                         1.88
 ────────────────────────────────────────────────────────────────────────────────
 ───────────────────────────────── Instance [0] ─────────────────────────────────
 ───────────────────────────── Time to First Token ──────────────────────────────
-Mean TTFT (ms):                                                     65702.79
-Median TTFT (ms):                                                   60360.49
-P99 TTFT (ms):                                                      137910.34
+Mean TTFT (ms):                                                     65702.77
+Median TTFT (ms):                                                   60360.48
+P99 TTFT (ms):                                                      137910.31
 ─────────────────── Time per Output Token (excl. 1st token) ────────────────────
 Mean TPOT (ms):                                                     32.52
 Median TPOT (ms):                                                   30.92
@@ -627,4 +627,4 @@ Median ITL (ms) :                                                   25.18
 P99 ITL (ms) :                                                      205.11
 ────────────────────────────────────────────────────────────────────────────────
 Saving each request's information to output file: bench/examples/RTX4090/Llama-3.1-8B/outputs/sim.csv
-[16:40:00.359] [Main] WARNING  Skipping ASTRA-Sim inputs cleanup because inputs_root is outside /tmp/llmservingsim-qwen-commits.Xxi6aL/tree/astra-sim/inputs/runs: /tmp/qwen-commit-validation-84g_baep/inputs
+[16:50:40.433] [Main] WARNING  Skipping ASTRA-Sim inputs cleanup because inputs_root is outside /tmp/llmservingsim-qwen-commits.Xxi6aL/tree/astra-sim/inputs/runs: /tmp/qwen-commit-validation-6f3c8j6g/inputs

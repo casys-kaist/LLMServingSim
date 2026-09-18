@@ -10,6 +10,7 @@ from .utils import (
 import pandas as pd
 import yaml
 from .memory_model import calculate_sizes
+from .communication import dtype_bytes, vocab_shard_size
 from .gate_function import GateRouter
 from .config_builder import get_device
 from .power_model import PowerModel, total_ring_data
@@ -1515,8 +1516,12 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
                                        kv_len=kv_len_for_sizes,
                                        parallel=ctx.tp_size, fp=ctx.fp)
     else:
-        inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
+        length = bctx.lm_head_len if category == "per_sequence" else bctx.total_len
+        inp, wt, out = calculate_sizes(ctx.model, layer_name, length,
                                        parallel=ctx.tp_size, fp=ctx.fp)
+
+    if layer_num is None and comm_type == 'NONE':
+        comm_type, comm_size = _shared_tp_collective(ctx, bctx, layer_name)
 
     wt_loc = get_device(ctx.placement, layer_num, layer_name, "weights")
 
@@ -1537,6 +1542,32 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
                 power_acc.link_data_bytes += total_ring_data(comm_size, ctx.tp_size, collective=collective)
 
     return latency_ns
+
+
+def _shared_tp_collective(ctx, bctx, name):
+    """Ordinary vocab-parallel target endpoints, once per forward.
+
+    Require the actual catalog binding and shared placement. MTP endpoints,
+    alternative heads and local-argmax sampling need their own contracts.
+    """
+    if ctx.tp_size <= 1:
+        return 'NONE', 0
+    arch = ctx.perf_db['architecture']
+    activation_fp = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
+    shared = arch.get('shared') or {}
+    catalog = arch['catalog']
+    if name == 'embedding' and name in shared.get('prologue', []):
+        binding = catalog.get('dense', {}).get(name, {}).get('vllm')
+        if binding == 'VocabParallelEmbedding':
+            return (_with_dim('ALLREDUCE', ctx.tp_dim),
+                    bctx.total_len * ctx.config['hidden_size'] * activation_fp)
+    if name == 'lm_head' and name in shared.get('head', []):
+        binding = catalog.get('per_sequence', {}).get(name, {}).get('vllm')
+        if binding == 'LogitsProcessor':
+            return (_with_dim('ALLGATHER', ctx.tp_dim),
+                    bctx.lm_head_len * vocab_shard_size(ctx.config, ctx.tp_size)
+                    * dtype_bytes(ctx.config.get('head_dtype'), activation_fp))
+    return 'NONE', 0
 
 
 def _pd_kv_send_bytes(ctx, bctx):
@@ -2254,6 +2285,10 @@ def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
         for layer_name in head_layers:
             lat = _layer_latency_for_power(ctx, bctx, layer_name)
             ctx.power_model.add_npu_active_energy_consumption(ctx.hardware, ctx.node_id, lat, num_npus=ctx.tp_size)
+            comm, size = _shared_tp_collective(ctx, bctx, layer_name)
+            if size:
+                ctx.power_model.add_link_energy_consumption(ctx.node_id, total_ring_data(
+                    size, ctx.tp_size, collective=comm.split(':')[0].lower()))
             if get_device(ctx.placement, None, layer_name, "weights") != 'LOCAL':
                 _, wt, _ = calculate_sizes(ctx.model, layer_name, bctx.total_len, parallel=ctx.tp_size, fp=ctx.fp)
                 ctx.power_model.add_dram_energy_consumption(ctx.node_id, wt)
@@ -2293,8 +2328,13 @@ def _emit_prologue(ctx, bctx, rows, batch_tag='NONE'):
             lat = _layer_latency_for_power(ctx, bctx, layer_name)
             ctx.power_model.add_npu_active_energy_consumption(
                 ctx.hardware, ctx.node_id, lat, num_npus=ctx.tp_size)
+            comm, size = _shared_tp_collective(ctx, bctx, layer_name)
+            if size:
+                ctx.power_model.add_link_energy_consumption(ctx.node_id, total_ring_data(
+                    size, ctx.tp_size, collective=comm.split(':')[0].lower()))
             if get_device(ctx.placement, None, layer_name, "weights") != 'LOCAL':
-                _, wt, _ = calculate_sizes(ctx.model, layer_name, bctx.total_len, fp=ctx.fp)
+                _, wt, _ = calculate_sizes(ctx.model, layer_name, bctx.total_len,
+                                           parallel=ctx.tp_size, fp=ctx.fp)
                 ctx.power_model.add_dram_energy_consumption(ctx.node_id, wt)
     return len(rows) - before
 

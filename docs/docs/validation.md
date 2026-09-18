@@ -83,7 +83,7 @@ configurations:
 | --- | --- | --- | --- | --- | --- | --- |
 | RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.3% | +0.2% | +0.3% | +1.1% |
 | RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +3.8% | +1.4% | +2.0% | +3.8% |
-| RTXPRO6000 | Qwen3-32B | TP=2 dense | -2.3% | -1.5% | -1.8% | -2.3% |
+| RTXPRO6000 | Qwen3-32B | TP=2 dense | -0.4% | +0.1% | -0.1% | -0.6% |
 | RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.8% | +0.5% | +0.5% | +4.8% |
 
 The last column is the largest absolute error across all fifteen metrics
@@ -92,19 +92,12 @@ summary of a run: a mean can be small because two errors cancelled. **Every
 metric of every configuration is inside 5%**, and TPOT and end-to-end latency
 means are inside 2% on all four.
 
-**TTFT is the loosest metric on every run, and that is structural rather than a
-separate error.** A saturated queue amplifies whatever per-step charge the
-simulator gets wrong: on the RTXPRO6000 Llama run the per-step cost is +1.6%
-against production, which becomes +1.4% TPOT, +4.3% on the average request's
-queue wait (299 of 300 requests wait longer than in vLLM), and +3.7% TTFT — an
-amplification of about 3.1x. So read TTFT as the most sensitive indicator in the
-table, not as an independent defect, and read TPOT as the closest thing to a
-direct test of the cost model.
-
-The two dense signs differ — Llama over-predicts, Qwen3-32B under-predicts —
-which is what you want from a model that is not tuned per configuration. There
-is no calibration factor anywhere in the pipeline: profiled latencies go in as
-measured.
+Queueing can amplify a small step-cost error into a larger TTFT error.
+The current Llama reference over-predicts mean TTFT by 3.8%, while the
+corrected Qwen3-32B reference is at -0.4% TTFT and +0.1% TPOT. These aggregate
+signs do not identify a unique kernel-level cause or establish generalization.
+The default tables are measured profiles; no end-to-end benchmark coefficient
+is fitted for these endpoint corrections.
 
 Per-percentile numbers are in the same `summary.txt` files under
 [`bench/examples/`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples).
@@ -141,7 +134,7 @@ Throughput timeline, vLLM (orange) vs. simulator (blue):
 | TTFT P99 | 137.36 s | 137.91 s | +0.4% |
 | TPOT mean | 32.4 ms | 32.5 ms | **+0.2%** |
 | TPOT P99 | 56.0 ms | 56.6 ms | +1.1% |
-| Latency mean | 86.61 s | 86.88 s | **+0.3%** |
+| Latency mean | 86.61 s | 86.87 s | **+0.3%** |
 | Latency P99 | 153.63 s | 154.22 s | +0.4% |
 
 The tightest configuration in the set: all fifteen metrics land between
@@ -196,26 +189,24 @@ bundle is measured rather than of the simulator, and both are still open.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 35.62 s | 34.81 s | **-2.3%** |
-| TTFT median | 39.47 s | 38.81 s | -1.7% |
-| TTFT P99 | 89.43 s | 87.35 s | -2.3% |
-| TPOT mean | 77.4 ms | 76.2 ms | **-1.5%** |
-| TPOT P99 | 94.3 ms | 92.4 ms | -2.0% |
-| Latency mean | 87.17 s | 85.61 s | **-1.8%** |
-| Latency P99 | 120.69 s | 118.63 s | -1.7% |
+| TTFT mean | 35.62 s | 35.48 s | **-0.4%** |
+| TTFT median | 39.47 s | 39.59 s | +0.3% |
+| TTFT P99 | 89.43 s | 89.07 s | -0.4% |
+| TPOT mean | 77.4 ms | 77.4 ms | **+0.1%** |
+| TPOT P99 | 94.3 ms | 93.8 ms | -0.6% |
+| Latency mean | 87.17 s | 87.07 s | **-0.1%** |
+| Latency P99 | 120.69 s | 120.71 s | +0.0% |
 
-TP=2 exercises the dense ALLREDUCE collective on `o_proj` / `down_proj`, whose
-price comes from the NCCL sweep in `hardware.yaml` rather than from a fit — the
-measured pair is 15.92 GB/s / 6,600 ns, and it charges this run's 1.31 MB
-decode all-reduce at 1.05x of real NCCL. The most uniformly behaved run of the
-four: all fifteen metrics land between -1.5% and -2.3%, all of them negative,
-so the simulator under-predicts by a small consistent margin rather than
-drifting. Its block pool is also the fullest of the four at 97% of budget, and
-it still preempts on neither side.
+TP=2 exercises the decoder all-reduces, plus the previously omitted shared
+embedding all-reduce and logits all-gather. Head tensor sizes now use the
+same per-sequence row count as the profile lookup, with padded vocabulary
+shards and full-vocabulary sampler inputs. The original skew table remains
+in use; these results do not include additional-skew calibration.
 
-Note the sign: this run is *under* where Llama-3.1-8B on the same card is
-*over*. Nothing in the pipeline is tuned per configuration, so the two
-residuals are independent rather than a single bias.
+The corrected run's fifteen aggregate errors range from -0.611% to +0.306%,
+with mean TTFT/TPOT/latency at -0.415% / +0.098% / -0.115%. The communication
+parameters and profiled compute times were not fitted to these results.
+This checkpoint does not validate MoE dispatch/combine or alternative heads.
 
 ### RTXPRO6000 — Qwen3-30B-A3B-Instruct-2507 (DP=2 × EP=2 MoE)
 

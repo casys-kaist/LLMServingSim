@@ -229,7 +229,11 @@ while a heterogeneous one still gets the right block per layer.
 one trace row per layer. It also:
 
 - Attaches **TP-ALLREDUCE** after `o_proj` and `down_proj` when
-  `tp_size > 1`.
+  `tp_size > 1`. The ordinary shared target embedding also reduces once per
+  forward; the shared logits head all-gathers vocabulary shards before
+  sampling. Catalog bindings guard these endpoint collectives. Per-sequence
+  tensor sizes use the head's lookup row count rather than total prompt tokens.
+  See [parallelism mechanics](./parallelism-mechanics) for payload conventions.
 - Wraps the MoE block with the **EP all-to-all** markers when MoE is
   active — emitted as `ALLGATHER` (dispatch) and `REDUCESCATTER`
   (combine), matching vLLM's default `allgather_reducescatter` backend.

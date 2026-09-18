@@ -890,7 +890,12 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         # the target's, and a separate table: vLLM's MTP wrappers build one
         # rather than sharing.
         input_size = length * fp * 2  # token_ids are int32 or int64
-        weight_size = (vocab_size // p) * n_embd * fp
+        if layer_name == "embedding":
+            from .communication import vocab_shard_size
+            local_vocab = vocab_shard_size(config, p)
+        else:
+            local_vocab = vocab_size // p
+        weight_size = local_vocab * n_embd * fp
         output_size = length * n_embd * fp
 
     elif layer_name in ["input_layernorm", "post_layernorm", "final_layernorm", "layernorm"]:
@@ -1240,7 +1245,8 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         output_size = input_size
 
     elif layer_name == "sampler":
-        input_size = length * (vocab_size // p) * fp
+        from .communication import dtype_bytes
+        input_size = length * vocab_size * dtype_bytes(config.get("head_dtype"), fp)
         weight_size = 0
         output_size = length * 4  # int32 token IDs
 
@@ -1258,9 +1264,11 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
 
     # ----------------- LM Head -----------------
     elif layer_name == "lm_head":
+        from .communication import dtype_bytes, vocab_shard_size
+        local_vocab = vocab_shard_size(config, p)
         input_size = length * n_embd * fp
-        weight_size = n_embd * (vocab_size // p) * fp
-        output_size = length * (vocab_size // p) * fp
+        weight_size = n_embd * local_vocab * fp
+        output_size = length * local_vocab * dtype_bytes(config.get("head_dtype"), fp)
 
     # ----------------- MTP (the model's own drafter) -----------------
     # One module per declared MTP layer, run N times per speculative step.

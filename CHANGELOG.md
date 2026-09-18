@@ -38,6 +38,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   worth knowing before rebuilding it.
 
 ### Changed
+- **Model the ordinary vocab-parallel target endpoints at TP > 1.**
+  Add the embedding all-reduce and logits all-gather once per forward,
+  guarded by catalog bindings and shared placement. Use the padded local
+  vocabulary and head dtype for logits, full-vocabulary sampler inputs,
+  and per-sequence rather than total-token tensor sizes for the head.
+  Include the additional collectives in link-energy accounting. MoE
+  dispatch/combine and idle-DP head handling are separate changes.
 - **Use query-weighted prefill coordinates in profiling and serving.**
   Unequal chunks now contribute in proportion to their query tokens rather
   than their sequence count. A shared helper preserves single-request and

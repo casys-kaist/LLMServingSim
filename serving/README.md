@@ -303,7 +303,8 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
   sub-batch interleaving.
 
-Handles tensor parallelism (ALLREDUCE placement), MoE expert routing with
+Handles tensor parallelism (decoder ALLREDUCE plus shared embedding
+ALLREDUCE and logits ALLGATHER), MoE expert routing with
 `involved_dim` dimension scoping for DP+EP, PIM attention offloading, and
 sub-batch interleaving. The `comm_type` field supports dimension scoping
 (e.g., `ALLGATHER:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a

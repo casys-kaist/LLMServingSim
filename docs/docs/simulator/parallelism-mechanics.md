@@ -15,7 +15,7 @@ of these on) is on
 
 | Style | What's parallelized | Collective | Where it fires |
 | --- | --- | --- | --- |
-| **TP** (tensor) | Linear weights split along head dim | ALLREDUCE | After `o_proj` and `down_proj` |
+| **TP** (tensor) | Linear and vocabulary weights partitioned across ranks | ALLREDUCE / ALLGATHER | Decoder projections plus shared target embedding/logits |
 | **PP** (pipeline) | Decoder layers split across GPU groups | (point-to-point in `inflight` queue) | At stage boundaries |
 | **EP** (expert) | MoE experts split across ranks | all-to-all, as ALLGATHER + REDUCESCATTER | Around the MoE block |
 | **DP+EP** | EP across multiple instances | the same pair | Same, but across instance boundaries with wave-sync |
@@ -52,7 +52,37 @@ The `comm_size` on each ALLREDUCE is the full output tensor size
 `qkv_proj`, `gate_up_proj`, etc. don't need ALLREDUCE because they
 *split* the input along the head dim, those layers' output is
 already correctly sharded for the next layer. TP's collective cost
-is bound by `o_proj` + `down_proj`, two ALLREDUCEs per decoder block.
+includes `o_proj` + `down_proj`, two ALLREDUCEs per dense decoder block.
+
+### Once-per-forward vocab-parallel endpoints
+
+Two additional collectives run outside those decoder blocks in the ordinary
+vLLM 0.28 target path. The catalog binding and shared placement are checked
+before emitting either, and TP=1 emits neither:
+
+| Endpoint | Collective | ASTRA-Sim payload |
+| --- | --- | --- |
+| Shared `VocabParallelEmbedding` | ALLREDUCE | scheduled tokens × hidden size × activation bytes |
+| Shared `LogitsProcessor` | ALLGATHER | head rows × padded vocabulary / TP × head-dtype bytes |
+
+The all-gather size is the **local vocabulary shard**, whereas the
+all-reduce size is the full replicated hidden tensor. vLLM pads the ordinary
+vocabulary to a multiple of 64 before dividing by TP. The sampler then reads
+the full, unpadded vocabulary and is not TP-sharded. Its tensor dimensions,
+and those of the logits head, use the per-sequence lookup row count rather
+than all scheduled prompt tokens. Both endpoint collectives contribute to
+link-energy accounting.
+
+This implements `VocabParallelEmbedding.forward` and
+`LogitsProcessor._get_logits`/`_gather_logits` for the default target path;
+it is not a claim about local-argmax sampling, MTP, alternative heads or
+expert dispatch/combine. Idle-DP head rows are a separate contract.
+
+:::caution[MoE scope]
+Target embedding/logits support does not validate expert dispatch/combine
+or DP+TP expert-group sizing. In vLLM, an EP group spans TP × DP ranks;
+a simulator configuration must match that layout before comparing timings.
+:::
 
 ## PP, pipeline stages and `inflight`
 
