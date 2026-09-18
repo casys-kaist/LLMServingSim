@@ -504,7 +504,8 @@ inherits the error. Two things go wrong at once under 0.28:
   module launched no kernel and was flattened away. Qwen's three drafter norms
   arrive as three identical top-level entries, and `LogitsProcessor` arrives
   once per timed forward. `extract_samples` now drops repeats identical in
-  (class, time, invocations), since that cannot be distinct work.
+  (full module representation, time, invocations). Do not reduce the identity
+  to a class name: differently shaped modules can have equal times and counts.
 - The root's own invocation count is the **forward count**, so
   `extract_samples` takes `iterations` and uses it as the top level's
   `parent_invocations`. It used to hardcode 1.

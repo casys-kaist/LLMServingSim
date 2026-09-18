@@ -5,6 +5,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Fixed
+- Preserve distinct module shapes when deduplicating top-level profiling
+  summaries; equal class names, times and invocation counts alone are not
+  sufficient to identify repeated entries.
+
 ### Removed
 - **The cudagraph step correction, and the `step.csv` it read.** It rested on
   the premise that the sum of profiled per-layer latencies predicts *eager*

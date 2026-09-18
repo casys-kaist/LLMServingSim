@@ -90,7 +90,9 @@ The five that decide how long a run takes, in rough order of effect:
    shot. It is also the **top level's** invocation count: every profile node
    divides by its parent's, and the top level has no parent node, so
    `extract_samples` is handed this value. `embedding`, `lm_head`, `sampler`
-   and Qwen3.5's whole drafter bind there.
+   and Qwen3.5's whole drafter bind there. Repeated top-level summaries are
+   deduplicated by full module representation, time and invocation count;
+   class-name equality alone must not discard differently shaped modules.
 1b. **Layer count, per category** — not a flag; resolved from the checkpoint.
    The same per-forward cost means op count sets the wall clock, and the
    profile tree merges same-class siblings, so a second layer of a type

@@ -359,7 +359,9 @@ The division is **per parent**: every node divides by its parent node's
 invocation count. The top level has no parent node, so `extract_samples` is
 given `iterations` as its count — and vLLM 0.28 additionally reports a
 top-level node once per forward (and once per sibling module) where 0.19 merged
-them into one wrapper, so identical sibling entries are deduped first. Both
+them into one wrapper, so identical sibling entries are deduped first. Identity
+includes the full module representation, time and invocation count: a shared
+class name and equal timing do not make differently shaped modules duplicates. Both
 matter because `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter
 bind at the top level; without them those read `iterations x repeats` too high.
 

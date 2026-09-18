@@ -225,14 +225,15 @@ def extract_samples(
         # merged node once **per sibling module**. Qwen3.5's drafter holds
         # three GemmaRMSNorms under a wrapper that launches nothing, and they
         # arrive as three identical top-level entries -- summing them charged
-        # the drafter's norms 3x. Two entries identical in class, time and
-        # invocation count cannot be distinct work, so the repeats are dropped.
+        # the drafter's norms 3x. vLLM's summary key retains the full module
+        # representation, not just its class. Keep that identity here: two
+        # differently shaped linears can coincidentally take the same time.
         seen: set[tuple[str, float, int]] = set()
         for node in nodes:
             raw_name = str(node["entry"]["name"])
             cls = _strip_class_name(raw_name)
             invocations = max(1, int(node["entry"]["invocations"]))
-            fingerprint = (cls, float(node["entry"]["cuda_time_us"]),
+            fingerprint = (raw_name, float(node["entry"]["cuda_time_us"]),
                            invocations)
             if fingerprint in seen:
                 continue
