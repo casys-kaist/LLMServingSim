@@ -191,7 +191,7 @@ FlashAttention-varlen skew correction:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SKIP_SKEW` | unset | Set to `1` to skip the skew sweep entirely. The simulator then applies no skew correction (`alpha = 0`) |
+| `SKIP_SKEW` | unset | Skip new skew measurements. Existing stored calibration is retained; a fresh bundle without skew data uses zero correction |
 | `ONLY_SKEW` | unset | Set to `1` to run **only** the skew step, leaving dense / per_seq / attention / moe untouched. Useful for refreshing `skew.csv` |
 | `SKEW_N_FACTOR` | `2.0` | `n` (total decodes) axis density. Higher = fewer shots |
 | `SKEW_PC_FACTOR` | `2.0` | `pc` (prefill chunk) axis |
@@ -204,6 +204,24 @@ substantially. See **[Skew & alpha fit](./skew-alpha-fit)** for the
 methodology.
 
 
+
+## Rebuild skew calibration without a GPU
+
+```bash
+python -m profiler refit-skew meta-llama/Llama-3.1-8B \
+    --hardware RTXPRO6000 --variant bf16 --tp 1
+```
+
+This uses local model configuration and existing `skew.csv`/`attention.csv`;
+it does not start vLLM or acquire GPU measurements. Omit `--tp` for all
+measured degrees, or use a comma-separated list. `--out` selects an alternate
+profile root. Only derived fit tables and skew-fit metadata are changed.
+The normal profiler's metadata writer invokes this same compiler automatically.
+
+The new table is versioned and tied to its attention references. Rebuild after
+changing reference data or lookup semantics; serving rejects stale fits.
+Existing unversioned bundles keep their legacy behavior until rebuilt.
+See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 
 ## Resume vs force
 

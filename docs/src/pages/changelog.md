@@ -9,6 +9,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+- Compile skew calibration against the simulator's actual attention references,
+  with partition-local supported batch-size anchors and relative-latency
+  weighted medians. Save versioned, fingerprinted tables for bounded-cost
+  runtime picking; add CPU-only `profiler refit-skew` and reject stale fits.
+  Preserve complete request geometry and geometry-based resume keys without
+  changing attention interpolation or automatically migrating bundled data.
 - Add an opt-in resource watchdog for one command and its descendants, with
   process-tree RSS, host-memory, swap-growth and timeout guards, optional
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.

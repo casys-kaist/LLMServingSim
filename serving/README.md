@@ -263,25 +263,19 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   (dense/per_sequence), 4D linear for attention (each of
   prefill_chunk / prefill_key / n_decode / kv_decode bracketed by its two
   neighbouring profiled values and blended linearly), and 2D for MoE.
-- `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
-  the attention kernel: a lookup at the batch's mean decode kv, blended
-  toward a second lookup at its max only when a non-zero bucket-specific
-  alpha applies, resolved from `meta.yaml::skew_fit`. The three bucket axes
-  (`n`, `pc`, `lev = (t_max - t_mean) / t_mean`) are read from meta, so the
-  simulator picks up whatever resolution the profiler ended up with -- `n`'s
-  edges are derived from the batch sizes the sweep fired. Two different
-  fallbacks, and they are not the same value: a cell missing from a real
-  fit reads that kernel's pooled `alpha_default`, but a meta with **no**
-  `skew_fit` block gets `alpha = 0` — no correction at all, rather than a
-  constant borrowed from another GPU. Either way the simulator stays
-  usable against older profile runs.
-- `_hydrate_skew_fit_tables()` — on load, walks each TP's
-  `bucket_table:` pointer and reads `tp<N>/skew_fit.csv` into the
-  in-memory `alpha_by_bucket` map that `_skew_alpha` consults.
-  The correction is empirical: mean/max endpoints do not uniquely describe
-  a KV distribution, and latency can change in either direction. Linear
-  interpolation and the bucket summaries are approximations, not kernel
-  identities or guarantees across models and hardware.
+- `_lookup_attention_with_skew()` / `_skew_alpha()` — apply a fitted correction
+  between the unchanged mean/max attention lookups. Versioned calibration
+  selects supported N anchors within kernel/query/prefill/lever partitions;
+  it does not interpolate neighboring alpha values or fit at runtime.
+  Missing cells use the same kernel/query fallback, missing kernel/query data
+  means zero correction, and unversioned bundles retain their legacy lookup.
+- `_hydrate_skew_fit_tables()` — validate profile identity, attention/table
+  fingerprints, lookup code and saturation semantics before loading cells.
+  Stale tables raise: rebuild with `python -m profiler refit-skew`.
+  Runtime only consults in-memory data. See the
+  [skew guide](../docs/docs/profiler/skew-alpha-fit.md) for the exact storage,
+  support and fallback contract. The correction remains empirical and is not
+  a guarantee across models, distributions or hardware.
 - `TraceCtx` / `BatchCtx` / `PowerAccumulator` — data classes for context passing
 - `_emit_layer()` — single-layer emission that dispatches by catalog category
 - `_emit_sequence()` — walks a list of canonical names from the yaml; attaches

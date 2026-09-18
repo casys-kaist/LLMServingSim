@@ -280,12 +280,6 @@ _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
 # meta.yaml — per-variant session metadata
 # ---------------------------------------------------------------------------
 
-# CSV filename under tp{N}/ that holds the per-bucket alpha table.
-# The meta.yaml skew_fit.per_tp[tp] block points at this file instead
-# of inlining the (usually 1-2k) bucket rows as a YAML mapping.
-_SKEW_FIT_CSV_NAME = "skew_fit.csv"
-
-
 def _geometric_spec(values) -> Any:
     """Compact string for a geometric (doubling) sequence.
 
@@ -328,117 +322,6 @@ def _geometric_spec(values) -> Any:
         else f"x{r0:.3g}"
     core = f"{tail[0]}-{tail[-1]} {factor}"
     return core if prefix is None else f"{prefix}, {core}"
-
-
-def _skew_fit_block(variant_root: Path, tp_degrees: list[int]) -> dict:
-    """Fit alpha per TP from each tp{N}/skew.csv and return a meta
-    block. Empty / missing skew.csv → ``{"enabled": False}``.
-
-    The per-bucket alpha table (potentially 1k+ rows per TP) is written
-    to ``tp{N}/skew_fit.csv``; the returned dict keeps only a per-TP
-    summary (method, n_samples, alpha_default, self-eval errors, and a
-    pointer to the CSV).
-
-    ``bucket_axes`` — derived from the skew.csv data by
-    ``profiler.fit_alpha`` so the bins adapt to whatever axis coverage
-    the profile actually contains — is promoted to the block top level
-    when all TPs agree (the common case, since all TPs share the same
-    profile grid). If TPs disagree, each entry keeps its own axes; the
-    simulator handles both shapes.
-    """
-    from profiler.core.fit_alpha import fit_alpha_per_tp
-    fit = fit_alpha_per_tp(variant_root, tp_degrees)
-    if not fit.get("enabled"):
-        return fit
-
-    per_tp_in = fit.get("per_tp", {})
-    per_tp_out: dict[int, dict[str, Any]] = {}
-    axes_seen: list[Any] = []
-
-    for tp, entry in per_tp_in.items():
-        axes_seen.append(entry.get("bucket_axes"))
-        tp_dir = variant_root / f"tp{int(tp)}"
-        csv_path = tp_dir / _SKEW_FIT_CSV_NAME
-        _write_skew_fit_csv(csv_path, entry)
-        summary = {
-            "method": entry.get("method"),
-            "n_samples": entry.get("n_samples"),
-            "alpha_default": entry.get("alpha_default"),
-            # Per-kernel fallback. An unfitted bucket on a sparse-attention
-            # layer must not inherit the dense kernel's alpha.
-            "alpha_default_by_layer": entry.get("alpha_default_by_layer"),
-            "bucket_table": f"tp{int(tp)}/{_SKEW_FIT_CSV_NAME}",
-        }
-        for k in ("rel_err_p50", "rel_err_p90", "rel_err_p99", "signed_mean"):
-            if k in entry:
-                summary[k] = entry[k]
-        per_tp_out[int(tp)] = summary
-
-    out: dict[str, Any] = {"enabled": True}
-    if axes_seen and all(a == axes_seen[0] for a in axes_seen) and axes_seen[0]:
-        # All TPs derived the same axes — promote once to avoid
-        # duplicating the block in meta.yaml.
-        out["bucket_axes"] = axes_seen[0]
-    else:
-        # TPs disagree (e.g. one TP was profiled at a different sweep
-        # width); keep per-TP axes so the simulator resolves each one
-        # against its own entry.
-        for tp, axes in zip(per_tp_in.keys(), axes_seen):
-            if axes is not None:
-                per_tp_out[int(tp)]["bucket_axes"] = axes
-    out["per_tp"] = per_tp_out
-    return out
-
-
-def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
-    """Write one TP's per-bucket alpha table to CSV.
-
-    Keys are the pipe-delimited strings ``profiler.fit_alpha._bucket_key``
-    builds: ``[{layer}|]{n_label}|{pc_label}|{lev_label}``. They are split into
-    columns so the table can be read by eye; the simulator reassembles the key
-    from the labels. A key with no layer prefix predates the prefix and is the
-    ``attention`` kernel.
-    """
-    alphas = fit_entry.get("alpha_by_bucket") or {}
-    counts = fit_entry.get("n_by_bucket") or {}
-    if not alphas:
-        return
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    rows: list[dict[str, Any]] = []
-    for key, alpha in alphas.items():
-        parts = key.split("|")
-        layer = "attention"
-        if len(parts) == 4:
-            layer, *parts = parts
-        if len(parts) != 3:
-            # Don't silently drop a malformed row -- keep the raw key.
-            rows.append({
-                "layer": layer, "n_label": "", "pc_label": "",
-                "lev_label": "", "alpha": float(alpha),
-                "n_samples": int(counts.get(key, 0)), "raw_key": key,
-            })
-            continue
-        n_label, pc_label, lev_label = parts
-        rows.append({
-            "layer": layer,
-            "n_label": n_label,
-            "pc_label": pc_label,
-            "lev_label": lev_label,
-            "alpha": float(alpha),
-            "n_samples": int(counts.get(key, 0)),
-        })
-
-    rows.sort(key=lambda r: (r["layer"], r["n_label"], r["pc_label"],
-                             r["lev_label"]))
-    fieldnames = ["layer", "n_label", "pc_label", "lev_label",
-                  "alpha", "n_samples"]
-    if any("raw_key" in r for r in rows):
-        fieldnames.append("raw_key")
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _skew_meta_block(args) -> dict:
@@ -777,13 +660,22 @@ def persist_meta(
             if records_skew
             else prior.get("skew_profile") or None
         ),
-        "skew_fit": _skew_fit_block(variant_root, args.tp_degrees),
+        "skew_fit": _calibrated_skew_fit_block(variant_root, args),
     }
     variant_root.mkdir(parents=True, exist_ok=True)
     out = variant_root / "meta.yaml"
-    with out.open("w", encoding="utf-8") as f:
-        yaml.dump(meta, f, Dumper=_CompactDumper, sort_keys=False)
+    from profiler.core.skew_calibration import atomic_yaml
+    atomic_yaml(out, meta, Dumper=_CompactDumper)
     log.debug("wrote meta.yaml → %s", out)
+
+
+def _calibrated_skew_fit_block(variant_root, args):
+    from profiler.core.skew_calibration import fit_bundle
+    if not args.model_config:
+        raise ValueError("Skew calibration requires the resolved model configuration")
+    return fit_bundle(variant_root,
+        dict(hardware=args.hardware, model=args.model, variant=args.effective_variant),
+        args.model_config)
 
 
 # ---------------------------------------------------------------------------

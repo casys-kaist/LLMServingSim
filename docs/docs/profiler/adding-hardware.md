@@ -200,6 +200,11 @@ skew_fit:
       alpha_default: 0.3
 ```
 
+The constant-alpha example above uses the **legacy unversioned** metadata
+format. Do not invent `runtime-skew-calibration-v1` entries or their hashes:
+generate them from measured skew data and matching attention references with
+`profiler refit-skew`. See [Skew & alpha fit](./skew-alpha-fit).
+
 `hardware` is the folder name a cluster config's `hardware` field must
 match; `gpu` is free-form provenance. They are separate fields — don't
 put the label in both.

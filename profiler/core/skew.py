@@ -12,14 +12,16 @@ From these we can compute the normalized interpolation factor
 
     alpha = (t_skew - t_mean) / (t_max - t_mean)
 
-which the simulator uses at query time:
+This control-based ratio is diagnostic. The default offline fit recomputes
+both endpoints with the simulator's attention lookup before fitting the
+coefficient used at query time:
 
     t_predicted = t_mean_lookup(batch.mean_kv) + alpha(batch.shape) ×
                   (t_max_lookup(batch.max_kv) - t_mean_lookup(batch.mean_kv))
 
 Output: ``<variant>/tp<N>/skew.csv`` with per-case columns
-``layer, regime, n, nb, ratio, skew, pc, kp, kvs, kv_big, kv_mean,
-t_mean_us, t_max_us, t_skew_us, alpha``.
+``layer, requests_json, decode_q_len, regime, n, nb, ratio, skew, pc,
+kp, kvs, kv_big, kv_mean, t_mean_us, t_max_us, t_skew_us, alpha, case_id``.
 
 One row **per attention-category layer per case**. A sparse-attention model has
 several kernels in that category and they do not share an alpha: MiniMax-M3's
@@ -31,19 +33,17 @@ alpha everywhere -- on M3 that is an alpha fitted on 3 of 60 layers.
 
 Downstream pipeline:
 
-  * ``fit_alpha`` reads each TP's skew.csv and fits per-cell medians on
-    (n, pc, lev), with a pooled per-kernel WLS fallback.
-  * ``writer.persist_meta`` spills the fitted (bucket → alpha) table
-    to ``<variant>/tp<N>/skew_fit.csv`` and records only a per-TP
-    summary + the derived ``bucket_axes`` under
-    ``meta.yaml::skew_fit``.
-  * At query time the simulator reads ``bucket_axes`` from meta.yaml
-    and reconstructs the same bucket key for whatever runtime batch
-    it's evaluating.
+  * ``skew_calibration`` recomputes runtime references and fits weighted
+    medians at supported N anchors within each kernel/query/pc/lever slice.
+  * ``writer.persist_meta`` saves compact cells to ``skew_fit.csv`` and
+    identity, reference fingerprints, axes and fallbacks to ``meta.yaml``.
+  * The simulator validates and loads this table once, then picks a bucket
+    without fitting, neighbor interpolation or file access inside the loop.
 """
 from __future__ import annotations
 
 import os
+import json
 import time
 import tempfile
 from dataclasses import dataclass
@@ -423,6 +423,8 @@ def _measure_case(llm, case: SkewCase, slice_, iters: int,
         alpha = (t_skew - t_mean) / gap if usable else float("nan")
         rows.append({
             "layer": layer,
+            "requests_json": json.dumps(skew_reqs, separators=(",", ":")),
+            "decode_q_len": 1,
             "regime": "pure" if case.pc == 0 else "mixed",
             "n": case.n, "nb": case.nb,
             "ratio": round(case.nb / case.n, 4),
@@ -440,26 +442,19 @@ def _measure_case(llm, case: SkewCase, slice_, iters: int,
 # Public API
 # ---------------------------------------------------------------------------
 
-def _case_key(case: SkewCase) -> tuple:
+def _case_key(case: SkewCase) -> str:
     """Identity key for delta/resume matching against an existing CSV."""
-    return (case.n, case.nb, round(case.skew, 3), case.pc, case.kp, case.kvs)
+    from profiler.core.skew_calibration import measurement_shape
+    return measurement_shape(vars(case))[4]
 
 
-def _existing_keys(csv_path: Path) -> set[tuple]:
+def _existing_keys(csv_path: Path) -> set[str]:
     """Keys already present in ``skew.csv`` (empty set if missing)."""
     if not csv_path.exists():
         return set()
-    try:
-        df = pd.read_csv(csv_path)
-    except Exception:
-        return set()
-    keys: set[tuple] = set()
-    for _, r in df.iterrows():
-        keys.add((
-            int(r["n"]), int(r["nb"]), round(float(r["skew"]), 3),
-            int(r["pc"]), int(r["kp"]), int(r["kvs"]),
-        ))
-    return keys
+    from profiler.core.skew_calibration import measurement_shape
+    df = pd.read_csv(csv_path).fillna("")
+    return {measurement_shape(row)[4] for row in df.to_dict("records")}
 
 
 def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
@@ -493,9 +488,10 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     # Put it first, so the file reads layer-major like skew_fit.csv.
     df = df[["layer"] + [c for c in df.columns if c != "layer"]]
     # Keep the latest measurement for any repeated key.
-    df = df.drop_duplicates(
-        subset=["layer", "n", "nb", "skew", "pc", "kp", "kvs"], keep="last",
-    ).reset_index(drop=True)
+    from profiler.core.skew_calibration import measurement_shape
+    df["case_id"] = [measurement_shape(row)[4]
+                     for row in df.fillna("").to_dict("records")]
+    df = df.drop_duplicates(subset=["layer", "case_id"], keep="last").reset_index(drop=True)
     # Keep the previous checkpoint intact if serialization is interrupted.
     with tempfile.NamedTemporaryFile(dir=csv_path.parent,
                                      prefix=csv_path.name + ".", suffix=".tmp",

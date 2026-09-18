@@ -1,6 +1,6 @@
 """CLI entry point: ``python -m profiler ...``.
 
-Three subcommands:
+Profiling subcommands:
 
     profile <model> --hardware <hw> [options]
         Full sweep: every TP × every category.
@@ -15,6 +15,12 @@ Three subcommands:
         still measure nothing, because vLLM's profile tree only holds
         modules that launch a kernel of their own, and reading the module
         tree cannot tell you which those are.
+
+Offline calibration:
+
+    refit-skew <model> --hardware <hw> [--tp N]
+        Compile existing skew measurements against local attention references
+        without starting vLLM or using a GPU.
 
 Model resolution
 ----------------
@@ -63,7 +69,6 @@ from profiler.core.config import (
     read_model_config,
     resolve_architecture_by_model_type,
 )
-from profiler.core.runner import run_coverage, run_full, run_slice
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +534,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    p_refit = sub.add_parser("refit-skew", help="Rebuild skew calibration from measured CSVs without a GPU.")
+    p_refit.add_argument("model", help="HF model id with a local config and profile bundle.")
+    p_refit.add_argument("--hardware", required=True)
+    p_refit.add_argument("--variant", default=None)
+    p_refit.add_argument("--tp", default=None, help="Comma-separated TP degrees; default: every measured TP.")
+    p_refit.add_argument("--out", default="profiler/perf", dest="out_root")
+    p_refit.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+
     # ---- profile ----
     p_profile = sub.add_parser(
         "profile",
@@ -611,6 +624,26 @@ def main(argv: list[str] | None = None) -> int:
 
     log.configure(_resolve_log_level(ns))
 
+    if ns.cmd == "refit-skew":
+        from profiler.core.skew_calibration import rebuild_bundle
+        from serving.core.trace_generator import resolve_variant
+        config = json.loads((Path(__file__).resolve().parents[1]/"configs/model"/
+                             (ns.model+".json")).read_text())
+        variant = ns.variant or resolve_variant(config)
+        root = Path(ns.out_root)/ns.hardware/ns.model/variant
+        with (root/"meta.yaml").open() as stream:
+            import yaml
+            meta = yaml.safe_load(stream)
+        if any(meta.get(k) != v for k, v in
+               (("model", ns.model), ("hardware", ns.hardware), ("variant", variant))):
+            raise ValueError("Requested profile identity does not match meta.yaml")
+        tps = None if ns.tp is None else [int(v) for v in ns.tp.split(",")]
+        if tps is not None and (not tps or any(tp < 1 for tp in tps)):
+            raise ValueError("TP degrees must be positive integers")
+        fit = rebuild_bundle(root, config, tps)
+        log.info("Rebuilt skew calibration for TP degrees %s", sorted(fit["per_tp"]))
+        return 0
+
     # `hardware` characterises the machine, not a model, so it runs before any
     # of the model-config resolution below -- it takes no model argument.
     if ns.cmd == "hardware":
@@ -619,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
         _, measured = run_hardware(ns.hardware, Path(ns.out_root),
                                    npus=ns.hw_npus)
         return 0 if measured else 1
+
+    from profiler.core.runner import run_coverage, run_full, run_slice
 
     # 1. Locate the model's HF config.json.
     model_config_path, hf_id = _resolve_model(ns.model, ns.model_config_root)

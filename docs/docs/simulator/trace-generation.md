@@ -82,8 +82,8 @@ On first load, the simulator also:
    `--max-num-batched-tokens` and `--max-num-seqs` against the
    profiled sweep bounds. If you exceed them, you get a one-shot
    warning that lookups will **extrapolate** rather than clamp.
-2. Hydrates the skew_fit table (`alpha_by_bucket` map) from
-   `skew_fit.csv`.
+2. Validates and hydrates versioned skew calibration from `skew_fit.csv`.
+   Legacy unversioned bundles retain their `alpha_by_bucket` lookup.
 
 ## Per-category lookup
 
@@ -152,52 +152,45 @@ same folder.
 
 ## Heterogeneous-decode skew correction
 
-FlashAttention's varlen kernel pays tile-padding and SM-imbalance
-costs when a decode batch has non-uniform KV lengths. The plain
-attention grid can't see that, it's profiled with uniform
-`kv_decode` per shot. So the profiler runs a **second sweep** on
-bimodal batches (`skew.csv`) and fits a per-bucket
-**alpha** that says how far along the mean→max line a skewed batch
-lands:
+The uniform attention grid uses one decode-history length per shot.
+Heterogeneous histories can change latency, so the skew profiler measures
+those batches separately. The default offline compiler fits corrections
+against the same mean/max **lookup references** that serving will use:
 
-```
-alpha = (t_skew - t_mean) / (t_max - t_mean)
+```text
+t_attention = t_mean_lookup + alpha * (t_max_lookup - t_mean_lookup)
 ```
 
-At runtime, `_lookup_attention_with_skew` looks the batch up at its
-`kv_decode_mean` and blends toward a second lookup at `kv_decode_max`:
+The ordinary attention table, interpolation and query-weighted prefill
+coordinate are unchanged. Pure prefill, one decode or uniform decode bypass
+skew correction. For heterogeneous decode, both endpoints are needed to
+compute the lever before choosing alpha, even when that alpha is zero.
 
-```
-t_attention = t_mean + alpha * (t_max - t_mean)
-```
+New fits partition by kernel, decode query length, prefill-token bucket and
+relative endpoint gap `lev = (t_max - t_mean) / t_mean`. Within a partition,
+only sufficiently supported measured N values become anchors. Runtime picks
+the nearest anchor on a log scale; exact midpoint ties go to the smaller N.
+There is no interpolation between alpha cells.
 
-The second lookup only happens when a non-zero alpha applies. A batch
-with one decode, or with every decode at the same length, or resolving
-to `alpha = 0`, returns `t_mean` directly.
+N is support-adaptive; prefill/lever bins remain fixed and are stored in
+metadata. Missing cells or out-of-range N use the same kernel/query pooled
+fallback. A missing kernel/query fit means zero correction. There is no
+model-specific fallback selection.
 
-The bucket key is built from three axes, plus the kernel:
-`[{layer}|]{n_label}|{pc_label}|{lev_label}`
+At profile load time, serving checks the bundle identity, attention and
+fitted-table checksums, reference lookup fingerprint and saturation semantics.
+A stale fit raises with instructions to run `profiler refit-skew`. After
+loading, lookup is an in-memory partition selection and binary search;
+it never refits or searches raw measurements in the simulation loop.
 
-- `n_label`: the batch size, one bucket per profiled `n` split at the
-  geometric midpoints — so a runtime `n` reads the nearest profiled size on a
-  log scale. It cannot be coarsened: alpha differs 2.1–2.5× between two
-  adjacent profiled sizes, and a run never schedules past `max_num_seqs`, so a
-  bucket spanning two of them averages in a regime the runtime cannot enter.
-- `pc_label`: the prefill chunk, four coarse bins (`pc0` / `pcS` / `pcM` /
-  `pcL`). Alpha's dependence on it is a single step at `pc = 0 → pc > 0`.
-- `lev_label`: `(t_max - t_mean) / t_mean`, the endpoint gap in units of the
-  batch's own cost. It costs nothing here — both lookups are already done
-  before an alpha is needed.
+Unversioned bundles retain their legacy lookup until rebuilt. Skipping skew
+acquisition does not remove an existing calibration; a bundle with no enabled
+fit uses zero correction. Neither endpoint reduction nor these empirical
+buckets uniquely describe all request distributions, so validate changes
+against all reported `bench/examples` statistics.
 
-`n`'s edges are derived from the sweep and live in
-`meta.yaml::skew_fit.bucket_axes`, so a wider profile lights up finer
-resolution without any simulator code change.
-
-If the skew sweep wasn't run (`SKIP_SKEW=1` at profile time), the
-simulator applies **no** correction (`alpha = 0`, i.e. `t_mean`).
-Profile skew if you need it. The profile angle
-of skew correction is documented on
-**[Profiler → Skew & alpha fit](/docs/profiler/skew-alpha-fit)**.
+See [Profiler → Skew & alpha fit](/docs/profiler/skew-alpha-fit) for the
+weighted-median objective, data contract, CPU-only rebuild and limitations.
 
 ## Walking the architecture YAML
 

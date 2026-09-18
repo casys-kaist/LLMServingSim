@@ -1,446 +1,192 @@
 ---
-sidebar_position: 4
-title: Skew & alpha fit
+sidebar_position: 5
+title: Skew & Alpha Fit
 ---
 
 # Skew & alpha fit
 
-The uniform attention sweep (`attention.csv`) profiles batches where
-all decodes share one KV length. Real serving doesn't look like
-that, every iteration mixes long-running requests at high KV with
-freshly-arrived ones at low KV. A varlen kernel's latency can change with
-that distribution even when total KV is unchanged. The change can have
-either sign; it is not necessarily a penalty bounded by uniform-max.
+Skew calibration corrects the uniform attention table for heterogeneous decode
+histories. It does not replace `attention.csv`, change attention interpolation,
+or fit benchmark request latencies. The default profiler compiles a small
+lookup table offline; simulation only selects an already fitted bucket.
 
-The skew sweep + alpha fit approximates that distribution-dependent change.
+Existing unversioned bundles retain their legacy lookup until explicitly
+rebuilt. New fits use `runtime-skew-calibration-v1`. Rebuilding a bundle changes
+simulation results; it is not an accuracy guarantee.
 
-## The problem in one picture
+## Measurements and lookup references
 
-```mermaid
-flowchart LR
-    UNIFORM["Uniform decode batch<br/>4 reqs × kv=2000"] --> T1["t = 38 µs"]
-    SKEWED["Skewed decode batch<br/>3 × kv=500 + 1 × kv=6500"] --> T2["t = 47 µs"]
-    UNIFORM2["Uniform decode batch<br/>4 reqs × kv=6500"] --> T3["t = 52 µs"]
+The built-in skew sweep still measures bimodal decode batches, with uniform
+mean and maximum controls at the same prefill geometry. Each attention-category
+kernel has its own row and measured `t_skew_us`. Control timings and their raw
+`alpha` remain diagnostic measurements and are never overwritten by estimates.
+
+The default fit instead reconstructs the requests and computes both references
+through the **same attention lookup used by serving**:
+
+```text
+m = attention_lookup(batch with uniform mean decode history)
+M = attention_lookup(batch with uniform maximum decode history)
+g = M - m
+a = (measured_skew_time - m) / g
+predicted_time = m + fitted_alpha * g
 ```
 
-Three batches with the same `n=4` decodes and the same **mean** KV
-of 2000 (left and middle) or **max** KV of 6500 (middle and right).
-The middle batch's latency lands between the two uniform reference
-points, but where, exactly, depends on how skewed the KV
-distribution is.
+This matters because measured controls and interpolated table references need
+not agree. A coefficient fitted against one pair cannot be assumed to
+compensate the other. Prefill coordinates use the shared query-weighted helper,
+including catalog-specific prefill key saturation. Decode references retain
+the runtime lookup's history semantics.
 
-These timings are schematic, not benchmark measurements.
+Both references must have an exact attention `layer` and `decode_q_len`
+slice. Offline fitting refuses to substitute another query length.
 
-The naive interpolation `t = t(mean_kv)` underestimates the skewed
-case (38 µs predicted vs. 47 µs actual). Using `t(max_kv)` would
-overestimate (52 µs vs. 47 µs).
+### Raw shape contract
 
-## The fix: blend toward a second lookup using a per-bucket alpha
+New `skew.csv` rows carry `requests_json`: an ordered list of
+`[query_tokens, computed_history_tokens]` pairs, plus `decode_q_len`.
+At query length one, requests are classified with the same shared helper as
+serving; one-query prompt tails count as decode for this lookup.
+Multi-query rows additionally require `n_prefill`, an explicit role boundary.
+The compiler accepts such rows but the built-in skew sweep currently emits
+query length one only.
 
-For every shape of skewed batch, we measure the actual latency
-**plus** what the uniform-mean and uniform-max latencies would be at
-the same shapes. Three numbers per shot:
-
-| Symbol | Batch shape |
-| --- | --- |
-| `t_mean` | Same `n`, all decodes uniform at the batch's **mean** kv |
-| `t_max` | Same `n`, all decodes uniform at the batch's **max** kv |
-| `t_skew` | The actual bimodal mix: `nb` decodes at `kv_big` + `(n - nb)` decodes at `kvs` |
-
-From these three:
-
-```
-alpha = (t_skew - t_mean) / (t_max - t_mean)
-```
-
-Alpha is a **normalized position on the t_mean → t_max line**:
-
-- `alpha = 0` → no penalty; skewed batch behaves like uniform-mean.
-- `alpha = 1` → full penalty; skewed batch behaves like uniform-max.
-
-For ordinary dense kernels, `t_max > t_mean` is required; otherwise alpha is
-recorded as `nan` and excluded from fitting. Saturating sparse kernels also
-retain negative gaps. An exactly zero gap cannot define the ratio.
-
-:::info[Raw alpha is not clamped to [0, 1]]
-The name says "normalized", but nothing bounds the ratio, and the
-measured data lands outside `[0, 1]` regularly. Across the six bundles
-in `profiler/perf/`, per `skew.csv`:
-
-| | range |
-| --- | --- |
-| p50 | 0.07 – 0.13 |
-| p90 | 0.46 – 0.96 |
-| rows with `alpha < 0` | 14 – 20 % |
-| rows with `alpha > 1` | 2 – 5 % |
-
-The two tails can include both real distribution effects and measurement noise:
-
-- **`alpha < 0`** can result from the endpoint gap sitting inside
-  measurement noise. A shot with `t_mean = 941.7 us` and
-  `t_max = 946.6 us` has a 4.9 us gap on a ~940 us baseline, so a
-  `t_skew` 10 us below `t_mean` reads as `alpha = -2.16`. The
-  magnitude is an artifact of dividing by a small number; the
-  underlying signal may be "no measurable penalty". But a negative alpha
-  must not automatically be dismissed: distribution-dependent kernel work
-  can also make a skewed batch faster than its uniform-mean control.
-  Use repeated paired measurements to distinguish that from noise.
-- **`alpha > 1` can be real.** A skewed mix can genuinely cost more than
-  *either* uniform reference, because tile padding and SM imbalance
-  are not bounded by the uniform-max case. The largest row in the
-  Qwen3-32B TP=1 bundle is `n=32, pc=2048, kv_big=16384, kvs=4096`
-  at `t_mean = 19.1 ms`, `t_max = 19.3 ms`, `t_skew = 24.5 ms` -
-  5.2 ms above uniform-max, so `alpha = 19.4`.
-
-Nothing clamps a `skew.csv` row: the column keeps the `-2.16` and the
-`19.4`, because both are measurements. What the *fit* applies is a sanity clip
-on the constant a cell resolves to, `_ALPHA_CLIP = (-0.2, 1.0)`.
-This is a development-set regularizer, not a physical bound or evidence
-that every cell outside it is noise. Repeated measurements are needed to
-separate noise from real out-of-range regimes.
-
-Inside a cell the constant is the **median** of its rows' alphas, and that is
-less sensitive to isolated extreme alpha values than a mean. However,
-small-gap rows still count toward the median, and distinct shapes are not
-independent repeated measurements of one operating point.
-:::
-
-At simulation time, the lookup becomes:
-
-```
-t_predicted = t_mean_lookup(batch.kv_decode_mean)
-            + alpha(batch.shape) × (t_max_lookup(batch.kv_decode_max)
-                                    - t_mean_lookup(batch.kv_decode_mean))
-```
-
-That's `_lookup_attention_with_skew` in
-`serving/core/trace_generator.py`. It looks the batch up at its mean
-decode kv and blends toward a second lookup at the max only when a
-non-zero alpha applies -- otherwise the mean lookup is returned as is.
+Legacy bimodal rows are reconstructed from their original shape columns.
+General distributions must include the complete request list; mean/max
+summaries cannot recover their geometry. One observation per kernel, query
+length and ordered case is required. Summarize repeated measurements before
+fitting. Resume deduplicates by this geometry, not by absent bimodal fields.
 
 ## Sweep structure (`skew.csv`)
 
-The skew sweep produces `skew.csv` rows in two tiers:
+The existing two-tier sweep is retained:
 
-### Tier 1, factorial over (n, ratio, pc, kp, kvs)
+- Tier 1 varies decode count, big-decode fraction, prefill chunk, prefill
+  history and small-decode history at a representative skew ratio.
+- Tier 2 varies the skew ratio at selected anchor shapes.
 
-A factorial sweep at one representative skew factor (`_SKEW_REP =
-4.0`). Provides the bulk of the rows, and covers the `(n, pc, lev)` cells the
-fit discriminates on — `lev` comes out of each row's own two timings, so the
-sweep populates it by varying `kvs` and `ratio` rather than by having an axis
-for it.
+The geometric grid follows configured sequence, token and context bounds.
+Use `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor` and
+`--skew-kvs-factor` to change sampling density. See
+[Running the profiler](./running). More points do not automatically give a
+better fit, and bimodal coverage is not coverage of all request distributions.
 
-Per axis:
-
-- `n` ∈ unique values up to `MAX_NUM_SEQS`
-- `ratio = nb / n` ∈ a few sample fractions
-- `pc` ∈ prefill chunk grid (including 0 = pure decode)
-- `kp` ∈ prefill-history grid
-- `kvs` ∈ small-kv grid
-- `skew` = 4.0 (fixed)
-
-### Tier 2, skew-axis sweep at anchor pivots
-
-At a handful of anchor pivots (a fixed subset of Tier-1 cells), Tier
-2 sweeps `skew ∈ {1.5, 2.0, 4.0, 8.0, 16.0}`. This is the only
-source of rows with `skew ≠ 4.0`; covers how `alpha` saturates as
-the outlier KV stretches.
-
-Tier 2 catches the "very long context decode joins a short-context
-batch" failure mode that Tier 1 alone would miss.
-
-## Density knobs
-
-Each case must fit all three measurements. The memory check uses the engine's
-resolved KV block size and budgets every decode at `kv_big + 1` for the
-uniform-max control, plus any prefill. Context limits also reserve the token
-needed by sampling. A heterogeneous shot fitting by itself is not sufficient.
-
-During resume, `skew.csv` is written to a temporary file, flushed and atomically
-replaced. A failed serialization leaves the previous checkpoint intact; an
-unreadable existing CSV raises an error instead of silently losing its rows.
-`--force` remains an explicit reset of the prior sweep.
-
-Four of the five *sweep* axes are user-controllable via per-axis geometric
-factors in `profile.sh` (defaults `2.0` = doubling). `ratio` has no factor: it
-is a unitless shape fraction rather than a scale, so a geometric coarsening of
-it would not mean anything.
-
-| Variable | Axis | Profiling time impact |
-| --- | --- | --- |
-| `SKEW_N_FACTOR` | `n` | doubling halves the shots |
-| `SKEW_PC_FACTOR` | `pc` | same |
-| `SKEW_KP_FACTOR` | `kp` | same |
-| `SKEW_KVS_FACTOR` | `kvs` | same |
-
-The skew sweep fires **3 shots per case** (`t_mean`, `t_max`,
-`t_skew`), so coarsening compounds across axes. Geometric point counts scale
-approximately as `1 / log(factor)`: changing 2 to 4 roughly halves the
-interior points on one axis, not quarters them. Bounds, rounding and
-feasibility filters determine the actual count.
-
-The effective values land in `meta.yaml::skew_profile.factors`.
+Every case must fit the actual resolved KV block size, sequence and token
+limits, and cache capacity. Capacity checks include the **largest uniform
+control**, newly scheduled tokens and the sampler's context-boundary reserve.
+Checkpoints use temporary files, fsync and atomic replacement. Corrupt prior
+CSV files raise rather than being silently replaced.
 
 ## The fit (`skew_fit.csv`)
 
-Raw `skew.csv` rows are too granular to query at runtime, thousands
-of `alpha`s, none of which match a runtime batch shape exactly. The
-post-process groups rows into **cells** along three axes and takes the
-**median** of each cell's per-row alphas.
+Fits are separated by hardware, model, variant, TP, attention kernel and
+decode query length. Within each kernel/query slice:
 
-### The 3-axis bucket key
+1. Partition by prefill-token count `pc` and relative endpoint gap
+   `lev = (M - m) / m`.
+2. A measured decode count `n` becomes an anchor only when it has at least
+   `MIN_ROWS` distinct cases **in that partition**.
+3. Pool observations at unsupported counts into the nearest supported anchor
+   on a logarithmic scale. Supported anchors are not merged with one another.
+4. Fit a weighted median in each resulting cell, then clip the fitted value.
 
-Four, counting the kernel. Every key carries a `{layer}|` prefix naming which
-attention-category kernel it was fitted on, and the fit runs **per kernel**.
-That is not bookkeeping: a sparse-attention model puts two or three genuinely
-different kernels in this category and their alphas disagree in sign. On the
-same MiniMax-M3 batch the fit gives 0.24 for `attention`, **0.74** for
-`indexer` — it scores the whole KV before the top-k, so it is the most
-skew-sensitive thing in the model — and **-0.01** for `sparse_attention`, whose
-block budget caps its work so its cost stops tracking kv length at all. Pooling
-those into one alpha describes none of them.
+Sparse new `n` values therefore do not insert unsupported boundaries into all
+other partitions. Runtime bucket selection uses the same geometric midpoints;
+an exact tie selects the smaller anchor. This is picking, not interpolation
+between neighboring alpha values.
 
-| Axis | Bucket scheme |
-| --- | --- |
-| `layer` | The kernel, verbatim (`attention`, `sparse_attention`, `indexer`, …) |
-| `n_label` | One bucket per profiled batch size, split at the **geometric midpoints** so a runtime `n` reads the nearest profiled size on a log scale: `n=2`, `n=4`, `n=8`, `n=16`, `n=32`, `n=64`, `n=128`, `n=256`, `n>256` |
-| `pc_label` | Four coarse bins on the prefill chunk: `pc0`, `pcS` (≤256), `pcM` (≤1024), `pcL` |
-| `lev_label` | Five fixed bins on `lev = (t_max - t_mean) / t_mean`, the endpoint gap in units of the batch's own cost: `lev0` (≤0.25), `lev1` (≤0.75), `lev2` (≤1.5), `lev3` (≤3.0), `lev4` |
+Only the `n` axis is support-adaptive. Prefill and lever bins remain fixed and
+are persisted with the fit. Defaults and support thresholds live in
+`profiler/core/skew_calibration.py`; they are common to all hardware and models,
+not workload-specific coefficients.
 
-These are the **literal strings** the fitter writes and the simulator
-rebuilds, joined into `[{layer}|]{n_label}|{pc_label}|{lev_label}`, so they
-have to match character for character. `n`'s edges depend on what the sweep
-fired, which is why the simulator reads all three axes out of
-`meta.yaml::skew_fit.bucket_axes` rather than hardcoding them.
+### Why a weighted median?
 
-`lev` is the axis that replaced three of the old five. It is not swept: it is
-derived from each row's own two timings, and the simulator has both lookups in
-hand before it needs an alpha — so it is free at both ends, and it already
-summarizes endpoint separation. It does not uniquely encode the distribution:
-different KV lists with the same mean and max have identical `lev`.
+For one measured case with positive latency `y`:
 
-### Why these three
+```text
+abs(predicted_time - y) / y
+  = abs(g) / y * abs(fitted_alpha - a)
+```
 
-The axes were chosen by running **every subset of six candidate axes end to
-end** — 64 of them across the three committed bench examples, scored on all 15
-metrics (TTFT / TPOT / latency × mean / p50 / p90 / p95 / p99). Summed
-mean \|err\| over the three examples:
+Therefore a weighted median of per-case `a`, with weight `abs(g) / y`,
+minimizes the sum of absolute relative **profile-latency** errors in that
+cell. It is not a neural predictor, a confidence interval, or a guarantee
+about end-to-end benchmark errors. The clip is regularization, not a physical
+bound. Raw measured values remain unchanged.
 
-| Key | Summed mean \|err\| |
-| --- | --- |
-| `n \| pc \| lev` | **4.35** ← chosen |
-| `n \| pc \| disp` | 4.43 |
-| `n \| pc` | 4.55 |
-| `n \| pc \| kp` | 4.82 |
-| `pc(raw) \| n \| skew_rate \| kv_big \| kp` | 7.51 ← the previous scheme |
-| `lev` alone | 8.5 |
+Dense kernels omit nonpositive reference gaps. Catalog-declared
+key-saturating kernels also accept negative gaps; zero gaps cannot define a
+coefficient.
 
-This search favored dropping `kv_big`, dispersion and `skew_rate` on its
-development workloads; it does not show that those quantities are redundant
-in other distributions. Only the additive part of prefill cost cancels in
-alpha. Mixed-kernel occupancy interactions can still depend on history.
-Across the 470 mixed development batches, history's median was **0**.
+### Fallbacks
 
-Read that table for the *ranking*, not as a clean 3-vs-5 measurement: every
-arm of it ran at the coarse `n` bins the section below replaces, so it ranks
-axis sets under a defect all of them shared.
+An unsupported partition or a decode count outside the measured range uses
+the same kernel/query slice's pooled least-squares fallback. That fallback is
+not clipped. No fitted kernel/query slice means zero correction: there is no
+borrowing across models, hardware, TP, kernels or query lengths.
 
-### The previous five axes could not be hit at runtime
+Pure prefill, a single decode and uniform decode retain the existing bypass.
+That does not establish that their underlying attention lookup is exact.
 
-That is the sharper statement, and it does not depend on the end-to-end score.
-The five-axis key splits one sweep's 13,476 rows into **1,554 cells**, and the
-cells real batches actually land in hold **2 to 5 rows each**. The three-axis
-key makes **117 cells** from the same rows, and the ones real batches land in
-hold **8 to 171**. So the old key has no usable setting:
+### Storage and stale-data checks
 
-| Keying | Cells hit by a real batch | p50 of \|err\|, Llama / Qwen3-32B | Lever-weighted \|err\| |
-| --- | --- | --- | --- |
-| `n \| pc \| lev` (this one) | **73% / 66%** | **1.6% / 3.1%** | **1.2% / 1.7%** |
-| the five, with the 20-row floor | **0% / 0%** | 1.5% / 5.3% | 2.5% / 5.1% |
-| the five, with no floor (what shipped) | 88% / 90% | 4.9% / 9.5% | 3.8% / 6.3% |
-| no cells at all — the pooled constant | — | 1.5% / 5.3% | 2.5% / 5.1% |
+`skew_fit.csv` stores:
 
-Given a support floor the five-axis table is **numerically identical to having
-no table**: not one of the 1,084 measured batches reaches a cell with 20 rows
-behind it. Given no floor — which is what actually shipped, since the previous
-fit had neither a floor nor a clip — it hits, but reads a cell fitted on two to
-five shots, and its per-batch error is 3x the current one.
+```text
+layer,decode_q_len,pc_label,lev_label,n_anchor,alpha,direct_rows,pooled_rows
+```
 
-This is scored per batch rather than per cell, deliberately. Weighting cells by
-a key the scheme itself defines rewards a finer key for having almost nothing
-to score; joining on the batch does not. Each measured batch carries its own
-`t_mean` / `t_max` / `t_skew`, so its true alpha and its lever in ms are known
-without any key matching at all.
+`meta.yaml::skew_fit.per_tp[tp]` stores the schema, identity, axes, support
+threshold, clipping range, per-kernel/query fallback and measured range, plus
+the table path and checksums. The reference records the source attention CSV,
+raw skew CSV, lookup implementation and key-saturation semantics.
 
-One honest wrinkle: on Llama the pooled constant's *per-batch median* (1.5%)
-edges out the fitted table's (1.6%), while the lever-weighted measure prefers
-the table two to one. That is the same concentration noted below — one cell
-carries half of that run's whole skew lever — so the two statistics genuinely
-disagree there. On Qwen3-32B the table wins on both.
+At load time the simulator validates the attention data, lookup implementation,
+fitted table, profile identity and saturation contract. A mismatch raises and
+requests a rebuild; it does not silently use an obsolete fit. Raw skew data is
+needed for rebuilding, not per-batch execution.
 
-:::note[The median, not a weighted least-squares fit]
-WLS is the right objective when the noise on `dts = t_skew - t_mean` is
-homoscedastic, because the charged error is `(a - a*) * dtm`. But `dts` is a
-difference of two nearly-equal measurements, so its noise scales with `t_mean`
-and weighting by `dtm²` over-trusts the few largest-gap rows — exactly where
-one noisy shot dominates. Measured both ways through the whole pipeline, the
-median wins on the sweep's own rows (Llama-3.1-8B `rel_err_p50`
-0.0588 → 0.0308) *and* end to end.
-
-That A/B held the axes fixed and swapped only the estimator, and it predates
-the `n` fix below — so neither number is the shipped self-eval, which is
-0.0259. See the accuracy table.
-:::
-
-### Why the default keeps profiled `n` values separate
-
-In the development measurements, alpha differed **2.1–2.5×** between two adjacent profiled batch sizes, measured
-at 42 coordinates with `nb` / `skew` / `kvs` held identical:
-
-| | alpha at n=128 | alpha at n=256 |
-| --- | --- | --- |
-| Llama-3.1-8B TP=1 | 0.0531 | 0.0215 |
-| Qwen3-32B TP=2 | 0.1119 | 0.0537 |
-
-Every one of the 42 pairs has the same sign. And a run never schedules past
-`max_num_seqs`, so a bucket spanning 128 and 256 charges real batches the
-average of their own regime and one they can never enter. On Llama that cell
-held 38 rows at n=128 (median 0.0589) and 37 at n=256 (0.0219), and its pooled
-median came out **0.0258** — against the **0.0539** measured on 224 of the
-run's own n=128 batches.
-
-Scored against 1,084 batches measured on the live engine, the lever-weighted
-alpha residual is **1.77%** of the two dense examples' spans with the sizes
-pooled, against **0.21–0.26%** with one bucket per profiled size.
-
-`pc` and `lev` are the other direction. Alpha's dependence on `pc` is a single
-step at `pc = 0 → pc > 0` (Qwen3-32B 0.0674 against 0.023–0.026) and flat
-above it, so swept at 2 / 3 / 4 / 5 / 6 / 8 bins and at
-one-per-profiled-value the residual reads 0.71 / 0.49 / **0.51** / 0.50 / 0.48
-/ 0.50 / 0.57% — the middle five are indistinguishable, and only one bin
-(which loses the step) and one-per-value (which starves the cells) are worse.
-Splitting `lev` finer only divides the support the same way.
-
-These observations motivate the current defaults, not a proof that coarsening
-is always wrong or that finer axes can never help. Support, dispatch boundaries
-and the validation distribution determine that tradeoff for a new profile.
-
-An unfitted cell — fewer than 20 rows — falls back to
-`alpha_default_by_layer[layer]`, that kernel's own pooled constant, and cells
-that are written are clipped to `[-0.2, 1.0]`. It never falls back across
-kernels, and a kernel with no skew data at all gets **no correction** — the
-same behaviour as `SKIP_SKEW=1`, for the same reason: the endpoint gap is a
-large fraction of an iteration, so a borrowed alpha is worse than none.
-
-### Storage
-
-- `skew_fit.csv`: the full per-cell alpha mapping, columns
-  `layer, n_label, pc_label, lev_label, alpha, n_samples`. 74–109 rows for the
-  bundled sweeps. The RTX 4090 bundle carries one too, kept in the same
-  format, but its `meta.yaml` sets `skew_fit.enabled: false` — so the
-  simulator never reads it and that configuration runs with no skew
-  correction at all.
-- `meta.yaml::skew_fit.per_tp[tp]`: summary per TP:
-  `method`, `n_samples`, `alpha_default`, `alpha_default_by_layer`,
-  `rel_err_p50/p90/p99`, `signed_mean`, plus a `bucket_table` pointer at
-  `tp<N>/skew_fit.csv`.
-
-This split keeps `meta.yaml` to ~100 lines per variant instead of
-~3000+.
-
-### Fit accuracy on the bundled profiles
-
-Self-evaluation over each sweep's own rows — the fitted alpha against the
-measured one, scored the way the simulator will use it:
-
-| Bundle | TP | n_samples | rel_err_p50 | rel_err_p90 | rel_err_p99 |
-| --- | --- | --- | --- | --- | --- |
-| Llama-3.1-8B bf16 | 1 | 13,476 | 2.6% | 12.6% | 35% |
-| Llama-3.1-8B bf16 | 2 | 13,302 | 2.6% | 13.2% | 35% |
-| Qwen3-32B bf16 | 1 | 13,489 | 2.1% | 10.1% | 33% |
-| Qwen3-32B bf16 | 2 | 13,469 | 2.5% | 12.2% | 39% |
-| Qwen3-30B-A3B bf16 | 1 | 13,456 | 2.4% | 11.7% | 38% |
-| Qwen3-30B-A3B bf16 | 2 | 13,271 | 2.5% | 12.6% | 38% |
-| DeepSeek-V3.2-Exp fp8 | 1 | 62,996 | 0.4% | 13.3% | 41% |
-
-:::caution[The self-eval got worse on purpose, and it is not an accuracy claim]
-These numbers roughly **doubled** with this keying, and that is the point. The
-previous fit wrote a cell for every distinct 5-axis coordinate with no support
-floor at all — 3,952 to 21,665 cells over the same rows, i.e. **2.9 to 3.4
-rows per cell** — so its `rel_err_p50` of 0.011–0.013 was measuring
-memorisation. This one writes 75–109 cells at **175 to 578 rows each**, with a
-20-row floor, and reads 0.021–0.026.
-
-| | previous | now |
-| --- | --- | --- |
-| cells (Llama-3.1-8B TP=1) | 3,984 | 77 |
-| rows behind each cell | 3.4 | 175 |
-| `rel_err_p50` | 0.0126 | 0.0259 |
-| lever-weighted residual on 1,084 development batches | 1.77% | 0.21–0.26% |
-
-Fit residuals score the rows used for fitting; neither they nor the development
-comparison above establish generalization. Independent validation needs
-untouched measurements: fire the batches a real run actually built, at their
-exact KV lists, and compare. Three steps, and the
-DEBUG `skew ...` line exists to make the first one possible — parse a
-`--log-level DEBUG` sim log into a shots file for every corrected batch, fire
-each on the live engine three ways exactly as `skew.py` defines them, and
-weight each cell's error by the time the run puts through it. That last step
-matters: on Llama-3.1-8B one cell carries 50% of the run's whole skew lever, so
-a per-cell average is not the same statement. And a 20-batch ground truth is
-not enough — it ranked two candidate keyings 2.34% / 0.25%, 209 batches said
-0.77% / 0.52%, and the 1,084 measured development shapes gave the answer the
-code now carries. They sampled every fourth generated shape and were used in
-selection; a new untouched workload split is required for a final claim.
-:::
+The simulator hydrates cells once. Runtime lookup uses a partition lookup and
+binary search over its `n` anchors; there is no fit, neighbor search over
+measurements, or file access in the batch loop.
 
 ## Skip / refresh modes
 
-| Variable | Effect |
-| --- | --- |
-| `SKIP_SKEW=1` | Skip the entire skew step. No `skew.csv` or `skew_fit.csv` produced. The simulator then applies **no skew correction** (`alpha = 0`) |
-| `ONLY_SKEW=1` | Run only the skew step, leaving `dense / per_seq / attention / moe` untouched. Useful for refreshing skew after axis-density changes |
+`--skip-skew` skips **acquisition**, not previously stored calibration.
+On a fresh bundle with no skew data, the simulator applies zero correction.
+Existing measurements are retained and recompiled when profile metadata is
+written. `--only-skew` refreshes skew measurements without remeasuring ordinary
+categories; calibration also requires an existing `attention.csv`.
 
-With no fit at all the simulator uses `alpha = 0`, i.e. `t_mean`
-straight from the uniform grid. Its error depends on the request distribution,
-compressed prefill geometry and interpolation; there is no general
-few-percent bound. It is deliberately not a constant borrowed from other
-hardware. Within a fit, buckets with no samples do fall back to that
-fit's own pooled `alpha_default`, measured on the same GPU.
+Rebuild existing measurements on CPU without starting vLLM:
 
-## Gotchas
+```bash
+python -m profiler refit-skew meta-llama/Llama-3.1-8B \
+    --hardware RTXPRO6000 --variant bf16 --tp 1
+```
 
-1. **`skew_fit.csv` is bucket-keyed**, not raw-shape-keyed. A
-   runtime batch with no matching bucket falls back to that kernel's
-   `alpha_default_by_layer` entry. If your workload pushes shapes outside the
-   profiled grid, expect those defaults to dominate, re-profile
-   with wider grid bounds.
-2. **A raw row is never clipped; a fitted cell is.** Measured p50 is
-   0.07–0.13, but 14–20% of rows come out negative and 2–5% exceed 1, and both
-   are real: a negative alpha means the skewed mix beat the uniform-mean batch
-   (the endpoint gap can be inside measurement noise, and a block-capped sparse
-   kernel genuinely gets cheaper), and above 1 means it cost more than
-   uniform-max, which tile padding and SM imbalance do not bound. `skew.csv`
-   keeps all of it; undefined alpha rows are dropped. Dense kernels omit
-   nonpositive gaps, while saturating kernels retain negative gaps. The cell
-   **median** limits a tail row's influence, and the constant is clipped to
-   `[-0.2, 1.0]`. The pooled `alpha_default` is not clipped, since it is a fit
-   over every row rather than a cell.
-3. **The legacy decode-skew path skips pure prefill and uniform decode.**
-   Uniform decode has no decode-length heterogeneity to correct. This policy
-   does not prove that interpolation or compressed, unequal-query prefill
-   geometry is exact for every batch.
-4. **MoE doesn't get skew correction.** The simulator's skew path is
-   attention-specific. MoE per-rank latency is read directly from
-   the 2D `(tokens, activated_experts)` table.
-5. **A kernel with no skew data gets no correction, not a borrowed one.** The
-   alpha is only worth applying if it is known to roughly ±0.02, because the
-   endpoint gap is a large fraction of an iteration. Falling back across
-   kernels would be worse than `t_mean`.
+The command requires the local model config, `meta.yaml`, `attention.csv`
+and `skew.csv`. Omit `--tp` to rebuild every measured TP; use `--out` for an
+alternate profile root. It writes only derived fit tables and the skew-fit
+metadata, preserving other categories and metadata fields. Keep a copy before
+migrating a published bundle. If interrupted between table and metadata
+publication, rerun the command to restore a matching pair.
 
-## What's next
+## Validation and limitations
 
-- **[Output bundle → `skew_fit.csv`](./output-bundle#skew_fitcsv-skew-enabled-runs)**
-  column-by-column reference.
-- **[Simulator → Trace generation](/docs/simulator/trace-generation#heterogeneous-decode-skew-correction)**
-  how the alpha is applied at simulation time.
+Use the committed `bench/examples` workloads and the standard validator;
+inspect TTFT, TPOT and latency at every reported statistic, not only their
+average. Keep those request-level observations out of coefficient fitting.
+Development examples are regression checks, not independent generalization
+evidence. A shared rule can improve one model while worsening another.
+
+Mean/max and lever do not uniquely represent a request distribution. Fixed
+prefill/lever bins, bimodal acquisition, the support floor and fallback remain
+empirical choices. Wider distributions and unseen hardware/model combinations
+need separate validation. No model-specific branch is used to choose a
+favorable calibration.
+
+See [Output bundle](./output-bundle#skew_fitcsv-skew-enabled-runs) for the file
+contract and [Trace generation](/docs/simulator/trace-generation#heterogeneous-decode-skew-correction)
+for serving-side behavior.

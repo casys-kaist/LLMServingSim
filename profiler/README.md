@@ -16,7 +16,8 @@ profiler/                     Python package — `python -m profiler ...`
     engine.py                 vLLM lifecycle (spin_up, probe_limits, spin_down)
     categories.py             Dense / PerSequence / Attention / LinearAttention / Expert
     skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
-    fit_alpha.py              per-kernel 3-axis per-cell-median alpha fit
+    skew_calibration.py       runtime-reference fit + supported-N bucket lookup
+    fit_alpha.py              legacy alpha-fit compatibility
     writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
     stack.py                  per-layer block composition from the HF config  *
     catalog_path.py           model_type -> yaml resolution                   *
@@ -271,8 +272,8 @@ sweep that drives the simulator's FlashAttention-varlen skew correction
 mode switches control it:
 
 ```bash
-SKIP_SKEW=1                         # skip the sweep entirely — simulator then
-                                    # applies no skew correction (alpha = 0).
+SKIP_SKEW=1                         # skip acquisition; retain existing data.
+                                    # A fresh bundle then has alpha = 0.
 ONLY_SKEW=1                         # run ONLY the skew step (dense / per_seq /
                                     # attention / moe untouched). Useful when the
                                     # uniform sweep is already done and you just want
@@ -456,10 +457,11 @@ tp<N>/
                                              only with --profile-mtp)
   skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
                          ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
-                         t_max_us, t_skew_us, alpha)                  (skew-enabled runs)
-  skew_fit.csv           fitted per-cell alpha table (layer, n_label,
-                         pc_label, lev_label, alpha, n_samples)
-                                                                      (skew-enabled runs)
+                         t_max_us, t_skew_us, alpha, requests_json,
+                         decode_q_len, case_id)                       (skew-enabled runs)
+  skew_fit.csv           versioned supported-N calibration cells
+                         (layer, decode_q_len, pc_label, lev_label, n_anchor,
+                          alpha, direct_rows, pooled_rows)            (skew-enabled runs)
 ```
 
 Times are in microseconds.
@@ -528,115 +530,50 @@ metadata:
   compact grid specs for the skew sweep. `factors` appears above
   `grid` so you can see the density knobs before the values they
   produced.
-- `skew_fit` — the fit summary per TP (`method`, `n_samples`,
-  `alpha_default`, `rel_err_p50/p90/p99`, `signed_mean`,
-  `bucket_table` pointer) plus the shared `bucket_axes` block. The
-  full per-bucket alpha mapping lives in each TP's `skew_fit.csv`.
+- `skew_fit` — versioned per-TP identity, reference fingerprints, fixed
+  prefill/lever axes, support threshold, per-kernel/query defaults and measured
+  N ranges, plus a pointer and checksum for `skew_fit.csv`. Unversioned
+  bundles retain the legacy metadata contract until rebuilt.
 
-## Skew profiling & alpha fit
+## Skew profiling & calibration
 
-Varlen attention latency can change in either direction when decode KV
-lengths are heterogeneous. The uniform
-attention grid can't see that — every shot there has all decodes at
-the same kv — so we run a second, narrower sweep on purpose-built
-bimodal batches:
+The bimodal sweep measures heterogeneous decode batches plus uniform mean/max
+controls. Raw rows now preserve complete request geometry. The default writer
+reconstructs each case, looks up its endpoints through the **same attention
+table and code as serving**, and compiles a supported-N table. Measured controls
+remain diagnostic; raw measured latency is the fit target.
 
-```
-t_mean   — all decodes uniform at the batch's mean kv
-t_max    — all decodes uniform at the batch's max kv
-t_skew   — the actual skewed batch [nb × kv_big, (n-nb) × kvs]
-```
+Within each kernel/query/prefill/lever partition, only sufficiently supported
+N values become anchors. Sparse N observations pool to their nearest supported
+anchor, and the cell's weighted median minimizes absolute relative profile
+latency error. Runtime picks one cell, without fitting or neighbor interpolation.
+Only N is adaptive; prefill/lever bins remain fixed. The attention table and
+its interpolation are unchanged.
 
-From these three we get a normalised alpha per case:
+The built-in two-tier bimodal sampling grid still follows user-configured
+sequence/token/context limits and the `SKEW_N_FACTOR`, `SKEW_PC_FACTOR`,
+`SKEW_KP_FACTOR` and `SKEW_KVS_FACTOR` density controls. It does not yet
+sample arbitrary distributions or multi-query decode by default.
+`--skip-skew` skips acquisition, not existing stored calibration.
+`--only-skew` refreshes measurements and requires an existing attention table.
 
-```
-alpha = (t_skew - t_mean) / (t_max - t_mean)
-```
+Rebuild from existing measurements on CPU, without loading vLLM:
 
-Raw ratios are not clipped to `[0, 1]`; both real distribution effects
-and measurement noise can produce values outside it. Dense kernels omit
-nonpositive endpoint gaps; kernels marked as key-saturating also retain
-negative gaps. A zero gap cannot define alpha. Small gaps amplify noise.
-
-which the simulator then applies at query time:
-
-```
-t_predicted = t_mean_lookup(batch.mean_kv) +
-              alpha(batch.shape) × (t_max_lookup(batch.max_kv) − t_mean_lookup(batch.mean_kv))
+```bash
+python -m profiler refit-skew meta-llama/Llama-3.1-8B \
+    --hardware RTXPRO6000 --variant bf16 --tp 1
 ```
 
-### Sweep structure
+New fits record attention-data, lookup-code and fitted-table fingerprints.
+Serving rejects stale combinations instead of silently reusing them; refit
+after changing reference data or lookup semantics. Existing bundled data is
+not migrated merely by upgrading the code. See the
+[skew guide](../docs/docs/profiler/skew-alpha-fit.md) for schemas, support,
+fallbacks, atomic publication and validation limitations.
 
-Two tiers make up `skew.csv`:
-
-- **Tier 1** — factorial over `(n, ratio, pc, kp, kvs)` at a single
-  representative skew factor (`_SKEW_REP = 4.0`). Gives the bulk of the
-  rows, and covers the (n, pc, lev) cells the fit discriminates on --
-  `lev` comes out of each row's own two timings, so the sweep populates
-  it by varying `kvs` and `ratio` rather than by having an axis for it.
-- **Tier 2** — skew-axis sweep at a handful of anchor pivots with
-  `skew ∈ {1.5, 2.0, 4.0, 8.0, 16.0}`. The only source of rows with
-  `skew ≠ 4.0`; covers how alpha saturates as the outlier decode
-  stretches.
-
-(A former Tier 3 for the kvs axis was removed once T1 grew dense
-enough along kvs.)
-
-### Density knobs
-
-Four of the five sweep axes are user-controllable via per-axis
-geometric factors (defaults 2.0 = doubling). `ratio` has none -- it is a
-unitless shape fraction, not a scale, so coarsening it geometrically
-would not mean anything:
-
-| Variable | Axis | Effect |
-|---|---|---|
-| `SKEW_N_FACTOR` | `n` (total decodes) | coarsen to fire fewer batch sizes |
-| `SKEW_PC_FACTOR` | `pc` (prefill chunk) | coarsen to skip prefill-chunk scales |
-| `SKEW_KP_FACTOR` | `kp` (prefill history) | coarsen long-context anchors |
-| `SKEW_KVS_FACTOR` | `kvs` (small-decode kv) | coarsen the kv sweep |
-
-Higher values → fewer points → faster sweep. Lower → denser grid →
-more samples, without guaranteeing a more accurate fit. The effective values
-hit `meta.yaml::skew_profile.factors` so you can tell later which
-density produced which CSV.
-
-### 3-axis alpha fit
-
-The default fitter groups rows by `[{layer}|]{n_label}|{pc_label}|{lev_label}`,
-where `lev = (t_max - t_mean) / t_mean`. Each supported cell uses the median
-of its raw alphas, clipped to `[-0.2, 1.0]`; cells below 20 rows use the same
-kernel's pooled least-squares `alpha_default`. The clip is a regularizer, not
-a physical bound, and distinct shapes are not repeated measurements of one
-operating point.
-
-`n` is derived from the sweep, with geometric-midpoint boundaries between
-profiled batch sizes. `pc` and `lev` use fixed bins. Axes are written to
-`meta.yaml::skew_fit.bucket_axes` and read back by the simulator. This keeps
-profiling and lookup consistent as the batch-size range changes.
-
-The ratio is empirical. Only a purely additive prefill contribution cancels
-between the three shots; mixed-kernel interactions can still depend on
-prefill history and request layout. Mean/max endpoints and `lev` do not
-uniquely encode an arbitrary KV distribution. These axes are not a proof of
-sufficiency across models or hardware.
-
-Fit residuals describe the fitting data, and the existing development
-benchmarks are regression checks rather than independent generalization
-estimates. Compare all workload-level latency metrics and use untouched
-distributions when assessing a new fit. See the
-[skew guide](../docs/docs/profiler/skew-alpha-fit.md) for the current storage,
-lookup and fallback behavior.
-
-### Disabling / re-fitting
-
-- Set `SKIP_SKEW=1` to skip the sweep entirely (uniform attention
-  grid only). The simulator's fallback constant is **0**, so it then
-  applies no skew correction at all and returns `t_mean` -- it does
-  not borrow an alpha from another GPU.
-- Set `ONLY_SKEW=1` to skip every other category and refresh just
-  `skew.csv` + `skew_fit.csv` — useful after widening the grid or
-  tweaking factors.
+Keep benchmark request latencies out of fitting. Validate all reported
+`bench/examples` metrics; a shared calibration rule can improve one model
+and worsen another. These development checks do not establish generalization.
 
 ## Architecture yamls
 

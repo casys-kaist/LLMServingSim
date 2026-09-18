@@ -215,87 +215,68 @@ Still profiled at **TP=1**: expert weights shard by `ep_size`, not `tp_size`.
 
 ## `skew.csv` (skew-enabled runs)
 
-Raw heterogeneous-decode shots:
+One raw measurement per attention-category kernel and ordered request shape.
+The built-in bimodal sweep retains `n, nb, ratio, skew, pc, kp, kvs, kv_big,
+kv_mean` plus measured `t_mean_us, t_max_us, t_skew_us` and the diagnostic
+control-based `alpha`. Raw alpha is not clipped.
 
-```
-layer,regime,n,nb,ratio,skew,pc,kp,kvs,kv_big,kv_mean,t_mean_us,t_max_us,t_skew_us,alpha
-attention,pure,4,1,0.25,4.0,0,0,512,2048,896,74.784,118.88,74.657,-0.0029
-attention,pure,4,1,0.25,4.0,0,0,2048,8192,3584,169.854,321.566,171.394,0.0102
-...
-```
-
-One row **per attention-category kernel per case**. A sparse-attention model
-has more than one, and they do not share an alpha — on MiniMax-M3 the same
-batch fits 0.24 for `attention`, 0.74 for `indexer` and -0.01 for
-`sparse_attention`, because block selection caps what the sparse layers do
-while the indexer scans the whole KV. A bundle profiled before this column
-existed has one kernel, and it is `attention`.
-
-The remaining columns capture the raw shape of each bimodal batch and the
-three measurements:
+New rows also carry:
 
 | Column | Meaning |
 | --- | --- |
-| `layer` | Which attention-category kernel this row measures |
-| `regime` | `pure` (decode-only) or `mixed` (with prefill chunk) |
-| `n` | Total decodes in the batch |
-| `nb` | Number of "big" decodes (the outlier KV bucket) |
-| `ratio` | `nb / n` |
-| `skew` | Ratio of big-KV to small-KV (`kv_big / kvs`) |
-| `pc` | Prefill chunk size |
-| `kp` | KV history of the prefill chunk |
-| `kvs` | Small-decode KV |
-| `kv_big` | Big-decode KV (`kvs * skew`) |
-| `kv_mean` | `(nb * kv_big + (n-nb) * kvs) / n` |
-| `t_mean_us` | Latency at all-decodes-uniform-at-mean kv |
-| `t_max_us` | Latency at all-decodes-uniform-at-max kv |
-| `t_skew_us` | Latency at the actual bimodal mix |
-| `alpha` | `(t_skew - t_mean) / (t_max - t_mean)`. **Not clamped** — 14-20% of rows are negative and 2-5% exceed 1, as the sample rows above show. `nan` when `t_max <= t_mean`, and the fit drops those. The *fitted* value in `skew_fit.csv` is a cell median and is clipped to `[-0.2, 1.0]`; this raw column is not |
+| `layer` | Exact attention-category kernel |
+| `requests_json` | Ordered `[query_tokens, computed_history_tokens]` pairs |
+| `decode_q_len` | Query tokens per decode request |
+| `case_id` | Geometry-derived resume key; the compiler recomputes it |
 
-Methodology: **[Skew & alpha fit](./skew-alpha-fit)**.
+General distributions require the complete request list. A multi-query input
+also needs an explicit `n_prefill` role boundary; current acquisition emits
+q=1. Legacy bimodal rows without these additions remain reconstructible.
+
+The default fit uses measured `t_skew_us` as its target, but **recomputes**
+mean/max references from `attention.csv` through serving's lookup. It does not
+reuse the diagnostic raw alpha or overwrite measured controls with estimates.
 
 ## `skew_fit.csv` (skew-enabled runs)
 
-The fitted per-bucket alpha table the simulator actually consumes
-at run time:
+New fits use `runtime-skew-calibration-v1` and write:
 
-```
-layer,n_label,pc_label,lev_label,alpha,n_samples
-attention,n=128,pc0,lev3,0.0589,38
-attention,n=128,pcM,lev4,0.008,171
-...
+```text
+layer,decode_q_len,pc_label,lev_label,n_anchor,alpha,direct_rows,pooled_rows
 ```
 
 | Column | Meaning |
 | --- | --- |
-| `layer` | Which attention-category kernel this alpha was fitted on |
-| `n_label` | Batch-size bucket. One per profiled `n`, split at the geometric midpoints so a runtime `n` reads the nearest profiled size on a log scale |
-| `pc_label` | Prefill-chunk bucket: `pc0` / `pcS` (≤256) / `pcM` (≤1024) / `pcL` |
-| `lev_label` | Bucket on `lev = (t_max - t_mean) / t_mean`, the endpoint gap in units of the batch's own cost: `lev0` (≤0.25) … `lev4` (>3.0) |
-| `alpha` | The **median** of this cell's per-row alphas, clipped to `[-0.2, 1.0]` |
-| `n_samples` | Number of `skew.csv` rows that contributed. A cell under 20 is not written |
+| `layer`, `decode_q_len` | Separate kernel/query slice; no cross-slice borrowing |
+| `pc_label`, `lev_label` | Prefill-token and relative-reference-gap partition |
+| `n_anchor` | Measured decode count with enough direct support in this partition |
+| `alpha` | Clipped relative-latency weighted median |
+| `direct_rows` | Distinct supported cases at the anchor itself |
+| `pooled_rows` | Direct cases plus nearby unsupported-N cases pooled into this anchor |
 
-Labels are the human-readable comparison strings the fitter emits, not slugs —
-the simulator rebuilds them from `meta.yaml::skew_fit.bucket_axes` and joins
-them into the key `[{layer}|]{n_label}|{pc_label}|{lev_label}`, so they have to
-match character for character.
+The simulator picks the nearest supported N on a log scale, with lower-anchor
+ties. It does not interpolate neighboring alpha values. The support-adaptive
+N anchors differ between partitions; prefill/lever bins remain fixed.
+See [Skew & alpha fit](./skew-alpha-fit) for the objective and fallback rules.
 
-The `layer` prefix is what keeps a sparse kernel from inheriting the dense
-one's alpha. A table written before the column existed has unprefixed keys, and
-the simulator falls back to those for `attention` **only** — any other kernel
-gets no correction rather than a borrowed one.
+Each `meta.yaml::skew_fit.per_tp[tp]` entry records the schema, bundle/TP
+identity, `axes`, `min_rows`, `alpha_clip`, `n_samples`, dropped-row counts,
+`alpha_default_by_kernel`, `n_range_by_kernel`, `reference`, `bucket_table`
+and `bucket_table_sha256`. Kernel/query keys have the form `attention|q=1`.
+`reference` records attention and raw-skew checksums, the lookup fingerprint
+and key-saturation semantics. The fitted CSV contains the cells, not raw shots.
 
-`n`'s edges are derived from what the sweep fired, which is why they are
-recorded in the meta rather than hardcoded: a sweep at `max_num_seqs 512` gets
-a bucket for 512 with no simulator-side change. `pc` and `lev` are fixed —
-alpha's dependence on `pc` is one step at `pc = 0 → pc > 0` and flat above it,
-and `lev` is not a swept axis at all.
+Legacy files have `layer, n_label, pc_label, lev_label, alpha, n_samples`
+and no schema field. They continue to use the legacy lookup until
+`profiler refit-skew` or a profiler metadata refresh rebuilds them. Do not
+combine a versioned CSV with legacy metadata.
 
 ## `meta.yaml`
 
 Sibling of the `tp<N>/` folders. Below is a real one, from
 `profiler/perf/RTXPRO6000/Qwen/Qwen3-32B/bf16/`, with the per-TP fit
-block trimmed to one entry:
+block trimmed to one entry. This is a **legacy, unversioned** bundle;
+new calibration entries follow the contract above:
 
 ```yaml
 profiler_version: 1.0.0
@@ -445,15 +426,16 @@ recorded here.
 | --- | --- |
 | `engine_effective.max_num_batched_tokens` / `.max_num_seqs` | One-shot warning when the runtime CLI exceeds the sweep bounds, since lookups will extrapolate |
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
-| `skew_fit.bucket_axes` | Building the bucket key per batch. A bundle with no `bucket_axes` at all falls back to the module defaults; one fitted against the previous five axes has the field but no `lev_bins`, and is detected and skipped. Either way its cells are unreachable and every batch reads the pooled `alpha_default` |
-| `skew_fit.per_tp[tp].alpha_by_bucket` or `.bucket_table` | The alpha table, hydrated from `tp<N>/skew_fit.csv` when the meta points at a CSV |
-| `skew_fit.per_tp[tp].alpha_default` | Fallback for a bucket absent from the table, pooled over every kernel. Used for `attention` only |
-| `skew_fit.per_tp[tp].alpha_default_by_layer` | Per-kernel fallback, `{layer: alpha}`. What a sparse kernel's unfitted buckets resolve to; absent means no correction |
+| `skew_fit.per_tp[tp].schema` | Versioned calibration or the unversioned legacy path |
+| `skew_fit.per_tp[tp].identity`, `.reference`, `.bucket_table_sha256` | Validate bundle identity, attention/reference implementation, saturation contract and table bytes |
+| `skew_fit.per_tp[tp].axes`, `.bucket_table` | Load partitions and supported N anchors once |
+| `skew_fit.per_tp[tp].alpha_default_by_kernel`, `.n_range_by_kernel` | Same-kernel/query fallback and measured N bounds |
+| Legacy `bucket_axes`, `alpha_by_bucket`, `alpha_default_by_layer`, `alpha_default` | Backward-compatible unversioned lookup only |
 
-Everything else — versions, `gpu`, `architecture_sha256`,
-`attention_grid`, `skew_profile`, and the `rel_err_*` / `signed_mean`
-fit diagnostics — is provenance for humans and is not consumed at run
-time.
+Other version and acquisition fields describe provenance. Raw skew data is
+required for rebuilding, not for runtime lookup. A changed attention table,
+lookup implementation, fitted table or saturation contract invalidates new
+calibration and requires `profiler refit-skew`.
 
 ## How the simulator consumes this
 
@@ -464,7 +446,7 @@ flowchart LR
     LOAD --> CACHE["_perf_db_cache<br/>(in-memory)"]
     LOAD --> META["read meta.yaml<br/>warn if runtime &gt; sweep bounds"]
     LOAD --> SKEWHYD["_hydrate_skew_fit_tables()"]
-    SKEWHYD --> ALPHA["alpha_by_bucket map"]
+    SKEWHYD --> ALPHA["validated in-memory cells"]
     CACHE --> LOOKUPS["per-batch lookups<br/>at trace generation time"]
     ALPHA --> LOOKUPS
 ```

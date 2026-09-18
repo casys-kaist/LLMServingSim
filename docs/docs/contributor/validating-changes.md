@@ -197,10 +197,12 @@ MODEL=meta-llama/Llama-3.1-8B HARDWARE=RTXPRO6000 \
 Then verify the simulator still loads it cleanly:
 `./serving/validate.sh --clocks-only single`.
 
-If you only changed the alpha fit (`fit_alpha.py`), you can use
-`SKIP_DENSE=1 SKIP_PER_SEQUENCE=1 SKIP_ATTENTION=1 SKIP_MOE=1
-ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
-without rerunning the rest.
+For a calibration-only change (`skew_calibration.py`), rebuild a **copy** of
+the existing bundle with `python -m profiler refit-skew MODEL --hardware HW
+--out PROFILE_ROOT`. This CPU-only command does not remeasure skew or alter
+attention. `--only-skew`, in contrast, is an acquisition command.
+Run the committed bench examples and compare every reported latency statistic;
+keep temporary tests, scripts and validation artifacts out of commits.
 
 ### If you touched `hardware.yaml`
 

@@ -198,11 +198,9 @@ def _load_meta(variant_root):
 def _hydrate_skew_fit_tables(meta, variant_root):
     """Load each TP's per-bucket alpha table from CSV into the meta dict.
 
-    Newer profile runs move the (1k+ rows per TP) ``alpha_by_bucket``
-    mapping out of meta.yaml into ``tp{N}/skew_fit.csv``. This helper
-    reads those CSVs and materialises the dict in-place so
-    ``_skew_alpha`` finds it where it used to be. Older meta.yamls
-    that still inline the dict are left untouched.
+    Versioned fits are validated against their identity, table and attention
+    references before loading supported-N cells. Unversioned CSV and inline
+    alpha mappings retain their legacy hydration path.
     """
     fit = (meta or {}).get("skew_fit") if isinstance(meta, dict) else None
     if not fit or not fit.get("enabled"):
@@ -212,6 +210,25 @@ def _hydrate_skew_fit_tables(meta, variant_root):
         return
     for tp_key, entry in per_tp.items():
         if not isinstance(entry, dict):
+            continue
+        if entry.get("schema"):
+            from profiler.core.skew_calibration import (
+                SCHEMA, checksum, lookup_fingerprint, read_table,
+            )
+            if entry["schema"] != SCHEMA:
+                raise ValueError("Unknown skew fit schema; regenerate the skew fit")
+            expected = {k: meta[k] for k in ("hardware", "model", "variant")}
+            expected["tp"] = int(tp_key)
+            if entry.get("identity") != expected:
+                raise ValueError("Skew calibration profile/TP identity does not match meta.yaml")
+            reference = entry["reference"]
+            attention_path = os.path.join(variant_root, f"tp{int(tp_key)}", "attention.csv")
+            csv_path = os.path.join(variant_root, entry["bucket_table"])
+            if (checksum(attention_path) != reference["attention_sha256"]
+                    or lookup_fingerprint() != reference["lookup_sha256"]
+                    or checksum(csv_path) != entry["bucket_table_sha256"]):
+                raise ValueError("Stale skew calibration: run profiler refit-skew for this bundle")
+            entry["calibration"] = read_table(csv_path, entry)
             continue
         if entry.get("alpha_by_bucket"):
             continue
@@ -246,11 +263,13 @@ def _read_skew_fit_csv(path):
     got.
     """
     df = pd.read_csv(path)
+    if "n_anchor" in df.columns:
+        raise ValueError("Calibrated skew table has legacy metadata; run profiler refit-skew")
     if not {"n_label", "pc_label", "lev_label"} <= set(df.columns):
         logger.warning(
             "skew_fit: %s was fitted against the previous bucket axes; "
             "ignoring its table and using the pooled alpha. Re-run "
-            "`profiler slice --group skew` or refit from skew.csv.", path,
+            "`profiler refit-skew` for this bundle.", path,
         )
         return {}, {}
     has_layer = "layer" in df.columns
@@ -520,6 +539,12 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         )
 
     meta = _load_meta(root)
+    calibrated = any(isinstance(entry, dict) and entry.get("schema")
+                     for entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).values())
+    if calibrated:
+        for name, expected in (("hardware", hardware), ("model", model), ("variant", variant)):
+            if meta.get(name) != expected:
+                raise ValueError(f"Profile metadata {name} does not match the requested bundle")
     _hydrate_skew_fit_tables(meta, root)
     arch = _load_architecture(model_type)
     available_tps = []
@@ -556,6 +581,15 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
                 _stack_module().text_config(model_config))
             if model_config else None),
     }
+    for entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).values():
+        if not isinstance(entry, dict) or not entry.get("calibration"):
+            continue
+        reference = entry["reference"]
+        saturation = {k: bool(v.get("key_saturates"))
+                      for k, v in (arch["catalog"].get("attention") or {}).items()}
+        if (reference["key_saturation"] != perf_db["key_saturation"]
+                or reference["saturation_by_layer"] != saturation):
+            raise ValueError("Attention window/catalog changed; run profiler refit-skew")
     _perf_db_cache[cache_key] = perf_db
     _check_tp_coverage(perf_db, tp_needed, hardware, model, variant)
     return perf_db
@@ -1007,44 +1041,19 @@ def _skew_alpha(
     n: int,
     lev: float,
     layer: str = "attention",
+    decode_q_len: int = 1,
 ) -> float:
     """Resolve alpha for a specific batch from the profile's
     ``skew_fit`` meta block.
 
-    The key is ``{layer}|{n_label}|{pc_label}|{lev_label}``, where
-    ``lev = (t_max - t_mean) / t_mean`` -- the endpoint gap in units of the
-    batch's own cost. It costs nothing here: both lookups are already done
-    before an alpha is needed. See ``profiler/core/fit_alpha.py`` for why
-    these three axes and not the five this used to build.
+    Versioned fits select a supported N anchor within the matching
+    kernel/query/prefill/lever partition. The compiler minimizes relative
+    profile-latency L1 error offline; this function only queries loaded cells.
+    Missing cells or out-of-range N use the same kernel/query fallback,
+    and missing kernel/query data means zero correction.
 
-    Lookup order:
-        1. meta.yaml::skew_fit.per_tp[tp].alpha_by_bucket[bucket_key],
-           hydrated from ``tp<N>/skew_fit.csv``, with the bins read from
-           ``skew_fit.bucket_axes``. A bundle fitted before the axes changed
-           carries no ``axes`` list; nothing then matches and every batch
-           falls through to that bundle's pooled default, which is what its
-           mixed batches already got.
-        2. The unprefixed key, **only for ``attention``**: a bundle
-           profiled before skew.csv had a ``layer`` column holds one
-           kernel and it is that one.
-        3. ``alpha_default_by_layer[layer]``, the pooled WLS constant for
-           this kernel.
-        4. ``alpha_default`` (pooled over every kernel), again only for
-           ``attention``.
-        5. Module-level fallback constant (``_ATTN_SKEW_ALPHA_FALLBACK``).
-
-    Why ``layer`` is in the key: the sparse families run two or three
-    kernels in this category and their alphas are not interchangeable.
-    MiniMax-M3's block selection caps the work its sparse layers do, so
-    past the block budget their cost stops tracking kv length and the
-    endpoint gap collapses; its indexer scans the whole KV and is the most
-    skew-sensitive thing in the model. Steps 2 and 4 deliberately refuse to
-    answer for any other layer — handing a sparse kernel the dense one's
-    alpha is the mistake this prefix exists to prevent, and 0 (no
-    correction) is the documented behaviour when a kernel has no skew data.
-
-    Returns the fallback constant when the meta block is disabled or
-    missing.
+    Unversioned fits retain their historical bucket-axis and per-layer
+    fallback path. A disabled or absent fit returns zero correction.
     """
     meta = perf_db.get("meta") if isinstance(perf_db, dict) else None
     if not meta:
@@ -1056,6 +1065,11 @@ def _skew_alpha(
     entry = per_tp.get(tp) or per_tp.get(int(tp)) or per_tp.get(str(tp))
     if not entry:
         return float(fit_block.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
+    if entry.get("schema"):
+        from profiler.core.skew_calibration import lookup
+        if "calibration" not in entry:
+            raise ValueError("Skew calibration was not loaded and validated")
+        return lookup(entry["calibration"], int(n), int(pc), float(lev), layer, decode_q_len)
     axes = _resolve_skew_axes(fit_block, entry)
     if layer is None:
         layer = "attention"
@@ -1148,7 +1162,7 @@ def _lookup_attention_with_skew(
     )
     lev = (t_max - t_mean) / t_mean if t_mean > 0 else 0.0
     alpha = _skew_alpha(
-        perf_db, tp, prefill_chunk, n_decode, lev, layer,
+        perf_db, tp, prefill_chunk, n_decode, lev, layer, decode_q_len,
     )
     if alpha == 0.0:
         return max(1, int(round(t_mean)))
