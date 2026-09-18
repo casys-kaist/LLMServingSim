@@ -13,7 +13,8 @@ Regenerate the site changelog from the root CHANGELOG.md and run a production
 build before handing off documentation changes.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
-current table contract, CPU-only rebuild command and legacy-bundle boundary.
+current table contract, required measurement inputs, CPU-only rebuild command
+and legacy-bundle boundary.
 
 ## Installation
 

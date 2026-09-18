@@ -20,6 +20,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Refuse CPU skew rebuilds with no raw measurements, preserving metadata and
+  preventing an empty rebuild from enabling a previously disabled calibration.
 - Reproduce example KV block sizes from recorded engine metadata, retaining
   explicit overrides and simulator fallback for legacy metadata. Discover
   stored example configs instead of maintaining a fixed benchmark list.

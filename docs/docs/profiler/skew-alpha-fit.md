@@ -167,7 +167,9 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B \
 ```
 
 The command requires the local model config, `meta.yaml`, `attention.csv`
-and `skew.csv`. Omit `--tp` to rebuild every measured TP; use `--out` for an
+and `skew.csv`. A bundle with no raw skew measurements is an error: its
+metadata stays unchanged and a disabled calibration is not enabled.
+Omit `--tp` to rebuild every measured TP; use `--out` for an
 alternate profile root. It writes only derived fit tables and the skew-fit
 metadata, preserving other categories and metadata fields. Keep a copy before
 migrating a published bundle. If interrupted between table and metadata

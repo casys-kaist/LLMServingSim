@@ -175,6 +175,8 @@ def rebuild_bundle(variant_root, model_config, tp_degrees=None):
     block = dict(metadata.get("skew_fit") or {})
     previous = dict(block.get("per_tp") or {})
     fitted = fit_bundle(root, identity, model_config, tp_degrees)
+    if not fitted["per_tp"]:
+        raise FileNotFoundError(f"No raw skew measurements to rebuild at {root}")
     for tp, entry in fitted["per_tp"].items():
         previous.pop(str(tp), None)
         previous[tp] = entry

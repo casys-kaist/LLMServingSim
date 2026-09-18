@@ -564,6 +564,8 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B \
     --hardware RTXPRO6000 --variant bf16 --tp 1
 ```
 
+The rebuild command refuses bundles without raw skew measurements and leaves
+metadata unchanged; it cannot enable an old fit through an empty rebuild.
 New fits record attention-data, lookup-code and fitted-table fingerprints.
 Serving rejects stale combinations instead of silently reusing them; refit
 after changing reference data or lookup semantics. Existing bundled data is

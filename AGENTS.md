@@ -644,6 +644,9 @@ measured ranges and source/table fingerprints. Serving validates identity,
 attention data, lookup code, table bytes and saturation semantics once before
 loading cells. Stale fits raise with instructions to run the CPU-only
 `python -m profiler refit-skew MODEL --hardware HARDWARE [--tp N]`.
+A CPU rebuild with no raw skew measurements must fail without changing metadata
+or enabling a previously disabled fit. Normal profiling without skew data still
+records a disabled fit.
 The default writer invokes the same compiler automatically; unversioned
 bundles keep their legacy behavior until rebuilt.
 

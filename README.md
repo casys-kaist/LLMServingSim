@@ -37,7 +37,7 @@ For installation details, container choices, configuration layout, CLI
 flags, and the full set of example workloads, see the
 [documentation](https://llmservingsim.ai/docs/getting-started/overview).
 
-For reusable, CPU-built attention corrections, see the
+For reusable, CPU-built attention corrections from measured inputs, see the
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
