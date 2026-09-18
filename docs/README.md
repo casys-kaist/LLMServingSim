@@ -2,6 +2,16 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+## Contribution policy
+
+Follow the repository [commit policy](docs/contributor/pr-workflow.md#commit-hygiene)
+and [AGENTS.md](../AGENTS.md). Every commit includes updates to the root and
+affected directory READMEs, AGENTS.md, CHANGELOG.md, and relevant public docs.
+Publish supported behavior and usage, not session notes or intermediate results;
+temporary diagnostic and verification scripts or tests remain uncommitted.
+Regenerate the site changelog from the root CHANGELOG.md and run a production
+build before handing off documentation changes.
+
 ## Installation
 
 ```bash

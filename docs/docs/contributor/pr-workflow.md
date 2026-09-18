@@ -32,13 +32,24 @@ git checkout -b add-deepseek-v3
   support`, `Document MoE expert routing`.
 - **One logical change per commit.** A refactor and a feature in
   the same commit is a reviewer's nightmare.
-- **Commit verified bug fixes separately from unresolved experiments.**
-  Before each commit, review repository READMEs, AGENTS.md, CHANGELOG.md
-  and related website pages. Update affected stale descriptions together
-  with the fix, and regenerate the site's changelog from CHANGELOG.md.
+- **Commit adopted changes only.** Record verified bug fixes separately.
+  Do not commit intermediate work: development notes, intermediate measurements
+  or generated results, experimental code, or temporary diagnostic and
+  fix-verification scripts and tests. Validation is still required; its
+  temporary tools and outputs stay local. Exclusion does not authorize deletion.
+- **Every commit includes documentation updates**, even a docs-only commit:
+  the root README.md and affected directory READMEs, AGENTS.md, CHANGELOG.md,
+  and relevant public pages under docs/. Review repository READMEs, including
+  per-directory files, for affected or stale descriptions. Keep README changes
+  concise and regenerate the site's changelog from CHANGELOG.md.
 - **Document supported behavior, not development sessions.** Keep investigation
   diaries, intermediate experiment notes and session checkpoints out of tracked
-  documentation. Describe verified changes, usage and known limitations.
+  documentation, including contributor pages. Describe final supported behavior,
+  usage, verified changes and known limitations.
+- **Inspect the staged diff before every commit.** Check both the excluded
+  material and the required documentation surfaces. Never stage an entire
+  dirty worktree without reviewing its contents.
+- **No AI-tool references or AI attribution trailers in commit messages.**
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.
@@ -77,11 +88,14 @@ Run through the checklist:
 4. **Conventions checklist**: `getattr` fallbacks, `head_dim`
    handling, English-only, layer names, no `astra-sim/inputs/`
    edits. See **[Coding conventions](./conventions)**.
-5. **Docs updated** if behavior changed. The relevant page under
-   `docs/`, plus the module's `README.md` if applicable.
-6. **No machine-specific paths or generated files** in the diff.
-   Sanity-check with `git diff --stat` and
-   `git diff --check`.
+5. **Documentation accompanies every commit.** Check the root and affected
+   directory READMEs, AGENTS.md, CHANGELOG.md, the generated changelog page,
+   and relevant public docs against the commit-hygiene policy above.
+6. **No machine-specific paths or intermediate artifacts** in the staged diff,
+   including temporary verification scripts and tests. The generated site
+   changelog is an intentional tracked document, not an experiment output.
+   Sanity-check with `git diff --cached --stat` and
+   `git diff --cached --check`.
 
 ## Opening the PR
 
@@ -143,9 +157,10 @@ rerun and gives the git log a record of what was checked.
 ## Squash, rebase, or merge?
 
 The project squashes most PRs to a single commit on `main`, with
-the PR title becoming the commit message. You don't need to clean
-up your branch's intermediate commits beforehand. If your PR is
-genuinely best as multiple commits (e.g., a refactor + a feature
+the PR title becoming the commit message. Every constituent commit
+must still follow the policy above: squashing does not excuse intermediate
+artifacts or missing documentation. If your PR is genuinely best as
+multiple commits (e.g., a refactor + a feature
 that depends on it), say so in the description and a maintainer
 will rebase rather than squash.
 

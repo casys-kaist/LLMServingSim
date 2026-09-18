@@ -37,6 +37,10 @@ For installation details, container choices, configuration layout, CLI
 flags, and the full set of example workloads, see the
 [documentation](https://llmservingsim.ai/docs/getting-started/overview).
 
+Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
+every commit includes documentation updates; intermediate experiments and
+temporary verification scripts or tests stay local.
+
 ## Publications
 
 **ISPASS 2026**  

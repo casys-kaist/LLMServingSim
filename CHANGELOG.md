@@ -36,6 +36,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Require documentation updates with every commit across READMEs, repository
+  guidance, changelog and public docs. Exclude intermediate work and temporary
+  diagnostic or fix-verification scripts, tests and results from commits.
 - Clarify the empirical scope of attention interpolation, skew axes and alpha
   clipping. Distinguish development validation from generalization and kernel
   sums from isolated wall time; remove investigation-only narrative from the

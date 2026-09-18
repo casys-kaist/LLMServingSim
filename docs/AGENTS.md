@@ -9,6 +9,16 @@ dataset schema, profiler walkthroughs, validation results) lives on this
 site, not in the README. See the root `AGENTS.md` for the README and
 docs split.
 
+## Commit policy
+
+The root AGENTS.md commit policy also applies to docs-only changes. Every
+commit includes updates to the root and affected directory READMEs, AGENTS.md,
+CHANGELOG.md and relevant public documentation; regenerate the site changelog.
+Public pages, including contributor guides, describe supported behavior, usage
+and policy, never development-session notes or intermediate experiments.
+Do not commit temporary diagnostic or fix-verification scripts, tests or
+generated experiment results. Review the staged diff before committing.
+
 ## What this is
 
 A [Docusaurus 3](https://docusaurus.io/) site (TypeScript, classic preset)

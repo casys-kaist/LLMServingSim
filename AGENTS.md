@@ -2366,14 +2366,26 @@ website (not the README).
 - Short imperative commit messages: `Fix incorrect evict_size accumulation`,
   `Add Qwen3 model support`
 - Keep commits focused — one logical change per commit
-- Record verified fixes for established bugs in separate commits; keep
-  unresolved experiments distinguishable from production changes.
-- Before every commit, review repository READMEs, AGENTS.md, CHANGELOG.md and
-  related website documentation. Update stale descriptions affected by the
-  change in the same commit, including the generated changelog page.
-- Commit documentation of supported behavior and verified changes only.
-  Keep session diaries, investigation checkpoints and intermediate experiment
-  notes outside tracked documentation, including contributor pages and this file.
+- Record verified fixes for established bugs in separate commits. Commit only
+  adopted changes, not unresolved experiments.
+- **Do not commit intermediate work.** This includes development/session notes,
+  intermediate measurements and generated results, experimental code, and
+  temporary scripts or test code written to diagnose or verify a fix. Run
+  validation locally, but keep these temporary files out of the staged diff.
+  Do not delete retained experiments merely because they are excluded.
+- **Every commit must include documentation updates**, including docs-only
+  commits: the root README.md and affected directory READMEs, AGENTS.md,
+  CHANGELOG.md, and relevant public pages under docs/. Review repository
+  READMEs, including per-directory files, for affected or stale descriptions.
+  Regenerate the site's changelog from CHANGELOG.md. Keep README updates
+  concise and consistent with the README/docs split above.
+- Public documentation describes final supported behavior, usage, verified
+  changes and limitations only. Never publish session diaries, investigation
+  checkpoints or intermediate experiment notes, including on contributor pages
+  or in this file.
+- Before committing, inspect the staged file list and diff for both exclusions
+  and mandatory documentation coverage. Do not stage the whole dirty worktree.
+- Do not add AI-tool references or AI attribution trailers to commit messages.
 - Include the exact command used for validation and note any output CSV path in PRs
 - Describe which simulation mode is affected and the config/dataset used
 
