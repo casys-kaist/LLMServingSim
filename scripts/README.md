@@ -1,8 +1,8 @@
 # scripts
 
-Shared environment / build entry points. Module-specific run scripts
+Shared environment, build and resource-safety entry points. Module-specific run scripts
 (e.g. `profiler/profile.sh`, `bench/bench.sh`, `workloads/examples/*.sh`)
-live with their module — only setup and build helpers are here.
+live with their module.
 
 ## Files
 
@@ -12,6 +12,7 @@ live with their module — only setup and build helpers are here.
 | `docker-sim.sh`   | Launch the simulator Docker container (ASTRA-Sim + sim Python deps). |
 | `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.28.0 plus `datasets` and `matplotlib`. |
 | `compile.sh`      | Build ASTRA-Sim's analytical backend and install the Chakra trace converter. Rerun it after any change under `astra-sim/`, including `llm_converter.py`, which is installed into site-packages rather than imported from the tree. |
+| `monitor_run.py` | Run one command with process-tree RSS, host-memory, swap-growth and timeout guards; write CSV telemetry and a JSON completion summary. Optional GPU telemetry targets one explicit physical UUID. |
 
 ## Typical first-time setup
 
@@ -30,6 +31,12 @@ Bare metal (vLLM side only):
 ```
 
 ## Editing notes
+
+Resource limits are configurable; choose them for the host rather than assuming
+the defaults fit every machine. See `python3 scripts/monitor_run.py --help`.
+Logs must use a fresh path. The watchdog stops its own command and descendants,
+not unrelated workloads; container memory limits remain the hard backstop.
+GPU telemetry does not reserve devices or check whether another user owns them.
 
 * `docker-vllm.sh` ships with a placeholder `HF_TOKEN="<your_token>"`.
   Set it to a real HuggingFace token before running so gated configs

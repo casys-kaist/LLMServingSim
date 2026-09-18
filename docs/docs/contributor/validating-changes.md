@@ -13,6 +13,23 @@ runs that comparison for you.
 
 ## 1. Run the validation script (every PR)
 
+For resource-bounded execution, wrap a command with the shared watchdog:
+
+```bash
+python3 scripts/monitor_run.py --output outputs/resources/run.csv \
+  --max-rss-gib 8 --min-available-gib 16 --max-swap-growth-gib 0.5 \
+  --timeout 1800 -- ./serving/validate.sh
+```
+
+These are example limits; set them for your host. The CSV records sampled
+process-tree RSS and host memory, and a sibling JSON records completion or the
+stop reason. Use a new log path for each run. Shared pages may be counted more
+than once, and sampling is not a hard memory limit; container limits remain
+the backstop. Only the launched command and its descendants are stopped.
+Optional GPU telemetry requires both `--gpu-uuid` and `--max-gpu-temp-c`;
+it does not allocate a GPU or check other users' ownership. Confirm availability
+separately before launching GPU work.
+
 ```bash
 ./serving/validate.sh
 ```

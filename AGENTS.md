@@ -82,10 +82,11 @@ LLMServingSim/
 │   │   └── validate.sh         # re-run the comparison: validate.sh <hardware>/<model>
 │   ├── bench.sh                # host-side wrapper for `python -m bench run`
 │   └── validate.sh             # host-side wrapper for `python -m bench validate`
-├── scripts/                    # Shared shell entry points (env / build, not module-specific)
+├── scripts/                    # Shared environment, build and resource-safety entry points
 │   ├── docker-vllm.sh          # vLLM container (profiler + bench)
 │   ├── docker-sim.sh           # simulator container
 │   ├── install-vllm.sh         # bare-metal vLLM install (uv venv)
+│   ├── monitor_run.py          # bounded child-process execution + resource telemetry
 │   └── compile.sh              # ASTRA-Sim + Chakra build
 └── astra-sim/                  # ASTRA-Sim C++ backend (submodule)
     ├── inputs/                 # Generated configs (network, memory, system)
@@ -2308,6 +2309,14 @@ Memory location types: `LOCAL` (NPU) = 1, `REMOTE` (CPU) = 2, `CXL` = 3, `STORAG
 These must match the C++ enum in `astra-sim/astra-sim/system/AstraMemoryAPI.hh`.
 
 ### Docker environments
+
+For long runs, `scripts/monitor_run.py` provides process-tree RSS, host available
+memory, optional swap-growth and timeout guards. Choose explicit limits for the
+host and a fresh log path; summed RSS can double-count shared pages. It stops
+only its own command and descendants. Keep container memory limits as the hard
+backstop. Optional GPU monitoring identifies one physical UUID but neither
+reserves it nor establishes permission or exclusive access.
+
 - **vLLM container** (used by `python -m profiler`, `python -m bench`, and
   `python -m workloads.generators`): `vllm/vllm-openai:v0.28.0` (or
   `v0.28.0-cu129` on a CUDA 12.9 host)
