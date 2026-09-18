@@ -30,38 +30,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   sufficient to identify repeated entries.
 
 ### Removed
-- **The cudagraph step correction, and the `step.csv` it read.** It rested on
-  the premise that the sum of profiled per-layer latencies predicts *eager*
-  execution while production replays a cudagraph, so a measured saving had to
-  be subtracted. Both halves are false. `layerwise_profile` sums leaf **kernel**
-  durations, so the trace total is kernel time (Llama-3.1-8B at one sequence:
-  trace 11,360 us against 11,311 measured), and a saturated engine replaying a
-  graph is essentially back-to-back kernels -- at matched concurrency against
-  real vLLM runs the uncorrected simulator's decode step is **0.993** on
-  Llama-3.1-8B and **1.000** on Qwen3-32B.
-
-  What `step.csv` measured was the difference between two *isolated* wall times
-  -- a `cuda.synchronize()` around every forward -- which charges a per-call
-  launch and drain neither production nor the profiled sum pays: the same step
-  reads 13,031 us isolated, 11,685 pipelined and 11,311 as kernel time.
-  Subtracting that from a total already equal to production took the simulator
-  below it.
-
-  It looked like it worked because it was cancelling an over-charged
-  interconnect (see below). With both fixed, the two collective-carrying
-  examples are better without either correction and Llama -- which has no
-  collectives to over-charge -- is the one that wanted the subtraction; its
-  remaining +1.6% TPOT is not a uniform per-step term, since its decode step is
-  already 0.993, so a flat subtraction is the wrong shape for it.
-
-  Removed: `profiler/core/step.py`, `profiler/core/hooks/cudagraph_hook.py`,
-  `--skip-step` / `SKIP_STEP`, `slice --group step`, the four committed
-  `step.csv` files, and the simulator's `_apply_step_correction` /
-  `_step_saved_ns` / `_load_step_tables`. Every clock the correction touched is
-  rerecorded. AGENTS.md keeps the account of why, including the three traps
-  worth knowing before rebuilding it.
+- **Remove the isolated-wall-time cudagraph correction and its `step.csv`.**
+  The simulator consumes profiled CUDA kernel sums, not isolated eager wall
+  time. Subtracting an isolated eager-versus-graph wall-time difference is
+  not a justified correction to those sums. This does not imply that eager
+  and captured execution have identical costs.
+  Remove the step profiler, hook, flags, profile files and serving subtraction
+  path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Clarify the empirical scope of attention interpolation, skew axes and alpha
+  clipping. Distinguish development validation from generalization and kernel
+  sums from isolated wall time; remove investigation-only narrative from the
+  affected release notes without changing fit or lookup behavior.
 - **Model the ordinary vocab-parallel target endpoints at TP > 1.**
   Add the embedding all-reduce and logits all-gather once per forward,
   guarded by catalog bindings and shared placement. Use the padded local
@@ -75,72 +56,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   equal-chunk coordinates and applies sparse-window caps before weighting.
   This corrects the lookup coordinate; it does not introduce a new attention
   table or establish that the compressed coordinate explains every batch.
-- **The skew alpha table is keyed on `n | pc | lev` and fitted per cell with
-  the median.** It was five axes -- `pc` raw, plus `n`, `skew_rate`, `kv_big`,
-  `kp` -- with a weighted least-squares fit per cell, and `pc` being keyed by
-  its *exact* value meant **208 of 208** `pc > 0` lookups on the Qwen3-32B
-  workload missed their cell and read the pooled constant, because a runtime
-  chunk is `min(remaining prompt, budget left)` and lands on a profiled grid
-  point only by coincidence.
-
-  The three axes were picked by running **every subset of six candidates end to
-  end** -- 64 of them across the three committed bench examples, scored on all
-  15 metrics. Summed mean |err|: `n | pc | lev` **4.35** against the previous
-  five axes' **7.51**. `kv_big` and the dispersion measures are already inside
-  `lev = (t_max - t_mean) / t_mean`, which costs nothing at either end (the fit
-  has both timings in the row, the simulator has both lookups in hand); `kp`
-  acts only through the additive prefill term the alpha algebra cancels, and
-  its median over all 470 mixed batches of the two dense examples is **0**;
-  `skew_rate` is noise. The median replaces WLS because `t_skew - t_mean` is a
-  difference of two nearly-equal measurements, so its noise scales with
-  `t_mean` and weighting by `dtm^2` over-trusts the largest-gap rows -- median
-  wins on the sweep's own rows (Llama `rel_err_p50` 0.0588 -> 0.0308, the
-  estimator A/B at the `n` bins of the time) and end to end.
-
-  **The previous five axes could not be hit at runtime**, which is the part
-  that does not rest on that end-to-end score. The five-axis key splits one
-  sweep's 13,476 rows into **1,554 cells** and the cells real batches land in
-  hold **2 to 5 rows each**; three axes make **117 cells** and the ones real
-  batches land in hold 8 to 171. Scored on the 1,084 measured batches, joined
-  per batch so a finer key gets no free pass: the old key hits **0%** of them
-  once the 20-row floor applies -- numerically identical to having no table at
-  all -- and with no floor, which is what shipped, it hits 88-90% but reads
-  cells fitted on two to five shots, at |err| p50 **4.9% / 9.5%** against this
-  key's **1.6% / 3.1%**. So the previous tuning's optimum was an optimum over
-  the sweep's own rows.
-
-  **The `n` axis keeps one bucket per profiled batch size, now split at the
-  geometric midpoints** so a runtime `n` reads the nearest profiled size on a
-  log scale -- the rule `decode_q_len` and the MoE `ep` degree already use.
-  Coarsening it is not available: alpha differs **2.1-2.5x** between two
-  adjacent profiled sizes (42 coordinates with `nb`/`skew`/`kvs` held
-  identical; Llama tp1 0.0531 at n=128 against 0.0215 at n=256), and a run
-  never schedules past `max_num_seqs`, so a bucket spanning 128 and 256 charges
-  real batches the average of their own regime and one they cannot enter -- on
-  Llama that cell read **0.0258** against the **0.0539** measured on 224 of the
-  run's own n=128 batches.
-
-  Scored against **1,084 batches measured on the live engine** at their exact
-  kv lists -- none of them in `skew.csv` -- the lever-weighted alpha residual
-  is **1.77%** of the two dense examples' spans with the sizes pooled against
-  **0.21-0.26%** with one bucket each. Every example's worst metric improves:
-  max |err| over the 15 metrics goes 4.9% -> **3.7%** on Llama-3.1-8B, 3.6% ->
-  **2.3%** on Qwen3-32B and 8.6% -> **4.5%** on Qwen3-30B-A3B, and all four
-  bundled examples now land every metric inside 5%. `skew_fit.csv`'s columns
-  become `layer, n_label, pc_label, lev_label, alpha, n_samples`, and every
-  bundle's table is rewritten in it -- including the RTX 4090 one, whose
-  `meta.yaml` sets `skew_fit.enabled: false` so the simulator never reads it,
-  because a table in the tree that no code can produce is worse than a table
-  nothing uses. A bundle fitted before the change carries no `axes` list, so
-  nothing matches and every batch reads that bundle's pooled `alpha_default`.
-
-  **The `rel_err_p50` recorded in each `meta.yaml` roughly doubles**, from
-  0.011-0.013 to 0.021-0.026, and that is not a regression to chase. The
-  previous fit wrote a cell for every distinct 5-axis coordinate with no
-  support floor at all -- 3,952 to 21,665 cells over the same rows, 2.9 to 3.4
-  rows behind each one -- so it was scoring memorisation. This one writes
-  75-109 cells at 175 to 578 rows each, under a 20-row floor. The held-out
-  number is the one that moved the right way.
+- **Key the default skew alpha table on `n | pc | lev`, per attention kernel.**
+  Use cell medians with a support floor and clipping, plus a same-kernel pooled
+  fallback. Derive `n` boundaries from measured batch sizes and persist the
+  axes with the fit; `pc` and `lev` retain fixed bins. Store the per-cell table
+  in `skew_fit.csv` and keep summaries in `meta.yaml`.
+  These are empirical summaries, not sufficient statistics for arbitrary
+  request distributions. Raw alpha can lie outside the endpoint interval;
+  clipping is regularization, and development benchmarks are not independent
+  generalization evidence.
 
 - **Qwen3-30B-A3B's committed ground truth is a representative run, not the
   best-agreeing one.** Its DP+EP tail has a wide error bar on the *engine*

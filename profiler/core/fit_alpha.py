@@ -1,124 +1,32 @@
-"""Fit a per-bucket alpha from ``skew.csv``.
+"""Fit the default per-kernel, per-bucket alpha table from ``skew.csv``.
 
-The skew case measures three latencies at the same operating point:
+Each case measures uniform-mean, uniform-max and heterogeneous decode with
+the same prefill. Define gap = t_max - t_mean and
+alpha = (t_skew - t_mean) / gap. Serving applies the fitted constant to its
+own uniform-table lookups: t_predicted = t_mean + alpha * gap.
 
-    t_mean   all decodes uniform at the mean kv
-    t_max    all decodes uniform at the max kv
-    t_skew   the actual skewed batch (nb at kv_big, n-nb at kv_small)
+This is an empirical latency ratio, not an attention identity. For a mixed
+kernel T(P, D) = A(P) + B(D) + I(P, D), only the additive A(P) cancels.
+The interaction I can depend on prefill history and request layout.
+Neither the ratio nor the heterogeneous latency is bounded by its endpoints;
+small endpoint gaps amplify measurement noise.
 
-The simulator uses alpha at lookup time via
+The default key is [{layer}|]n|pc|lev, with lev = gap / t_mean.
+The n axis follows profiled batch sizes with geometric-midpoint boundaries;
+pc and lev retain fixed bins. These summaries do not uniquely identify a
+length distribution or its kernel dispatch, and are not proved sufficient
+for arbitrary models, hardware or workloads.
 
-    t_predicted = t_mean + alpha * (t_max - t_mean)
+Each supported cell uses the median of its raw alphas, then _ALPHA_CLIP.
+The clip is a regularizer, not a physical bound. Cells below
+_MIN_BUCKET_ROWS fall back to the same kernel's pooled least-squares
+alpha_default. Axes and fit summaries are persisted in meta.yaml, while
+per-cell values live in skew_fit.csv. Legacy incompatible axes use the
+pooled fallback at lookup.
 
-**What alpha is.** Split a batch's cost into its prefill and decode parts.
-All three shots carry the *same* prefill by construction, so writing
-``D(x)`` for the decode cost with every decode at ``kv = x``::
-
-    t_mean = T_pf + D(mean)   t_max = T_pf + D(max)   t_skew = T_pf + D(list)
-
-    gap   = t_max - t_mean           = D(max)  - D(mean)      <- T_pf cancels
-    alpha = (t_skew - t_mean) / gap  = [D(list) - D(mean)] / [D(max) - D(mean)]
-
-So alpha is a purely decode-side ratio: the prefill's additive cost cancels
-twice. That is what makes it the right quantity to fit -- the same penalty
-expressed relative to ``t_mean`` keeps ``T_pf`` in its denominator and so
-varies 2.9x with ``kp`` where alpha varies 1.2x.
-
-And note what alpha measures. If the kernel were exactly linear in kv,
-``D(x) = a + b*n*x``, then ``D(list) = a + b*sum(kv) = D(mean)`` -- the real
-list and the uniform-at-the-mean batch read the same total KV -- and alpha
-would be **exactly 0**. Alpha is therefore the *departure from kv-linearity*:
-tile padding, CTA-wave quantisation, SM imbalance. It is a second-order term,
-which is why measured values run 0.0006-0.03 on real batches and why it is
-noise-sensitive.
-
----------------------------------------------------------------------
-The three axes
----------------------------------------------------------------------
-``n | pc | lev``, where ``lev = (t_max - t_mean) / t_mean``. Each names one
-component of that departure:
-
-    n     its size. One CTA per (query tile, head) means the CTA count scales
-          with n, and the quantisation loss depends on how n falls against the
-          device's SM count.
-    pc    its coupling to the prefill. Alpha cancels T_pf's *additive* part,
-          but a model like Llama runs prefill and decode in one varlen call,
-          so the decodes' CTAs share waves with the chunk's and ``D(.)``
-          itself depends on pc. The interaction does not cancel.
-    lev   its normalisation. The departure grows sub-linearly with the spread,
-          so alpha falls roughly as 1/lev -- measured 0.20 / 0.066 / 0.087 /
-          0.065 / 0.016 across the five lev bins on Llama-3.1-8B.
-
-**This was chosen by running every subset of six candidate axes end to end**,
-64 of them x 3 committed bench examples, scored on all 15 metrics
-(TTFT/TPOT/latency x mean/p50/p90/p95/p99). Summed mean |err| over the three
-examples:
-
-    n | pc | lev                    4.35   <- chosen
-    n | pc | disp                   4.43
-    n | pc                          4.55
-    n | pc | kp                     4.82
-    pc(raw) | n | skew_rate
-        | kv_big | kp               7.51   <- what shipped before
-    lev alone                       8.5
-    srate | kp                     63.9    <- worst of the 64
-
-On the one example whose bundle reproduces exactly when re-measured
-(Llama-3.1-8B) that is 15 of 15 metrics inside +-1.1%, against +1.6..+4.9%
-before.
-
-Three axes were dropped, and the reasons match the algebra above:
-
-    kv_big, disp   already inside ``gap`` / ``lev``; adding them moves the
-                   score 4.55 -> 4.43, inside what one example can resolve.
-    kp             acts only through the additive prefill term alpha cancels.
-                   Real batches make the point anyway: over all 470 mixed
-                   batches of the two dense examples, kp's median is **0** and
-                   only 3 of them exceed 2048.
-    skew_rate      noise. Every subset containing it but not ``n, pc`` lands in
-                   the bottom half, and ``srate | kp`` is last of the 64.
-
-**Bins are fixed, not derived from the sweep -- except that ``n`` keeps one
-bucket per profiled batch size, split at the geometric midpoints so a runtime
-``n`` reads the nearest profiled size on a log scale.** Fixed bins split the
-data more slowly than derived ones (at 30 cells only 4 of 20 measured real
-batches hit one and the rest fell back to the pooled constant regardless), but
-``n`` cannot be coarsened: alpha differs **2.1-2.5x** between two adjacent
-profiled sizes, measured at 42 coordinates with (nb, skew, kvs) held identical,
-and a run at ``max_num_seqs`` never reaches the larger one. A bucket spanning
-128 and 256 charged real batches the average of their own regime and one they
-cannot enter -- and its median flipped between the two populations as rows
-arrived (0.0437 at 116 rows, 0.0285 at 127). Scored against 1,084 batches
-measured on the live engine, the lever-weighted alpha residual is **1.77%** of
-the two dense examples' spans pooled that way against **0.21-0.26%** with one
-bucket per profiled size.
-
-And ``pc`` used to be keyed by its **raw** value, which is why every mixed
-batch missed: a runtime chunk is ``min(remaining prompt, budget left after the
-decodes)`` and lands on a profiled grid point only by coincidence -- 208 of 208
-lookups on the Qwen3-32B workload fell through to the pooled alpha.
-
-Within a cell the fitted constant is the **median** of the per-row alphas, not
-the weighted-LS optimum ``sum(dtm*dts) / sum(dtm^2)``. WLS is the right
-objective when the noise on ``dts`` is homoscedastic -- the charged error is
-``(a - a*) * dtm``, so weighting the residual by ``dtm^2`` is optimal -- but
-``dts`` is a difference of two nearly-equal measurements, so its noise scales
-with ``t_mean``, which grows with the batch and correlates with ``dtm``. Under
-that noise model ``dtm^2`` over-trusts the few largest-gap rows, which are
-exactly where one noisy shot dominates. Measured both ways through the whole
-pipeline, median wins on the sweep's own rows (Llama ``rel_err_p50``
-0.0588 -> 0.0308) *and* end to end. That A/B swapped only the estimator, at
-the ``n`` bins of the time; the shipped fit reads 0.0259.
-
-A cell with fewer than ``_MIN_BUCKET_ROWS`` rows is not written; those
-batches read the layer's pooled ``alpha_default``, measured on the same
-kernel. Cells are clipped to ``_ALPHA_CLIP``.
-
-The axes are written to ``meta.yaml::skew_fit.bucket_axes`` with an explicit
-``axes`` list, and the simulator reads them from there. A bundle fitted before
-this change carries no ``axes`` key; its cells are then unreachable and every
-batch reads that bundle's pooled ``alpha_default``, which is what mixed
-batches already got.
+Fit residuals describe the input rows, not independent generalization.
+Use workload-level validation and untouched distributions to assess a
+change; do not fit coefficients to benchmark request timings.
 """
 from __future__ import annotations
 
@@ -153,8 +61,8 @@ _LEV_LABELS = ("lev0", "lev1", "lev2", "lev3", "lev4")
 # alpha, which is measured on the same kernel.
 _MIN_BUCKET_ROWS = 20
 
-# Cells outside this range are noise: the sweep's own alpha p10-p90 is
-# -0.04..0.82, and an alpha below -1/lever drives the blended lookup negative.
+# A regularizer chosen during development, not a physical bound or proof
+# that cells outside this range contain only measurement noise.
 _ALPHA_CLIP = (-0.2, 1.0)
 
 

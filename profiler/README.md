@@ -535,8 +535,8 @@ metadata:
 
 ## Skew profiling & alpha fit
 
-FlashAttention's varlen kernel pays a tile-padding + SM-imbalance
-penalty when a decode batch's kv lengths aren't uniform. The uniform
+Varlen attention latency can change in either direction when decode KV
+lengths are heterogeneous. The uniform
 attention grid can't see that — every shot there has all decodes at
 the same kv — so we run a second, narrower sweep on purpose-built
 bimodal batches:
@@ -553,13 +553,10 @@ From these three we get a normalised alpha per case:
 alpha = (t_skew - t_mean) / (t_max - t_mean)
 ```
 
-Nothing clamps this ratio, and the measured data does leave `[0, 1]`:
-across the bundles in `perf/`, 14-20% of rows are negative (the
-endpoint gap sitting inside measurement noise) and 2-5% exceed 1 (a
-skewed mix genuinely costing more than uniform-max, since tile padding
-and SM imbalance are not bounded by it). p50 is 0.07-0.13, p90 is
-0.46-0.96. Rows where `t_max <= t_mean` are recorded as `nan` and
-dropped by the fit.
+Raw ratios are not clipped to `[0, 1]`; both real distribution effects
+and measurement noise can produce values outside it. Dense kernels omit
+nonpositive endpoint gaps; kernels marked as key-saturating also retain
+negative gaps. A zero gap cannot define alpha. Small gaps amplify noise.
 
 which the simulator then applies at query time:
 
@@ -600,68 +597,36 @@ would not mean anything:
 | `SKEW_KVS_FACTOR` | `kvs` (small-decode kv) | coarsen the kv sweep |
 
 Higher values → fewer points → faster sweep. Lower → denser grid →
-more accurate alpha near the fine structure. The effective values
+more samples, without guaranteeing a more accurate fit. The effective values
 hit `meta.yaml::skew_profile.factors` so you can tell later which
 density produced which CSV.
 
 ### 3-axis alpha fit
 
-`fit_alpha.py` runs right after profiling and groups rows by a
-3-tuple bucket key, prefixed with the kernel:
+The default fitter groups rows by `[{layer}|]{n_label}|{pc_label}|{lev_label}`,
+where `lev = (t_max - t_mean) / t_mean`. Each supported cell uses the median
+of its raw alphas, clipped to `[-0.2, 1.0]`; cells below 20 rows use the same
+kernel's pooled least-squares `alpha_default`. The clip is a regularizer, not
+a physical bound, and distinct shapes are not repeated measurements of one
+operating point.
 
-```
-[{layer}|]{n_label}|{pc_label}|{lev_label}
-```
+`n` is derived from the sweep, with geometric-midpoint boundaries between
+profiled batch sizes. `pc` and `lev` use fixed bins. Axes are written to
+`meta.yaml::skew_fit.bucket_axes` and read back by the simulator. This keeps
+profiling and lookup consistent as the batch-size range changes.
 
-Each cell's alpha is the **median** of its per-row alphas, clipped to
-`[-0.2, 1.0]`; a cell with fewer than 20 rows is not written and its
-batches read the kernel's pooled `alpha_default`. The median rather
-than a weighted-LS fit because `dts = t_skew - t_mean` is a difference
-of two nearly-equal measurements, so its noise scales with `t_mean` and
-weighting by `dtm^2` over-trusts the largest-gap rows.
+The ratio is empirical. Only a purely additive prefill contribution cancels
+between the three shots; mixed-kernel interactions can still depend on
+prefill history and request layout. Mean/max endpoints and `lev` do not
+uniquely encode an arbitrary KV distribution. These axes are not a proof of
+sufficiency across models or hardware.
 
-The `rel_err_p50` in `meta.yaml` roughly **doubled** when this replaced
-the previous 5-axis fit (0.011-0.013 -> 0.021-0.026), and that is not a
-regression. The old fit wrote a cell per distinct coordinate with no
-support floor -- 3,952-21,665 cells at 2.9-3.4 rows each -- so it was
-scoring memorisation; this one writes 75-109 cells at 175-578 rows each.
-The held-out number is the one that moved the right way: the
-lever-weighted residual over 1,084 batches fired on the live engine,
-1.77% -> 0.21-0.26%.
-
-The axes were picked by running **every subset of six candidates end to
-end** -- 64 of them across the three committed bench examples, scored on
-all 15 metrics. `n | pc | lev` summed 4.35 against the previous five
-axes' 7.51; `kv_big` and the dispersion measures are already inside
-`lev`, `kp`'s median over 470 real mixed batches is 0, and `skew_rate`
-is noise.
-
-The sharper reason is support, not ranking. The five-axis key splits one
-sweep's 13,476 rows into **1,554 cells** and the cells real batches land
-in hold **2-5 rows each**; this one makes **117 cells** and the ones real
-batches land in hold **8-171**. Scored per batch on 1,084 measured
-batches, the old key hits **0%** of them once a 20-row floor applies --
-numerically identical to having no table -- and with no floor (what
-shipped) reads |err| p50 4.9% / 9.5% against this key's 1.6% / 3.1%.
-
-**`n` is derived from the sweep; `pc` and `lev` are fixed.** `n` gets one
-bucket per profiled batch size, split at the **geometric midpoints** so a
-runtime `n` reads the nearest profiled size on a log scale -- the same
-rule `decode_q_len` and the MoE `ep` degree use. That axis cannot be
-coarsened: alpha differs 2.1-2.5x between two adjacent profiled sizes
-(measured at 42 coordinates with `nb`/`skew`/`kvs` held identical) and a
-run never schedules past `max_num_seqs`, so a bucket spanning two of them
-averages in a regime the runtime cannot enter. Deriving it is also what
-makes raising `MAX_NUM_SEQS` light up resolution with no code change --
-the fitter writes the axes it used into
-`meta.yaml::skew_fit.bucket_axes` and the simulator reads them from
-there.
-
-`pc` stays four coarse bins because alpha's dependence on it is a single
-step at `pc = 0 -> pc > 0` and flat above it; swept from 2 bins to
-one-per-profiled-value the residual moves 0.71 / 0.49 / 0.51 / 0.50 /
-0.48 / 0.50 / 0.57%, indistinguishable across the middle. `lev` is not a
-swept axis at all, so there is no profiled value to be nearest to.
+Fit residuals describe the fitting data, and the existing development
+benchmarks are regression checks rather than independent generalization
+estimates. Compare all workload-level latency metrics and use untouched
+distributions when assessing a new fit. See the
+[skew guide](../docs/docs/profiler/skew-alpha-fit.md) for the current storage,
+lookup and fallback behavior.
 
 ### Disabling / re-fitting
 

@@ -86,6 +86,10 @@ configurations:
 | RTXPRO6000 | Qwen3-32B | TP=2 dense | -0.4% | +0.1% | -0.1% | -0.6% |
 | RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.8% | +0.5% | +0.5% | +4.8% |
 
+These workloads were used during development, including skew-axis selection.
+Their results are useful regression checks, not an independent estimate of
+generalization to other models, hardware or request distributions.
+
 The last column is the largest absolute error across all fifteen metrics
 (TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
 summary of a run: a mean can be small because two errors cancelled. **Every
@@ -168,13 +172,13 @@ the author's choice rather than measured.
 | Latency P99 | 36.17 s | 36.86 s | +1.9% |
 
 The same model and parallelism on a 96 GB card. It never preempts, though its
-block pool does reach 79% of budget. This run is the one whose residual is
-fully localised, and it is a single term: the simulator's charge for one decode
-step is **1.6% above production**, measured on one controlled uniform-kv shape
-(production 26.04 ms against the simulator's 26.47 at n=128, kv 1190). The
-saturated queue then amplifies it — +1.4% TPOT, +4.3% queue wait, +3.7% TTFT.
+block pool does reach 79% of budget. On one controlled uniform-KV shape, the
+simulator charges a decode step **1.6% above production** (production 26.04 ms
+against the simulator's 26.47 at n=128, kv 1190). The
+saturated queue can amplify a step-level discrepancy. This single shape does
+not identify the entire run's residual or establish a universal correction.
 
-Two measured causes, neither of them the cost model being wrong about a kernel.
+Two observed measurement sensitivities are token layout and profiled depth.
 `dense.csv` records only the **prefill** token layout, because the profiler
 packs a shot's tokens into one request, and the same token count spread over
 decode sequences measures 2-4% cheaper on the projections (`down_proj` at

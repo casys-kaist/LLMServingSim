@@ -278,6 +278,10 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `_hydrate_skew_fit_tables()` — on load, walks each TP's
   `bucket_table:` pointer and reads `tp<N>/skew_fit.csv` into the
   in-memory `alpha_by_bucket` map that `_skew_alpha` consults.
+  The correction is empirical: mean/max endpoints do not uniquely describe
+  a KV distribution, and latency can change in either direction. Linear
+  interpolation and the bucket summaries are approximations, not kernel
+  identities or guarantees across models and hardware.
 - `TraceCtx` / `BatchCtx` / `PowerAccumulator` — data classes for context passing
 - `_emit_layer()` — single-layer emission that dispatches by catalog category
 - `_emit_sequence()` — walks a list of canonical names from the yaml; attaches

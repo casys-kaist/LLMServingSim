@@ -523,7 +523,9 @@ Two controlled experiments, same model / hardware / flags, against the trusted
 
 The physics check that made it findable at all: `lm_head` reads the whole
 output embedding, so `vocab * hidden * bytes / mem_bw` = 583 us is a hard floor
-and 6417 us is impossible. **A profiled curve gives no other signal** — it
+and 6417 us is suspiciously far above that floor. A lower bound alone does
+not make a slower measurement impossible; the controlled 9x discrepancy
+and upstream normalization explain the error. **A profiled curve gives no other signal** — it
 stayed smooth and monotone the whole way, and `profiler coverage` passed,
 because coverage reports only what is *un*bound.
 
@@ -607,12 +609,12 @@ sweep on bimodal batches and measures three latencies per case — `t_mean`
 (all decodes at the batch mean), `t_max` (all at the max), and `t_skew` (the
 actual bimodal mix). The alpha
 `alpha = (t_skew − t_mean) / (t_max − t_mean)` tells the simulator how far
-along the mean→max line a skewed batch lands. It is **not** clamped to
-[0, 1], in the fit or in `_skew_alpha`: measured p50 is 0.07–0.13, but
-14–20% of rows are negative (endpoint gap inside measurement noise) and
-2–5% exceed 1 (a skewed mix genuinely costing more than uniform-max,
-which tile padding and SM imbalance do not bound). Rows with
-`t_max <= t_mean` are recorded `nan` and dropped.
+along the mean→max line a skewed batch lands. Raw ratios are not clamped;
+fitted cells are clipped to `[-0.2, 1.0]`, while the pooled fallback is not.
+Negative or above-one ratios can reflect real distribution effects as well
+as noise. Dense kernels omit nonpositive endpoint gaps; key-saturating kernels
+retain negative gaps too. A zero gap cannot define alpha. Neither the ratio
+nor its clipping range is a physical bound.
 
 - **Sweep structure**: Tier 1 is a factorial over `(n, ratio, pc, kp, kvs)`
   at `_SKEW_REP = 4.0`; Tier 2 adds a skew-axis sweep at a handful of anchor
@@ -634,9 +636,10 @@ which tile padding and SM imbalance do not bound). Rows with
   end** — 64 of them x the three committed bench examples, scored on all 15
   metrics. Summed mean |err|: `n | pc | lev` 4.35, `n | pc | disp` 4.43,
   `n | pc` 4.55, `n | pc | kp` 4.82, the old five 7.51, `lev` alone 8.5.
-  `kv_big` and `disp` are already inside `lev`; `kp` acts only through the
-  additive prefill term alpha cancels (over all 470 mixed batches of the two
-  dense examples its median is **0**); `skew_rate` is noise. Read that for the
+  This is development-set selection, not an independent generalization test.
+  `lev` summarizes endpoint separation, not arbitrary length distributions.
+  Only an additive prefill term cancels; mixed-kernel interactions can depend
+  on history and layout. Dropped axes were not proved irrelevant. Read that for the
   ranking only: every arm of it ran at the coarse `n` bins that were later
   replaced, so it ranks axis sets under a defect all of them shared.
 
@@ -683,10 +686,11 @@ which tile padding and SM imbalance do not bound). Rows with
   21,665 cells over the same 13k-63k rows, i.e. 2.9 to 3.4 rows behind each
   "fit" — so its 0.011-0.013 was measuring memorisation. This one writes
   75-109 cells at 175 to 578 rows each and reads 0.021-0.026. What moved in the
-  right direction is the held-out number: the lever-weighted residual over
+  right direction was the development comparison: the lever-weighted residual over
   1,084 batches measured on the live engine, **1.77% -> 0.21-0.26%**, and the
-  64-subset end-to-end score, 7.51 -> 4.35. A self-eval on a table with three
-  rows per cell cannot distinguish the two.
+  64-subset end-to-end score, 7.51 -> 4.35. These shapes were used in selection,
+  so they are not an untouched holdout. A self-eval on a table with three
+  rows per cell cannot establish generalization.
 - **`n` is derived from the sweep; `pc` and `lev` are fixed.** `_derive_n_axis`
   puts one bucket per profiled batch size and splits at the **geometric
   midpoints**, so a runtime `n` reads the profiled size nearest to it on a log
@@ -695,7 +699,8 @@ which tile padding and SM imbalance do not bound). Rows with
   makes the axis follow `max_num_seqs`: a sweep at 256 gets a bucket for 256, a
   sweep at 512 one for 512, and neither pools two profiled sizes.
 
-  That axis cannot be coarsened. Alpha differs **2.1-2.5x** between two
+  Coarsening requires validation rather than an assumption of smoothness.
+  In the development measurements, alpha differed **2.1-2.5x** between two
   adjacent profiled sizes — measured at 42 coordinates with `nb` / `skew` /
   `kvs` held identical (Llama tp1 0.0531 at n=128 against 0.0215 at n=256;
   Qwen3-32B tp2 0.1119 against 0.0537) — and a run never schedules past
@@ -738,12 +743,14 @@ which tile padding and SM imbalance do not bound). Rows with
   `alpha_default`, measured on the same GPU. `ONLY_SKEW=1` skips every
   other category and refreshes just `skew.csv` + `skew_fit.csv`.
 
-### There is no cudagraph correction, and why the one there was is gone
+### Why the old cudagraph correction is gone (not proof that graphs are irrelevant)
 For four months the simulator subtracted a per-step "cudagraph saving" it read
 from a `step.csv` the profiler swept, on the premise that **the sum of profiled
 layers predicts eager execution** and production runs the compiled + cudagraph
-path. Both halves of that premise are false, and the correction was
-compensating a second error rather than modelling a real term.
+path. The first equality is false: kernel sums are not eager wall time.
+The isolated-wall-time correction also compensated a second error rather
+than identifying a production term. This does not establish execution-mode
+invariance: exact-step controls are needed to measure any remaining difference.
 
 **What the profiled sum actually is.** `layerwise_profile` builds its tree from
 per-module CUDA events and `_cumulative_cuda_time` sums **leaf kernel
@@ -753,11 +760,11 @@ measured kernel total on the live engine, the simulator's trace lands within
 half a percent (Llama-3.1-8B at one sequence: trace 11,360 us against 11,311
 measured).
 
-**And a production step is kernel time too.** A saturated engine replaying a
-captured graph is essentially back-to-back kernels, and the residual does not
-survive to the run level. Measured at matched concurrency against real vLLM
-runs -- the truth's own `running / gen_throughput` on pure-decode ticks against
-the same quantity from the simulator's log:
+**What the historical production comparison measured.** A saturated captured
+graph can overlap host overhead, but its event interval is not guaranteed to
+equal the sum of eager-profiled kernels. The old comparison used the truth's
+own `running / gen_throughput` on pure-decode ticks against the same quantity
+from the simulator's log:
 
 | model | sim / truth decode step |
 |---|---|
@@ -765,11 +772,12 @@ the same quantity from the simulator's log:
 | Qwen3-32B, TP=2 | **1.000** |
 | Qwen3-30B-A3B, DP2+EP2 | 0.944 |
 
-That is with **no** step correction and the measured link below. The two dense
-models are exact. A microbenchmark does show a residual of 2-5% between a
-pipelined graph replay and the kernel sum, but it is `sample_tokens` and batch
-assembly per forward, which a real engine overlaps -- so it is not a term the
-simulator is missing.
+That is with **no** step correction and the measured link below. These
+historical one-second-tick aggregates are close, but do not establish exact
+same-shape agreement: running counts and KV distributions change inside a
+tick. A pipelined replay microbenchmark's 2-5% residual also does not establish
+which costs overlap in every production regime. Neither a universal zero
+residual nor a flat subtraction follows from these aggregates.
 
 **What `step.csv` measured instead.** `saved_us` was
 `isolated_no_graph_wall - isolated_graph_wall`, both timed with a
@@ -793,11 +801,12 @@ sizes the simulator emits. Removing both:
 
 The two collective-carrying models are better without either correction, and
 Llama -- which has no collectives to over-charge -- is the one that wanted the
-subtraction. Its remaining +1.6% is **not** a uniform per-step term: its decode
-step is already 0.993, so the residual is in its prefill steps, and a flat
-subtraction is the wrong shape for it.
+subtraction. Its remaining +1.6% should **not** be assigned a uniform per-step
+term. The historical 0.993 decode-tick ratio suggested a prefill contribution,
+but cannot localise the entire residual. A flat subtraction still lacks a
+causal basis without exact-shape controls across execution regimes.
 
-**Do not rebuild it.** Three specific things to know if the idea comes back:
+**Do not restore the isolated-wall subtraction.** Three specific things to know if the idea comes back:
 
 - **The premise has to be re-derived, not assumed.** "Profiled sum = eager
   wall" was written down once and never checked against a measured kernel
@@ -1179,7 +1188,7 @@ the lookup.
 | `embedding` | dense | `tokens = total_len` |
 | `layernorm` | dense (tp_stable) | `tokens = total_len` |
 | `qkv_proj` | dense | `tokens = total_len` |
-| `qk_norm` | dense (tp_stable; Qwen3 only) | `tokens = total_len` |
+| `qk_norm` | dense (TP-dependent; Qwen3 only) | `tokens = total_len` |
 | `rotary_emb` | dense | `tokens = total_len` |
 | `attention` | attention | `(prefill_chunk, prefill_key, n_decode, kv_decode)` |
 | `o_proj` | dense + ALLREDUCE after (TP>1) | `tokens = total_len` |
@@ -2362,6 +2371,9 @@ website (not the README).
 - Before every commit, review repository READMEs, AGENTS.md, CHANGELOG.md and
   related website documentation. Update stale descriptions affected by the
   change in the same commit, including the generated changelog page.
+- Commit documentation of supported behavior and verified changes only.
+  Keep session diaries, investigation checkpoints and intermediate experiment
+  notes outside tracked documentation, including contributor pages and this file.
 - Include the exact command used for validation and note any output CSV path in PRs
 - Describe which simulation mode is affected and the config/dataset used
 
@@ -2464,8 +2476,10 @@ recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
 If that metadata is absent, omit the flag so serving resolves its default;
 do not force a dense-only page size onto sparse or hybrid examples.
 
-No unit-test suite. The simulator is deterministic, so validation is exact
-equality against recorded results:
+Focused unit tests live under `profiler/tests/`. Run them in the profiler
+environment with `python3 -m unittest discover -s profiler/tests -v`.
+The simulator is deterministic, so its regression validation additionally
+checks exact equality against recorded results:
 
 **Three things under `profiler/` are simulator inputs**, despite the path. The
 trace generator reads each directly, so a change to any of them can move every

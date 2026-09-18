@@ -36,6 +36,9 @@ git checkout -b add-deepseek-v3
   Before each commit, review repository READMEs, AGENTS.md, CHANGELOG.md
   and related website pages. Update affected stale descriptions together
   with the fix, and regenerate the site's changelog from CHANGELOG.md.
+- **Document supported behavior, not development sessions.** Keep investigation
+  diaries, intermediate experiment notes and session checkpoints out of tracked
+  documentation. Describe verified changes, usage and known limitations.
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.

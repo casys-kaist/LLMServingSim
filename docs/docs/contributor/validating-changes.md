@@ -5,10 +5,11 @@ title: Validating your changes
 
 # Validating your changes
 
-The project does not ship a unit-test suite. The simulator is
-**deterministic** instead — the same cluster config, workload and flags
+Focused regression tests live under `profiler/tests/` and run with
+`python3 -m unittest discover -s profiler/tests -v` in the profiler environment.
+The simulator is also **deterministic** — the same cluster config, workload and flags
 reproduce the same makespan exactly — so validation is equality against
-recorded results rather than eyeballing plots. `serving/validate.sh`
+recorded results in addition to targeted tests. `serving/validate.sh`
 runs that comparison for you.
 
 ## 1. Run the validation script (every PR)

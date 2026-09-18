@@ -130,7 +130,7 @@ class BatchCtx:
                         # hold. A length, used for tensor sizing -- not the
                         # attention lookup, which needs the mean below.
     # The prefill side's key axis: the query-weighted mean over this step's
-    # prefills of how far each sequence's queries look back -- its context
+    # prefill sequences of how far their queries look back -- the context
     # plus half its own chunk, since causal masking means the average query
     # in a chunk sees half of it. It replaces ``sum(prefill_k_list)``, which
     # described one sequence and, on a step carrying several, added their
@@ -836,8 +836,9 @@ def _axis_bracket(values, query):
     ``t`` is measured on a **linear** scale even though the profiler
     sweeps every axis geometrically. Those are separate choices: the
     grid spacing decides where the kernel is sampled, the blend decides
-    how two samples are combined, and the kernel is linear in each
-    axis. Profiled decode attention fits ``time_us = a + b * (n_decode
+    how two samples are combined. Local linearity is an approximation,
+    not a guarantee across dispatch or tile/wave boundaries.
+    Profiled decode attention fits ``time_us = a + b * (n_decode
     * kv_decode)`` with R^2 = 1.0000 on the RTX 4090 Llama-3.1-8B grid,
     at an implied 953 GB/s — 95% of the card's spec, i.e. a pure
     KV-bandwidth read.
@@ -870,7 +871,7 @@ def _axis_bracket(values, query):
 def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
     """Bilinear (linear on each axis) within a single (pc, nd) slice.
 
-    ``prefill_key`` is a query-weighted mean over the batch's prefills, so it is
+    ``prefill_key`` is a query-weighted mean over the prefills, so it is
     not an integer and must not be floored: at the bottom of the axis a
     half-token is a percent of the coordinate.
     """
@@ -909,15 +910,16 @@ def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
 # only tell us the uniform-batch latency. ``kv_decode_mean`` is the
 # right coordinate to ask it for: decode attention cost tracks the
 # total KV read Sigma_k, and a uniform batch at the arithmetic mean has
-# ``n * mean(k) = Sigma_k`` exactly. The median would not — the runtime
+# ``n * mean(k) = Sigma_k`` before integer flooring. The shared floor
+# convention loses less than n history tokens per batch. The median would
+# not preserve the total — the runtime
 # kv distribution is right-skewed (measured ``kv_max/kv_mean`` p50 =
 # 2.61 on the ShareGPT replay), so a median anchor would understate the
 # read volume. The profiler uses the same definition (``skew.py``:
 # ``kv_mean = total_kv // n``).
 #
-# A truly skewed batch is slightly *slower* than that uniform anchor,
-# because FlashAttention's varlen kernel pays tile padding and
-# SM-imbalance costs the uniform measurement misses. The skew profile
+# A heterogeneous batch can be faster or slower than that uniform anchor;
+# the aggregate key coordinate does not retain its distribution. The legacy skew profile
 # (profiler/.../tp<N>/skew.csv + the fitted ``skew_fit`` block in
 # meta.yaml, with the bucket alpha table spilled to
 # ``tp<N>/skew_fit.csv``) captures that as a 3-axis lookup table of
