@@ -95,11 +95,18 @@ has its own lookup function:
 | --- | --- | --- | --- |
 | `dense` | `_lookup_dense` | `total_len` (sum of tokens in batch) | 1D linear |
 | `per_sequence` | `_lookup_per_sequence` | `num_requests` | 1D linear |
-| `attention` | `_lookup_attention` | `(prefill_chunk, kv_prefill, n_decode, kv_decode)` | 4D linear (bracket + blend on each axis) |
+| `attention` | `_lookup_attention` | `(prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len)` | Linear bracket + blend on each axis |
 | `moe` | `_lookup_moe` | `(local_tokens, activated_experts)` (per rank, profiled at TP=1) | 2D linear |
 
 Every axis is bracketed by its two neighbouring profiled values and
 blended on a linear scale.
+
+`prefill_key = sum(c * (history + c / 2)) / sum(c)` weights each prefill
+by its query count `c`, not by one vote per sequence. Empty prefills give zero.
+Profiling and runtime use the same helper in `profiler/core/attention_shape.py`.
+This preserves the continuous causal convention and does not claim that one
+coordinate fully determines heterogeneous attention latency. For saturating
+kernels, each effective key is capped before the weighted mean.
 
 All lookups **extrapolate** outside the profiled grid (via linear
 extension), so a runtime value larger than the largest profiled

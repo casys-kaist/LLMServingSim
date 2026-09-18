@@ -100,27 +100,34 @@ Simulator: **1D linear interpolation over `sequences`**.
 
 ## `attention.csv`
 
-The 4D attention table, covers pure-prefill, pure-decode, and mixed
+The attention table covers pure-prefill, pure-decode, and mixed
 kernel shapes:
 
 ```
-prefill_chunk,kv_prefill,n_decode,kv_decode,time_us
-0,0,1,16,8.08533
-0,0,1,32,8.17033
+layer,prefill_chunk,prefill_key,n_decode,kv_decode,decode_q_len,time_us
+attention,0,0,1,16,1,8.08533
+attention,0,0,1,32,1,8.17033
 ...
-512,2048,4,128,...
+attention,512,2304,4,128,1,...
 ...
 ```
 
 | Column | Meaning |
 | --- | --- |
 | `prefill_chunk` | Tokens of the prefill chunk in this iteration. `0` = pure decode |
-| `kv_prefill` | KV cache history length the prefill chunk attends to |
+| `prefill_key` | Query-weighted effective causal key length across prefills |
 | `n_decode` | Number of concurrent decode requests in this iteration. `0` = pure prefill |
 | `kv_decode` | KV cache history length the decode requests attend to |
+| `decode_q_len` | Query tokens per decode sequence; normally 1, larger for speculative verification |
 | `time_us` | Measured attention kernel latency |
 
-Simulator does **4D linear interpolation**: each of the four axes is
+For chunks `c_i` with histories `k_i`, the shared profiling/runtime coordinate
+is `sum(c_i * (k_i + c_i / 2)) / sum(c_i)` (zero without prefills). Equal
+chunks and single-request shots keep their previous values. Legacy
+`kv_prefill` tables held one prefill per shot and are relabelled on load as
+`kv_prefill + prefill_chunk / 2`; this does not create missing grid coverage.
+
+Simulator does **5D linear interpolation**: each populated axis is
 bracketed by its two neighbouring profiled values and blended
 linearly, extrapolating from the top two samples above the grid.
 

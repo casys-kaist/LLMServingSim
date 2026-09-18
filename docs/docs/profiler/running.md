@@ -159,12 +159,14 @@ the value a combined run would resolve to: `max_model_len - max(q) - 1`.
 :::
 
 
-The 4D attention sweep covers `(prefill_chunk, kv_prefill, n_decode,
-kv_decode)`. Three knobs control its shape:
+The attention sweep covers `(prefill_chunk, prefill_key, n_decode,
+kv_decode, decode_q_len)`. `prefill_key` is the query-weighted causal key
+coordinate described in [the output schema](./output-bundle#attentioncsv).
+The ordinary decode slice has `decode_q_len = 1`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ATTENTION_MAX_KV` | `16384` | Upper bound for `kv_prefill` and `kv_decode` axes |
+| `ATTENTION_MAX_KV` | model-derived | Bounds the histories used to construct prefill and decode shots |
 | `ATTENTION_CHUNK_FACTOR` | `2.0` | Geometric factor for `prefill_chunk` axis (doubling) |
 | `ATTENTION_KV_FACTOR` | `2.0` | Geometric factor for `kv` axes (doubling) |
 

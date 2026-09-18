@@ -32,6 +32,10 @@ git checkout -b add-deepseek-v3
   support`, `Document MoE expert routing`.
 - **One logical change per commit.** A refactor and a feature in
   the same commit is a reviewer's nightmare.
+- **Commit verified bug fixes separately from unresolved experiments.**
+  Before each commit, review repository READMEs, AGENTS.md, CHANGELOG.md
+  and related website pages. Update affected stale descriptions together
+  with the fix, and regenerate the site's changelog from CHANGELOG.md.
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.

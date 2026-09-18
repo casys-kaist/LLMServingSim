@@ -946,14 +946,22 @@ sequences -- one request finishing its prompt beside another just starting --
 and summing their contexts produces a coordinate none of them has: 0, 1200 and
 64 came out as 1264.
 
-The axis is now **`prefill_key`**: the mean, over the batch's prefill
-sequences, of how far that sequence's queries look back --
+The axis is **`prefill_key`**: the query-weighted mean of each prefill's
+effective causal key length --
 
-    prefill_key = mean_i ( k_i + c_i / 2 )
+    prefill_key = sum_i c_i * (k_i + c_i / 2) / sum_i c_i
 
 `c_i` is what request *i* has scheduled this step and `k_i` what it already
 holds; the half is causal masking, since the average query in a chunk sees
-half of it. Matched against real vLLM runs -- table built from the shapes the
+half of it. `profiler/core/attention_shape.py` owns this coordinate for both
+profiling and serving. An empty prefill contributes zero. Cap each request's
+effective key before weighting for a saturating kernel; this remains a window
+approximation, not an exact discrete causal-work integral. Equal chunks retain
+their old coordinate, but unequal chunks must not count as equally much work:
+chunks 1792 and 256 with no history give 800, not the old sequence mean 512.
+
+The following figures describe the earlier sequence-mean migration, not an
+independent validation of query weighting. Matched against real vLLM runs -- table built from the shapes the
 profiler sweeps, scored on multi-prefill steps -- that moves |err| p50 from
 14.18% to 5.97% on DeepSeek-V3.2 and 12.96% to 7.93% on Llama-3.1-8B, and it
 improves the single-prefill case too (2.15% -> 1.71%, 10.28% -> 9.88%). Adding
@@ -2314,6 +2322,11 @@ website (not the README).
 - Short imperative commit messages: `Fix incorrect evict_size accumulation`,
   `Add Qwen3 model support`
 - Keep commits focused — one logical change per commit
+- Record verified fixes for established bugs in separate commits; keep
+  unresolved experiments distinguishable from production changes.
+- Before every commit, review repository READMEs, AGENTS.md, CHANGELOG.md and
+  related website documentation. Update stale descriptions affected by the
+  change in the same commit, including the generated changelog page.
 - Include the exact command used for validation and note any output CSV path in PRs
 - Describe which simulation mode is affected and the config/dataset used
 

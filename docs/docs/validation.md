@@ -81,10 +81,10 @@ configurations:
 
 | Hardware | Model | Parallelism | TTFT mean | TPOT mean | Latency mean | worst of 15 |
 | --- | --- | --- | --- | --- | --- | --- |
-| RTX 4090   | Llama-3.1-8B                | TP=1 dense      | +0.3% | +0.2% | +0.3% | +1.1% |
-| RTXPRO6000 | Llama-3.1-8B                | TP=1 dense      | +3.7% | +1.4% | +1.9% | +3.7% |
-| RTXPRO6000 | Qwen3-32B                   | TP=2 dense      | -2.3% | -1.5% | -1.8% | -2.3% |
-| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.9% | +0.6% | +0.6% | +4.5% |
+| RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.3% | +0.2% | +0.3% | +1.1% |
+| RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +3.8% | +1.4% | +2.0% | +3.8% |
+| RTXPRO6000 | Qwen3-32B | TP=2 dense | -2.3% | -1.5% | -1.8% | -2.3% |
+| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.8% | +0.5% | +0.5% | +4.8% |
 
 The last column is the largest absolute error across all fifteen metrics
 (TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
@@ -136,13 +136,13 @@ Throughput timeline, vLLM (orange) vs. simulator (blue):
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |   65.49 s |   65.70 s | **+0.3%** |
-| TTFT median   |   60.13 s |   60.36 s | +0.4% |
-| TTFT P99      |  137.36 s |  137.91 s | +0.4% |
-| TPOT mean     |   32.4 ms |   32.5 ms | **+0.2%** |
-| TPOT P99      |   56.0 ms |   56.6 ms | +1.1% |
-| Latency mean  |   86.61 s |   86.87 s | **+0.3%** |
-| Latency P99   |  153.63 s |  154.22 s | +0.4% |
+| TTFT mean | 65.49 s | 65.70 s | **+0.3%** |
+| TTFT median | 60.13 s | 60.36 s | +0.4% |
+| TTFT P99 | 137.36 s | 137.91 s | +0.4% |
+| TPOT mean | 32.4 ms | 32.5 ms | **+0.2%** |
+| TPOT P99 | 56.0 ms | 56.6 ms | +1.1% |
+| Latency mean | 86.61 s | 86.88 s | **+0.3%** |
+| Latency P99 | 153.63 s | 154.22 s | +0.4% |
 
 The tightest configuration in the set: all fifteen metrics land between
 +0.2% and +1.1%. Two things make it the cleanest comparison available.
@@ -166,13 +166,13 @@ the author's choice rather than measured.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |    6.55 s |    6.79 s | **+3.7%** |
-| TTFT median   |    8.43 s |    8.74 s | +3.7% |
-| TTFT P99      |   18.49 s |   19.11 s | +3.4% |
-| TPOT mean     |   31.5 ms |   32.0 ms | **+1.4%** |
-| TPOT P99      |   36.4 ms |   37.1 ms | +1.8% |
-| Latency mean  |   27.04 s |   27.57 s | **+1.9%** |
-| Latency P99   |   36.17 s |   36.84 s | +1.8% |
+| TTFT mean | 6.55 s | 6.79 s | **+3.8%** |
+| TTFT median | 8.43 s | 8.74 s | +3.7% |
+| TTFT P99 | 18.49 s | 19.08 s | +3.2% |
+| TPOT mean | 31.5 ms | 32.0 ms | **+1.4%** |
+| TPOT P99 | 36.4 ms | 37.1 ms | +1.8% |
+| Latency mean | 27.04 s | 27.58 s | **+2.0%** |
+| Latency P99 | 36.17 s | 36.86 s | +1.9% |
 
 The same model and parallelism on a 96 GB card. It never preempts, though its
 block pool does reach 79% of budget. This run is the one whose residual is
@@ -196,13 +196,13 @@ bundle is measured rather than of the simulator, and both are still open.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |   35.62 s |   34.80 s | **-2.3%** |
-| TTFT median   |   39.47 s |   38.80 s | -1.7% |
-| TTFT P99      |   89.43 s |   87.35 s | -2.3% |
-| TPOT mean     |   77.4 ms |   76.3 ms | **-1.5%** |
-| TPOT P99      |   94.3 ms |   92.4 ms | -2.0% |
-| Latency mean  |   87.17 s |   85.61 s | **-1.8%** |
-| Latency P99   |  120.69 s |  118.63 s | -1.7% |
+| TTFT mean | 35.62 s | 34.81 s | **-2.3%** |
+| TTFT median | 39.47 s | 38.81 s | -1.7% |
+| TTFT P99 | 89.43 s | 87.35 s | -2.3% |
+| TPOT mean | 77.4 ms | 76.2 ms | **-1.5%** |
+| TPOT P99 | 94.3 ms | 92.4 ms | -2.0% |
+| Latency mean | 87.17 s | 85.61 s | **-1.8%** |
+| Latency P99 | 120.69 s | 118.63 s | -1.7% |
 
 TP=2 exercises the dense ALLREDUCE collective on `o_proj` / `down_proj`, whose
 price comes from the NCCL sweep in `hardware.yaml` rather than from a fit — the
@@ -223,13 +223,13 @@ residuals are independent rather than a single bias.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean     |    1.11 s |    1.14 s | **+2.9%** |
-| TTFT median   |    0.17 s |    0.17 s | +2.4% |
-| TTFT P99      |    9.78 s |   10.22 s | +4.5% |
-| TPOT mean     |   47.2 ms |   47.4 ms | **+0.6%** |
-| TPOT P99      |   53.1 ms |   54.2 ms | +2.1% |
-| Latency mean  |   32.29 s |   32.50 s | **+0.6%** |
-| Latency P99   |   43.78 s |   43.92 s | +0.3% |
+| TTFT mean | 1.11 s | 1.14 s | **+2.8%** |
+| TTFT median | 0.17 s | 0.17 s | +1.6% |
+| TTFT P99 | 9.78 s | 10.25 s | +4.8% |
+| TPOT mean | 47.2 ms | 47.4 ms | **+0.5%** |
+| TPOT P99 | 53.1 ms | 54.1 ms | +2.0% |
+| Latency mean | 32.29 s | 32.47 s | **+0.5%** |
+| Latency P99 | 43.78 s | 43.93 s | +0.3% |
 
 The disaggregated path: data-parallel across two instances, expert-parallel
 within each, with wave-synchronized collectives. TPOT and end-to-end latency

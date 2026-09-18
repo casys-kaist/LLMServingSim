@@ -135,7 +135,7 @@ layer.
 Latencies come from the profiler's per-category CSVs under
 `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` — `dense.csv` (keyed on
 `tokens`), `per_sequence.csv` (`sequences`), `attention.csv` (a 5D grid on
-`prefill_chunk, kv_prefill, n_decode, kv_decode, decode_q_len`),
+`prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len`),
 `linear_attention.csv` (`prefill_tokens, n_decode`, mamba/gated-DeltaNet only),
 and `moe.csv` (`tokens, activated_experts`). `resolve_variant(model_config)`
 names the `<variant>` folder as a **pure function of the checkpoint** — weight
@@ -261,7 +261,7 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation
   (dense/per_sequence), 4D linear for attention (each of
-  prefill_chunk / kv_prefill / n_decode / kv_decode bracketed by its two
+  prefill_chunk / prefill_key / n_decode / kv_decode bracketed by its two
   neighbouring profiled values and blended linearly), and 2D for MoE.
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
   the attention kernel: a lookup at the batch's mean decode kv, blended

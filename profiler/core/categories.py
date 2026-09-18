@@ -33,6 +33,7 @@ from profiler.core.config import (
 from profiler.core.engine import RuntimeLimits
 from profiler.core.hooks.batch import Shot
 from profiler.core.stack import ALL_AXES, ATTENTION_AXES
+from profiler.core.attention_shape import prefill_key
 from profiler.core.hooks.timings import TimingSample
 
 
@@ -70,7 +71,7 @@ class AttentionPoint:
     # attention layer, but it is a different kernel with a different cost.
     layer: str
     prefill_chunk: int
-    # Mean, over the batch's prefill sequences, of how far that sequence's
+    # Query-weighted mean, over the batch's prefills, of how far each sequence's
     # queries look back: its context plus half its own chunk (causal). The
     # column it replaces, ``kv_prefill``, described a single sequence, so a
     # step carrying several was summed into a number describing none of them
@@ -437,7 +438,7 @@ def _compose_prefill(
 ) -> list[tuple[int, int]] | None:
     """The prefill sequences that put a batch at ``(total_tokens, key_mean)``.
 
-    ``key_mean`` is the mean, over the batch's prefill sequences, of how far
+    ``key_mean`` is the query-weighted mean over the batch's prefills of how far
     that sequence's queries look back: its context plus half its own chunk
     (causal). With one sequence that is ``h + c/2``, so a single sequence can
     only ever reach ``key_mean >= total_tokens / 2``. Below that the tokens
@@ -458,14 +459,12 @@ def _compose_prefill(
     if k > max_seqs or total_tokens // k < min_chunk:
         return None
     base, extra = divmod(total_tokens, k)
-    # The remainder goes on the first sequence, so the chunks stay as even as
-    # integers allow and the mean below is exact rather than approximate.
+    # Keep chunks as even as integers allow. Odd chunks require rounding their
+    # half-token history; _attn_key records the actual coordinate after that.
     chunks = [base + (1 if i < extra else 0) for i in range(k)]
-    # One context for all of them: the sweep point is a mean, and a uniform
-    # context is the composition that realises it with nothing else varying.
-    # Heterogeneous contexts are what the *runtime* produces, and the mean is
-    # what the axis reads, so they land on the same coordinate by
-    # construction.
+    # Give each request the same effective key, up to half-token rounding.
+    # Sequence- and query-weighted means therefore coincide for the grid's
+    # even chunks; heterogeneous runtime chunks need the query weighting.
     reqs = []
     for c in chunks:
         h = key_mean - c / 2.0
@@ -493,7 +492,7 @@ def _attn_key(shot) -> tuple[int, float, int, int, int]:
     prefill = reqs[:n_pf]
     decodes = reqs[n_pf:]
     total = sum(c for c, _ in prefill)
-    key = (sum(h + c / 2.0 for c, h in prefill) / n_pf) if n_pf else 0.0
+    key = prefill_key(prefill)
     kv_dec = decodes[0][1] if decodes else 0
     return total, key, len(decodes), kv_dec, q
 

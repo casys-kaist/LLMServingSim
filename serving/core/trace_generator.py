@@ -18,6 +18,7 @@ from .logger import get_logger
 from .run_paths import input_path
 import bisect
 from dataclasses import dataclass, field, replace
+from profiler.core.attention_shape import prefill_key as _prefill_key
 
 # ----------------------------------------------------------------------
 # Global in-memory cache for the profiler's per-category performance DB.
@@ -127,8 +128,8 @@ class BatchCtx:
     kv_prefill: int     # sum(prefill_k_list): total kv the prefills already
                         # hold. A length, used for tensor sizing -- not the
                         # attention lookup, which needs the mean below.
-    # The prefill side's key axis: the mean, over this step's prefill
-    # sequences, of how far that sequence's queries look back -- its context
+    # The prefill side's key axis: the query-weighted mean over this step's
+    # prefills of how far each sequence's queries look back -- its context
     # plus half its own chunk, since causal masking means the average query
     # in a chunk sees half of it. It replaces ``sum(prefill_k_list)``, which
     # described one sequence and, on a step carrying several, added their
@@ -868,7 +869,7 @@ def _axis_bracket(values, query):
 def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
     """Bilinear (linear on each axis) within a single (pc, nd) slice.
 
-    ``prefill_key`` is a mean over the batch's prefill sequences, so it is
+    ``prefill_key`` is a query-weighted mean over the batch's prefills, so it is
     not an integer and must not be floored: at the bottom of the axis a
     half-token is a percent of the coordinate.
     """
@@ -1408,20 +1409,13 @@ def _build_batch_ctx(batch, ctx):
     # n_decode, kv_decode). The kv_decode axis carries a single value per
     # shot, so we collapse multi-decode requests to their mean AND capture
     # the per-batch max/min for the skew correction below. The prefill side
-    # is a mean too, over that step's prefill sequences -- see BatchCtx.
+    # is query-weighted, so unequal chunks retain their relative attention work.
     prefill_chunk = sum(batch.prefill_q_list)
     kv_prefill = sum(batch.prefill_k_list)
-    n_pf = len(batch.prefill_q_list)
     cap = ctx.perf_db.get("key_saturation")
-    if n_pf:
-        raw = [k + c / 2.0
-               for c, k in zip(batch.prefill_q_list, batch.prefill_k_list)]
-        prefill_key = sum(raw) / n_pf
-        prefill_key_capped = (
-            sum(min(v, cap) for v in raw) / n_pf if cap else prefill_key
-        )
-    else:
-        prefill_key = prefill_key_capped = 0.0
+    prefills = list(zip(batch.prefill_q_list, batch.prefill_k_list))
+    prefill_key = _prefill_key(prefills)
+    prefill_key_capped = _prefill_key(prefills, cap=cap) if cap else prefill_key
     n_decode = len(batch.decode_k_list)
     # Query tokens per decode sequence: 1 normally, 1 + N when a speculative
     # step verifies N drafts. A fifth attention axis rather than folding into

@@ -183,7 +183,7 @@ MAX_NUM_SEQS=256                    # vLLM's --max-num-seqs. Profile with MSQ > 
 #### Attention grid
 
 ```bash
-ATTENTION_MAX_KV=""                 # kv_prefill / kv_decode bound; empty = the model's own context
+ATTENTION_MAX_KV=""                 # key-history bound; empty = the model's own context
 ATTENTION_CHUNK_FACTOR=2.0          # geometric factor for prefill_chunk axis (doubling)
 ATTENTION_KV_FACTOR=2.0             # geometric factor for kv axes (doubling)
 ```
@@ -440,7 +440,7 @@ profiled TP degree:
 tp<N>/
   dense.csv              layer, tokens, time_us
   per_sequence.csv       layer, sequences, time_us
-  attention.csv          layer, prefill_chunk, kv_prefill, n_decode,
+  attention.csv          layer, prefill_chunk, prefill_key, n_decode,
                          kv_decode, decode_q_len, time_us
   linear_attention.csv   layer, prefill_tokens, n_decode, time_us
                                                      (mamba / gated-DeltaNet only)
@@ -456,6 +456,10 @@ tp<N>/
 ```
 
 Times are in microseconds.
+
+`prefill_key` is query-weighted across prefill chunks; profiling and serving
+share its implementation. See the [attention schema](https://llmservingsim.ai/docs/profiler/output-bundle#attentioncsv)
+for the formula and legacy single-prefill compatibility.
 
 **Every category is keyed by `layer` except `moe`.** That is not cosmetic:
 the `attention` category holds **more than one kernel** on a sparse model and
@@ -846,4 +850,3 @@ python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000     --tp 1,2 --t
 ```
 
 Otherwise it exits with `tp=2 is not in the session's tp_degrees ([1])`.
-

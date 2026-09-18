@@ -41,6 +41,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   worth knowing before rebuilding it.
 
 ### Changed
+- **Use query-weighted prefill coordinates in profiling and serving.**
+  Unequal chunks now contribute in proportion to their query tokens rather
+  than their sequence count. A shared helper preserves single-request and
+  equal-chunk coordinates and applies sparse-window caps before weighting.
+  This corrects the lookup coordinate; it does not introduce a new attention
+  table or establish that the compressed coordinate explains every batch.
 - **The skew alpha table is keyed on `n | pc | lev` and fitted per cell with
   the median.** It was five axes -- `pc` raw, plus `n`, `skew_rate`, `kv_big`,
   `kp` -- with a weighted least-squares fit per cell, and `pc` being keyed by
