@@ -9,6 +9,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Fixed
+- Check skew measurement capacity with the resolved KV block size and the
+  largest uniform control, including new-token and context-boundary space.
+  Preserve prior skew checkpoints on failed writes and reject corrupt input
+  CSVs rather than silently replacing them.
 - Preserve distinct module shapes when deduplicating top-level profiling
   summaries; equal class names, times and invocation counts alone are not
   sufficient to identify repeated entries.

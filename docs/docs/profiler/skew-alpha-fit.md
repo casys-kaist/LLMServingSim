@@ -147,6 +147,16 @@ batch" failure mode that Tier 1 alone would miss.
 
 ## Density knobs
 
+Each case must fit all three measurements. The memory check uses the engine's
+resolved KV block size and budgets every decode at `kv_big + 1` for the
+uniform-max control, plus any prefill. Context limits also reserve the token
+needed by sampling. A heterogeneous shot fitting by itself is not sufficient.
+
+During resume, `skew.csv` is written to a temporary file, flushed and atomically
+replaced. A failed serialization leaves the previous checkpoint intact; an
+unreadable existing CSV raises an error instead of silently losing its rows.
+`--force` remains an explicit reset of the prior sweep.
+
 Four of the five *sweep* axes are user-controllable via per-axis geometric
 factors in `profile.sh` (defaults `2.0` = doubling). `ratio` has no factor: it
 is a unitless shape fraction rather than a scale, so a geometric coarsening of

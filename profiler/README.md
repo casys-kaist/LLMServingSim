@@ -337,6 +337,11 @@ extend an earlier sweep after changing feasibility (e.g. raising
 in minutes instead of hours. Resume applies to every category plus
 skew; `FORCE=1` nukes them all.
 
+Skew feasibility uses the resolved block size and includes the uniform-max
+control, not only the heterogeneous shot. Skew checkpoints use atomic file
+replacement and preserve existing permissions. Corrupt CSVs fail explicitly
+instead of being silently replaced; `FORCE=1` still requests a fresh sweep.
+
 #### Output naming
 
 ```bash

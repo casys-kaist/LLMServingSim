@@ -31,10 +31,8 @@ alpha everywhere -- on M3 that is an alpha fitted on 3 of 60 layers.
 
 Downstream pipeline:
 
-  * ``fit_alpha`` reads each TP's skew.csv, derives bucket axes from
-    the observed (n, kv_big, kp) coverage (so widening the sweep
-    automatically lights up more resolution), and emits a 5-axis
-    weighted-LS fit.
+  * ``fit_alpha`` reads each TP's skew.csv and fits per-cell medians on
+    (n, pc, lev), with a pooled per-kernel WLS fallback.
   * ``writer.persist_meta`` spills the fitted (bucket → alpha) table
     to ``<variant>/tp<N>/skew_fit.csv`` and records only a per-TP
     summary + the derived ``bucket_axes`` under
@@ -45,7 +43,9 @@ Downstream pipeline:
 """
 from __future__ import annotations
 
+import os
 import time
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -262,12 +262,14 @@ def _feasible(case: SkewCase, limits, args: ProfileArgs) -> bool:
     Since the shot bypasses the vLLM scheduler, MNBT is advisory:
     ``pc + n`` is allowed up to ``MNBT + MSQ`` so pc=MNBT can still
     pair with the full n-axis range. The hard caps are the max_seqs
-    buffer (strict ``n_seqs < MSQ``), the per-request position bound
-    (``pos + 1 > MML``), and the KV-cache block budget.
+    buffer (``n_seqs <= MSQ``), the per-request position bound,
+    and the KV-cache block budget of the largest of all three shots.
     """
     AMK = args.attention_max_kv
     MNBT = args.max_num_batched_tokens or limits.max_num_batched_tokens
     MSQ = limits.max_num_seqs
+    if case.n < 2 or not 0 < case.nb < case.n:
+        return False
     if case.pc > MNBT + 1: return False
     if case.kvs > AMK + 1: return False
     if case.kv_big > AMK + 1: return False
@@ -275,12 +277,12 @@ def _feasible(case: SkewCase, limits, args: ProfileArgs) -> bool:
     # Sum bound, mirrored from AttentionCategory: the shot bypasses the
     # vLLM scheduler via assemble_scheduler_output, so MNBT is advisory.
     # Allow pc + n up to MNBT + MSQ so pc=MNBT can still pair with the
-    # full n-axis range. The strict n_seqs < MSQ check further down is
+    # full n-axis range. The n_seqs <= MSQ check further down is
     # the hard cap that actually protects vLLM's input_batch buffer.
     if case.pc + case.n > MNBT + MSQ: return False
 
     MML = limits.max_model_len
-    if case.kv_big + 1 > MML: return False
+    if case.kv_big + 2 > MML: return False
     if case.pc > 0 and case.pc + case.kp + 1 > MML: return False
     # n_seqs vs max_num_seqs — mirrored from AttentionCategory so the
     # skew sweep can fire the same (n = MSQ) corner the uniform grid
@@ -291,12 +293,15 @@ def _feasible(case: SkewCase, limits, args: ProfileArgs) -> bool:
     n_seqs = case.n + (1 if case.pc > 0 else 0)
     if n_seqs > limits.max_num_seqs: return False
 
-    BS = 16
-    def aligned(t): return ((t + BS - 1) // BS) * BS
-    big_blk = aligned(case.kv_big) * case.nb
-    small_blk = aligned(case.kvs) * (case.n - case.nb)
+    bs = limits.block_size
+    def aligned(t): return ((t + bs - 1) // bs) * bs
+    # The uniform-max control needs every decode at kv_big, including its
+    # newly scheduled token. Checking only the bimodal shot admits cases
+    # whose control writes past the allocated KV block pool. The resolved
+    # block size can be 64/128/784 on sparse and hybrid models, not just 16.
+    decode_blk = aligned(case.kv_big + 1) * case.n
     pfx_blk = aligned(case.pc + case.kp) if case.pc > 0 else 0
-    if big_blk + small_blk + pfx_blk > limits.num_cache_tokens:
+    if decode_blk + pfx_blk > limits.num_cache_tokens:
         return False
     return True
 
@@ -411,8 +416,8 @@ def _measure_case(llm, case: SkewCase, slice_, iters: int,
         # is right. A sparse kernel below its key bound costs *less* at a
         # longer kv -- DeepSeek-V3.2 measures 968.8 us at no context and 139.3
         # at 2048 -- so the gap is negative for essentially every case and the
-        # whole sweep was being discarded. The fit is a WLS in ``dtm``, which
-        # already down-weights a small lever, so only a zero one is unusable.
+        # whole sweep was being discarded. Retain either sign here; the fit
+        # and its validation must handle the uncertainty of a small lever.
         gap = t_max - t_mean
         usable = gap > 0 or ((saturates or {}).get(layer) and gap != 0)
         alpha = (t_skew - t_mean) / gap if usable else float("nan")
@@ -469,11 +474,9 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     before the column existed, where every row is the ``attention`` kernel.
     """
     frames: list[pd.DataFrame] = []
+    previous = csv_path.stat() if csv_path.exists() else None
     if csv_path.exists():
-        try:
-            frames.append(pd.read_csv(csv_path))
-        except Exception:
-            pass
+        frames.append(pd.read_csv(csv_path))
     if new_rows:
         frames.append(pd.DataFrame(new_rows))
     if not frames:
@@ -493,7 +496,24 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     df = df.drop_duplicates(
         subset=["layer", "n", "nb", "skew", "pc", "kp", "kvs"], keep="last",
     ).reset_index(drop=True)
-    df.to_csv(csv_path, index=False)
+    # Keep the previous checkpoint intact if serialization is interrupted.
+    with tempfile.NamedTemporaryFile(dir=csv_path.parent,
+                                     prefix=csv_path.name + ".", suffix=".tmp",
+                                     delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        df.to_csv(temporary, index=False)
+        # NamedTemporaryFile starts at 0600. Preserve a refreshed file's
+        # permissions (and ownership when running as container root), and
+        # keep a new profile readable from the host bind mount.
+        if previous is not None and os.geteuid() == 0:
+            os.chown(temporary, previous.st_uid, previous.st_gid)
+        temporary.chmod(previous.st_mode & 0o777 if previous else 0o644)
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        temporary.replace(csv_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return df
 
 

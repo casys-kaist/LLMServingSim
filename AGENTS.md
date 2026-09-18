@@ -592,6 +592,13 @@ regimes once the shim was in.
 
 
 ### Skew profiling & alpha fit
+Feasibility uses the engine-resolved KV block size and budgets the largest
+of all three shots: the uniform-max control puts every decode at the longest
+history, including its newly scheduled token. Reserve the sampler's remaining
+token at the context boundary. Checkpoints are replaced atomically after
+serialization and fsync; an unreadable existing CSV must raise rather than be
+silently overwritten. This preserves ordinary resume data, not `--force` resets.
+
 FlashAttention's varlen kernel pays tile-padding + SM-imbalance costs when a
 decode batch has non-uniform kv lengths. The uniform attention grid can't see
 that (every shot uses a single kv_decode value), so `skew.py` runs a second
