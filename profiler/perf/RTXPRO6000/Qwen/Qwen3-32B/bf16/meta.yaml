@@ -8,7 +8,9 @@ architecture: qwen3
 architecture_sha256: 09b91fc5b2056bac024b5de9f166786814fe636b2eebd68b4217e861e599554a
 model: Qwen/Qwen3-32B
 variant: bf16
-tp_degrees: [1, 2]
+tp_degrees:
+- 1
+- 2
 category_provenance:
   attention:
     vllm_version: 0.28.0
@@ -64,50 +66,157 @@ attention_grid:
   n_decode: 0, 1-256 x2
   kv: 0, 16-16384 x1.5
   prefill_key: 0, 16-17408 x1.5
-  decode_q_lens: [1]
+  decode_q_lens:
+  - 1
 measurement_iterations: 3
 skew_profile:
   enabled: true
-  factors:
-    n: 2.0
-    pc: 2.0
-    kp: 2.0
-    kvs: 2.0
-  grid:
-    n: 2-256 x2
-    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
-    pc: 0, 16-2048 x2
-    kp: 0, 512-8192 x2
-    kvs: 128-16384 x2
-    skew_rep: 4.0
+  historical_grid:
+    factors:
+      n: 2.0
+      pc: 2.0
+      kp: 2.0
+      kvs: 2.0
+    grid:
+      n: 2-256 x2
+      ratio:
+      - 0.0625
+      - 0.125
+      - 0.25
+      - 0.5
+      - 0.75
+      - 0.9
+      pc: 0, 16-2048 x2
+      kp: 0, 512-8192 x2
+      kvs: 128-16384 x2
+      skew_rep: 4.0
+  retained_measurements:
+    2:
+      rows: 29967
+      origins:
+        committed_actual: 13496
+        compatible_added_actual: 112
+        native_tp2_actual: 16359
+      complete_request_geometry: true
+      raw_sha256: ad455c2d1fcd7a3e8410d68a6f9ee65bfb4335b4b0b5b062530f2d7bb4e358e5
+      new_acquisition_protocol_complete: false
+      native_measurement:
+        vllm: 0.28.0
+        torch: 2.13.0+cu130
+        block_size: 16
+        max_model_len: 40960
+        num_cache_tokens: 13647584
+        kv_initialization: zeroed once before warmups; native query writes thereafter
 skew_fit:
   enabled: true
-  bucket_axes:
-    axes: [n, pc, lev]
-    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
-    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
-    pc_bins: [-1, 1, 256, 1024, 1000000000]
-    pc_labels: [pc0, pcS, pcM, pcL]
-    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
-    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
     1:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 13489
-      alpha_default: 0.0572
-      alpha_default_by_layer: {attention: 0.0572}
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: Qwen/Qwen3-32B
+        variant: bf16
+        tp: 1
+      reference:
+        attention_sha256: 30887f500366f14acdb572425fd5365fc4fb11b32c10ea4727f40aa3e8ecea71
+        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        skew_sha256: a9a00058e9f398aeda2ab21c3c3c71d38889439086ae668b0b567cb13240655f
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 13495
+      dropped_rows:
+        unusable_reference_gap: 1
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.0566
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0205
-      rel_err_p90: 0.101
-      rel_err_p99: 0.3258
-      signed_mean: -0.0093
+      bucket_table_sha256: eed2da772d43692e1b09e254f320213e16be6d28b4d87327d778fe7ba7f60e13
     2:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 13469
-      alpha_default: 0.0686
-      alpha_default_by_layer: {attention: 0.0686}
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: Qwen/Qwen3-32B
+        variant: bf16
+        tp: 2
+      reference:
+        attention_sha256: 8aa35343a39655d210811f1162ec0c5bac4f7d0c8025d52f079dd39ebbecca7f
+        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        skew_sha256: ad455c2d1fcd7a3e8410d68a6f9ee65bfb4335b4b0b5b062530f2d7bb4e358e5
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 27699
+      dropped_rows:
+        unusable_reference_gap: 2268
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.1513
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp2/skew_fit.csv
-      rel_err_p50: 0.0253
-      rel_err_p90: 0.1218
-      rel_err_p99: 0.3866
-      signed_mean: -0.0066
+      bucket_table_sha256: 2ec41417cc2648705434987dc1819a6b936ac4b2e090806a00375cc749c0b2a1

@@ -195,6 +195,11 @@ def run_full(
     arch = load_architecture(arch_path)
     variant_root = _variant_root(out_root, args)
 
+    if args.only_skew:
+        for tp in args.tp_degrees:
+            if not (variant_root / f"tp{tp}" / "attention.csv").exists():
+                raise FileNotFoundError("--only-skew requires existing per-TP attention.csv files")
+
     log.banner(args, variant_root)
 
     last_engine_kwargs: dict[str, Any] | None = None

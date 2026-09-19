@@ -198,14 +198,20 @@ FlashAttention-varlen skew correction:
 | `SKEW_KP_FACTOR` | `2.0` | `kp` (prefill history length) axis |
 | `SKEW_KVS_FACTOR` | `2.0` | `kvs` (small-decode kv) axis |
 
-The skew sweep fires three shots per case (`t_mean`, `t_max`,
-`t_skew`), so coarsening with `>2.0` factors cuts profile time
-substantially. See **[Skew & alpha fit](./skew-alpha-fit)** for the
+Each heterogeneous case uses three independent contexts with three timed
+forwards each by default. Only the actual batch is measured; references come
+from `attention.csv`. Density factors above 2.0 reduce the number of cases. See **[Skew & alpha fit](./skew-alpha-fit)** for the
 methodology.
 
 
 
-## Rebuild skew calibration without a GPU
+## Preview or rebuild skew calibration without a GPU
+
+`python -m profiler plan-skew MODEL --hardware HARDWARE --tp 1` streams the
+same acquisition plan using saved engine limits, reporting family/query
+coverage and remaining cases. The live run rechecks actual capacity. This
+preview cannot determine whether a GPU is available.
+
 
 ```bash
 python -m profiler refit-skew meta-llama/Llama-3.1-8B \
@@ -220,7 +226,7 @@ The normal profiler's metadata writer invokes this same compiler automatically.
 
 The new table is versioned and tied to its attention references. Rebuild after
 changing reference data or lookup semantics; serving rejects stale fits.
-Existing unversioned bundles keep their legacy behavior until rebuilt.
+Enabled unversioned fits are rejected until rebuilt. Disabled bundles remain unchanged.
 See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 
 ## Resume vs force
@@ -316,6 +322,9 @@ file is an error.
 | `--skew-pc-factor` | `2.0` | `SKEW_PC_FACTOR` |
 | `--skew-kp-factor` | `2.0` | `SKEW_KP_FACTOR` |
 | `--skew-kvs-factor` | `2.0` | `SKEW_KVS_FACTOR` |
+| `--skew-samples-per-cell` | `32` | `SKEW_SAMPLES_PER_CELL` |
+| `--skew-rounds` | `3` | `SKEW_ROUNDS` |
+| `--skew-seed` | `0` | `SKEW_SEED` |
 | `--force` | off (resume) | `FORCE=1` |
 | `--out-root` | `profiler/perf` | `OUT_ROOT` |
 | `--model-config-root` | `configs/model` | `MODEL_CONFIG_ROOT` |

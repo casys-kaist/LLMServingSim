@@ -37,6 +37,8 @@ the defaults fit every machine. See `python3 scripts/monitor_run.py --help`.
 Logs must use a fresh path. The watchdog stops its own command and descendants,
 not unrelated workloads; container memory limits remain the hard backstop.
 GPU telemetry does not reserve devices or check whether another user owns them.
+Before a long skew sweep, preview coverage with `profiler plan-skew`, verify
+exclusive GPU availability, and run the acquisition under explicit memory limits.
 
 * `docker-vllm.sh` ships with a placeholder `HF_TOKEN="<your_token>"`.
   Set it to a real HuggingFace token before running so gated configs

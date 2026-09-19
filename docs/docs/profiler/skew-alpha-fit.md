@@ -10,16 +10,21 @@ histories. It does not replace `attention.csv`, change attention interpolation,
 or fit benchmark request latencies. The default profiler compiles a small
 lookup table offline; simulation only selects an already fitted bucket.
 
-Existing unversioned bundles retain their legacy lookup until explicitly
-rebuilt. New fits use `runtime-skew-calibration-v1`. Rebuilding a bundle changes
-simulation results; it is not an accuracy guarantee.
+Enabled fits must use `runtime-skew-calibration-v1`. Legacy lookup and inline
+coefficients are no longer supported; rebuild old enabled bundles. Disabled
+bundles, including RTX4090, are unchanged. Rebuilding is not an accuracy guarantee. The broader shipped Llama TP1 and
+Qwen3-32B TP2 raw data are retained measurements, not a completed run of the
+new acquisition defaults. Their metadata distinguishes historical coverage
+from the new protocol; planned cases lacking verified repetitions are
+remeasured on the next sweep.
 
 ## Measurements and lookup references
 
-The built-in skew sweep still measures bimodal decode batches, with uniform
-mean and maximum controls at the same prefill geometry. Each attention-category
-kernel has its own row and measured `t_skew_us`. Control timings and their raw
-`alpha` remain diagnostic measurements and are never overwritten by estimates.
+The sweep measures the **actual heterogeneous batch**, not its uniform
+controls. Each case uses three independent contexts with three timed forwards
+by default. Its target is the median of the per-context forward medians.
+Every forward time is retained, per attention-category kernel. Historical
+measured controls remain diagnostic; they are not relabelled lookup estimates.
 
 The default fit instead reconstructs the requests and computes both references
 through the **same attention lookup used by serving**:
@@ -48,8 +53,8 @@ New `skew.csv` rows carry `requests_json`: an ordered list of
 At query length one, requests are classified with the same shared helper as
 serving; one-query prompt tails count as decode for this lookup.
 Multi-query rows additionally require `n_prefill`, an explicit role boundary.
-The compiler accepts such rows but the built-in skew sweep currently emits
-query length one only.
+Both acquisition and compilation support the configured
+`--attention-decode-q-lens`, requiring matching attention reference slices.
 
 Legacy bimodal rows are reconstructed from their original shape columns.
 General distributions must include the complete request list; mean/max
@@ -59,23 +64,39 @@ fitting. Resume deduplicates by this geometry, not by absent bimodal fields.
 
 ## Sweep structure (`skew.csv`)
 
-The existing two-tier sweep is retained:
+Eight families cover bimodal, few-outlier, trimodal, ramp, lognormal, Pareto,
+near-uniform and uniform-spread histories. Draws span ordered, reversed,
+interleaved and shuffled requests and equal/unequal multi-prefill splits.
+Mixed batches include the scheduled-token frontier.
 
-- Tier 1 varies decode count, big-decode fraction, prefill chunk, prefill
-  history and small-decode history at a representative skew ratio.
-- Tier 2 varies the skew ratio at selected anchor shapes.
+Geometric axes follow configured sequence/token/context bounds and resolved
+engine capacity, not model names or benchmark distributions. The four
+`--skew-*-factor` flags control density; `--skew-samples-per-cell` defaults to
+32 distribution draws per operating cell. `--skew-seed` defaults to zero and
+`--skew-rounds` to three. See [Running the profiler](./running).
 
-The geometric grid follows configured sequence, token and context bounds.
-Use `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor` and
-`--skew-kvs-factor` to change sampling density. See
-[Running the profiler](./running). More points do not automatically give a
-better fit, and bimodal coverage is not coverage of all request distributions.
+Only the actual shot consumes KV capacity: its allocation is page-aligned,
+includes all scheduled queries, and respects the context boundary plus one
+sampler token. The collector verifies executed geometry and finite warmup
+output, restores unambiguous CPU module containment, and excludes GPU user
+annotations from kernel-duration sums.
 
-Every case must fit the actual resolved KV block size, sequence and token
-limits, and cache capacity. Capacity checks include the **largest uniform
-control**, newly scheduled tokens and the sampler's context-boundary reserve.
-Checkpoints use temporary files, fsync and atomic replacement. Corrupt prior
-CSV files raise rather than being silently replaced.
+The plan streams batches rather than allocating the full Cartesian product.
+Raw checkpoints are replaced atomically. Successful cases survive failures;
+incomplete kernel sets, missing repetitions or a changed protocol need
+measurement. A failed run raises and keeps `skew.meta.yaml::completed: false`,
+rather than reporting success with missing cases. CPU refitting also rejects
+an acquisition marked incomplete; resume it before rebuilding. Acquisition status and actual
+resolved bounds are recorded per TP, not reconstructed from CLI defaults.
+
+Preview coverage and remaining cases using saved engine limits:
+
+```bash
+python -m profiler plan-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp 1
+```
+
+This CPU-only preview cannot establish current GPU availability or capacity.
+The live sweep always resolves its limits again.
 
 ## The fit (`skew_fit.csv`)
 
@@ -95,8 +116,10 @@ other partitions. Runtime bucket selection uses the same geometric midpoints;
 an exact tie selects the smaller anchor. This is picking, not interpolation
 between neighboring alpha values.
 
-Only the `n` axis is support-adaptive. Prefill and lever bins remain fixed and
-are persisted with the fit. Defaults and support thresholds live in
+The `n` axis is support-adaptive. Prefill cutoffs scale at one-eighth and
+one-half of the measured maximum prefill-token count, with a separate tiny
+prefill bucket; duplicate cutoffs collapse on small envelopes. Leverage
+cutoffs are dimensionless. All boundaries are persisted with the fit. Defaults and support thresholds live in
 `profiler/core/skew_calibration.py`; they are common to all hardware and models,
 not workload-specific coefficients.
 
@@ -183,8 +206,8 @@ average. Keep those request-level observations out of coefficient fitting.
 Development examples are regression checks, not independent generalization
 evidence. A shared rule can improve one model while worsening another.
 
-Mean/max and lever do not uniquely represent a request distribution. Fixed
-prefill/lever bins, bimodal acquisition, the support floor and fallback remain
+Mean/max and lever do not uniquely represent a request distribution.
+Sampling families, relative partitions, the support floor and fallback remain
 empirical choices. Wider distributions and unseen hardware/model combinations
 need separate validation. No model-specific branch is used to choose a
 favorable calibration.

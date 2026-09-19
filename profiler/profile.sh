@@ -169,6 +169,9 @@ SKEW_N_FACTOR=2.0
 SKEW_PC_FACTOR=2.0
 SKEW_KP_FACTOR=2.0
 SKEW_KVS_FACTOR=2.0
+SKEW_SAMPLES_PER_CELL=32
+SKEW_ROUNDS=3
+SKEW_SEED=0
 
 # --- Resume vs force -------------------------------------------------------
 # Default: resume. Existing CSVs are preloaded and only shots whose
@@ -235,6 +238,9 @@ done
 [[ -n "${SKEW_PC_FACTOR:-}" ]]         && cmd+=(--skew-pc-factor "$SKEW_PC_FACTOR")
 [[ -n "${SKEW_KP_FACTOR:-}" ]]         && cmd+=(--skew-kp-factor "$SKEW_KP_FACTOR")
 [[ -n "${SKEW_KVS_FACTOR:-}" ]]        && cmd+=(--skew-kvs-factor "$SKEW_KVS_FACTOR")
+    [[ -n "${SKEW_SAMPLES_PER_CELL:-}" ]] && cmd+=(--skew-samples-per-cell "$SKEW_SAMPLES_PER_CELL")
+    [[ -n "${SKEW_ROUNDS:-}" ]] && cmd+=(--skew-rounds "$SKEW_ROUNDS")
+    [[ -n "${SKEW_SEED:-}" ]] && cmd+=(--skew-seed "$SKEW_SEED")
 [[ -n "${ONLY_SKEW:-}" ]]              && cmd+=(--only-skew)
 [[ -n "${FORCE:-}" ]]                  && cmd+=(--force)
 [[ -n "${VARIANT:-}" ]]                && cmd+=(--variant "$VARIANT")

@@ -8,7 +8,8 @@ architecture: deepseek_v32
 architecture_sha256: 6ba3e00e947a45ff799f08393aaa3e36366eb021db4b2e3ac5aada3a49bc8078
 model: deepseek-ai/DeepSeek-V3.2-Exp
 variant: fp8
-tp_degrees: [1]
+tp_degrees:
+- 1
 category_provenance:
   dense:
     vllm_version: 0.28.0
@@ -63,7 +64,12 @@ attention_grid:
   n_decode: 0, 1-256 x2
   kv: 0, 16-163830 x2
   prefill_key: 0, 16-164854 x2
-  decode_q_lens: [1, 2, 3, 5, 9]
+  decode_q_lens:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 9
 measurement_iterations: 3
 skew_profile:
   enabled: true
@@ -74,29 +80,77 @@ skew_profile:
     kvs: 2.0
   grid:
     n: 2-256 x2
-    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
+    ratio:
+    - 0.0625
+    - 0.125
+    - 0.25
+    - 0.5
+    - 0.75
+    - 0.9
     pc: 0, 16-2048 x2
     kp: 0, 512-81915 x2
     kvs: 128-163830 x2
     skew_rep: 4.0
 skew_fit:
   enabled: true
-  bucket_axes:
-    axes: [n, pc, lev]
-    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
-    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
-    pc_bins: [-1, 1, 256, 1024, 1000000000]
-    pc_labels: [pc0, pcS, pcM, pcL]
-    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
-    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
     1:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 62996
-      alpha_default: 0.1985
-      alpha_default_by_layer: {attention: -0.0054, indexer: 0.2237}
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: deepseek-ai/DeepSeek-V3.2-Exp
+        variant: fp8
+        tp: 1
+      reference:
+        attention_sha256: 1b4d542b16c67ae808d3636c96d193121b46fa46d5de074655a54b23adf4da0d
+        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        skew_sha256: 4c779c5e978e1fc8edce26519a4719728029045270eebe83563003f24f760f98
+        key_saturation: 2048
+        saturation_by_layer:
+          attention: true
+          indexer: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 64616
+      dropped_rows:
+        unusable_reference_gap: 1106
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.3888
+        indexer|q=1: 0.225
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
+        indexer|q=1:
+        - 2
+        - 256
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0041
-      rel_err_p90: 0.1334
-      rel_err_p99: 0.4102
-      signed_mean: -0.0
+      bucket_table_sha256: 43e16ad66c78e9185fa6008749381b2449d0546252020018f7ded1cf22724436

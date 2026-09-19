@@ -14,7 +14,7 @@ build before handing off documentation changes.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command
-and legacy-bundle boundary.
+dynamic acquisition, resumable repetitions and migration of enabled bundles.
 
 ## Installation
 

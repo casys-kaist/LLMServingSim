@@ -268,7 +268,8 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   selects supported N anchors within kernel/query/prefill/lever partitions;
   it does not interpolate neighboring alpha values or fit at runtime.
   Missing cells use the same kernel/query fallback, missing kernel/query data
-  means zero correction, and unversioned bundles retain their legacy lookup.
+  means zero correction. Enabled unversioned fits are rejected; rebuild them
+  with `profiler refit-skew`. Disabled bundles remain unchanged.
 - `_hydrate_skew_fit_tables()` — validate profile identity, attention/table
   fingerprints, lookup code and saturation semantics before loading cells.
   Stale tables raise: rebuild with `python -m profiler refit-skew`.

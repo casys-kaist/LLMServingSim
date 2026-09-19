@@ -14,7 +14,8 @@ simulator, then comparing the per-request and per-tick metrics with
 committed `bench/examples/<hardware>/<model>/validation/summary.txt`, so it is
 reproducible rather than quoted.
 
-**All four configurations land every one of their 15 metrics inside 5%.**
+**The three dense configurations stay within 1.6% across their 15 metrics.
+The DP+EP MoE configuration reaches +5.6% and remains a separate accuracy target.**
 
 > **Want to validate your own change?** See
 > **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**
@@ -76,15 +77,14 @@ difference is cosmetic — but it is not a 2.5x discrepancy to chase.
 :::
 ## Headline numbers
 
-Mean error vs. real vLLM, per metric, on the four currently bundled
-configurations:
+Mean error vs. real vLLM, per metric, on the four configurations summarized here:
 
 | Hardware | Model | Parallelism | TTFT mean | TPOT mean | Latency mean | worst of 15 |
 | --- | --- | --- | --- | --- | --- | --- |
 | RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.3% | +0.2% | +0.3% | +1.1% |
-| RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +3.8% | +1.4% | +2.0% | +3.8% |
-| RTXPRO6000 | Qwen3-32B | TP=2 dense | -0.4% | +0.1% | -0.1% | -0.6% |
-| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +2.8% | +0.5% | +0.5% | +4.8% |
+| RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +0.9% | +0.1% | +0.3% | +1.5% |
+| RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.3% | -0.6% | -1.0% |
+| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +3.6% | +0.7% | +0.8% | +5.6% |
 
 These workloads were used during development, including skew-axis selection.
 Their results are useful regression checks, not an independent estimate of
@@ -92,13 +92,12 @@ generalization to other models, hardware or request distributions.
 
 The last column is the largest absolute error across all fifteen metrics
 (TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
-summary of a run: a mean can be small because two errors cancelled. **Every
-metric of every configuration is inside 5%**, and TPOT and end-to-end latency
-means are inside 2% on all four.
+summary of a run: a mean can be small because two errors cancelled. TPOT and
+end-to-end latency means are inside 1% on all four, but the MoE TTFT tail is not.
 
 Queueing can amplify a small step-cost error into a larger TTFT error.
-The current Llama reference over-predicts mean TTFT by 3.8%, while the
-corrected Qwen3-32B reference is at -0.4% TTFT and +0.1% TPOT. These aggregate
+The current Llama reference over-predicts mean TTFT by 0.9%, while
+Qwen3-32B is at -1.0% TTFT and -0.3% TPOT. These aggregate
 signs do not identify a unique kernel-level cause or establish generalization.
 The default tables are measured profiles; no end-to-end benchmark coefficient
 is fitted for these endpoint corrections.
@@ -163,13 +162,18 @@ the author's choice rather than measured.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 6.55 s | 6.79 s | **+3.8%** |
-| TTFT median | 8.43 s | 8.74 s | +3.7% |
-| TTFT P99 | 18.49 s | 19.08 s | +3.2% |
-| TPOT mean | 31.5 ms | 32.0 ms | **+1.4%** |
-| TPOT P99 | 36.4 ms | 37.1 ms | +1.8% |
-| Latency mean | 27.04 s | 27.58 s | **+2.0%** |
-| Latency P99 | 36.17 s | 36.86 s | +1.9% |
+| TTFT mean | 6.55 s | 6.60 s | **+0.9%** |
+| TTFT median | 8.43 s | 8.39 s | -0.5% |
+| TTFT P99 | 18.49 s | 18.64 s | +0.8% |
+| TPOT mean | 31.5 ms | 31.6 ms | **+0.1%** |
+| TPOT P99 | 36.4 ms | 37.0 ms | +1.5% |
+| Latency mean | 27.04 s | 27.11 s | **+0.3%** |
+| Latency P99 | 36.17 s | 36.19 s | +0.0% |
+
+This bundle includes broader measured skew geometry and uses reference-aligned,
+offline weighted-median calibration. Its fifteen absolute errors improve over
+the previous bundled skew fit. This does not show that the acquisition defaults
+reproduce the same accuracy on a fresh model or GPU.
 
 The same model and parallelism on a 96 GB card. It never preempts, though its
 block pool does reach 79% of budget. On one controlled uniform-KV shape, the
@@ -193,22 +197,23 @@ bundle is measured rather than of the simulator, and both are still open.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 35.62 s | 35.48 s | **-0.4%** |
-| TTFT median | 39.47 s | 39.59 s | +0.3% |
-| TTFT P99 | 89.43 s | 89.07 s | -0.4% |
-| TPOT mean | 77.4 ms | 77.4 ms | **+0.1%** |
-| TPOT P99 | 94.3 ms | 93.8 ms | -0.6% |
-| Latency mean | 87.17 s | 87.07 s | **-0.1%** |
-| Latency P99 | 120.69 s | 120.71 s | +0.0% |
+| TTFT mean | 35.62 s | 35.28 s | **-1.0%** |
+| TTFT median | 39.47 s | 39.21 s | -0.7% |
+| TTFT P99 | 89.43 s | 88.63 s | -0.9% |
+| TPOT mean | 77.4 ms | 77.1 ms | **-0.3%** |
+| TPOT P99 | 94.3 ms | 93.8 ms | -0.5% |
+| Latency mean | 87.17 s | 86.68 s | **-0.6%** |
+| Latency P99 | 120.69 s | 120.36 s | -0.3% |
 
 TP=2 exercises the decoder all-reduces, plus the previously omitted shared
 embedding all-reduce and logits all-gather. Head tensor sizes now use the
 same per-sequence row count as the profile lookup, with padded vocabulary
-shards and full-vocabulary sampler inputs. The original skew table remains
-in use; these results do not include additional-skew calibration.
+shards and full-vocabulary sampler inputs. These results include broader TP2
+skew measurements and the same calibration rule used for Llama.
 
-The corrected run's fifteen aggregate errors range from -0.611% to +0.306%,
-with mean TTFT/TPOT/latency at -0.415% / +0.098% / -0.115%. The communication
+All fifteen errors remain below 1% in absolute value, but only two improve
+over the previous bundled fit; thirteen worsen. More profile rows and a shared
+estimator are not by themselves evidence of improved generalization. The communication
 parameters and profiled compute times were not fitted to these results.
 This checkpoint does not validate MoE dispatch/combine or alternative heads.
 
@@ -218,20 +223,20 @@ This checkpoint does not validate MoE dispatch/combine or alternative heads.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 1.11 s | 1.14 s | **+2.8%** |
-| TTFT median | 0.17 s | 0.17 s | +1.6% |
-| TTFT P99 | 9.78 s | 10.25 s | +4.8% |
-| TPOT mean | 47.2 ms | 47.4 ms | **+0.5%** |
-| TPOT P99 | 53.1 ms | 54.1 ms | +2.0% |
-| Latency mean | 32.29 s | 32.47 s | **+0.5%** |
-| Latency P99 | 43.78 s | 43.93 s | +0.3% |
+| TTFT mean | 1.11 s | 1.15 s | **+3.6%** |
+| TTFT median | 0.17 s | 0.18 s | +3.4% |
+| TTFT P99 | 9.78 s | 10.29 s | +5.2% |
+| TPOT mean | 47.2 ms | 47.5 ms | **+0.7%** |
+| TPOT P99 | 53.1 ms | 54.3 ms | +2.3% |
+| Latency mean | 32.29 s | 32.54 s | **+0.8%** |
+| Latency P99 | 43.78 s | 44.00 s | +0.5% |
 
 The disaggregated path: data-parallel across two instances, expert-parallel
 within each, with wave-synchronized collectives. TPOT and end-to-end latency
-hold to +0.6%, which is the tightest pair in the set after the RTX 4090 run —
-the DP+EP path tracks vLLM as closely as the dense TP path.
+means stay below 1%. The skew table was recompiled with the common rule;
+this migration does not change or validate MoE communication modelling.
 
-Its TTFT tail (+4.5% at P99) is the widest error on the page, and it is also
+Its TTFT tail (+5.6% at P90 and +5.2% at P99) is the widest error on the page, and it is also
 the one number here that a single vLLM run cannot pin down: see the caution
 under the headline table for the 22.1% engine-side spread across twelve
 identical runs, and why the committed truth is chosen for representativeness
@@ -254,7 +259,7 @@ artifacts:
 
 ```bash
 # Sim side: writes bench/examples/<hardware>/<model>/outputs/sim.csv
-./bench/examples/run.sh                       # all four
+./bench/examples/run.sh                       # all discovered examples
 ./bench/examples/run.sh RTX4090/Llama-3.1-8B  # or one at a time
 
 # Compare: writes bench/examples/<hardware>/<model>/validation/{summary.txt, *.png}

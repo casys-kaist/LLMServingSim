@@ -324,43 +324,15 @@ def _geometric_spec(values) -> Any:
     return core if prefix is None else f"{prefix}, {core}"
 
 
-def _skew_meta_block(args) -> dict:
-    """Record the skew grid configuration actually used.
-
-    Delegates to profiler.skew._build_grid for the dynamic axes and
-    emits each doubling axis as a compact ``"<start>-<end> x<factor>"``
-    spec string. Irregular axes (``ratio``) stay as literal lists.
-    Raw data is in tp<N>/skew.csv; this block tells the simulator
-    which grid density produced them.
-    """
-    if args.skip_skew:
-        return {"enabled": False}
-    # Import lazily to avoid a circular profiler import at module load.
-    from profiler.core.skew import _build_grid, _SKEW_REP
-
-    class _FakeLimits:
-        max_num_batched_tokens = args.max_num_batched_tokens or 2048
-        max_num_seqs = args.max_num_seqs or 256
-    grid = _build_grid(args, _FakeLimits())
-    return {
-        "enabled": True,
-        # Geometric factors actually used. 2.0 (doubling) is the
-        # default; higher values coarsen the sweep and speed it up.
-        "factors": {
-            "n": args.skew_n_factor,
-            "pc": args.skew_pc_factor,
-            "kp": args.skew_kp_factor,
-            "kvs": args.skew_kvs_factor,
-        },
-        "grid": {
-            "n": _geometric_spec(grid["n"]),
-            "ratio": list(grid["ratio"]),
-            "pc": _geometric_spec(grid["pc"]),
-            "kp": _geometric_spec(grid["kp"]),
-            "kvs": _geometric_spec(grid["kvs"]),
-            "skew_rep": _SKEW_REP,
-        },
-    }
+def _skew_meta_block(args, variant_root, prior=None):
+    """Record actual per-TP plans, never reconstruct engine bounds from defaults."""
+    result = dict(prior or {})
+    plans = {int(tp): value for tp, value in (result.get("per_tp") or {}).items()}
+    for path in sorted(Path(variant_root).glob("tp*/skew.meta.yaml")):
+        with path.open() as stream:
+            plans[int(path.parent.name[2:])] = yaml.safe_load(stream)
+    result.update(enabled=bool(plans) or bool(result.get("enabled")), per_tp=plans)
+    return result
 
 
 def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
@@ -548,12 +520,9 @@ def persist_meta(
     authoritative either, for the same reason.
 
     ``records_skew`` -- same restraint for ``skew_profile``, which
-    ``_skew_meta_block`` derives from *this run's* args. A run that swept no
-    skew would replace the recorded grid with one its own defaults describe and
-    no ``skew.csv`` in the bundle matches. Every ``slice`` is such a run, and
-    the block also needs ``attention_max_kv`` resolved, which a slice does not
-    do -- so leaving it ungated made ``slice --group step`` crash in
-    ``_build_grid`` on ``None // 2`` after the sweep had already succeeded.
+    ``_skew_meta_block`` merges from actual per-TP acquisition sidecars. A run
+    that swept no skew must retain earlier coverage and provenance rather
+    than replacing it with a grid inferred from defaults.
 
     ``records_attention_grid`` -- only a run that swept attention knows which
     axes were fired. A ``per_sequence`` refresh regenerating the block from its
@@ -656,7 +625,7 @@ def persist_meta(
         ),
         "measurement_iterations": args.measurement_iterations,
         "skew_profile": (
-            _skew_meta_block(args)
+            _skew_meta_block(args, variant_root, prior.get("skew_profile"))
             if records_skew
             else prior.get("skew_profile") or None
         ),

@@ -193,15 +193,10 @@ engine_effective:
   max_num_seqs: <ditto>
 
 skew_fit:
-  enabled: true                 # REQUIRED, see below
-  per_tp:
-    1:
-      method: "synthetic-constant"
-      alpha_default: 0.3
+  enabled: false                # no measured heterogeneous correction
 ```
 
-The constant-alpha example above uses the **legacy unversioned** metadata
-format. Do not invent `runtime-skew-calibration-v1` entries or their hashes:
+Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration-v1` entries or their hashes:
 generate them from measured skew data and matching attention references with
 `profiler refit-skew`. See [Skew & alpha fit](./skew-alpha-fit).
 
@@ -218,19 +213,12 @@ sweep-bound warning.
 **not read at run time**, so you can omit them from a synthetic bundle
 or fill them in however you like.
 
-:::danger[`alpha_default` does nothing without `enabled: true`]
-`_skew_alpha` returns the module fallback — which is **0**, i.e. no
-skew correction at all — unless `skew_fit.enabled` is truthy. So a
-bundle carrying `alpha_default: 0.3` but no `enabled` flag silently
-applies `alpha = 0`, not `0.3`. It also needs a `per_tp[<tp>]` entry
-for the TP being simulated; without one it falls back to a top-level
-`skew_fit.alpha_default` and then to 0.
-
-If you genuinely have no skew data, the honest choice is to leave
-`skew_fit` out entirely and accept `alpha = 0` (`t_mean`). A borrowed
-constant is not a safe default: the endpoint gap `(t_max - t_mean)` is
-a large fraction of an iteration, so alpha has to be known to about
-±0.02 to be worth applying at all.
+:::warning[Enable only measured, compiled calibration]
+An absent or disabled `skew_fit` applies zero correction. Enabled entries
+must use the versioned compiler output; the old constant-alpha and bucket
+formats are rejected. `profiler refit-skew` compiles your own raw measurements
+against matching attention references. A missing TP or query slice does not
+borrow another slice's correction.
 :::
 
 Omit `skew.csv` and `skew_fit.csv` when you have no

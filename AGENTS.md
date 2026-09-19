@@ -52,7 +52,7 @@ LLMServingSim/
 │   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
 │   │   ├── skew_calibration.py # Offline reference-aligned fit + supported-N lookup
-│   │   ├── fit_alpha.py        # Legacy fitter for unversioned profile compatibility
+│   │   ├── skew_plan.py        # Dynamic heterogeneous distribution coverage
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
 │   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
 │   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
@@ -595,71 +595,62 @@ coverage's own total, which rose by 22.3 / 24.1 / 29.4 us across the three
 regimes once the shim was in.
 
 
-### Skew profiling & alpha fit
-Feasibility uses the engine-resolved KV block size and budgets the largest
-of all three shots: the uniform-max control puts every decode at the longest
-history, including its newly scheduled token. Reserve the sampler's remaining
-token at the context boundary. Checkpoints are replaced atomically after
-serialization and fsync; an unreadable existing CSV must raise rather than be
-silently overwritten. This preserves ordinary resume data, not `--force` resets.
+### Skew acquisition and offline calibration
 
-### Offline skew calibration
+`skew_plan.py` generates workload-independent distributions from configured
+bounds and resolved engine limits. It covers history families, request order,
+token-frontier batches and equal/unequal multi-prefill splits. Decode query
+lengths follow the attention sweep. Planning streams one expanded batch at a
+time; feasibility uses page-aligned actual KV allocation and reserves the
+sampler's final token. No benchmark inputs belong in the planner.
 
-The uniform attention table and its interpolation remain unchanged.
-`skew.py` measures bimodal heterogeneous decode cases with uniform mean/max
-controls. Raw rows preserve measured timings and complete `requests_json`
-geometry; `decode_q_len` is explicit. Legacy bimodal rows are reconstructible.
-Multi-query input additionally needs `n_prefill`; the current acquisition
-sweep still emits q=1 only. Resume keys use ordered geometry, not incomplete
-bimodal summaries.
+`hooks/skew_measurement.py` measures the actual heterogeneous batch through
+vLLM 0.28. Three independent contexts, each containing three timed forwards
+by default, produce a median of forward medians. CPU scopes establish call
+ownership; correlated GPU annotations are not kernel work. Native history is
+initialized once, and warmups verify finite output and executed geometry.
+Recurrent state groups are identified by vLLM KV-cache spec, not model names;
+the paged attention groups supply the history/query geometry in hybrid stacks.
+Attention and other ordinary categories retain their existing measurement path.
 
-`skew_calibration.py` is the default compiler. It reconstructs the shared
-query-weighted prefill coordinate and computes both reference endpoints with
-the actual serving lookup. Measured controls remain diagnostics, never
-relabelled runtime estimates. The fit requires an exact attention kernel/q
-slice and uses measured heterogeneous latency as its target, not benchmark
-request latency.
+Raw CSV rows preserve ordered requests, query roles, repetitions, protocol
+and actual time. Complete kernel sets and sufficient repetitions are required
+for resume. Failed acquisition raises after checkpointing instead of silently
+publishing partial coverage. `skew.meta.yaml` records the actual per-TP plan,
+resolved limits and completion; metadata must not fabricate this from defaults.
+`profiler plan-skew` previews the same plan and outstanding cases on CPU from
+an existing bundle's resolved engine limits.
 
-Within each hardware/model/variant/TP/kernel/q/prefill/lever partition, a
-decode count becomes an anchor only with at least `MIN_ROWS` distinct cases.
-Unsupported counts pool into the nearest supported anchor on a log scale;
-geometric-midpoint ties select the smaller anchor. Sparse additions do not
-split unrelated partitions. Only N is support-adaptive: pc/lever bins remain
-fixed. Neither these axes nor endpoint summaries uniquely encode arbitrary
-request distributions.
+`skew_calibration.py` recomputes both endpoints with serving's unchanged
+query-weighted attention lookup. Exact kernel/query reference slices are
+required. Bimodal historical raw measurements remain reconstructible; that
+input conversion is not an old runtime estimator. General data requires full
+geometry, and multi-query data an explicit prefill boundary.
 
-Each cell uses a weighted median of `(actual - mean_reference) / gap`, with
-weight `abs(gap) / actual`. This minimizes the cell's sum of absolute relative
-profile-latency errors before clipping; it does not guarantee benchmark
-improvement. Cells retain the common clipping regularizer; missing cells and
-out-of-range N use the same kernel/q pooled WLS fallback. Missing kernel/q
-data means zero correction. Never borrow a fit across hardware, model, TP,
-kernel or query length. Dense nonpositive gaps are omitted; key-saturating
-kernels retain negative, but not zero, gaps.
+The weighted median minimizes each cell's summed absolute relative
+profile-latency error before clipping. N anchors require sufficient distinct
+support within their kernel/query/prefill/lever partition. Sparse counts pool
+to the nearest supported anchor using geometric midpoints. Prefill boundaries
+scale with the measured token envelope; leverage boundaries are dimensionless.
+Unsupported cells use their own kernel/query pooled fallback; missing
+kernel/query data means zero correction. No cross-model, hardware, TP or
+query borrowing is permitted.
 
-New `skew_fit.csv` columns are `layer, decode_q_len, pc_label, lev_label,
-n_anchor, alpha, direct_rows, pooled_rows`. Per-TP metadata records
-`schema: runtime-skew-calibration-v1`, identity, axes, fallbacks, support,
-measured ranges and source/table fingerprints. Serving validates identity,
-attention data, lookup code, table bytes and saturation semantics once before
-loading cells. Stale fits raise with instructions to run the CPU-only
-`python -m profiler refit-skew MODEL --hardware HARDWARE [--tp N]`.
-A CPU rebuild with no raw skew measurements must fail without changing metadata
-or enabling a previously disabled fit. Normal profiling without skew data still
-records a disabled fit.
-The default writer invokes the same compiler automatically; unversioned
-bundles keep their legacy behavior until rebuilt.
+Only `runtime-skew-calibration-v1` tables can be enabled. Remove, rather than
+revive, old inline alpha and legacy bucket lookup code. Disabled bundles need
+no migration; the RTX4090 bundle remains untouched. The normal writer and
+CPU-only `profiler refit-skew` use the same compiler. Identity, attention,
+table, lookup-code and saturation fingerprints are checked before execution.
+An empty rebuild is an error and must not enable a disabled fit. A sidecar
+marked incomplete also blocks rebuilding until acquisition is resumed.
+`--skip-skew` skips new acquisition, not existing data; `--only-skew` requires
+existing attention references before GPU work begins.
 
-`--skip-skew` skips new measurements, not existing calibration.
-`--only-skew` needs an existing attention table for compilation.
-Derived CSVs and metadata are individually replaced atomically; interruption
-between them is recovered by refitting, not by silently accepting mismatches.
-
-Validate every reported statistic on committed `bench/examples` through
-`bench validate`, keeping benchmark request latencies out of fitting.
-Measurement-level tests supplement this check; they do not replace it.
-Development examples are not independent evidence of generalization. Publish
-supported behavior and limitations, never investigation checkpoints.
+Validate every statistic through `bench validate` on committed examples,
+without fitting their request latencies. Broader acquisition and a shared
+rule do not guarantee improvements on every model. Generalization needs
+unseen models, hardware and workloads; endpoint summaries are not sufficient
+statistics of arbitrary distributions.
 
 ### Why the old cudagraph correction is gone (not proof that graphs are irrelevant)
 For four months the simulator subtracted a per-step "cudagraph saving" it read
@@ -963,9 +954,10 @@ sequence and must precede the mean -- `mean(min(x, cap))` is not
 `min(mean(x), cap)`.
 
 **The same flag governs the skew guard.** `alpha` is where a skewed batch
-lands on the line between two measured uniform endpoints, and that line does
-not care which end is higher, but both the sweep and the simulator required
-`t_max > t_mean`. That is right for dense -- cost rises with kv, so a negative
+lands on the line between the two uniform attention-table lookups. That line
+does not care which end is higher; the fitter and simulator accept either
+sign for a kernel declared saturating. The former `t_max > t_mean` guard
+was right for dense -- cost rises with kv, so a negative
 gap is noise -- and wrong for a saturating kernel, where the gap is negative
 for essentially every case, so a sparse skew sweep would have had almost every
 row dropped as `nan`.
@@ -1051,8 +1043,9 @@ one. Do not let the `n_decode` result launder a claim about them.
 factors retain their defaults in `ProfileArgs`; the new compiler creates N
 anchors only where each partition has direct support. Increasing density can
 add support or introduce new regimes, but neither necessarily improves the
-fit. Prefill/lever partitions remain fixed and the other measured shape axes
-still affect which observations are pooled. Validate changed coverage through
+fit. Prefill partitions scale with the measured token envelope; lever bins
+remain dimensionless and fixed. Other measured shape axes still affect which
+observations are pooled. Validate changed coverage through
 the committed bench examples rather than assuming that more rows are better.
 
 **A refresh has to restate the other axes.** Every committed RTXPRO6000
@@ -1070,8 +1063,9 @@ used to show nothing at all between "firing N" and "done" -- which reads
 exactly like a hang, and was misdiagnosed as one twice (the GPU also sits at
 0-4% throughout, because the cost is the profiler's event tree, not the
 forward). `_fire_one_category` logs count, rate and ETA every 1% of shots, and
-`skew.sample_skew` does the same -- it is a separate fire loop, so it needed
-its own, and it is the longest single sweep in a run after `attention`.
+`skew.sample_skew` logs at every 20-case atomic checkpoint. It reports the
+actual acquisition rate, excluding reused cases, and retains completed cases
+if a later measurement fails.
 
 ### Feasibility bounds shared by attention and skew
 Both the uniform attention sweep and the skew sweep cap `n_reqs > max_num_seqs`
@@ -1265,7 +1259,8 @@ when the selected alpha is zero. New calibration tables use a kernel/query/
 prefill/lever partition and binary search over supported N anchors.
 `_hydrate_skew_fit_tables` validates and loads the table once; no fitting,
 measurement-neighbor interpolation or file access occurs per batch.
-Unversioned profiles retain the legacy bucket path.
+Enabled unversioned fits are rejected with a `profiler refit-skew` instruction.
+Disabled skew bundles, including RTX4090, bypass calibration unchanged.
 
 Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as

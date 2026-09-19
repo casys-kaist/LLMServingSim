@@ -9,12 +9,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ## [Unreleased]
 
 ### Added
+
+- Generate heterogeneous skew coverage from configured token, sequence and KV
+  bounds, including history families, request ordering and multi-prefill batches.
+  Record native per-forward repetitions and resumable completion; add CPU-only
+  `profiler plan-skew` coverage preview.
+- Require reference-aligned skew tables on the simulator path and remove the
+  legacy fitter/lookup. Migrate enabled RTXPRO6000 calibration bundles, including
+  broader Llama TP1 and Qwen3-32B TP2 measurements; leave disabled RTX4090 data
+  unchanged. Prefill partitions now scale with the measured envelope.
 - Compile skew calibration against the simulator's actual attention references,
   with partition-local supported batch-size anchors and relative-latency
   weighted medians. Save versioned, fingerprinted tables for bounded-cost
   runtime picking; add CPU-only `profiler refit-skew` and reject stale fits.
   Preserve complete request geometry and geometry-based resume keys without
-  changing attention interpolation or automatically migrating bundled data.
+  changing attention interpolation. The acquisition replacement above also
+  migrates the enabled shipped calibration bundles.
 - Add an opt-in resource watchdog for one command and its descendants, with
   process-tree RSS, host-memory, swap-growth and timeout guards, optional
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
@@ -29,8 +39,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   an exclusive startup snapshot, and reject known incomplete or perturbed
   validation inputs. Add an explicit KV memory budget and placement metadata;
   fix percent-sign formatting in CLI help without adding diagnostic hooks.
-- Check skew measurement capacity with the resolved KV block size and the
-  largest uniform control, including new-token and context-boundary space.
+- Check skew measurement capacity with the resolved KV block size, including
+  new-token and context-boundary space. The replacement acquisition measures
+  actual heterogeneous batches without additional uniform controls.
   Preserve prior skew checkpoints on failed writes and reject corrupt input
   CSVs rather than silently replacing them.
 - Preserve distinct module shapes when deduplicating top-level profiling

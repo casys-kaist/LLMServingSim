@@ -215,27 +215,29 @@ Still profiled at **TP=1**: expert weights shard by `ep_size`, not `tp_size`.
 
 ## `skew.csv` (skew-enabled runs)
 
-One raw measurement per attention-category kernel and ordered request shape.
-The built-in bimodal sweep retains `n, nb, ratio, skew, pc, kp, kvs, kv_big,
-kv_mean` plus measured `t_mean_us, t_max_us, t_skew_us` and the diagnostic
-control-based `alpha`. Raw alpha is not clipped.
-
-New rows also carry:
+One measured target per attention kernel and ordered request shape.
 
 | Column | Meaning |
 | --- | --- |
 | `layer` | Exact attention-category kernel |
-| `requests_json` | Ordered `[query_tokens, computed_history_tokens]` pairs |
-| `decode_q_len` | Query tokens per decode request |
-| `case_id` | Geometry-derived resume key; the compiler recomputes it |
+| `requests_json` | Ordered query/history pairs |
+| `n_prefill`, `decode_q_len` | Explicit query roles |
+| `case_id` | Geometry-derived key |
+| `family` | Workload-independent acquisition family |
+| `measurement_protocol` | Native per-forward timing protocol |
+| `measurement_sha256`, `block_size` | Measurement implementation fingerprint and resolved KV page size |
+| `rounds`, `timed_forwards` | Repetition counts |
+| `round_timings_us_json` | Individual forward times, grouped by context |
+| `t_skew_us` | Median of the context-level forward medians |
 
-General distributions require the complete request list. A multi-query input
-also needs an explicit `n_prefill` role boundary; current acquisition emits
-q=1. Legacy bimodal rows without these additions remain reconstructible.
+Historical bimodal rows can be reconstructed; general distributions need
+their full request lists. Measured controls, when present, remain diagnostics.
+The compiler obtains mean/max references through the unchanged serving
+attention lookup, never by relabelling measured control values.
 
-The default fit uses measured `t_skew_us` as its target, but **recomputes**
-mean/max references from `attention.csv` through serving's lookup. It does not
-reuse the diagnostic raw alpha or overwrite measured controls with estimates.
+`skew.meta.yaml` accompanies new acquisitions with the actual per-TP plan,
+resolved page size/capacity, seed, family counts and completion status.
+Interrupted or failed runs retain an incomplete status and checkpointed rows.
 
 ## `skew_fit.csv` (skew-enabled runs)
 
@@ -256,7 +258,8 @@ layer,decode_q_len,pc_label,lev_label,n_anchor,alpha,direct_rows,pooled_rows
 
 The simulator picks the nearest supported N on a log scale, with lower-anchor
 ties. It does not interpolate neighboring alpha values. The support-adaptive
-N anchors differ between partitions; prefill/lever bins remain fixed.
+N anchors differ between partitions; prefill cutoffs scale with the measured
+prefill envelope and leverage cutoffs are dimensionless.
 See [Skew & alpha fit](./skew-alpha-fit) for the objective and fallback rules.
 
 Each `meta.yaml::skew_fit.per_tp[tp]` entry records the schema, bundle/TP
@@ -267,91 +270,35 @@ and `bucket_table_sha256`. Kernel/query keys have the form `attention|q=1`.
 and key-saturation semantics. The fitted CSV contains the cells, not raw shots.
 
 Legacy files have `layer, n_label, pc_label, lev_label, alpha, n_samples`
-and no schema field. They continue to use the legacy lookup until
-`profiler refit-skew` or a profiler metadata refresh rebuilds them. Do not
-combine a versioned CSV with legacy metadata.
+and no schema field. They are no longer accepted when skew is enabled:
+run `profiler refit-skew` first. Disabled bundles do not read these tables.
 
 ## `meta.yaml`
 
-Sibling of the `tp<N>/` folders. Below is a real one, from
-`profiler/perf/RTXPRO6000/Qwen/Qwen3-32B/bf16/`, with the per-TP fit
-block trimmed to one entry. This is a **legacy, unversioned** bundle;
-new calibration entries follow the contract above:
+Sibling of the `tp<N>/` folders. Ordinary engine/category metadata and
+calibration have separate authority. This schematic omits generated hashes;
+use the profiler to create enabled entries, not hand-written placeholders.
 
 ```yaml
-profiler_version: 1.0.0
-vllm_version: 0.19.0
-cuda_version: '13.0'
-gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-04-24T12:35:08+00:00'
-architecture: qwen3
-architecture_sha256: c0557f326f38c70b46b5841c90d3447863d653dc9a228019db74eec591c2bf78
 model: Qwen/Qwen3-32B
 variant: bf16
-tp_degrees: [1, 2]
-engine_effective:
-  load_format: dummy
-  enforce_eager: true
-  skip_tokenizer_init: true
-  enable_prefix_caching: false
-  generation_config: vllm
-  tensor_parallel_size: 1
-  block_size: 16
-  gpu_memory_utilization: 0.9
-  max_num_batched_tokens: 2048
-  max_num_seqs: 256
-  hf_overrides:
-    num_hidden_layers: 1
-    intermediate_size: 12800
-    num_attention_heads: 32
-    num_key_value_heads: 4
-    vocab_size: 75968
-  worker_extension_cls: profiler.hooks.extension.Extension
-  model: /tmp/profiler_model_dnlix5xf
-attention_grid:
-  max_kv: 16384
-  chunk_factor: 2.0
-  kv_factor: 2.0
-  chunks: 0, 16-2048 x2
-  n_decode: 0, 1-256 x2
-  kv: 0, 16-16384 x2
-  decode_q_lens: [1]
-category_provenance:
-  dense: {vllm_version: 0.19.0, profiled_at: '2026-04-24T12:44:06+00:00'}
-  moe: {vllm_version: 0.28.0, profiled_at: '2026-09-03T02:13:24+00:00'}
-measurement_iterations: 3
-skew_profile:
-  enabled: true
-  factors: {n: 2.0, pc: 2.0, kp: 2.0, kvs: 2.0}
-  grid:
-    n: 2-256 x2
-    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
-    pc: 0, 16-2048 x2
-    kp: 0, 512-8192 x2
-    kvs: 128-16384 x2
-    skew_rep: 4.0
+engine_resolved:
+  per_tp:
+    '2':
+      block_size: 16
+      max_model_len: 40960
+      num_cache_tokens: 43523488
 skew_fit:
   enabled: true
-  bucket_axes:
-    axes: [n, pc, lev]
-    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
-    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
-    pc_bins: [-1, 1, 256, 1024, 1000000000]
-    pc_labels: [pc0, pcS, pcM, pcL]
-    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
-    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
-    1:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 13476
-      alpha_default: 0.0535
-      alpha_default_by_layer: {attention: 0.0535}
-      bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0259
-      rel_err_p90: 0.1259
-      rel_err_p99: 0.349
-      signed_mean: -0.0046
+    2:
+      schema: runtime-skew-calibration-v1
+      identity: {hardware: RTXPRO6000, model: Qwen/Qwen3-32B, variant: bf16, tp: 2}
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      bucket_table: tp2/skew_fit.csv
+      # axes, fallbacks, measured ranges and fingerprints are compiler output
 ```
 
 ### Identity and provenance
@@ -407,7 +354,7 @@ conv state widened by `num_speculative_tokens`) and a per-category refresh
 (which boots a shrunk stack) both leave them alone. `attention_grid` may only
 be rewritten by a run that swept attention.
 
-`attention_grid` and `skew_profile.grid` use a shorthand rather than
+`attention_grid` uses a shorthand rather than
 listing every point:
 
 | Spec | Reads as |
@@ -416,9 +363,8 @@ listing every point:
 | `2-256 x2` | `2` doubling to `256`, no zero point |
 | `[0.0625, 0.125, …]` | an explicit list, used where the axis is not geometric |
 
-`skew_profile.grid.skew_rep` is the single representative skew factor
-Tier 1 fires at (`4.0`); the Tier 2 anchor sweep's skew values are not
-recorded here.
+New `skew_profile.per_tp` entries retain explicit dynamic acquisition axes
+and completion from each measured TP's `skew.meta.yaml`.
 
 ### What the simulator actually reads
 
@@ -426,11 +372,11 @@ recorded here.
 | --- | --- |
 | `engine_effective.max_num_batched_tokens` / `.max_num_seqs` | One-shot warning when the runtime CLI exceeds the sweep bounds, since lookups will extrapolate |
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
-| `skew_fit.per_tp[tp].schema` | Versioned calibration or the unversioned legacy path |
+| `skew_fit.per_tp[tp].schema` | Required versioned calibration schema |
 | `skew_fit.per_tp[tp].identity`, `.reference`, `.bucket_table_sha256` | Validate bundle identity, attention/reference implementation, saturation contract and table bytes |
 | `skew_fit.per_tp[tp].axes`, `.bucket_table` | Load partitions and supported N anchors once |
 | `skew_fit.per_tp[tp].alpha_default_by_kernel`, `.n_range_by_kernel` | Same-kernel/query fallback and measured N bounds |
-| Legacy `bucket_axes`, `alpha_by_bucket`, `alpha_default_by_layer`, `alpha_default` | Backward-compatible unversioned lookup only |
+| Legacy inline alpha / bucket-axis fields | Not supported for enabled calibration |
 
 Other version and acquisition fields describe provenance. Raw skew data is
 required for rebuilding, not for runtime lookup. A changed attention table,

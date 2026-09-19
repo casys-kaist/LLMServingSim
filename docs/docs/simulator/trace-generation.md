@@ -83,7 +83,7 @@ On first load, the simulator also:
    profiled sweep bounds. If you exceed them, you get a one-shot
    warning that lookups will **extrapolate** rather than clamp.
 2. Validates and hydrates versioned skew calibration from `skew_fit.csv`.
-   Legacy unversioned bundles retain their `alpha_by_bucket` lookup.
+   Enabled legacy fits are rejected; rebuild with `profiler refit-skew`.
 
 ## Per-category lookup
 
@@ -172,7 +172,8 @@ only sufficiently supported measured N values become anchors. Runtime picks
 the nearest anchor on a log scale; exact midpoint ties go to the smaller N.
 There is no interpolation between alpha cells.
 
-N is support-adaptive; prefill/lever bins remain fixed and are stored in
+N is support-adaptive; prefill boundaries scale with the measured envelope,
+while leverage boundaries are dimensionless. They are stored in
 metadata. Missing cells or out-of-range N use the same kernel/query pooled
 fallback. A missing kernel/query fit means zero correction. There is no
 model-specific fallback selection.
@@ -183,7 +184,7 @@ A stale fit raises with instructions to run `profiler refit-skew`. After
 loading, lookup is an in-memory partition selection and binary search;
 it never refits or searches raw measurements in the simulation loop.
 
-Unversioned bundles retain their legacy lookup until rebuilt. Skipping skew
+Enabled unversioned fits require rebuilding; disabled bundles are unchanged. Skipping skew
 acquisition does not remove an existing calibration; a bundle with no enabled
 fit uses zero correction. Neither endpoint reduction nor these empirical
 buckets uniquely describe all request distributions, so validate changes

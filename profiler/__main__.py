@@ -281,6 +281,12 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                    dest="skew_kvs_factor",
                    help="Geometric factor for the skew kvs (small-decode kv) "
                         "axis. 2.0 (default) is doubling.")
+    p.add_argument("--skew-samples-per-cell", type=int, default=32,
+                   help="Distribution draws per operating cell (minimum 8).")
+    p.add_argument("--skew-rounds", type=int, default=3,
+                   help="Independent profile contexts per heterogeneous batch.")
+    p.add_argument("--skew-seed", type=int, default=0,
+                   help="Deterministic workload-independent sampling seed.")
     p.add_argument("--only-skew", action="store_true", default=False,
                    dest="only_skew",
                    help="Skip the uniform attention/dense/per_seq/moe "
@@ -475,6 +481,9 @@ def _build_profile_args(
         skew_pc_factor=getattr(ns, "skew_pc_factor", 2.0),
         skew_kp_factor=getattr(ns, "skew_kp_factor", 2.0),
         skew_kvs_factor=getattr(ns, "skew_kvs_factor", 2.0),
+        skew_samples_per_cell=getattr(ns, "skew_samples_per_cell", 32),
+        skew_rounds=getattr(ns, "skew_rounds", 3),
+        skew_seed=getattr(ns, "skew_seed", 0),
         only_skew=getattr(ns, "only_skew", False),
         force=getattr(ns, "force", False),
         hf_overrides=_parse_hf_overrides(getattr(ns, "hf_override", None)),
@@ -553,6 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
              "config file under configs/model/.",
     )
     _add_common_flags(p_profile)
+
+    p_plan = sub.add_parser("plan-skew", help="Preview skew coverage from saved engine limits; no GPU.")
+    p_plan.add_argument("model")
+    _add_common_flags(p_plan)
 
     # ---- slice ----
     p_slice = sub.add_parser(
@@ -653,8 +666,6 @@ def main(argv: list[str] | None = None) -> int:
                                    npus=ns.hw_npus)
         return 0 if measured else 1
 
-    from profiler.core.runner import run_coverage, run_full, run_slice
-
     # 1. Locate the model's HF config.json.
     model_config_path, hf_id = _resolve_model(ns.model, ns.model_config_root)
 
@@ -680,6 +691,38 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # 5. Dispatch.
+    if ns.cmd == "plan-skew":
+        from profiler.core.skew_plan import summarize
+        from profiler.core.skew import _existing_keys
+        from profiler.core.config import load_architecture
+        from types import SimpleNamespace
+        from serving.core.trace_generator import resolve_variant
+        import dataclasses
+        import yaml
+        variant = profile_args.variant or resolve_variant(model_config)
+        root = Path(ns.out_root) / profile_args.hardware / hf_id / variant
+        metadata = yaml.safe_load((root / "meta.yaml").read_text())
+        effective = metadata["engine_effective"]
+        resolved = metadata["engine_resolved"]["per_tp"]
+        plans = {}
+        catalog = load_architecture(arch_path).catalog.attention
+        for tp in profile_args.tp_degrees:
+            saved = resolved.get(str(tp)) or resolved.get(tp)
+            if not saved:
+                raise ValueError(f"Missing saved engine limits for TP={tp}; profile first")
+            limits = SimpleNamespace(**{"max_num_batched_tokens": effective["max_num_batched_tokens"],
+                "max_num_seqs": effective["max_num_seqs"], **saved})
+            planned = dataclasses.replace(profile_args,
+                attention_max_kv=profile_args.attention_max_kv or
+                                 metadata.get("attention_grid", {}).get("max_kv") or limits.max_model_len)
+            completed = _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
+                                       planned.skew_rounds, planned.measurement_iterations,
+                                       block_size=limits.block_size)
+            plans[tp] = summarize(planned, limits, completed)
+        print(json.dumps(plans, indent=2))
+        return 0
+
+    from profiler.core.runner import run_coverage, run_full, run_slice
     if ns.cmd == "profile":
         # --profile-mtp needs no restriction here: run_full boots the drafter
         # in a second engine after the main pass, with only the `mtp` category,

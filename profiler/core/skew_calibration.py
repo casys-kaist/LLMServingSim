@@ -3,8 +3,8 @@
 Uniform attention references must come from the same table and lookup used
 at execution. Actual latencies are profiling measurements, never benchmark
 request latencies. N anchors are supported independently within each kernel,
-query-length, prefill and lever partition. The prefill and lever partitions
-remain fixed; they are not claimed to be sufficient distribution descriptors.
+query-length, prefill and lever partition. Prefill partitions scale with the
+measured envelope; these summaries are not sufficient distribution descriptors.
 """
 
 from collections import defaultdict
@@ -19,8 +19,6 @@ import tempfile
 
 
 SCHEMA = "runtime-skew-calibration-v1"
-PC_BINS = (-1, 1, 256, 1024, 1_000_000_000)
-PC_LABELS = ("pc0", "pcS", "pcM", "pcL")
 LEV_BINS = (0.0, 0.25, 0.75, 1.5, 3.0, 1_000_000_000.0)
 LEV_LABELS = ("lev0", "lev1", "lev2", "lev3", "lev4")
 MIN_ROWS = 20
@@ -153,6 +151,11 @@ def fit_bundle(variant_root, identity, model_config, tp_degrees=None):
     per_tp = {}
     for tp in wanted:
         folder = root / f"tp{tp}"
+        status = folder / "skew.meta.yaml"
+        if status.exists():
+            import yaml
+            if not (yaml.safe_load(status.read_text()) or {}).get("completed"):
+                raise ValueError(f"Incomplete skew acquisition at {folder}; resume profiling first")
         if not (folder / "skew.csv").exists():
             raise FileNotFoundError(f"Missing skew measurements at {folder}")
         fit_identity = dict(identity, tp=tp)
@@ -268,7 +271,13 @@ def fit(rows, identity, reference, *, min_rows=MIN_ROWS):
         raise ValueError("A positive integer support floor is required")
     if not reference or not reference.get("attention_sha256") or not reference.get("lookup_sha256"):
         raise ValueError("Attention data and lookup fingerprints are required")
-    axes = dict(pc_bins=list(PC_BINS), pc_labels=list(PC_LABELS),
+    rows = list(rows)
+    pc_cap = max((r["pc"] for r in rows), default=0)
+    pc_edges = sorted({1, max(1, pc_cap // 8), max(1, pc_cap // 2)})
+    # Token coordinates scale with the measured envelope; leverage is already
+    # dimensionless. Preserve a separate zero/tiny-prefill partition.
+    axes = dict(pc_bins=[-1, *pc_edges, max(1_000_000_000, pc_cap + 1)],
+                pc_labels=["pc0"] + [f"pc{i}" for i in range(1, len(pc_edges) + 1)],
                 lev_bins=list(LEV_BINS), lev_labels=list(LEV_LABELS))
     seen, dropped, partitions, kernels = set(), defaultdict(int), defaultdict(list), defaultdict(list)
     for source in rows:
@@ -315,8 +324,8 @@ def fit(rows, identity, reference, *, min_rows=MIN_ROWS):
     defaults, ranges = {}, {}
     for name, selected in sorted(kernels.items()):
         denominator = math.fsum(r["gap"]**2 for r in selected)
-        # Retain the established per-kernel pooled WLS fallback. Changing
-        # fallback and cell loss together would obscure the cell comparison.
+        # A same-kernel/query pooled least-squares estimate supplies cells
+        # with insufficient local support. It is never borrowed across slices.
         defaults[name] = round(math.fsum(r["gap"]*r["delta"] for r in selected) / denominator, 4)
         ranges[name] = [min(r["n"] for r in selected), max(r["n"] for r in selected)]
     return dict(schema=SCHEMA, identity=dict(identity), reference=dict(reference),
@@ -359,7 +368,7 @@ def write_table(path, table):
         temporary = Path(stream.name)
     try:
         with temporary.open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
             stream.flush()

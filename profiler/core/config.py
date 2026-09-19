@@ -967,38 +967,17 @@ class ProfileArgs:
     written and alpha fit cannot run). Useful for quick profile runs
     that only need uniform attention data."""
 
-    # Skew grid density. Mirrors the attention factor knobs — the
-    # default 2.0 (doubling) is what ships today; crank higher
-    # (e.g. 4.0) to coarsen the sweep and cut profile time when the
-    # target workload doesn't stress every axis.
-    # The skew axes stay at 2.0 rather than following ``SQRT2``, and the
-    # reason is that density is not free here the way it is on the attention
-    # grid. ``fit_alpha`` derives one bucket per *profiled value* on ``n`` and
-    # ``kp``, so halving the step doubles the bucket count and halves the
-    # samples behind each alpha -- the fit already sits at ~2 samples per
-    # bucket, which is why the simulator reads the pooled ``alpha_default``
-    # for every mixed batch. ``pc`` is keyed by its raw value and a runtime
-    # chunk lands on a grid point only by coincidence, so a denser pc axis
-    # buys nothing at all. The one axis where density *would* pool samples is
-    # ``kvs``, inside its log-4x ``kv_big`` bin; lower that one alone if the
-    # skew fit needs support where a workload actually sits.
+    # Acquisition density is independent of the supported-N fit partitions.
     skew_n_factor: float = 2.0
-    """Geometric factor for the skew n (total decode count) axis.
-    Default 2.0 (doubling). Override via --skew-n-factor. See the note
-    above: one bucket is derived per profiled value on this axis."""
     skew_pc_factor: float = 2.0
-    """Geometric factor for the skew pc (prefill chunk) axis.
-    Default 2.0. Override via --skew-pc-factor. Keyed raw by the fit, so
-    a runtime lookup misses it regardless of density."""
     skew_kp_factor: float = 2.0
-    """Geometric factor for the skew kp (prefill history) axis.
-    Default 2.0. Override via --skew-kp-factor. One bucket per profiled
-    value, as with ``skew_n_factor``."""
     skew_kvs_factor: float = 2.0
-    """Geometric factor for the skew kvs (small-decode kv) axis.
-    Default 2.0. Override via --skew-kvs-factor. The one skew axis whose
-    values share a bucket (log-4x ``kv_big`` bins), so lowering this one
-    pools more samples per alpha instead of splitting them."""
+    skew_samples_per_cell: int = 32
+    """Distribution draws per geometric N/prefill/history operating cell."""
+    skew_rounds: int = 3
+    """Independent profile contexts; target is the median of forward medians."""
+    skew_seed: int = 0
+    """Deterministic acquisition seed, shared by every hardware/model."""
 
     only_skew: bool = False
     """If True, skip dense/per_sequence/attention/moe categories and

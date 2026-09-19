@@ -48,6 +48,14 @@ class Extension:
     ``collective_rpc`` call.
     """
 
+    def skew_initialize(self):
+        from .skew_measurement import initialize
+        return initialize(self.model_runner)
+
+    def skew_measure(self, shot_dict, catalog, iterations=3):
+        from .skew_measurement import measure
+        return measure(self.model_runner, shot_dict, catalog, iterations)
+
     def fire(
         self,
         shot_dict: dict[str, Any],

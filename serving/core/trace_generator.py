@@ -196,100 +196,29 @@ def _load_meta(variant_root):
 
 
 def _hydrate_skew_fit_tables(meta, variant_root):
-    """Load each TP's per-bucket alpha table from CSV into the meta dict.
-
-    Versioned fits are validated against their identity, table and attention
-    references before loading supported-N cells. Unversioned CSV and inline
-    alpha mappings retain their legacy hydration path.
-    """
+    """Load only reference-aligned tables. Disabled bundles need no migration."""
     fit = (meta or {}).get("skew_fit") if isinstance(meta, dict) else None
     if not fit or not fit.get("enabled"):
         return
+    from profiler.core.skew_calibration import SCHEMA, checksum, lookup_fingerprint, read_table
     per_tp = fit.get("per_tp")
-    if not isinstance(per_tp, dict):
-        return
+    if not isinstance(per_tp, dict) or not per_tp:
+        raise ValueError("Enabled skew requires calibrated TP tables; run profiler refit-skew")
     for tp_key, entry in per_tp.items():
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("schema"):
-            from profiler.core.skew_calibration import (
-                SCHEMA, checksum, lookup_fingerprint, read_table,
-            )
-            if entry["schema"] != SCHEMA:
-                raise ValueError("Unknown skew fit schema; regenerate the skew fit")
-            expected = {k: meta[k] for k in ("hardware", "model", "variant")}
-            expected["tp"] = int(tp_key)
-            if entry.get("identity") != expected:
-                raise ValueError("Skew calibration profile/TP identity does not match meta.yaml")
-            reference = entry["reference"]
-            attention_path = os.path.join(variant_root, f"tp{int(tp_key)}", "attention.csv")
-            csv_path = os.path.join(variant_root, entry["bucket_table"])
-            if (checksum(attention_path) != reference["attention_sha256"]
-                    or lookup_fingerprint() != reference["lookup_sha256"]
-                    or checksum(csv_path) != entry["bucket_table_sha256"]):
-                raise ValueError("Stale skew calibration: run profiler refit-skew for this bundle")
-            entry["calibration"] = read_table(csv_path, entry)
-            continue
-        if entry.get("alpha_by_bucket"):
-            continue
-        rel = entry.get("bucket_table")
-        if not rel:
-            continue
-        csv_path = os.path.join(variant_root, rel)
-        if not os.path.isfile(csv_path):
-            logger.warning(
-                "skew_fit: tp=%s bucket_table %s missing — falling back to "
-                "alpha_default", tp_key, csv_path,
-            )
-            continue
-        alphas, counts = _read_skew_fit_csv(csv_path)
-        entry["alpha_by_bucket"] = alphas
-        entry["n_by_bucket"] = counts
-
-
-def _read_skew_fit_csv(path):
-    """Return (alpha_by_bucket, n_by_bucket) keyed by the pipe-delimited
-    bucket string used by ``_skew_alpha``.
-
-    A ``layer`` column is prefixed onto the key, naming the attention kernel
-    the alpha was fitted on. A CSV written before that column existed holds one
-    kernel, and its keys stay unprefixed — which is what ``_skew_alpha`` falls
-    back to for ``attention`` and only for ``attention``.
-
-    A CSV written against the previous axes (``pc`` raw, ``skew_rate``,
-    ``kv_big``, ``kp``) has none of the columns this builds a key from, so it
-    is refused wholesale rather than half-read: every batch then reads that
-    bundle's pooled ``alpha_default``, which is what its mixed batches already
-    got.
-    """
-    df = pd.read_csv(path)
-    if "n_anchor" in df.columns:
-        raise ValueError("Calibrated skew table has legacy metadata; run profiler refit-skew")
-    if not {"n_label", "pc_label", "lev_label"} <= set(df.columns):
-        logger.warning(
-            "skew_fit: %s was fitted against the previous bucket axes; "
-            "ignoring its table and using the pooled alpha. Re-run "
-            "`profiler refit-skew` for this bundle.", path,
-        )
-        return {}, {}
-    has_layer = "layer" in df.columns
-    alphas: dict = {}
-    counts: dict = {}
-    for row in df.itertuples(index=False):
-        raw = getattr(row, "raw_key", None)
-        if isinstance(raw, str) and raw:
-            key = raw
-        else:
-            key = f"{row.n_label}|{row.pc_label}|{row.lev_label}"
-            if has_layer:
-                key = f"{row.layer}|{key}"
-        alphas[key] = float(row.alpha)
-        if hasattr(row, "n_samples"):
-            try:
-                counts[key] = int(row.n_samples)
-            except (TypeError, ValueError):
-                pass
-    return alphas, counts
+        if not isinstance(entry, dict) or entry.get("schema") != SCHEMA:
+            raise ValueError("Legacy skew fits are no longer supported; run profiler refit-skew")
+        expected = {k: meta[k] for k in ("hardware", "model", "variant")}
+        expected["tp"] = int(tp_key)
+        if entry.get("identity") != expected:
+            raise ValueError("Skew calibration profile/TP identity does not match meta.yaml")
+        reference = entry["reference"]
+        attention_path = os.path.join(variant_root, f"tp{int(tp_key)}", "attention.csv")
+        csv_path = os.path.join(variant_root, entry["bucket_table"])
+        if (checksum(attention_path) != reference["attention_sha256"]
+                or lookup_fingerprint() != reference["lookup_sha256"]
+                or checksum(csv_path) != entry["bucket_table_sha256"]):
+            raise ValueError("Stale skew calibration: run profiler refit-skew for this bundle")
+        entry["calibration"] = read_table(csv_path, entry)
 
 
 def _read_category_csv(path, key_cols):
@@ -939,165 +868,24 @@ def _attn_slice_lookup(tbl, pc, nd, prefill_key, kv_decode):
 # ---------------------------------------------------------------------------
 # Skew correction
 # ---------------------------------------------------------------------------
-# When the runtime batch has heterogeneous decode kv lengths, the
-# profiled 4D grid (which carries one kv_decode value per shot) can
-# only tell us the uniform-batch latency. ``kv_decode_mean`` is the
-# right coordinate to ask it for: decode attention cost tracks the
-# total KV read Sigma_k, and a uniform batch at the arithmetic mean has
-# ``n * mean(k) = Sigma_k`` before integer flooring. The shared floor
-# convention loses less than n history tokens per batch. The median would
-# not preserve the total — the runtime
-# kv distribution is right-skewed (measured ``kv_max/kv_mean`` p50 =
-# 2.61 on the ShareGPT replay), so a median anchor would understate the
-# read volume. The profiler uses the same definition (``skew.py``:
-# ``kv_mean = total_kv // n``).
-#
-# A heterogeneous batch can be faster or slower than that uniform anchor;
-# the aggregate key coordinate does not retain its distribution. The legacy skew profile
-# (profiler/.../tp<N>/skew.csv + the fitted ``skew_fit`` block in
-# meta.yaml, with the bucket alpha table spilled to
-# ``tp<N>/skew_fit.csv``) captures that as a 3-axis lookup table of
-# alpha values where
-#
-#     t_skew = t_mean + alpha * (t_max - t_mean)
-#
-# Lookup is resolved per-batch via ``_skew_alpha``. The bin edges and
-# labels come from ``meta.yaml::skew_fit.bucket_axes`` so the profiler
-# can widen any axis (e.g. raise ``max_num_seqs`` above 128) without a
-# coordinated code change here. The ``_DEFAULT_SKEW_AXES`` block below
-# is used as a fallback only when the meta carries no ``bucket_axes``
-# at all; a bundle fitted against the previous five axes has the field
-# but not this shape, and is handled by returning its pooled alpha.
-#
-# The fallback, used when a bundle carries no skew profile at all, is
-# **0**: apply no correction you have not measured. It used to be
-# 0.093, a constant no bundle in the repo reproduces — the measured
-# pooled value for Llama-3.1-8B on RTXPRO6000 is 0.0535, and resolving
-# a saturated RTX 4090 run's own batches against that bucket table
-# gives alpha p50 0.059. A scalar cannot serve this parameter anyway:
-# the endpoint gap ``(t_max - t_mean) * num_layers`` is ~12.6 ms on a
-# ~29 ms iteration, so each 0.1 of alpha is ~4.3% of iteration time and
-# alpha would have to be known to +/-0.023 to keep attention within 1%.
-# Profile skew if you need the correction; guessing it is worse than
-# omitting it.
-_ATTN_SKEW_ALPHA_FALLBACK: float = 0.0
+# The mean history preserves total decode KV volume before flooring, but
+# does not describe its distribution. Reference-aligned calibration adjusts
+# that uniform-table estimate using the separately measured heterogeneous cost.
+# No old axes, inline coefficients or cross-TP fallback are accepted.
 
-# These mirror ``profiler/core/fit_alpha.py``'s fixed edges. They are used only
-# when a bundle's meta carries no ``bucket_axes``; a bundle fitted against the
-# previous five axes carries a ``bucket_axes`` without ``lev_bins``, and
-# ``_skew_alpha`` reads its pooled default rather than building a key nothing
-# can match.
-_DEFAULT_SKEW_AXES: dict = {
-    "axes": ("n", "pc", "lev"),
-    # ``n`` gets one bucket per profiled batch size, split at the geometric
-    # midpoints so a runtime n reads the nearest profiled size. The real
-    # edges are derived from the sweep (so they follow whatever max_num_seqs
-    # it ran at) and read back from meta.yaml::skew_fit.bucket_axes. These
-    # are only the fallback. The axis cannot be coarsened: alpha differs
-    # 2.1-2.5x between two adjacent profiled sizes, and a run never schedules
-    # past max_num_seqs, so a bucket spanning two of them averages in a
-    # regime the runtime cannot enter.
-    "n_bins": (0, 3, 6, 11, 23, 45, 91, 181, 1_000_000_000),
-    "n_labels": ("n=2", "n=4", "n=8", "n=16", "n=32", "n=64",
-                 "n=128", "n>128"),
-    "pc_bins": (-1, 1, 256, 1024, 1_000_000_000),
-    "pc_labels": ("pc0", "pcS", "pcM", "pcL"),
-    "lev_bins": (0.0, 0.25, 0.75, 1.5, 3.0, 1_000_000_000.0),
-    "lev_labels": ("lev0", "lev1", "lev2", "lev3", "lev4"),
-}
-
-
-def _bucket_label(bins, labels, val) -> str:
-    # Bucketing is (bins[i], bins[i+1]] — inclusive on the right so
-    # the label matches its intuitive reading (``n<=8`` includes 8).
-    for i in range(len(labels)):
-        if val <= bins[i + 1]:
-            return labels[i]
-    return labels[-1]
-
-
-def _resolve_skew_axes(fit_block, tp_entry):
-    """Return the (bins, labels) axes used for key construction.
-
-    Priority: per-TP entry > block top-level > module defaults. The
-    per-TP override is primarily a transition path — the writer
-    promotes ``bucket_axes`` to the top of the block when it's
-    identical across TPs, which is the common case.
-    """
-    axes = None
-    if isinstance(tp_entry, dict):
-        axes = tp_entry.get("bucket_axes")
-    if not axes and isinstance(fit_block, dict):
-        axes = fit_block.get("bucket_axes")
-    if not axes:
-        return _DEFAULT_SKEW_AXES
-    return axes
-
-
-def _skew_alpha(
-    perf_db,
-    tp: int,
-    pc: int,
-    n: int,
-    lev: float,
-    layer: str = "attention",
-    decode_q_len: int = 1,
-) -> float:
-    """Resolve alpha for a specific batch from the profile's
-    ``skew_fit`` meta block.
-
-    Versioned fits select a supported N anchor within the matching
-    kernel/query/prefill/lever partition. The compiler minimizes relative
-    profile-latency L1 error offline; this function only queries loaded cells.
-    Missing cells or out-of-range N use the same kernel/query fallback,
-    and missing kernel/query data means zero correction.
-
-    Unversioned fits retain their historical bucket-axis and per-layer
-    fallback path. A disabled or absent fit returns zero correction.
-    """
-    meta = perf_db.get("meta") if isinstance(perf_db, dict) else None
-    if not meta:
-        return _ATTN_SKEW_ALPHA_FALLBACK
-    fit_block = meta.get("skew_fit")
-    if not fit_block or not fit_block.get("enabled"):
-        return _ATTN_SKEW_ALPHA_FALLBACK
-    per_tp = fit_block.get("per_tp") or {}
-    entry = per_tp.get(tp) or per_tp.get(int(tp)) or per_tp.get(str(tp))
-    if not entry:
-        return float(fit_block.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
-    if entry.get("schema"):
-        from profiler.core.skew_calibration import lookup
-        if "calibration" not in entry:
-            raise ValueError("Skew calibration was not loaded and validated")
-        return lookup(entry["calibration"], int(n), int(pc), float(lev), layer, decode_q_len)
-    axes = _resolve_skew_axes(fit_block, entry)
-    if layer is None:
-        layer = "attention"
-    if "n_bins" not in axes or "lev_bins" not in axes:
-        # Fitted before the axes changed: no key this builds can match.
-        per_layer = entry.get("alpha_default_by_layer") or {}
-        if layer in per_layer:
-            return float(per_layer[layer])
-        if layer == "attention":
-            return float(entry.get("alpha_default",
-                                   _ATTN_SKEW_ALPHA_FALLBACK))
+def _skew_alpha(perf_db, tp, pc, n, lev, layer="attention", decode_q_len=1):
+    """Pick one offline cell; missing/disabled measurements mean no correction."""
+    fit = (perf_db.get("meta") or {}).get("skew_fit") or {}
+    if not fit.get("enabled"):
         return 0.0
-    n_label = _bucket_label(axes["n_bins"], axes["n_labels"], int(n))
-    pc_label = _bucket_label(axes["pc_bins"], axes["pc_labels"], int(pc))
-    lev_label = _bucket_label(axes["lev_bins"], axes["lev_labels"], float(lev))
-    bucket = f"{n_label}|{pc_label}|{lev_label}"
-    alphas = entry.get("alpha_by_bucket") or {}
-    key = f"{layer}|{bucket}"
-    if key in alphas:
-        return float(alphas[key])
-    if layer == "attention" and bucket in alphas:
-        return float(alphas[bucket])
-    per_layer = entry.get("alpha_default_by_layer") or {}
-    if layer in per_layer:
-        return float(per_layer[layer])
-    if layer == "attention":
-        return float(entry.get("alpha_default", _ATTN_SKEW_ALPHA_FALLBACK))
-    return 0.0
+    entries = fit.get("per_tp") or {}
+    entry = entries.get(tp) or entries.get(str(tp))
+    if not entry:
+        return 0.0
+    from profiler.core.skew_calibration import SCHEMA, lookup
+    if entry.get("schema") != SCHEMA or "calibration" not in entry:
+        raise ValueError("Skew calibration was not loaded and validated; run profiler refit-skew")
+    return lookup(entry["calibration"], int(n), int(pc), float(lev), layer, decode_q_len)
 
 
 def _prefill_key_for(perf_db, bctx, layer):

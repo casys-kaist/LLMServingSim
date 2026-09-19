@@ -1,461 +1,32 @@
-"""Skew profiling — measures how FlashAttention kernel cost shifts when
-a decode batch has non-uniform kv distributions.
+"""Dynamic heterogeneous acquisition with bounded, resumable raw storage.
 
-Unlike the uniform attention grid (all decodes at the same kv), each
-skew case measures three latencies at the same operating point:
-
-    t_mean   — all decodes uniform at the batch's mean kv
-    t_max    — all decodes uniform at the batch's max kv
-    t_skew   — the actual skewed batch [nb × kv_big, (n-nb) × kvs]
-
-From these we can compute the normalized interpolation factor
-
-    alpha = (t_skew - t_mean) / (t_max - t_mean)
-
-This control-based ratio is diagnostic. The default offline fit recomputes
-both endpoints with the simulator's attention lookup before fitting the
-coefficient used at query time:
-
-    t_predicted = t_mean_lookup(batch.mean_kv) + alpha(batch.shape) ×
-                  (t_max_lookup(batch.max_kv) - t_mean_lookup(batch.mean_kv))
-
-Output: ``<variant>/tp<N>/skew.csv`` with per-case columns
-``layer, requests_json, decode_q_len, regime, n, nb, ratio, skew, pc,
-kp, kvs, kv_big, kv_mean, t_mean_us, t_max_us, t_skew_us, alpha, case_id``.
-
-One row **per attention-category layer per case**. A sparse-attention model has
-several kernels in that category and they do not share an alpha: MiniMax-M3's
-block selection caps the work its sparse layers do, so past the block budget
-their cost stops tracking kv length at all and ``t_max - t_mean`` collapses,
-while the indexer scans the whole KV and is the most skew-sensitive thing in
-the model. This used to measure the ``attention`` entry only and apply its
-alpha everywhere -- on M3 that is an alpha fitted on 3 of 60 layers.
-
-Downstream pipeline:
-
-  * ``skew_calibration`` recomputes runtime references and fits weighted
-    medians at supported N anchors within each kernel/query/pc/lever slice.
-  * ``writer.persist_meta`` saves compact cells to ``skew_fit.csv`` and
-    identity, reference fingerprints, axes and fallbacks to ``meta.yaml``.
-  * The simulator validates and loads this table once, then picks a bucket
-    without fitting, neighbor interpolation or file access inside the loop.
+The actual batch is measured; attention.csv provides both lookup references.
 """
-from __future__ import annotations
-
-import os
 import json
-import time
-import tempfile
-from dataclasses import dataclass
+import hashlib
+import math
+import os
 from pathlib import Path
+import statistics
+import tempfile
+import time
 
 import pandas as pd
 
-from profiler.core import logger as log
-from profiler.core.config import Architecture, ProfileArgs
-from profiler.core.hooks.batch import Shot
-from profiler.core.hooks.timings import TimingSample
+from . import logger as log
+from .skew_calibration import atomic_yaml, measurement_shape
+from .skew_plan import iter_cases, summarize
+
+PROTOCOL = "native-skew-per-forward-v1"
 
 
-# ---------------------------------------------------------------------------
-# Grid design
-# ---------------------------------------------------------------------------
-#
-# The grid axes are generated from the CLI-provided caps + per-axis
-# geometric factors so that the skew sweep scales with each model /
-# hardware target and can be coarsened for quick runs:
-#
-#   n axis      — geometric from 2 up to ``max_num_seqs``
-#                 (``--skew-n-factor``, default 2.0 = doubling)
-#   ratio axis  — fixed (unitless shape characterization)
-#   pc axis     — {0} + geometric from 16 up to
-#                 ``max_num_batched_tokens``. Starting at 16 gives
-#                 dense sampling in the small-chunk regime where skew
-#                 effects are strongest. (``--skew-pc-factor``)
-#   kp axis     — {0} + geometric from 512 up to
-#                 ``attention_max_kv // 2`` so prefill + existing-KV
-#                 interactions get swept across short (512) to long
-#                 histories. (``--skew-kp-factor``)
-#   kvs axis    — geometric in [128, attention_max_kv]
-#                 (``--skew-kvs-factor``)
-#   skew axis   — fixed {2, 4, 8, 16} (physical saturation-curve fit)
-#
-# Bumping any factor above 2.0 coarsens that axis (faster profile,
-# wider interpolation gaps); dropping below 2.0 densifies it.
-#
-# Tier 1 is a factorial of the above at a single representative skew
-# (4.0, in the saturated regime). Tier 2 adds a sweep along the skew
-# axis at a few anchor points — the only source of skew ≠ 4.0 data
-# in the dataset. (A former Tier 3 for the kvs axis was removed once
-# T1 grew dense enough along kvs to make T3 fully redundant.)
-
-_RATIO_VALS = (0.0625, 0.125, 0.25, 0.5, 0.75, 0.9)
-# Absolute nb counts that should be probed for every n, regardless of
-# what the fractional ``_RATIO_VALS`` produce. Needed because
-# ratio-based sampling at large n skips the "a few heavy outliers"
-# regime entirely — e.g. n=128 with ratio=0.0625 already gives nb=8,
-# never touching nb=1..4 where alpha peaks physically.
-_NB_ABSOLUTE = (1, 2, 3, 4)
-_SKEW_REP   = 4.0
-# kp axis grows from ``_KP_START`` up to ``AMK // 2`` so short
-# histories (512, 1024) get representation alongside the longer ones.
-_KP_START = 512
-
-# Tier 2 skew sweep — physical values, fixed.
-_T2_SKEW_MIXED = [1.5, 2.0, 4.0, 8.0, 16.0]
-_T2_SKEW_PURE  = [2.0, 4.0, 8.0, 16.0]
-
-
-def _doubling(start: int, max_val: int, factor: float = 2.0) -> list[int]:
-    """Geometric grid from ``start`` up to ``max_val`` inclusive.
-
-    ``factor=2.0`` (the default) gives the classic doubling sequence.
-    Higher factors coarsen the grid (fewer samples, faster profile);
-    lower factors densify it. Adjacent values that round to the same
-    integer are deduplicated (can happen for factors close to 1.0 at
-    small scales). ``max_val`` is always appended when it isn't
-    already on the grid so the top of the sweep is never missed.
-    """
-    if factor <= 1.0:
-        raise ValueError(f"factor must be > 1.0; got {factor}")
-    if max_val < start:
-        return [max_val] if max_val > 0 else []
-    vals: list[int] = []
-    v: float = float(start)
-    while True:
-        iv = int(round(v))
-        if iv > max_val:
-            break
-        if not vals or iv != vals[-1]:
-            vals.append(iv)
-        v *= factor
-    if vals and vals[-1] != max_val:
-        vals.append(max_val)
-    return vals
-
-
-def _build_grid(args: ProfileArgs, limits) -> dict:
-    """Generate dynamic axis values from user-set envelopes and the
-    per-axis geometric factors on ``args``.
-    """
-    AMK = args.attention_max_kv
-    MNBT = args.max_num_batched_tokens or limits.max_num_batched_tokens
-    MSQ = args.max_num_seqs or limits.max_num_seqs
-
-    n_vals = _doubling(
-        2, min(MSQ, limits.max_num_seqs), factor=args.skew_n_factor,
-    )
-    if not n_vals:
-        n_vals = [1]
-
-    # pc: start from 16 to cover the small-chunk regime where
-    # decode-tile imbalance is the dominant term.
-    pc_vals = [0] + _doubling(16, MNBT, factor=args.skew_pc_factor)
-    pc_vals = sorted(set(pc_vals))
-
-    # kp: 0 plus geometric from 512 up to AMK // 2 so both short (512)
-    # and long histories get representation. E.g. AMK=16384, factor=2
-    # → [0, 512, 1024, 2048, 4096, 8192].
-    kp_vals = [0]
-    kp_cap = max(_KP_START, AMK // 2)
-    kp_vals.extend(_doubling(_KP_START, kp_cap, factor=args.skew_kp_factor))
-    kp_vals = sorted(set(kp_vals))
-
-    # kvs: geometric across the full AMK range.
-    kvs_vals = _doubling(128, max(512, AMK), factor=args.skew_kvs_factor)
-
-    return {
-        "n": tuple(n_vals),
-        "ratio": _RATIO_VALS,
-        "pc": tuple(pc_vals),
-        "kp": tuple(kp_vals),
-        "kvs": tuple(kvs_vals),
-    }
-
-
-def _spanning(vals: list, stride: int) -> list:
-    """Every ``stride``-th value plus the last, order preserved.
-
-    Used to coarsen an axis for the tier-2 skew sweep without picking
-    absolute cut-offs: which values exist is still the grid's decision.
-    """
-    if not vals:
-        return []
-    out = list(vals[::max(1, stride)])
-    if vals[-1] not in out:
-        out.append(vals[-1])
-    return out
-
-
-def _tier2_pivots(grid: dict) -> list[tuple]:
-    """Skew-axis sweep anchors: a coarse factorial spanning the grid.
-
-    Tier 2 is the **only** source of ``skew != _SKEW_REP`` in the dataset, so
-    wherever it does not reach, a bucket's alpha is fitted from ``nb``
-    variation at a single skew. It used to be four pivots pinned to
-    ``grid["pc"][1]`` -- 16 on every bundle in ``profiler/perf/`` -- plus
-    ``grid["kvs"][0]`` and ``n`` from ``grid["n"][1:3]``, i.e. 17 cases all at
-    ``pc`` 0 or 16. That left the region a real chunked prefill actually runs
-    in with no skew-axis data at all: on Qwen3-30B-A3B the 792 rows at
-    ``pc >= 512, kp = 0`` are every one of them ``skew = 4.0``, and their
-    buckets hold ~1.3 samples each, which is why half the fitted alphas there
-    come out negative.
-
-    Spanning the axes by stride instead of anchoring at one end keeps the cost
-    bounded without introducing a cut-off: strides are relative to whatever
-    grid the CLI produced, so a coarser or denser sweep scales with it.
-    """
-    if not grid["n"] or not grid["pc"] or not grid["kvs"]:
-        return []
-    # pc: every other value, so both the small-chunk regime the old pivots
-    # covered and the large-chunk regime a real prefill produces are swept.
-    pc_mixed = _spanning([pc for pc in grid["pc"] if pc > 0], 2)
-    n_samples = _spanning(grid["n"], 2)
-    kvs_samples = _spanning(grid["kvs"], 2)
-    # Both the "few heavy outliers" and the balanced shape, since alpha peaks
-    # at small nb/n and the endpoint gap closes as it approaches 1.
-    ratios = (0.125, 0.5)
-
-    pivots: list[tuple] = []
-    for pc in pc_mixed:
-        for n in n_samples:
-            for kvs in kvs_samples:
-                for r in ratios:
-                    pivots.append((n, r, pc, 0, kvs, _T2_SKEW_MIXED))
-    # Pure regime (pc=0) keeps its own sweep: it is a different kernel path and
-    # its alpha sits several-fold below the mixed one.
-    if 0 in grid["pc"]:
-        for n in n_samples:
-            for kvs in kvs_samples:
-                pivots.append((n, 0.125, 0, 0, kvs, _T2_SKEW_PURE))
-    return pivots
-
-
-
-# ---------------------------------------------------------------------------
-# Case definition
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SkewCase:
-    n: int
-    ratio: float
-    skew: float
-    pc: int
-    kp: int
-    kvs: int
-    # Derived:
-    nb: int = 0
-    kv_big: int = 0
-    kv_mean: int = 0
-
-    def __post_init__(self):
-        self.nb = max(1, min(self.n - 1, int(round(self.ratio * self.n))))
-        self.kv_big = int(round(self.kvs * self.skew))
-        total_kv = self.nb * self.kv_big + (self.n - self.nb) * self.kvs
-        self.kv_mean = total_kv // self.n
-
-
-def _feasible(case: SkewCase, limits, args: ProfileArgs) -> bool:
-    """Feasibility filter — mirrors the attention category's checks.
-
-    Since the shot bypasses the vLLM scheduler, MNBT is advisory:
-    ``pc + n`` is allowed up to ``MNBT + MSQ`` so pc=MNBT can still
-    pair with the full n-axis range. The hard caps are the max_seqs
-    buffer (``n_seqs <= MSQ``), the per-request position bound,
-    and the KV-cache block budget of the largest of all three shots.
-    """
-    AMK = args.attention_max_kv
-    MNBT = args.max_num_batched_tokens or limits.max_num_batched_tokens
-    MSQ = limits.max_num_seqs
-    if case.n < 2 or not 0 < case.nb < case.n:
-        return False
-    if case.pc > MNBT + 1: return False
-    if case.kvs > AMK + 1: return False
-    if case.kv_big > AMK + 1: return False
-    if case.kp > AMK + 1: return False
-    # Sum bound, mirrored from AttentionCategory: the shot bypasses the
-    # vLLM scheduler via assemble_scheduler_output, so MNBT is advisory.
-    # Allow pc + n up to MNBT + MSQ so pc=MNBT can still pair with the
-    # full n-axis range. The n_seqs <= MSQ check further down is
-    # the hard cap that actually protects vLLM's input_batch buffer.
-    if case.pc + case.n > MNBT + MSQ: return False
-
-    MML = limits.max_model_len
-    if case.kv_big + 2 > MML: return False
-    if case.pc > 0 and case.pc + case.kp + 1 > MML: return False
-    # n_seqs vs max_num_seqs — mirrored from AttentionCategory so the
-    # skew sweep can fire the same (n = MSQ) corner the uniform grid
-    # reaches. vLLM V1's ``input_batch`` pre-allocation sizes to MSQ
-    # sequences, so MSQ itself fits; MSQ+1 overflows. Pure-regime
-    # n=MSQ therefore fires; mixed-regime n=MSQ (which would need
-    # MSQ+1 requests with the prefill case) is still filtered.
-    n_seqs = case.n + (1 if case.pc > 0 else 0)
-    if n_seqs > limits.max_num_seqs: return False
-
-    bs = limits.block_size
-    def aligned(t): return ((t + bs - 1) // bs) * bs
-    # The uniform-max control needs every decode at kv_big, including its
-    # newly scheduled token. Checking only the bimodal shot admits cases
-    # whose control writes past the allocated KV block pool. The resolved
-    # block size can be 64/128/784 on sparse and hybrid models, not just 16.
-    decode_blk = aligned(case.kv_big + 1) * case.n
-    pfx_blk = aligned(case.pc + case.kp) if case.pc > 0 else 0
-    if decode_blk + pfx_blk > limits.num_cache_tokens:
-        return False
-    return True
-
-
-def _build_cases(args: ProfileArgs, limits) -> list[SkewCase]:
-    """Compose cases across three tiers. All axis values derive from
-    ``args`` + ``limits`` via ``_build_grid``.
-    """
-    grid = _build_grid(args, limits)
-    cases: list[SkewCase] = []
-
-    # Tier 2 is fired **first**, on purpose. It is the only source of
-    # ``skew != _SKEW_REP``, so it carries all the information the uniform
-    # attention grid cannot express -- while tier 1 is the bulk of the shots
-    # and grows with whatever KV budget the engine happens to resolve (a
-    # re-profile of Qwen3-30B-A3B added 4,200 tier-1 cases before reaching
-    # tier 2 at all, and a time-boxed run then delivered no new skew-axis
-    # data). Ordering costs nothing -- the shots are independent and the dedup
-    # below is order-insensitive, since a duplicate is the same case either
-    # way -- and it makes an interrupted sweep useful.
-    # Tier 2 — skew-axis sweep at a few pivots. This is the only
-    # source of skew ≠ _SKEW_REP samples in the dataset; keep even
-    # though T1 covers the skew=4 baseline.
-    for (n, r, pc, kp, kvs, skews) in _tier2_pivots(grid):
-        for sk in skews:
-            c = SkewCase(n=n, ratio=r, skew=sk, pc=pc, kp=kp, kvs=kvs)
-            if _feasible(c, limits, args):
-                cases.append(c)
-
-    # Tier 1 — factorial at representative skew.
-    # Per-n, the effective ratio list is the fractional ``_RATIO_VALS``
-    # plus ``nb_abs / n`` for each nb_abs in _NB_ABSOLUTE (dedup'd).
-    # This guarantees the "few heavy outliers" regime (nb=1..4) is
-    # measured for every batch size, not just for small n where the
-    # fractional ratios happen to collapse to nb≈1.
-    for n in grid["n"]:
-        ratios_for_n = set(grid["ratio"])
-        for nb_abs in _NB_ABSOLUTE:
-            if 1 <= nb_abs < n:
-                ratios_for_n.add(nb_abs / n)
-        for r in sorted(ratios_for_n):
-            for pc in grid["pc"]:
-                for kp in grid["kp"]:
-                    if pc == 0 and kp != 0:
-                        continue
-                    for kvs in grid["kvs"]:
-                        c = SkewCase(n=n, ratio=r, skew=_SKEW_REP,
-                                     pc=pc, kp=kp, kvs=kvs)
-                        if _feasible(c, limits, args):
-                            cases.append(c)
-
-    # Dedup (T1 + T2 can overlap at skew=4)
-    seen = set()
-    uniq: list[SkewCase] = []
-    for c in cases:
-        key = (c.n, c.nb, round(c.skew, 3), c.pc, c.kp, c.kvs)
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(c)
-    return uniq
-
-
-# ---------------------------------------------------------------------------
-# Measurement
-# ---------------------------------------------------------------------------
-
-def _measure(llm, reqs, slice_, iters: int) -> dict[str, float]:
-    """One shot, returning ``{canonical_layer: microseconds}``.
-
-    Every layer the attention-category slice matches, not just ``attention``:
-    the sparse families put two or three genuinely different kernels in this
-    category and each needs its own alpha.
-    """
-    shot = Shot(requests=[tuple(r) for r in reqs])
-    raw = llm.collective_rpc(
-        "fire", args=(shot.as_dict(), slice_, "attention", iters))
-    timings = [TimingSample(layer=d["layer"],
-                            microseconds=float(d["microseconds"]))
-               for d in raw[0]]
-    out: dict[str, float] = {}
-    for t in timings:
-        out[t.layer] = out.get(t.layer, 0.0) + t.microseconds
-    return out
-
-
-def _measure_case(llm, case: SkewCase, slice_, iters: int,
-                  saturates: dict[str, bool] | None = None) -> list[dict]:
-    """Three shots, one row per layer measured in all three of them.
-
-    A layer missing from any of the three is dropped rather than fitted from a
-    partial triple -- which happens legitimately, because a kernel that only
-    fires in one batch regime will not appear in the uniform shots.
-    """
-    base = [(case.pc, case.kp)] if case.pc > 0 else []
-    uni_mean_reqs = base + [(1, case.kv_mean)] * case.n
-    uni_max_reqs  = base + [(1, case.kv_big)]  * case.n
-    skew_reqs     = base + [(1, case.kv_big)] * case.nb + \
-                    [(1, case.kvs)] * (case.n - case.nb)
-
-    by_mean = _measure(llm, uni_mean_reqs, slice_, iters)
-    by_max  = _measure(llm, uni_max_reqs,  slice_, iters)
-    by_skew = _measure(llm, skew_reqs,     slice_, iters)
-
-    rows: list[dict] = []
-    for layer in sorted(set(by_mean) & set(by_max) & set(by_skew)):
-        t_mean, t_max, t_skew = by_mean[layer], by_max[layer], by_skew[layer]
-        # ``alpha`` is where the skewed batch lands on the line between the
-        # two uniform endpoints, and that line does not care which end is
-        # higher. Requiring ``t_max > t_mean`` was a dense assumption: cost
-        # rises with kv there, so a negative gap is noise and dropping the row
-        # is right. A sparse kernel below its key bound costs *less* at a
-        # longer kv -- DeepSeek-V3.2 measures 968.8 us at no context and 139.3
-        # at 2048 -- so the gap is negative for essentially every case and the
-        # whole sweep was being discarded. Retain either sign here; the fit
-        # and its validation must handle the uncertainty of a small lever.
-        gap = t_max - t_mean
-        usable = gap > 0 or ((saturates or {}).get(layer) and gap != 0)
-        alpha = (t_skew - t_mean) / gap if usable else float("nan")
-        rows.append({
-            "layer": layer,
-            "requests_json": json.dumps(skew_reqs, separators=(",", ":")),
-            "decode_q_len": 1,
-            "regime": "pure" if case.pc == 0 else "mixed",
-            "n": case.n, "nb": case.nb,
-            "ratio": round(case.nb / case.n, 4),
-            "skew": case.skew, "pc": case.pc, "kp": case.kp, "kvs": case.kvs,
-            "kv_big": case.kv_big, "kv_mean": case.kv_mean,
-            "t_mean_us": round(t_mean, 3),
-            "t_max_us":  round(t_max, 3),
-            "t_skew_us": round(t_skew, 3),
-            "alpha": round(alpha, 4) if alpha == alpha else None,
-        })
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def _case_key(case: SkewCase) -> str:
-    """Identity key for delta/resume matching against an existing CSV."""
-    from profiler.core.skew_calibration import measurement_shape
-    return measurement_shape(vars(case))[4]
-
-
-def _existing_keys(csv_path: Path) -> set[str]:
-    """Keys already present in ``skew.csv`` (empty set if missing)."""
-    if not csv_path.exists():
-        return set()
-    from profiler.core.skew_calibration import measurement_shape
-    df = pd.read_csv(csv_path).fillna("")
-    return {measurement_shape(row)[4] for row in df.to_dict("records")}
-
+def measurement_fingerprint():
+    """Changing timing attribution or batch construction requires remeasurement."""
+    hooks = Path(__file__).parent / "hooks"
+    value = hashlib.sha256()
+    for name in ("skew_measurement.py", "timings.py", "batch.py", "sampler_shim.py"):
+        value.update((hooks / name).read_bytes())
+    return value.hexdigest()
 
 def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     """Merge ``new_rows`` with any existing CSV and rewrite atomically.
@@ -471,7 +42,7 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     previous = csv_path.stat() if csv_path.exists() else None
     if csv_path.exists():
-        frames.append(pd.read_csv(csv_path))
+        frames.append(pd.read_csv(csv_path, low_memory=False))
     if new_rows:
         frames.append(pd.DataFrame(new_rows))
     if not frames:
@@ -488,9 +59,11 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     # Put it first, so the file reads layer-major like skew_fit.csv.
     df = df[["layer"] + [c for c in df.columns if c != "layer"]]
     # Keep the latest measurement for any repeated key.
-    from profiler.core.skew_calibration import measurement_shape
-    df["case_id"] = [measurement_shape(row)[4]
-                     for row in df.fillna("").to_dict("records")]
+    if "case_id" not in df.columns:
+        df["case_id"] = ""
+    missing = df["case_id"].isna() | (df["case_id"] == "")
+    df.loc[missing, "case_id"] = [measurement_shape(row)[4]
+        for row in df.loc[missing].fillna("").to_dict("records")]
     df = df.drop_duplicates(subset=["layer", "case_id"], keep="last").reset_index(drop=True)
     # Keep the previous checkpoint intact if serialization is interrupted.
     with tempfile.NamedTemporaryFile(dir=csv_path.parent,
@@ -513,121 +86,113 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     return df
 
 
-def sample_skew(
-    llm,
-    arch: Architecture,
-    args: ProfileArgs,
-    limits,
-    tp: int,
-    tp_root: Path,
-) -> Path:
-    """Fire feasible skew cases, write/update ``tp_root/skew.csv``.
 
-    Resume behaviour: if ``skew.csv`` already exists, its rows are
-    preserved and only cases whose keys are absent from it are fired.
-    New rows are appended. This lets the user re-run after a
-    feasibility change (e.g. added pc=2048 cases) without losing the
-    hours of prior measurement.
-    """
-    # Serialize attention catalog slice for the RPC.
-    slice_ = {
-        name: {"vllm": e.vllm, "within": e.within, "tp_stable": e.tp_stable}
-        for name, e in arch.catalog.attention.items()
-    }
-    # Which kernels saturate in key length. A saturating kernel costs *less*
-    # at a longer kv, so its endpoint gap is genuinely negative and the row is
-    # real; on a non-saturating one a negative gap is measurement noise.
-    saturates = {name: bool(e.key_saturates)
-                 for name, e in arch.catalog.attention.items()}
-    iters = args.measurement_iterations
-    grid = _build_grid(args, limits)
-    from profiler.core.writer import _geometric_spec
-    log.info(
-        "skew grid: n=%s ratio=%s pc=%s kp=%s kvs=%s skew=(T1=%.1f, T2 swept)",
-        _geometric_spec(grid["n"]), list(grid["ratio"]),
-        _geometric_spec(grid["pc"]), _geometric_spec(grid["kp"]),
-        _geometric_spec(grid["kvs"]), _SKEW_REP,
-    )
-    all_cases = _build_cases(args, limits)
-    if not all_cases:
-        log.warning("skew: no feasible cases at tp=%d; skipping", tp)
-        return tp_root / "skew.csv"
+def _existing_keys(path, layers, rounds, iterations, *, block_size=None):
+    """A partial kernel set or an under-repeated shot is still unfinished."""
+    if not path.exists():
+        return set()
+    grouped = {}
+    fingerprint = measurement_fingerprint()
+    for row in pd.read_csv(path, low_memory=False).fillna("").to_dict("records"):
+        key = measurement_shape(row)[4]
+        if row.get("case_id") and row["case_id"] != key:
+            raise ValueError("Stored skew identity disagrees with its request geometry")
+        if (row.get("measurement_protocol") != PROTOCOL
+                or row.get("measurement_sha256") != fingerprint
+                or (block_size is not None and int(row.get("block_size") or 0) != block_size)
+                or int(row.get("rounds") or 0) < rounds
+                or int(row.get("timed_forwards") or 0) != iterations):
+            continue
+        samples = json.loads(row.get("round_timings_us_json") or "[]")
+        if (len(samples) < rounds or any(len(values) != iterations for values in samples)
+                or any(not math.isfinite(v) or v <= 0 for values in samples for v in values)):
+            continue
+        expected = statistics.median(statistics.median(values) for values in samples)
+        if not math.isclose(expected, float(row["t_skew_us"]), abs_tol=0.00051):
+            raise ValueError("Stored skew target does not match its raw repetitions")
+        grouped.setdefault(key, set()).add(row.get("layer") or "attention")
+    return {key for key, present in grouped.items() if present >= set(layers)}
 
-    out = tp_root / "skew.csv"
-    tp_root.mkdir(parents=True, exist_ok=True)
 
-    # Resume vs force: the default preserves prior rows and fires only
-    # new keys (matches the main loop's resume policy). ``--force``
-    # wipes the CSV and re-fires every case.
+def sample_skew(llm, arch, args, limits, tp, tp_root):
+    """Measure the dynamic plan; failures preserve completed cases and raise."""
+    if args.skew_rounds < 1 or args.measurement_iterations < 1:
+        raise ValueError("Positive skew repetition counts required")
+    out = Path(tp_root) / "skew.csv"
+    attention = Path(tp_root) / "attention.csv"
+    if not attention.exists():
+        raise FileNotFoundError("Skew calibration needs attention.csv; profile attention first")
+    catalog = {name: dict(vllm=e.vllm, within=e.within, not_within=e.not_within,
+                         tp_stable=e.tp_stable)
+               for name, e in arch.catalog.attention.items()}
+    from serving.core import trace_generator as tg
+    table = tg._build_attention_tables_by_layer(tg._read_category_csv(str(attention), None))
+    for name in catalog:
+        if not set(args.attention_decode_q_lens) <= set(table.get(name, {})):
+            raise ValueError(f"Missing exact attention query slices for {name}")
+    plan = summarize(args, limits)
+    plan.update(enabled=True, tp=tp, measurement_protocol=PROTOCOL,
+                measurement_sha256=measurement_fingerprint(),
+                completed=False, measured_cases=0)
+    status = Path(tp_root) / "skew.meta.yaml"
+    Path(tp_root).mkdir(parents=True, exist_ok=True)
     if args.force and out.exists():
-        log.info("skew force: removing existing %s before re-firing", out)
-        out.unlink()
-
-    prior_keys = _existing_keys(out)
-    cases = [c for c in all_cases if _case_key(c) not in prior_keys]
-    if prior_keys:
-        log.info(
-            "skew resume: %d prior rows on disk, %d new cases to fire "
-            "(skipped %d already-measured)",
-            len(prior_keys), len(cases), len(all_cases) - len(cases),
-        )
-    if not cases:
-        log.info("skew: %s already has all %d cases; nothing to do",
-                 out, len(all_cases))
-        return out
-
-    label = f"TP={tp}  skew"
-    rows: list[dict] = []
-    # The rich bar needs a TTY and the CSV only flushes every 20 cases, so a
-    # run redirected to a file shows nothing between "firing N" and "done" --
-    # which reads exactly like a hang. Same heartbeat as the main categories.
-    heartbeat = max(1, len(cases) // 100)
-    t_start = time.monotonic()
-    with log.progress(label, total=len(cases)) as bar:
-        for i, case in enumerate(cases):
-            try:
-                case_rows = _measure_case(llm, case, slice_, iters,
-                                          saturates)
-            except Exception as e:
-                log.warning(
-                    "skew shot failed (n=%d nb=%d pc=%d kp=%d): %s",
-                    case.n, case.nb, case.pc, case.kp, e,
-                )
-                bar.advance(1)
+        out.unlink()  # Explicit --force discards this category's old acquisition.
+    prior = _existing_keys(out, catalog, args.skew_rounds, args.measurement_iterations,
+                           block_size=limits.block_size)
+    total = plan["cases"]
+    log.info("TP=%d skew: %d planned cases, %d reusable; %d rounds x %d forwards",
+             tp, total, len(prior), args.skew_rounds, args.measurement_iterations)
+    atomic_yaml(status, plan)
+    rows, fired, skipped = [], 0, 0
+    started, initialized = time.monotonic(), False
+    try:
+        for shot, family, key in iter_cases(args, limits):
+            if key in prior:
+                skipped += 1
                 continue
-            rows.extend(case_rows)
-            bar.advance(1)
-            # Save incrementally every 20 rows so a crash doesn't lose data
-            if (i + 1) % 20 == 0:
+            if not initialized:
+                llm.collective_rpc("skew_initialize")
+                initialized = True
+            by_layer = {name: [] for name in catalog}
+            for _ in range(args.skew_rounds):
+                result = llm.collective_rpc("skew_measure", args=(
+                    shot.as_dict(), catalog, args.measurement_iterations))[0]
+                forwards = result["per_forward_us"]
+                if len(forwards) != args.measurement_iterations:
+                    raise ValueError("Incomplete skew timed-forward set")
+                for name in catalog:
+                    values = [float(row[name]) for row in forwards]
+                    if any(not math.isfinite(value) or value <= 0 for value in values):
+                        raise ValueError("Invalid skew kernel time")
+                    by_layer[name].append(values)
+            for name, samples in by_layer.items():
+                target = statistics.median(statistics.median(values) for values in samples)
+                rows.append(dict(layer=name, case_id=key,
+                    requests_json=json.dumps(shot.requests, separators=(",", ":")),
+                    n_prefill=shot.n_prefill, decode_q_len=shot.decode_q_len,
+                    family=family, measurement_protocol=PROTOCOL,
+                    measurement_sha256=plan["measurement_sha256"],
+                    block_size=limits.block_size,
+                    rounds=args.skew_rounds, timed_forwards=args.measurement_iterations,
+                    round_timings_us_json=json.dumps(samples, separators=(",", ":")),
+                    t_skew_us=round(target, 3)))
+            fired += 1
+            if fired % 20 == 0:
                 _flush_rows(out, rows)
-            done = i + 1
-            if done % heartbeat == 0 or done == len(cases):
-                elapsed = max(1e-9, time.monotonic() - t_start)
-                rate = done / elapsed
-                log.info(
-                    "%s: %d/%d cases (%.1f%%), %.2f case/s, eta %.1f min",
-                    label, done, len(cases), 100.0 * done / len(cases),
-                    rate, (len(cases) - done) / max(1e-9, rate) / 60.0,
-                )
-
-    if rows:
-        df = _flush_rows(out, rows)
-        # Per (layer, regime) alpha summary -- pooling the layers would hide
-        # exactly the difference this split exists to capture.
-        group_cols = (["layer", "regime"] if "layer" in df.columns
-                      else ["regime"])
-        for group, sub in df.groupby(group_cols):
-            regime = " ".join(group) if isinstance(group, tuple) else str(group)
-            alphas = sub["alpha"].dropna()
-            log.info(
-                "%s: n=%d alpha mean=%.3f min=%.3f max=%.3f",
-                regime, len(sub),
-                float(alphas.mean()) if len(alphas) else 0.0,
-                float(alphas.min()) if len(alphas) else 0.0,
-                float(alphas.max()) if len(alphas) else 0.0,
-            )
-    else:
-        log.warning("skew: no valid rows measured at tp=%d", tp)
-
-    log.success("skew → %s", out)
+                rows.clear()
+                elapsed = max(time.monotonic() - started, 1e-9)
+                remaining = max(0, total - fired - skipped)
+                log.info("TP=%d skew: %d/%d cases, %.2f case/s, eta %.1f min",
+                         tp, fired + skipped, total, fired / elapsed,
+                         remaining * elapsed / fired / 60)
+                plan.update(measured_cases=fired, reused_cases=skipped)
+                atomic_yaml(status, plan)
+    finally:
+        if rows:
+            _flush_rows(out, rows)
+    plan.update(completed=True, measured_cases=fired, reused_cases=skipped,
+                elapsed_seconds=time.monotonic() - started)
+    atomic_yaml(status, plan)
+    log.success("skew -> %s", out)
     return out

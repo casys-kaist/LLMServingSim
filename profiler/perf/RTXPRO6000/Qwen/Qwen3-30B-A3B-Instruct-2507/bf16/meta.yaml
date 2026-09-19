@@ -8,7 +8,9 @@ architecture: qwen3
 architecture_sha256: 09b91fc5b2056bac024b5de9f166786814fe636b2eebd68b4217e861e599554a
 model: Qwen/Qwen3-30B-A3B-Instruct-2507
 variant: bf16
-tp_degrees: [1, 2]
+tp_degrees:
+- 1
+- 2
 category_provenance:
   dense:
     vllm_version: 0.28.0
@@ -64,7 +66,8 @@ attention_grid:
   n_decode: 0, 1-256 x2
   kv: 0, 16-16384 x1.5
   prefill_key: 0, 16-17408 x1.5
-  decode_q_lens: [1]
+  decode_q_lens:
+  - 1
 measurement_iterations: 3
 skew_profile:
   enabled: true
@@ -75,39 +78,127 @@ skew_profile:
     kvs: 2.0
   grid:
     n: 2-256 x2
-    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
+    ratio:
+    - 0.0625
+    - 0.125
+    - 0.25
+    - 0.5
+    - 0.75
+    - 0.9
     pc: 0, 16-2048 x2
     kp: 0, 512-8192 x2
     kvs: 128-16384 x2
     skew_rep: 4.0
 skew_fit:
   enabled: true
-  bucket_axes:
-    axes: [n, pc, lev]
-    n_bins: [0, 3, 6, 11, 23, 45, 91, 181, 362, 1000000000]
-    n_labels: [n=2, n=4, n=8, n=16, n=32, n=64, n=128, n=256, n>256]
-    pc_bins: [-1, 1, 256, 1024, 1000000000]
-    pc_labels: [pc0, pcS, pcM, pcL]
-    lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
-    lev_labels: [lev0, lev1, lev2, lev3, lev4]
   per_tp:
     1:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 13456
-      alpha_default: 0.0661
-      alpha_default_by_layer: {attention: 0.0661}
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: Qwen/Qwen3-30B-A3B-Instruct-2507
+        variant: bf16
+        tp: 1
+      reference:
+        attention_sha256: d62ea19809d848ced8e5a12b623c0a94491d69409284a13a5ff91975a42ccb30
+        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        skew_sha256: 559bb1032c184a7e282dcd8ee660438a2c617a5164b0cf170b5a564edd657b28
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 13481
+      dropped_rows:
+        unusable_reference_gap: 15
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.0684
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0236
-      rel_err_p90: 0.1173
-      rel_err_p99: 0.378
-      signed_mean: -0.0056
+      bucket_table_sha256: eb15c3d8a07da98b0615304ebbd1da8bd4ecf8353d7e058495a64592656a8d64
     2:
-      method: per_bucket_median_3axis_n_pc_lev
-      n_samples: 13271
-      alpha_default: 0.0796
-      alpha_default_by_layer: {attention: 0.0796}
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: Qwen/Qwen3-30B-A3B-Instruct-2507
+        variant: bf16
+        tp: 2
+      reference:
+        attention_sha256: 2e9fdd5d8d5e16968c1eead59bf40ba98e177527507c506a365436d509dc214c
+        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        skew_sha256: bd00eec109ce5d1950f0549e7a15bb81e27e77d33df26b4e5e42e7ad6f7d168a
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 13371
+      dropped_rows:
+        unusable_reference_gap: 125
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.0773
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp2/skew_fit.csv
-      rel_err_p50: 0.0245
-      rel_err_p90: 0.1263
-      rel_err_p99: 0.38
-      signed_mean: -0.0018
+      bucket_table_sha256: d2e07dbc593c22d2ccf202ae1b30d4e16a9d2607fe3e89629e48601c57069558

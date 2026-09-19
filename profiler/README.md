@@ -17,7 +17,7 @@ profiler/                     Python package — `python -m profiler ...`
     categories.py             Dense / PerSequence / Attention / LinearAttention / Expert
     skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
     skew_calibration.py       runtime-reference fit + supported-N bucket lookup
-    fit_alpha.py              legacy alpha-fit compatibility
+    skew_plan.py              dynamic distribution coverage and feasibility
     writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
     stack.py                  per-layer block composition from the HF config  *
     catalog_path.py           model_type -> yaml resolution                   *
@@ -75,7 +75,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
 | **measurement** | `--measurement-iterations` |
-| **skew** | `--skip-skew`, `--only-skew`, `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor`, `--skew-kvs-factor` |
+| **skew** | `--skip-skew`, `--only-skew`, `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor`, `--skew-kvs-factor`, `--skew-samples-per-cell`, `--skew-rounds`, `--skew-seed` |
 | **resume** | `--force` (default is resume) |
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
@@ -282,13 +282,16 @@ ONLY_SKEW=1                         # run ONLY the skew step (dense / per_seq /
 SKEW_N_FACTOR=2.0                   # n (total decodes) axis — 2.0 = doubling.
 SKEW_PC_FACTOR=2.0                  # pc (prefill chunk) axis.
 SKEW_KP_FACTOR=2.0                  # kp (prefill history length) axis.
-SKEW_KVS_FACTOR=2.0                 # kvs (small-decode kv) axis.
+SKEW_KVS_FACTOR=2.0                 # decode-history envelope axis.
+SKEW_SAMPLES_PER_CELL=32            # distribution draws per operating cell.
+SKEW_ROUNDS=3                       # independent timed contexts.
+SKEW_SEED=0                         # deterministic sampling seed.
 ```
 
 Crank any factor above 2.0 to coarsen that axis and cut profile time
-(skew fires 3 shots per case, so coarsening compounds). Drop below 2.0
-for denser sampling in axes where accuracy matters. The effective
-values land in `meta.yaml::skew_profile.factors`.
+(each case has three independent contexts by default). Drop below 2.0
+for denser sampling. Actual per-TP plans are saved in `skew.meta.yaml`
+and copied into `meta.yaml::skew_profile.per_tp`.
 
 
 #### Measuring the machine: `profiler hardware`
@@ -338,8 +341,8 @@ extend an earlier sweep after changing feasibility (e.g. raising
 in minutes instead of hours. Resume applies to every category plus
 skew; `FORCE=1` nukes them all.
 
-Skew feasibility uses the resolved block size and includes the uniform-max
-control, not only the heterogeneous shot. Skew checkpoints use atomic file
+Skew feasibility uses the resolved block size for the actual heterogeneous
+shot; uniform reference batches are looked up offline, not measured. Skew checkpoints use atomic file
 replacement and preserve existing permissions. Corrupt CSVs fail explicitly
 instead of being silently replaced; `FORCE=1` still requests a fresh sweep.
 
@@ -455,10 +458,9 @@ tp<N>/
   moe.csv                ep, tokens, activated_experts, time_us      (MoE only)
   mtp.csv                layer, sequences, time_us      (one drafter pass;
                                              only with --profile-mtp)
-  skew.csv               raw heterogeneous-decode shots (layer, regime, n, nb,
-                         ratio, skew, pc, kp, kvs, kv_big, kv_mean, t_mean_us,
-                         t_max_us, t_skew_us, alpha, requests_json,
-                         decode_q_len, case_id)                       (skew-enabled runs)
+  skew.csv               ordered requests, query roles, per-forward repetitions,
+                         protocol, family and measured t_skew_us
+  skew.meta.yaml         actual per-TP acquisition plan and completion status
   skew_fit.csv           versioned supported-N calibration cells
                          (layer, decode_q_len, pc_label, lev_label, n_anchor,
                           alpha, direct_rows, pooled_rows)            (skew-enabled runs)
@@ -481,8 +483,8 @@ layer on M3.
 Attention is a single **5D** table covering pure-prefill, pure-decode and
 mixed kernel shapes (what vLLM's chunked-prefill scheduler actually produces
 each step). The axes grow geometrically — `prefill_chunk` and the kv axes by
-`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default 2.0),
-`n_decode` always on doubling. `decode_q_len` is the fifth axis and defaults
+`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default sqrt(2)),
+`n_decode` uses a sqrt(2) factor. `decode_q_len` is the fifth axis and defaults
 to just `[1]`, because it only matters for speculative decoding and each extra
 value multiplies the whole sweep; see `ATTENTION_DECODE_Q_LENS`.
 
@@ -526,56 +528,49 @@ metadata:
 - `attention_grid` — the 4D attention sweep's caps (`max_kv`),
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec
   strings for the `chunks` / `n_decode` / `kv` axes.
-- `skew_profile` — per-axis factors (`n`, `pc`, `kp`, `kvs`) and
-  compact grid specs for the skew sweep. `factors` appears above
-  `grid` so you can see the density knobs before the values they
-  produced.
-- `skew_fit` — versioned per-TP identity, reference fingerprints, fixed
-  prefill/lever axes, support threshold, per-kernel/query defaults and measured
-  N ranges, plus a pointer and checksum for `skew_fit.csv`. Unversioned
-  bundles retain the legacy metadata contract until rebuilt.
+- `skew_profile` — actual per-TP dynamic plans, resolved capacity and completion.
+- `skew_fit` — versioned identity, reference fingerprints, adaptive prefill
+  partitions, supported N anchors, per-kernel/query defaults and table checksum.
 
 ## Skew profiling & calibration
 
-The bimodal sweep measures heterogeneous decode batches plus uniform mean/max
-controls. Raw rows now preserve complete request geometry. The default writer
-reconstructs each case, looks up its endpoints through the **same attention
-table and code as serving**, and compiles a supported-N table. Measured controls
-remain diagnostic; raw measured latency is the fit target.
+The default sweep covers bimodal, outlier, trimodal, ramp, lognormal, Pareto,
+near-uniform and uniform-spread histories; ordered, reversed, interleaved and
+shuffled requests; and equal/unequal multi-prefill splits. Axes follow the
+user's sequence/token/context bounds and resolved engine capacity. Query
+lengths follow `--attention-decode-q-lens`; each requires its own attention
+reference slice. A geometric operating cell gets 32 distribution draws by
+default, not workload-derived samples.
 
-Within each kernel/query/prefill/lever partition, only sufficiently supported
-N values become anchors. Sparse N observations pool to their nearest supported
-anchor, and the cell's weighted median minimizes absolute relative profile
-latency error. Runtime picks one cell, without fitting or neighbor interpolation.
-Only N is adaptive; prefill/lever bins remain fixed. The attention table and
-its interpolation are unchanged.
+Only the actual heterogeneous batch is measured. Three independent contexts
+of three timed forwards produce a median of forward medians. Per-forward
+times, geometry and query roles are preserved. Failed cases stop with a
+checkpoint; incomplete kernel sets and insufficient repetitions are retried.
 
-The built-in two-tier bimodal sampling grid still follows user-configured
-sequence/token/context limits and the `SKEW_N_FACTOR`, `SKEW_PC_FACTOR`,
-`SKEW_KP_FACTOR` and `SKEW_KVS_FACTOR` density controls. It does not yet
-sample arbitrary distributions or multi-query decode by default.
-`--skip-skew` skips acquisition, not existing stored calibration.
-`--only-skew` refreshes measurements and requires an existing attention table.
+The writer computes endpoints through the unchanged serving attention lookup,
+then fits weighted-median cells at supported N anchors. Prefill boundaries
+scale with the measured token envelope; leverage is dimensionless. Runtime
+picks one cell, with no fitting or measurement search. Old skew fits are
+rejected; disabled bundles, including RTX4090, need no migration.
 
-Rebuild from existing measurements on CPU, without loading vLLM:
+Preview the acquisition using an existing bundle's engine limits, or rebuild
+its calibration without a GPU:
 
 ```bash
-python -m profiler refit-skew meta-llama/Llama-3.1-8B \
-    --hardware RTXPRO6000 --variant bf16 --tp 1
+python -m profiler plan-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp 1
+python -m profiler refit-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp 1
 ```
 
-The rebuild command refuses bundles without raw skew measurements and leaves
-metadata unchanged; it cannot enable an old fit through an empty rebuild.
-New fits record attention-data, lookup-code and fitted-table fingerprints.
-Serving rejects stale combinations instead of silently reusing them; refit
-after changing reference data or lookup semantics. Existing bundled data is
-not migrated merely by upgrading the code. See the
-[skew guide](../docs/docs/profiler/skew-alpha-fit.md) for schemas, support,
-fallbacks, atomic publication and validation limitations.
+`--skip-skew` skips acquisition, not existing calibration. `--only-skew`
+requires an existing attention table. New acquisitions record completion
+and resolved limits in `tp<N>/skew.meta.yaml`. Refit rejects unfinished
+acquisitions and absent raw data
+and stale references are rejected at simulator startup. See the
+[skew guide](../docs/docs/profiler/skew-alpha-fit.md) for contracts and limits.
 
-Keep benchmark request latencies out of fitting. Validate all reported
-`bench/examples` metrics; a shared calibration rule can improve one model
-and worsen another. These development checks do not establish generalization.
+Validate every reported `bench/examples` statistic. Reusing broader measured
+data can improve one model and worsen another; neither sampling families nor
+the mean/max summaries establish generalization to unseen distributions.
 
 ## Architecture yamls
 
