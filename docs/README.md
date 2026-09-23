@@ -14,7 +14,8 @@ build before handing off documentation changes.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command
-dynamic acquisition, resumable repetitions and migration of enabled bundles.
+dynamic acquisition, resumable repetitions, independent skew-only TP selection,
+and migration of enabled bundles.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization and its optional logging override.
 

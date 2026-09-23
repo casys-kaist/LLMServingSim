@@ -39,6 +39,7 @@ flags, and the full set of example workloads, see the
 
 For dynamic heterogeneous profiling and reusable CPU-built attention corrections, see the
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
+Skew-only refreshes can target a TP degree independently.
 Hardware characterization is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 

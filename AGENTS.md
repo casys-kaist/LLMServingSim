@@ -619,7 +619,10 @@ for resume. Failed acquisition raises after checkpointing instead of silently
 publishing partial coverage. `skew.meta.yaml` records the actual per-TP plan,
 resolved limits and completion; metadata must not fabricate this from defaults.
 `profiler plan-skew` previews the same plan and outstanding cases on CPU from
-an existing bundle's resolved engine limits.
+an existing bundle's resolved engine limits. Both `plan-skew` and
+`profile --only-skew` accept an independent positive TP selection such as
+`--tp 2`; they neither measure nor replicate TP-stable categories. Ordinary
+category profiling still requires TP1.
 
 `skew_calibration.py` recomputes both endpoints with serving's unchanged
 query-weighted attention lookup. Exact kernel/query reference slices are

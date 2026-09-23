@@ -102,7 +102,8 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
         "--tp",
         default="1",
         help="Comma-separated TP degrees to sweep, e.g. '1,2,4'. "
-             "Must include 1. Default: '1'.",
+             "Must include 1 except for plan-skew or profile --only-skew. "
+             "Default: '1'.",
     )
     p.add_argument(
         "--variant",
@@ -432,11 +433,13 @@ def _resolve_model(model: str, root: Path) -> tuple[Path, str]:
     return resolved, model
 
 
-def _parse_tp(tp_str: str) -> list[int]:
+def _parse_tp(tp_str: str, *, require_tp1: bool = True) -> list[int]:
     tps = [int(x.strip()) for x in tp_str.split(",") if x.strip()]
     if not tps:
         raise ValueError("--tp must contain at least one value")
-    if 1 not in tps:
+    if any(tp < 1 for tp in tps):
+        raise ValueError("--tp values must be positive integers")
+    if require_tp1 and 1 not in tps:
         raise ValueError("--tp must include 1")
     return tps
 
@@ -451,7 +454,9 @@ def _build_profile_args(
         architecture=architecture,
         model=hf_id,
         hardware=ns.hardware,
-        tp_degrees=_parse_tp(ns.tp),
+        tp_degrees=_parse_tp(ns.tp, require_tp1=not (
+            getattr(ns, "cmd", None) == "plan-skew" or
+            (getattr(ns, "cmd", None) == "profile" and getattr(ns, "only_skew", False)))),
         variant=ns.variant,
         dtype=ns.dtype,
         kv_cache_dtype=ns.kv_cache_dtype,

@@ -747,7 +747,8 @@ class ProfileArgs:
             ``vllm.LLM(model=...)``.
         hardware: Free-form hardware label that becomes an output
             folder name (e.g. "H100", "A6000", "RTXPRO6000").
-        tp_degrees: Which TP shardings to sweep. Must include 1.
+        tp_degrees: Positive TP shardings to sweep. Ordinary category sweeps
+            require 1 for TP-stable replication; skew-only work is independent.
         variant: Free-form output folder label under the model's
             directory. If omitted at the CLI, auto-derived from
             ``dtype`` + ``kv_cache_dtype`` so that profiles with

@@ -79,7 +79,7 @@ on a single GPU by dividing the model's per-rank shapes via
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TP_DEGREES` | `1,2` in `profile.sh` (`--tp` defaults to `1`) | Comma-separated TP degrees. **Must include `1`** (TP-stable layers are profiled once at TP=1 and replicated to other TP folders) |
+| `TP_DEGREES` | `1,2` in `profile.sh` (`--tp` defaults to `1`) | Positive TP degrees. Ordinary category profiling **must include `1`** for TP-stable replication; `plan-skew` and `profile --only-skew` can select a degree independently |
 | `MAX_NUM_BATCHED_TOKENS` | `2048` | Profiler internally bumps this by `+MSQ` for shot-bypass headroom; subtracted back when recording meta |
 | `MAX_NUM_SEQS` | `256` | Profile with `MSQ > runtime MSQ` so mixed-regime cases at `n = runtime_MSQ` stay feasible |
 
@@ -210,7 +210,9 @@ methodology.
 `python -m profiler plan-skew MODEL --hardware HARDWARE --tp 1` streams the
 same acquisition plan using saved engine limits, reporting family/query
 coverage and remaining cases. The live run rechecks actual capacity. This
-preview cannot determine whether a GPU is available.
+preview cannot determine whether a GPU is available. Both this preview and
+`profile --only-skew` accept `--tp 2` without a TP1 pass. Existing attention
+references and, for the preview, saved engine limits must cover that degree.
 
 
 ```bash
@@ -527,9 +529,10 @@ adding them to the repo.
 `--silent` is `WARNING`, `--verbose` is `DEBUG` **plus** vLLM's own
 stdout, and `--log-level` overrides either explicitly.
 
-`--tp` must include `1`: TP-stable layers (layernorms, sampler) are
-profiled once at TP=1 and replicated into the other `tp<N>/` folders by
-the writer, so a sweep without TP=1 has nothing to replicate from.
+Ordinary category profiling requires `--tp` to include `1`: TP-stable layers
+(layernorms, sampler) are measured once at TP1 and replicated into other
+`tp<N>/` folders. Skew-only acquisition and `plan-skew` do not replicate these
+categories, so they can select another positive degree alone.
 
 ### `slice`: refresh one (tp, category) pair
 

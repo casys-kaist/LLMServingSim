@@ -69,7 +69,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | Group | Flags |
 |-------|-------|
 | **required** | `--hardware` |
-| **sharding** | `--tp` (must include 1) |
+| **sharding** | `--tp` (must include 1 except for `plan-skew` or `profile --only-skew`) |
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |

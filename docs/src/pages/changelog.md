@@ -30,6 +30,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Allow skew-only acquisition and CPU coverage planning for an independent
+  positive TP degree without forcing a TP1 sweep. Preserve the TP1 requirement
+  for ordinary profiling and reject nonpositive TP selections before launch.
 - Give hardware profiling a valid INFO logging default and reject invalid
   explicit levels during CLI argument parsing, before measurement begins.
 - Refuse CPU skew rebuilds with no raw measurements, preserving metadata and
