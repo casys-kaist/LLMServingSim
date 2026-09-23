@@ -34,6 +34,10 @@ handles it. Three steps:
 python -m profiler hardware --hardware <LABEL> --npus 2
 ```
 
+The command defaults to INFO logging; no verbosity flag is required.
+Use `--log-level DEBUG`, `INFO`, `WARNING` or `ERROR` to override it.
+Invalid levels are rejected before probing the GPU.
+
 Writes `profiler/perf/<LABEL>/hardware.yaml`: the card's spec, queried from the
 device, and an NCCL all-reduce sweep that gives `link_bw` / `link_latency`.
 Cluster configs on this hardware then inherit those instead of carrying a

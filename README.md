@@ -39,6 +39,8 @@ flags, and the full set of example workloads, see the
 
 For dynamic heterogeneous profiling and reusable CPU-built attention corrections, see the
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
+Hardware characterization is covered in the
+[hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

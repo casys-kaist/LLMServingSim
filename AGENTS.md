@@ -764,7 +764,9 @@ methods agreeing is the hardest kind of error to see.
 
 `python -m profiler hardware --hardware <hw> --npus 2` writes
 `profiler/perf/<hw>/hardware.yaml`: one file per hardware folder, shared by
-every model bundle under it. Three sections:
+every model bundle under it. The hardware command defaults to INFO logging;
+an explicit `--log-level` is optional and validated at argument parsing.
+Three sections:
 
 - **`spec`** — queried from the device. GPU name, SM count, bus width, clocks,
   PCIe generation and width, driver, power limit, and `memory_bw_gbps` derived

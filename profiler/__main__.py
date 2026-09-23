@@ -624,8 +624,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output root (default profiler/perf).",
     )
     p_hardware.add_argument(
-        "--log-level", default=None, dest="log_level",
-        help="DEBUG / INFO / WARNING / ERROR.",
+        "--log-level", default="INFO", dest="log_level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logger verbosity (default: INFO).",
     )
 
     return p

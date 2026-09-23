@@ -51,8 +51,11 @@ scripts/                      shared environment / build entry points (top-level
 
 ## Everything you can set
 
-`python -m profiler` has three subcommands, and every flag below is a
-`profile.sh` variable of the same name in caps unless noted.
+Use `python -m profiler --help` for the full subcommand list. The model
+profiling flags below have a `profile.sh` variable of the same name in caps
+unless noted. Hardware characterization runs separately as
+`python -m profiler hardware --hardware <hw> --npus 2`; it defaults to INFO
+logging and accepts an explicit `--log-level` override.
 **[Profiler → Running](https://llmservingsim.ai/docs/profiler/running)**
 carries the semantics; this is the index, so a flag missing from one list is
 visible against the other.
