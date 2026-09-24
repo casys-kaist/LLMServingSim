@@ -220,8 +220,13 @@ def _load_dataset(path: Path, cap: int = 0) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Path) -> None:
+    # These paths are independent of disable_custom_all_reduce in vLLM 0.28.
+    # Set before importing vLLM and before any worker inherits the environment.
+    os.environ["VLLM_ALLREDUCE_USE_SYMM_MEM"] = "0"
+    os.environ["VLLM_ALLREDUCE_USE_FLASHINFER"] = "0"
     # Imports deferred so `validate` / `--help` works without vLLM installed.
     from vllm import AsyncEngineArgs, SamplingParams
+    from vllm.config import CompilationConfig, PassConfig
     from vllm.inputs import TokensPrompt
     from vllm.v1.engine.async_llm import AsyncLLM
 
@@ -243,11 +248,17 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         # inherits this environment, so it has to be set before the engine boots.
         os.environ["VLLM_MOE_ACTIVATED_LOG"] = str(gate_log)
 
+    compilation_config = CompilationConfig(pass_config=PassConfig(
+        fuse_allreduce_rms=False, fuse_gemm_comms=False,
+    ))
     engine_args = AsyncEngineArgs(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         data_parallel_size=args.data_parallel_size,
         enable_expert_parallel=args.enable_expert_parallel,
+        # Match the simulator's NCCL collective baseline explicitly.
+        disable_custom_all_reduce=True,
+        compilation_config=compilation_config,
         max_num_seqs=args.max_num_seqs,
         max_num_batched_tokens=args.max_num_batched_tokens,
         max_model_len=args.max_model_len,
@@ -261,6 +272,11 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
+    # Record the explicit overrides, not a repr of the full config object.
+    engine_kwargs_for_meta["compilation_config"] = {"pass_config": {
+        name: getattr(compilation_config.pass_config, name)
+        for name in ("fuse_allreduce_rms", "fuse_gemm_comms")
+    }}
 
     with log.stage("Booting AsyncLLM"):
         with log.capture_stdio():
@@ -443,6 +459,7 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
     fields = (
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
+        "disable_custom_all_reduce",
         "max_model_len", "dtype", "kv_cache_dtype", "kv_cache_memory_bytes", "seed", "load_format",
         # Recorded for the same reason load_format is: a run booted from a
         # tokenizer-less config directory should never be mistaken for one
@@ -598,6 +615,11 @@ def _kv_cache_facts(engine) -> dict:
 def _hardware_facts() -> dict:
     """Which accelerator this ran on, for matching against profiler/perf/<hw>/."""
     facts = {"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+    facts["all_reduce_environment"] = {
+        name: os.environ.get(name) for name in (
+            "VLLM_ALLREDUCE_USE_SYMM_MEM", "VLLM_ALLREDUCE_USE_FLASHINFER",
+        )
+    }
     try:
         if hasattr(os, "sched_getaffinity"):
             facts["cpu_affinity"] = sorted(os.sched_getaffinity(0))

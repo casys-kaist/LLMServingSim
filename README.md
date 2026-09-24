@@ -42,6 +42,8 @@ For dynamic heterogeneous profiling and reusable CPU-built attention corrections
 Skew-only refreshes can target a TP degree independently.
 Hardware characterization is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
+Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
+[bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

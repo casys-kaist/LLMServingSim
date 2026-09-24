@@ -30,6 +30,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Explicitly disable vLLM custom, Torch symmetric-memory and FlashInfer
+  all-reduce and non-NCCL collective fusions in benchmark runs for the NCCL
+  baseline. Preserve engine, compilation and effective environment overrides
+  in run metadata without disabling ordinary compute compilation or CUDA graphs.
 - Allow skew-only acquisition and CPU coverage planning for an independent
   positive TP degree without forcing a TP1 sweep. Preserve the TP1 requirement
   for ordinary profiling and reject nonpositive TP selections before launch.

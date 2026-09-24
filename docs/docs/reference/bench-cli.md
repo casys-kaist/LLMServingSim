@@ -52,6 +52,25 @@ the bench-side counterpart of a cluster config's `tp_size` / `ep_size`
 | `--data-parallel-size` | int | `1` | vLLM `data_parallel_size` (DP across engines) |
 | `--enable-expert-parallel` | flag | off | vLLM `enable_expert_parallel`, for MoE models |
 
+The communication baseline is NCCL. The runner always passes
+`disable_custom_all_reduce=True`; there is no custom-all-reduce CLI switch.
+This input is recorded in `meta.json` and `engine_start.json` under
+`engine_kwargs`, in addition to the engine's resolved parallel configuration.
+Before importing vLLM, the runner also pins
+`VLLM_ALLREDUCE_USE_FLASHINFER=0` and `VLLM_ALLREDUCE_USE_SYMM_MEM=0`.
+These independent non-NCCL paths are not controlled by the custom flag;
+Torch symmetric-memory all-reduce is enabled by default in vLLM 0.28 on
+supported devices. Effective overrides are saved in `meta.json` under
+`hardware.all_reduce_environment`. Check the backend-selection log when
+verifying a new environment.
+The runner also disables `compilation_config.pass_config.fuse_allreduce_rms`
+and `fuse_gemm_comms`, which can replace collectives with FlashInfer/AITER or
+Torch symmetric-memory fused kernels independently of those switches.
+These explicit overrides are recorded under `engine_kwargs.compilation_config`;
+ordinary compute compilation and CUDA graphs keep their usual defaults.
+Historical benchmark files retain their original metadata and are not
+retroactively NCCL-only; compare communication settings before reusing them.
+
 ### Scheduler and precision
 
 Match these to the simulator run you intend to compare against, or the

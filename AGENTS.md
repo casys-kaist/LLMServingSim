@@ -2272,6 +2272,20 @@ website (not the README).
 
 ## Comparing against a bench run: the metric definitions
 
+The benchmark communication baseline is **NCCL-only**. `bench run` explicitly
+sets `disable_custom_all_reduce=True` and records that input in `engine_kwargs`.
+Check `resolved_config.parallel_config.disable_custom_all_reduce` and the vLLM
+backend-selection log as well. The runner pins `VLLM_ALLREDUCE_USE_SYMM_MEM=0`
+and `VLLM_ALLREDUCE_USE_FLASHINFER=0` before importing vLLM; these independent
+paths are not controlled by the custom flag. Effective overrides are recorded
+in `meta.json` under `hardware.all_reduce_environment`. Historical artifacts
+keep their recorded settings and must not be relabelled as NCCL-only without evidence.
+The runner also pins `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`:
+these compiler passes can bypass the communicator via non-NCCL fused kernels.
+Record these explicit overrides under `engine_kwargs.compilation_config`.
+Ordinary compute compilation and CUDA graphs retain their defaults. Custom
+all-reduce and per-collective link parameters are not part of this baseline.
+
 Snapshot resolved engine settings and KV capacity before shutdown. Normal
 serving runs write `engine_start.json` before submitting requests, exclusively;
 use a fresh output directory. This startup snapshot is not a completed run.

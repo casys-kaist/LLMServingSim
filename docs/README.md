@@ -18,6 +18,8 @@ dynamic acquisition, resumable repetitions, independent skew-only TP selection,
 and migration of enabled bundles.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization and its optional logging override.
+The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
+NCCL baseline and recorded communicator and compilation settings.
 
 ## Installation
 

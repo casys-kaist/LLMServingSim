@@ -41,6 +41,17 @@ consumes). Each request's `input_tok_ids` and `output_toks` are pinned via
 vLLM run is bit-for-bit comparable to the simulator's view of the same
 workload.
 
+The communication baseline is NCCL: the runner explicitly sets
+`disable_custom_all_reduce=True` and records it in `engine_kwargs`, alongside
+the resolved parallel configuration. It also disables the independent Torch
+symmetric-memory and FlashInfer all-reduce paths before loading vLLM; the
+effective overrides are saved in `meta.json` under
+`hardware.all_reduce_environment`. Non-NCCL all-reduce/RMS and asynchronous
+GEMM/communication fusions are disabled through recorded compilation overrides.
+Ordinary compute compilation and CUDA graphs remain enabled by default.
+Historical artifacts retain their original
+settings; inspect their metadata before comparing them.
+
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
 ./bench/bench.sh
