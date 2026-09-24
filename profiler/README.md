@@ -18,6 +18,7 @@ profiler/                     Python package — `python -m profiler ...`
     skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
     skew_calibration.py       runtime-reference fit + supported-N bucket lookup
     skew_plan.py              dynamic distribution coverage and feasibility
+    skew_support.py           reference-only completion of lookup-cell support
     writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
     stack.py                  per-layer block composition from the HF config  *
     catalog_path.py           model_type -> yaml resolution                   *
@@ -543,7 +544,12 @@ shuffled requests; and equal/unequal multi-prefill splits. Axes follow the
 user's sequence/token/context bounds and resolved engine capacity. Query
 lengths follow `--attention-decode-q-lens`; each requires its own attention
 reference slice. A geometric operating cell gets 32 distribution draws by
-default, not workload-derived samples.
+default, not workload-derived samples. The profiler then checks those draws
+against the compiler's per-kernel/query/prefill/leverage support floor and
+selects extra batches for undersampled N anchors. Selection reads attention
+references, never skew latencies or benchmark results. Candidate search is
+bounded; any remaining deficits are recorded rather than hidden by a
+successful acquisition status. Expanded batches are streamed, not retained.
 
 Only the actual heterogeneous batch is measured. Three independent contexts
 of three timed forwards produce a median of forward medians. Per-forward
@@ -565,7 +571,9 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp
 ```
 
 `--skip-skew` skips acquisition, not existing calibration. `--only-skew`
-requires an existing attention table. New acquisitions record completion
+requires an existing attention table. Existing raw rows are retained unless
+`--force` is explicit. `plan-skew` includes support additions and unresolved
+deficits in its preview. New acquisitions record completion
 and resolved limits in `tp<N>/skew.meta.yaml`. Refit rejects unfinished
 acquisitions and absent raw data
 and stale references are rejected at simulator startup. See the

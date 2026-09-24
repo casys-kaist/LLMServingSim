@@ -39,7 +39,8 @@ flags, and the full set of example workloads, see the
 
 For dynamic heterogeneous profiling and reusable CPU-built attention corrections, see the
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
-Skew-only refreshes can target a TP degree independently.
+Skew-only refreshes can target a TP degree independently and automatically
+supplement undersampled lookup cells from the attention references.
 Hardware characterization is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the

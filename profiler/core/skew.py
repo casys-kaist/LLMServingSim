@@ -10,12 +10,14 @@ from pathlib import Path
 import statistics
 import tempfile
 import time
+from itertools import chain
 
 import pandas as pd
 
 from . import logger as log
 from .skew_calibration import atomic_yaml, measurement_shape
-from .skew_plan import iter_cases, summarize
+from .skew_plan import iter_cases
+from .skew_support import complete_plan
 
 PROTOCOL = "native-skew-per-forward-v1"
 
@@ -130,7 +132,11 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     for name in catalog:
         if not set(args.attention_decode_q_lens) <= set(table.get(name, {})):
             raise ValueError(f"Missing exact attention query slices for {name}")
-    plan = summarize(args, limits)
+    prior = set() if args.force else _existing_keys(
+        out, catalog, args.skew_rounds, args.measurement_iterations, block_size=limits.block_size)
+    log.info("TP=%d skew: checking reference-cell support before acquisition", tp)
+    plan, extra = complete_plan(args, limits, attention, arch, prior,
+                               existing_csv=None if args.force else out)
     plan.update(enabled=True, tp=tp, measurement_protocol=PROTOCOL,
                 measurement_sha256=measurement_fingerprint(),
                 completed=False, measured_cases=0)
@@ -138,16 +144,17 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     Path(tp_root).mkdir(parents=True, exist_ok=True)
     if args.force and out.exists():
         out.unlink()  # Explicit --force discards this category's old acquisition.
-    prior = _existing_keys(out, catalog, args.skew_rounds, args.measurement_iterations,
-                           block_size=limits.block_size)
     total = plan["cases"]
     log.info("TP=%d skew: %d planned cases, %d reusable; %d rounds x %d forwards",
-             tp, total, len(prior), args.skew_rounds, args.measurement_iterations)
+             tp, total, plan["reusable_cases"], args.skew_rounds, args.measurement_iterations)
+    support = plan["support_completion"]
+    log.info("TP=%d skew: %d reference-selected additions; %d cells remain below support floor",
+             tp, len(extra), len(support["remaining_deficits"]))
     atomic_yaml(status, plan)
     rows, fired, skipped = [], 0, 0
     started, initialized = time.monotonic(), False
     try:
-        for shot, family, key in iter_cases(args, limits):
+        for shot, family, key in chain(iter_cases(args, limits), extra):
             if key in prior:
                 skipped += 1
                 continue
@@ -182,17 +189,17 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 _flush_rows(out, rows)
                 rows.clear()
                 elapsed = max(time.monotonic() - started, 1e-9)
-                remaining = max(0, total - fired - skipped)
+                remaining = max(0, total - fired - plan["reusable_cases"])
                 log.info("TP=%d skew: %d/%d cases, %.2f case/s, eta %.1f min",
                          tp, fired + skipped, total, fired / elapsed,
                          remaining * elapsed / fired / 60)
-                plan.update(measured_cases=fired, reused_cases=skipped)
+                plan.update(measured_cases=fired, reused_cases=skipped, remaining_cases=remaining)
                 atomic_yaml(status, plan)
     finally:
         if rows:
             _flush_rows(out, rows)
     plan.update(completed=True, measured_cases=fired, reused_cases=skipped,
-                elapsed_seconds=time.monotonic() - started)
+                remaining_cases=0, elapsed_seconds=time.monotonic() - started)
     atomic_yaml(status, plan)
     log.success("skew -> %s", out)
     return out

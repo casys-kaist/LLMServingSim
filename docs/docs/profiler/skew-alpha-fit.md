@@ -75,6 +75,28 @@ engine capacity, not model names or benchmark distributions. The four
 32 distribution draws per operating cell. `--skew-seed` defaults to zero and
 `--skew-rounds` to three. See [Running the profiler](./running).
 
+The operating grid is not the lookup grid. The profiler checks its base
+draws in the compiler's kernel/query/prefill/leverage partitions and selects
+additional batches when an observed N anchor has fewer than `MIN_ROWS`
+distinct cases. It uses only request geometry and `attention.csv` references,
+not measured skew times or benchmark results. The support floor itself and
+runtime picking are unchanged.
+
+Candidate search has a finite bound (`skew_support.SEARCH_MULTIPLIER` times
+the configured draws). Rare cells can remain below the floor; the plan's
+`support_completion.remaining_deficits` lists them, and the existing
+unsupported-cell lookup policy still applies. `completed: true` means all
+selected batches were acquired, **not** that every cell has direct support.
+Support completion targets cells observed in the base plan; it is not a claim
+of exhaustive coverage of every reachable distribution.
+The CPU preview includes these additions and deficits. Selected identities
+are compact; their request arrays are regenerated one batch at a time.
+
+Existing raw measurements are retained unless `--force` is explicit. The
+support check accounts for their usable heterogeneous prefill envelope so its partitions match
+the eventual merged fit, but counts support on the new plan alone; legacy
+rows cannot hide gaps in the current measurement protocol.
+
 Only the actual shot consumes KV capacity: its allocation is page-aligned,
 includes all scheduled queries, and respects the context boundary plus one
 sampler token. The collector verifies executed geometry and finite warmup

@@ -92,7 +92,7 @@ def feasible(shot, limits, axes):
     return allocated <= limits.num_cache_tokens
 
 
-def iter_cases(args, limits):
+def iter_cases(args, limits, *, cell_filter=None):
     """Yield unique feasible (Shot, family) pairs in breadth-first sample order.
 
     Each geometric operating cell gets the same number of distribution draws.
@@ -116,6 +116,8 @@ def iter_cases(args, limits):
                 for pc_target in axes["pc"]:
                     budget = min(pc_target, axes["tokens"] - n * q)
                     if pc_target and (budget <= q or n == axes["seqs"]):
+                        continue
+                    if cell_filter is not None and not cell_filter(q, n, budget):
                         continue
                     for cap_target in axes["kv"]:
                         cap = min(cap_target, limits.max_model_len - q - 1)
@@ -165,12 +167,13 @@ def iter_cases(args, limits):
 def summarize(args, limits, completed=()):
     counts, query_counts, regimes = Counter(), Counter(), Counter()
     completed = set(completed)
-    reused = 0
+    reused, max_prefill = 0, 0
     for shot, family, key in iter_cases(args, limits):
         counts[family] += 1
         reused += key in completed
         query_counts[shot.decode_q_len] += 1
         regimes["mixed" if shot.n_prefill else "decode"] += 1
+        max_prefill = max(max_prefill, sum(query for query, _ in shot.requests[:shot.n_prefill]))
     return dict(schema=SCHEMA, grid=grid(args, limits), families=dict(counts),
                 cases=sum(counts.values()), reusable_cases=reused,
                 remaining_cases=sum(counts.values()) - reused,
@@ -178,4 +181,4 @@ def summarize(args, limits, completed=()):
                 seed=args.skew_seed, samples_per_cell=args.skew_samples_per_cell,
                 rounds=args.skew_rounds, timed_forwards_per_round=args.measurement_iterations,
                 block_size=limits.block_size, num_cache_tokens=limits.num_cache_tokens,
-                max_model_len=limits.max_model_len)
+                max_model_len=limits.max_model_len, max_prefill_tokens=max_prefill)

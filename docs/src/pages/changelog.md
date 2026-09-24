@@ -30,6 +30,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Align skew acquisition with the fitted lookup's per-partition support floor.
+  Automatically select additional batches from attention references, without
+  benchmark inputs or skew-latency targets. Share the bounded plan with CPU
+  previews and resume; record remaining support deficits separately from
+  acquisition completion and retain existing measurements by default.
 - Explicitly disable vLLM custom, Torch symmetric-memory and FlashInfer
   all-reduce and non-NCCL collective fusions in benchmark runs for the NCCL
   baseline. Preserve engine, compilation and effective environment overrides

@@ -225,6 +225,14 @@ def _partition(layer, q, pc, lev, axes):
                      _label(axes["lev_bins"], axes["lev_labels"], lev)))
 
 
+def partition_axes(pc_cap):
+    """Shared acquisition/fit partitions for a measured prefill envelope."""
+    pc_edges = sorted({1, max(1, pc_cap // 8), max(1, pc_cap // 2)})
+    return dict(pc_bins=[-1, *pc_edges, max(1_000_000_000, pc_cap + 1)],
+                pc_labels=["pc0"] + [f"pc{i}" for i in range(1, len(pc_edges) + 1)],
+                lev_bins=list(LEV_BINS), lev_labels=list(LEV_LABELS))
+
+
 def weighted_median(pairs):
     """A minimizer of sum(weight * abs(value - estimate))."""
     values = sorted(pairs)
@@ -273,12 +281,9 @@ def fit(rows, identity, reference, *, min_rows=MIN_ROWS):
         raise ValueError("Attention data and lookup fingerprints are required")
     rows = list(rows)
     pc_cap = max((r["pc"] for r in rows), default=0)
-    pc_edges = sorted({1, max(1, pc_cap // 8), max(1, pc_cap // 2)})
     # Token coordinates scale with the measured envelope; leverage is already
     # dimensionless. Preserve a separate zero/tiny-prefill partition.
-    axes = dict(pc_bins=[-1, *pc_edges, max(1_000_000_000, pc_cap + 1)],
-                pc_labels=["pc0"] + [f"pc{i}" for i in range(1, len(pc_edges) + 1)],
-                lev_bins=list(LEV_BINS), lev_labels=list(LEV_LABELS))
+    axes = partition_axes(pc_cap)
     seen, dropped, partitions, kernels = set(), defaultdict(int), defaultdict(list), defaultdict(list)
     for source in rows:
         r = dict(source)

@@ -604,6 +604,17 @@ lengths follow the attention sweep. Planning streams one expanded batch at a
 time; feasibility uses page-aligned actual KV allocation and reserves the
 sampler's final token. No benchmark inputs belong in the planner.
 
+`skew_support.py` checks the base plan in the compiler's actual partition
+coordinates using the attention table. It adds deterministic draws where an
+observed N/partition lacks `MIN_ROWS` distinct cases. Selection never reads
+skew timing targets or benchmark results. CPU preview and live acquisition
+share this logic, including the retained raw data's prefill envelope. Extra
+cases retain compact identities and regenerate their request arrays lazily.
+Bounded candidate search may leave deficits: `support_completion` records
+them separately from acquisition completion. Do not equate completing a
+sweep with every lookup cell having direct support. Existing raw data remains
+preserved unless `--force` is requested.
+
 `hooks/skew_measurement.py` measures the actual heterogeneous batch through
 vLLM 0.28. Three independent contexts, each containing three timed forwards
 by default, produce a median of forward medians. CPU scopes establish call

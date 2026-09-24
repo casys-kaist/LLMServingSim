@@ -698,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Dispatch.
     if ns.cmd == "plan-skew":
-        from profiler.core.skew_plan import summarize
+        from profiler.core.skew_support import complete_plan
         from profiler.core.skew import _existing_keys
         from profiler.core.config import load_architecture
         from types import SimpleNamespace
@@ -711,7 +711,8 @@ def main(argv: list[str] | None = None) -> int:
         effective = metadata["engine_effective"]
         resolved = metadata["engine_resolved"]["per_tp"]
         plans = {}
-        catalog = load_architecture(arch_path).catalog.attention
+        architecture = load_architecture(arch_path)
+        catalog = architecture.catalog.attention
         for tp in profile_args.tp_degrees:
             saved = resolved.get(str(tp)) or resolved.get(tp)
             if not saved:
@@ -721,10 +722,11 @@ def main(argv: list[str] | None = None) -> int:
             planned = dataclasses.replace(profile_args,
                 attention_max_kv=profile_args.attention_max_kv or
                                  metadata.get("attention_grid", {}).get("max_kv") or limits.max_model_len)
-            completed = _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
+            completed = set() if planned.force else _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
                                        planned.skew_rounds, planned.measurement_iterations,
                                        block_size=limits.block_size)
-            plans[tp] = summarize(planned, limits, completed)
+            plans[tp], _ = complete_plan(planned, limits, root / f"tp{tp}" / "attention.csv",
+                architecture, completed, existing_csv=None if planned.force else root / f"tp{tp}" / "skew.csv")
         print(json.dumps(plans, indent=2))
         return 0
 

@@ -209,7 +209,8 @@ methodology.
 
 `python -m profiler plan-skew MODEL --hardware HARDWARE --tp 1` streams the
 same acquisition plan using saved engine limits, reporting family/query
-coverage and remaining cases. The live run rechecks actual capacity. This
+coverage, automatic reference-selected support additions, unresolved lookup
+cell deficits and remaining cases. The live run rechecks actual capacity. This
 preview cannot determine whether a GPU is available. Both this preview and
 `profile --only-skew` accept `--tp 2` without a TP1 pass. Existing attention
 references and, for the preview, saved engine limits must cover that degree.
