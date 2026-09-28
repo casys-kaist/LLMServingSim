@@ -30,6 +30,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Select each DP member's own slice of the global EP routing vector for MoE
+  latency lookup. Propagate DP-group position through both wave-completion
+  paths and ordinary/interleaved traces while keeping EXPERT markers local.
+  Equal-rank BALANCED behavior and communication payloads are unchanged.
 - Resolve local CUDA graph capture shapes before DP synchronization, including
   independent TP1/TPN instances. Preserve local padding when the common mode
   is NONE; keep actual attention queries, KV history and head rows separate

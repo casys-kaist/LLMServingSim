@@ -1033,7 +1033,7 @@ def main():
                     first_batch = round_batches[first_inst_id][0]
                     dp_workload_name = f'{instances[first_inst_id]["hardware"]}/{instances[first_inst_id]["model_name"]}/dp_{dg}_batch{first_batch.batch_id}'
 
-                    for inst_id in dp_groups[dg]:
+                    for dp_rank, inst_id in enumerate(dp_groups[dg]):
                         batch, nid = round_batches[inst_id]
                         batch.workload_name = dp_workload_name
                         inst = instances[inst_id]
@@ -1051,6 +1051,7 @@ def main():
                                        tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                        dp_sum_total_len=sum_total_len,
                                        dp_min_total_len=min_total_len,
+                                       dp_rank=dp_rank,
                                        enable_block_copy=inst_cfg["enable_block_copy"],
                                        inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(
@@ -1122,7 +1123,7 @@ def main():
                         first_batch = round_batches[first_inst_id][0]
                         dp_workload_name = f'{instances[first_inst_id]["hardware"]}/{instances[first_inst_id]["model_name"]}/dp_{dg}_batch{first_batch.batch_id}'
 
-                        for inst_id in dp_groups[dg]:
+                        for dp_rank, inst_id in enumerate(dp_groups[dg]):
                             batch, nid = round_batches[inst_id]
                             batch.workload_name = dp_workload_name
                             inst = instances[inst_id]
@@ -1139,7 +1140,8 @@ def main():
                                            dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                            tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                            dp_sum_total_len=sum_total_len,
-                                       dp_min_total_len=min_total_len,
+                                           dp_min_total_len=min_total_len,
+                                           dp_rank=dp_rank,
                                            enable_block_copy=inst_cfg["enable_block_copy"],
                                            inputs_root=run_paths.inputs_root,
                                    num_speculative_tokens=(

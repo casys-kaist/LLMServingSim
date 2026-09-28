@@ -112,6 +112,7 @@ class TraceCtx:
     pp_size: int       # pipeline parallel degree
     local_ep: int      # expert parallel degree within this instance
     ep_total: int      # total EP degree across DP group
+    dp_rank: int       # position within this DP group, not the instance id
     tp_dim: list       # involved_dim for TP collectives (ALLREDUCE), None = all dims
     ep_dim: list       # involved_dim for EP collectives (ALLTOALL), None = all dims
     num_speculative_tokens: int  # draft length N; the drafter runs N times per
@@ -1158,7 +1159,10 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
                      placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                      variant, kv_cache_dtype='auto',
                      runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
-                     tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, num_speculative_tokens=0):
+                     tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, num_speculative_tokens=0,
+                     dp_rank=0):
+    if dp_rank < 0 or (gate is not None and (dp_rank + 1) * max(local_ep, 1) > ep_total):
+        raise ValueError("DP member's local expert ranks exceed the EP group")
     model_type = config.get('model_type')
     if not model_type:
         raise KeyError(
@@ -1192,6 +1196,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         kv_fp=(1 if kv_cache_dtype == 'fp8' else fp),
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
+        dp_rank=dp_rank,
         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
         dp_min_total_len=dp_min_total_len,
         num_speculative_tokens=num_speculative_tokens,
@@ -1598,7 +1603,9 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
         # ``T * k/ep`` expert-token pairs, which is exactly what a rank computes
         # over the gathered set.
         local_tokens = effective_total_len_compute
-        activated_experts = routing.activated_experts[i]
+        # EXPERT markers stay local; routing vectors cover the entire DP group.
+        global_rank = ctx.dp_rank * ctx.local_ep + i
+        activated_experts = routing.activated_experts[global_rank]
 
         if local_tokens > 0:
             # The **total** EP degree, not this instance's share: what a rank
@@ -2149,7 +2156,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                       variant, kv_cache_dtype='auto',
                       runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
                       tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
-                      num_speculative_tokens=0):
+                      num_speculative_tokens=0, dp_rank=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
@@ -2157,7 +2164,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                            runtime_max_num_seqs=runtime_max_num_seqs,
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                            dp_min_total_len=dp_min_total_len,
-                           num_speculative_tokens=num_speculative_tokens)
+                           num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank)
     bctx = _build_batch_ctx(batch, ctx)
 
     logger.info(
@@ -2243,7 +2250,7 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                                   variant, kv_cache_dtype='auto',
                                   runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
                                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
-                                  num_speculative_tokens=0):
+                                  num_speculative_tokens=0, dp_rank=0):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
@@ -2251,7 +2258,7 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                            runtime_max_num_seqs=runtime_max_num_seqs,
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                            dp_min_total_len=dp_min_total_len,
-                           num_speculative_tokens=num_speculative_tokens)
+                           num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank)
     bctx1 = _build_batch_ctx(batches[0], ctx)
     bctx2 = _build_batch_ctx(batches[1], ctx)
 
@@ -2394,7 +2401,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None,
                    enable_sub_batch_interleaving=False, fp=16, dtype=None, kv_cache_dtype='auto',
                    tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, enable_block_copy=True, inputs_root=None,
-                   num_speculative_tokens=0, gate_stats_path=None):
+                   num_speculative_tokens=0, gate_stats_path=None, dp_rank=0):
 
     model = batch.model
     config = get_config(model)
@@ -2458,7 +2465,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         runtime_max_num_seqs=max_num_seqs,
                         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                         dp_min_total_len=dp_min_total_len,
-                           num_speculative_tokens=num_speculative_tokens)
+                        num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank)
     if not enable_sub_batch_interleaving:
         rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)
     else:

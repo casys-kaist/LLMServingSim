@@ -214,9 +214,11 @@ Requests are routed at their arrival time during the simulation loop, not upfron
 Handles request transfer in Prefill/Decode disaggregation mode.
 
 ### `gate_function.py`
-Routes tokens to MoE experts according to configurable policies (Copy, Round Robin, Random,
-Custom). `COPY` (default) enables block copy optimization. Provides EP-aware routing via
-`route_ep()` with even expert-to-rank partitioning for per-rank latency lookup.
+Routes tokens to MoE experts with `BALANCED` (default), `RR`, `RAND`, or
+`CUSTOM`. Block copy is a separate optimization. `route_ep()` returns
+global EP-rank vectors; each DP member reads its own slice using its position
+within the DP group, not its instance ID. `EXPERT {i}` trace markers remain
+local to the instance. See the [routing contract](../docs/docs/simulator/moe-expert-routing.md).
 
 ### `spec_decode.py`
 The acceptance model behind `--num-speculative-tokens`. Which draft tokens the

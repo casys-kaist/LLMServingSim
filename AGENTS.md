@@ -2085,9 +2085,18 @@ by ~20%. It is also the measured case for the `ep` column existing at all:
 are reachable.
 
 ### MoE expert blocks
+Routing vectors use global EP ranks. Each DP member's trace uses
+`global_rank = dp_rank * local_ep + local_rank`, where `dp_rank` is its
+position in the DP group, never its global instance ID. Both wave-completion
+paths must pass that position through ordinary and interleaved synthesis.
+PP does not enter this index: each stage has its own EP group. Keep
+`EXPERT {local_rank}` markers local, because the converter selects them
+within an instance. Equal BALANCED vectors can hide an incorrect offset;
+asymmetric routing is required to check rank selection.
+
 Expert blocks use `EXPERT {i}` / `EXPERT END` markers for ASTRA-Sim. Each EP rank
-gets a per-rank latency from profiled data based on its local token count and activated
-experts (`key_0=local_tokens, key_1=activated_experts`, profiled at tp=1). Ranks execute
+gets a latency from the gathered/replicated token count and its own activated
+experts (`key_0=tokens, key_1=activated_experts`, profiled at tp=1). Ranks execute
 in parallel and sync at the dispatch/combine collectives. Expert-to-rank assignment uses even
 partitioning: `expert_id * ep_size // num_experts`.
 

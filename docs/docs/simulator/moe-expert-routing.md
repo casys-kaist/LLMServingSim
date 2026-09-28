@@ -18,26 +18,29 @@ experts to ranks. This page is about both.
 ## The piece that does it: `GateRouter`
 
 `serving/core/gate_function.py` defines `GateRouter`. The trace
-generator instantiates one per simulation; on every MoE block it
+generator instantiates one per generated trace; on every built MoE block it
 calls:
 
 ```python
-GateRouter(
+router = GateRouter(
+    node_id=0, instance_id=0,
     num_local_experts=N,           # total experts in the model
-    num_experts_per_token=K,       # top-K activations per token
+    num_experts_per_tok=K,         # top-K activations per token
     routing_policy='BALANCED',     # one of 4 policies, see below
     seed=42,
     block_copy=True,
 )
 
-result = router.route(num_tokens=T, tp_rank=r, num_experts_per_token=K)
+result = router.route_ep(layer_num=0, batch_id="0", total_len=T, ep_size=EP)
 # → RoutingResult(local_tokens=[...], activated_experts=[...], source_tokens=[...])
 ```
 
-`local_tokens[i]` is the number of tokens assigned to EP rank `i`
-after dispatch. `activated_experts[i]` is the count of distinct
-experts touched on that rank. Both feed into the per-rank attention/MLP
-latency lookup.
+`local_tokens[i]` counts unique tokens with at least one expert on global
+EP rank `i`; `activated_experts[i]` counts its distinct active experts.
+For the default all-gather/reduce-scatter backend, MoE lookup uses the
+**gathered input token count**, not `local_tokens[i]`, and that rank's
+activated-expert count. The source-token split in this routing result is
+synthetic; actual DP communication sizes come from the scheduled DP round.
 
 ## Four policies
 
@@ -219,9 +222,23 @@ So with 128 experts and `ep_size=2`, experts 0–63 live on rank 0 and
 division already lands below `ep_size` — but it keeps an out-of-range id
 from indexing past the last rank.
 
-The `GateRouter.route()` output collapses per-token assignments into
-per-rank token counts that ASTRA-Sim consumes through the trace's
-`EXPERT {i}` markers.
+The `GateRouter.route_ep()` result covers the **whole EP group**. A DP member
+selects its own slice:
+
+```python
+global_ep_rank = dp_rank * local_ep + local_rank
+```
+
+`dp_rank` is the member's zero-based position within its DP group, not its
+instance ID. For TP2/DP2 with full EP, the first member selects ranks 0/1
+and the second selects 2/3. PP stages have separate EP groups and do not
+add another offset. Both ordinary and idle-member DP completion paths use
+this mapping, including interleaved trace generation.
+
+The trace's `EXPERT {local_rank}` markers stay **instance-local** for the
+converter. Global indexing applies to routing lookup, not marker numbering.
+This distinction matters for asymmetric rank loads; equal BALANCED vectors
+produce the same values on every member.
 
 ## `block_copy`: what it means and when it's safe
 
@@ -270,13 +287,13 @@ Every rank's MoE block latency comes from
 | Key | Meaning |
 | --- | --- |
 | `ep` | The instance's **total** EP degree — picks which grid to read |
-| `local_tokens` | Tokens assigned to this rank after dispatch |
+| `tokens` | Gathered input rows, or replicated rows without dispatch |
 | `activated_experts` | Number of *distinct* experts this rank touches |
 
 Profiled at TP=1 (expert weights shard by `ep_size`, not `tp_size`) but
 **once per EP degree**, because a rank runs a slice of the block rather than
 the block: `E/ep` local experts and `k/ep` of a token's k assignments. The
-simulator does 2D linear interpolation across `local_tokens` and
+simulator does 2D linear interpolation across `tokens` and
 `activated_experts` inside the chosen grid, and falls back to the nearest
 profiled `ep` with a one-shot warning rather than interpolating across it.
 
