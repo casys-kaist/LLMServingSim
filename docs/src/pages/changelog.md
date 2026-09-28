@@ -30,6 +30,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Advance the token ordinal during EP round-robin routing instead of selecting
+  the first token's experts repeatedly. Preserve top-k and group restrictions,
+  source counts and seeded RAND draws; keep BALANCED and CUSTOM unchanged.
+  Refresh the round-robin regression clock without changing benchmark truths.
 - Select each DP member's own slice of the global EP routing vector for MoE
   latency lookup. Propagate DP-group position through both wave-completion
   paths and ordinary/interleaved traces while keeping EXPERT markers local.

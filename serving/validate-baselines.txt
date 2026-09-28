@@ -28,7 +28,7 @@ saturated_block_size_64 20692287868
 saturated_wide_batch 20562178009
 routing_rr 1666850305
 routing_rand 1672027990
-expert_routing_rr 1461369089
+expert_routing_rr 1715103956
 expert_routing_rand 2106513632
 no_block_copy 2001000095
 pp 1804961970

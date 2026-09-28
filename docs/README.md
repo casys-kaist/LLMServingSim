@@ -25,7 +25,8 @@ The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
 local CUDA graph padding from DP synchronization; target graph overrides live
 in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
 The [expert routing guide](docs/simulator/moe-expert-routing.md) distinguishes
-global EP-rank lookup from instance-local trace markers.
+global EP-rank lookup from instance-local trace markers, and documents
+round-robin top-k assignment over gathered token positions.
 
 ## Installation
 

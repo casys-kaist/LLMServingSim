@@ -47,7 +47,8 @@ Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseli
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
 Model-forward shapes include local CUDA graph padding and subsequent DP synchronization;
 see [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
-DP members select their own global expert ranks for MoE latency lookup; see
+DP members select their own global expert ranks for MoE latency lookup, and
+round-robin routing advances across gathered token positions; see
 [expert routing](https://llmservingsim.ai/docs/simulator/moe-expert-routing).
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):

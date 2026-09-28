@@ -96,9 +96,8 @@ class GateRouter:
     trace-generation time by roughly ``num_hidden_layers`` × on MoE
     models. Safe whenever every layer's routing produces the same
     (local_tokens, activated_experts) pair — which is true for
-    BALANCED (deterministic), and a harmless approximation for
-    RR / RAND (per-layer variance in activated-count is small once
-    the batch is at saturation). Default True for speed; CUSTOM
+    BALANCED and RR (deterministic). For RAND it suppresses per-layer
+    routing variance and is only an approximation. Default True for speed; CUSTOM
     policies that legitimately need per-layer variance can set
     ``block_copy=False`` in the constructor.
     """
@@ -360,8 +359,8 @@ class GateRouter:
     def route_ep(self, layer_num, batch_id, total_len, ep_size):
         """EP-aware routing: returns per-rank token counts and activated experts.
 
-        Tokens are distributed evenly across EP ranks before dispatch
-        (matching vLLM's EP execution model). Each token selects k
+        Source-token counts here are a synthetic even split, not the real
+        DP batch vector used to size communication. Each token selects k
         experts; the owning rank receives the token for local
         execution. Expert-to-rank assignment uses even partitioning:
         ``expert_id * ep // num_experts``.
@@ -392,16 +391,15 @@ class GateRouter:
             local_tokens = [0] * ep_size
             activated_experts = [set() for _ in range(ep_size)]
 
-            for src_rank in range(ep_size):
-                for _ in range(source_tokens[src_rank]):
-                    selected = self._token_experts(0)
-                    dest_ranks = set()
-                    for expert_id in selected:
-                        owner = self.expert_owner(expert_id, ep_size, self.E)
-                        activated_experts[owner].add(expert_id)
-                        dest_ranks.add(owner)
-                    for owner in dest_ranks:
-                        local_tokens[owner] += 1
+            for token_idx in range(total_len):
+                selected = self._token_experts(token_idx)
+                dest_ranks = set()
+                for expert_id in selected:
+                    owner = self.expert_owner(expert_id, ep_size, self.E)
+                    activated_experts[owner].add(expert_id)
+                    dest_ranks.add(owner)
+                for owner in dest_ranks:
+                    local_tokens[owner] += 1
 
             activated_counts = [len(s) for s in activated_experts]
 

@@ -219,6 +219,9 @@ Routes tokens to MoE experts with `BALANCED` (default), `RR`, `RAND`, or
 global EP-rank vectors; each DP member reads its own slice using its position
 within the DP group, not its instance ID. `EXPERT {i}` trace markers remain
 local to the instance. See the [routing contract](../docs/docs/simulator/moe-expert-routing.md).
+RR advances through the gathered batch's token positions without restarting
+at each synthetic source partition. It is deterministic at a fixed shape;
+RAND retains its seeded draws, while BALANCED retains its analytical counts.
 
 ### `spec_decode.py`
 The acceptance model behind `--num-speculative-tokens`. Which draft tokens the

@@ -1702,6 +1702,13 @@ The `system.json` collective implementations must have one entry per topology di
 `config_builder.py` generates this automatically from the topology it emitted.
 
 ### Group-limited expert routing
+RR uses each token's ordinal in the full gathered/replicated batch, not a
+constant zero or a counter restarted at each source partition. Unrestricted
+RR chooses `(t + j) % E` for `j = 0..k-1`; grouped RR uses the same advancing
+ordinal to select groups and experts. RR resets at each layer invocation,
+so block copy is exact for it at a fixed batch shape. RAND draws and the
+BALANCED/CUSTOM analytical paths are independent of this ordinal fix.
+
 DeepSeek-V3/V3.2 and GLM restrict a token's experts to `topk_group` of
 `n_group` groups (`deepseek_v2.py` passes `num_expert_group=config.n_group`,
 `topk_group=config.topk_group`, both defaulting to 1). `GateRouter` reads both

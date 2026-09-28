@@ -47,7 +47,7 @@ synthetic; actual DP communication sizes come from the scheduled DP round.
 ```mermaid
 flowchart LR
     subgraph BAL["BALANCED (default)"]
-        TB["8 tokens"] --> ASB["2 tokens<br/>per expert<br/>(deterministic)"]
+        TB["Token count"] --> ASB["Equal expected counts<br/>per rank<br/>(deterministic)"]
     end
     subgraph RR["RR"]
         TR["8 tokens"] --> ASR["1, 1, 1, 1, 1, 1, 1, 1<br/>(positional)"]
@@ -64,28 +64,23 @@ flowchart LR
 | --- | --- | --- | --- |
 | **BALANCED** (default) | Deterministic | Idealized load-balanced gate (post-aux-loss training) | Most research baselines |
 | **RR** | Deterministic | Pure round-robin assignment | Sanity / null-baseline runs |
-| **RAND** | Seeded random | Uniform random per token | Worst-case load imbalance studies |
+| **RAND** | Seeded random | Uniform random per token | Variation under a uniform gate assumption |
 | **CUSTOM** | Deterministic | The **measured** distinct-expert count of a real trained gate | Comparing against a real vLLM run |
 
 ### BALANCED, closed-form pigeonhole
 
-BALANCED computes the *exact* token distribution that a perfectly
-load-balanced gate would produce: for `T` tokens and `E` experts with
-top-`K`, each expert gets `T*K/E` tokens (with the remainder split
-deterministically across experts to round to integers).
+BALANCED estimates counts under a uniform-routing assumption; it does not
+construct an exact assignment histogram. With `E` experts, top-`K`, and
+`T` tokens, its distinct-expert expectation per rank is
+`(E / EP) * (1 - (1 - K / E)**T)`, rounded and bounded for lookup.
+All ranks receive the same analytical count. This is deterministic and
+allows block copy, but training with load-balancing losses does not establish
+that a deployed model has equal rank loads or this exact distribution.
 
-This is what a model with a well-trained auxiliary load-balancing
-loss converges to in expectation. It's the simulator's default
-because:
-
-1. Real production MoE deployments use auxiliary losses → balanced
-   distribution is the realistic baseline.
-2. It's deterministic, so simulations are reproducible.
-3. It enables the **block copy** optimization (see below).
-
-The number it actually needs is not "tokens per expert" but **how many
-EP ranks one token reaches**, since that is what sets each rank's local
-token count and the size of the EP collective. `_hit_probs` computes it
+It also estimates **how many EP ranks one token reaches**, which sets the
+unique local-token count for a dispatching backend. The default AgRs path
+uses all gathered input rows and does not size its collective from this
+local-token estimate. `_hit_probs` computes the hit probability
 exactly, by
 a DP over which groups the token selected rather than by sampling, so
 the simulator stays deterministic. It draws **without replacement**,
@@ -95,18 +90,23 @@ read about 1% low (Qwen3-30B at EP=8: 0.6564 against the exact 0.6674).
 
 ### RR, round-robin
 
-Token *t* goes to expert `t % num_local_experts`. Same expert each
-forward, regardless of token content. Useful as a sanity check or
-when you want a "no smart routing" baseline; produces identical
-per-rank token counts to BALANCED in expectation.
+For unrestricted routing, token `t` selects the `K` distinct experts
+`(t + j) % E`, for `j = 0..K-1`. The ordinal advances across the full
+gathered/replicated batch, not separately within each source partition.
+Grouped routing applies the same ordinal to the configured group selection.
+
+Each layer invocation starts at token zero; token content does not affect
+the result. RR is a deterministic sanity-check policy, not the trained gate
+or the independent uniform-draw law used by BALANCED. Their distinct-expert
+counts need not agree, especially on short batches.
 
 ### RAND, random
 
-Per-token uniform random across experts (using `seed=42` by default
-for reproducibility). Produces realistic worst-case load imbalance
-- some ranks see more tokens than others, which is what an
-*untrained* gate produces. Use this if you want to study the cost of
-load imbalance specifically.
+Per-token uniform random selection of distinct experts (using `seed=42`
+by default for reproducibility). Ranks can receive different loads, but
+uniform random draws are neither a learned gate nor a worst-case bound.
+The router is recreated for each trace, so identical shapes with the
+same seed repeat their draws.
 
 ### CUSTOM, the measured curve
 
@@ -257,11 +257,11 @@ This is **exact** for:
 - Dense models (no MoE, every layer of a given block shape is identical).
 - MoE with `BALANCED` (every block routes the same way, since
   BALANCED is deterministic and stateless).
+- MoE with `RR` (the same gathered batch shape starts at token zero
+  at every layer, so the routing is deterministic).
 
 It's an **approximation** for:
 
-- MoE with `RR` (alternating round-robin position differs per layer,
-  in practice the per-rank counts are still nearly identical).
 - MoE with `RAND` (per-block randomness produces variance the copy
   can't capture).
 - MoE with a `CUSTOM` per-token `_custom_gate_function` (depends
@@ -270,8 +270,7 @@ It's an **approximation** for:
   for BALANCED.
 
 For research where per-block variance matters, set
-`enable_block_copy=False` in the trace generator (or pick a policy
-where block_copy is auto-disabled). Trace generation runs more slowly and
+`--no-enable-block-copy` on the simulator. Trace generation runs more slowly and
 every layer is built from its own router draw.
 
 A heterogeneous stack never shares a block across differing layers, block copy
@@ -366,8 +365,8 @@ across the DP group, see
 
 ## Gotchas
 
-1. **`block_copy` defaults to True** and silently produces an
-   approximation for non-BALANCED policies. If you're studying load
+1. **`block_copy` defaults to True** and suppresses per-layer randomness
+   for RAND or a varying custom per-token policy. If you're studying load
    imbalance specifically, disable it. It does **not** change the trace for a
    deterministic router — until v1.2.0 disabling it emitted a single
    transformer block instead of `num_hidden_layers`, understating the clock
