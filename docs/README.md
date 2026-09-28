@@ -21,6 +21,9 @@ hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 NCCL baseline and recorded communicator and compilation settings.
+The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
+local CUDA graph padding from DP synchronization; target graph overrides live
+in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
 
 ## Installation
 

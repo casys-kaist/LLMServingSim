@@ -253,7 +253,7 @@ Three rules the table cannot show:
 
 ### Runtime overrides (optional)
 
-Exactly **14** of the `python -m serving` flags can be re-specified per
+Runtime flags can be re-specified per
 instance, letting one cluster run heterogeneous instances — a prefill
 instance with a tight `max_num_seqs` next to a decode instance with a
 wide one, or two instances at different `mem_util`. Every one of them
@@ -285,9 +285,52 @@ other instance keeps the CLI value.
 | `enable_sub_batch_interleaving` | bool | `--enable-sub-batch-interleaving` | Enable sub-batch interleaving for this instance |
 | `enable_block_copy` | bool | `--enable-block-copy` | Build a block's trace rows once per distinct block shape and reuse them for every layer sharing it. A trace-*generation* optimization — the emitted trace has every layer either way. Off means every layer is built from its own router draw |
 
-#### `npu_mem.mem_util` is the one nested override
+#### CUDA graph contract
 
-The other 13 are plain keys on the instance object. `mem_util` sits
+`cudagraph` is an optional, config-only object on each instance. It describes
+the **target deployment**, not the eager engine used to measure profile tables.
+Local forward padding applies even at DP=1 and TP=1. Members of a DP group
+must resolve to the same graph contract. Capture overrides must remain
+compatible with each member's scheduler limits.
+
+```json
+{
+  "cudagraph": {
+    "mode": "FULL_AND_PIECEWISE",
+    "capture_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 256],
+    "enable_sp": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | Effective vLLM MRV1 graph mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY`, or `FULL_AND_PIECEWISE` (default assumption) |
+| `capture_sizes` | Optional positive token counts; deduplicated, sorted and filtered by the token budget and compiler-SP divisibility |
+| `max_capture_size` | Optional positive cap for automatic grid generation. If supplied with `capture_sizes`, it must equal the largest retained size before speculative rounding |
+| `enable_sp` | Compiler sequence parallelism, default `false`. This is **not** the MoE model's sequence-parallel dispatch wrapper |
+
+Without an explicit grid, the simulator follows vLLM 0.28's ordinary
+non-interactivity grid: 1/2/4, then increments of 8 below 256 and of 16 above.
+The cap depends on the instance's sequence limit, speculative query length,
+token budget and target compute capability. `hardware.yaml` identifies SM10x
+(platform cap 1024); other capabilities use 512. Unknown capability emits a
+warning and assumes 512; specify a cap or grid for a different target.
+Unlimited simulator scheduler limits do not constrain this finite graph cap.
+FULL decode grids are rounded to supported speculative query multiples.
+
+Use the **effective worker mode** after attention-backend resolution, not just
+the requested engine mode. Explicit sizes can also describe an interactivity
+grid. Set `mode: "NONE"` for eager execution. The resolver does not automatically
+infer LoRA-specialized keys, cascade/encoder restrictions, DBO, MRV2 or drafter
+graph dispatch. Attention offloading uses NONE; graph replay for that simulator
+extension is not modeled. No graph-specific latency multiplier or subtraction
+is applied. See [parallelism mechanics](/docs/simulator/parallelism-mechanics)
+for the local-padding and DP synchronization order.
+
+#### Nested memory utilization override
+
+The scheduler overrides are plain keys on the instance object. `mem_util` sits
 **inside** the `npu_mem` block, because its only job is to scale
 `mem_size` and it follows that block's `mem_*` naming:
 

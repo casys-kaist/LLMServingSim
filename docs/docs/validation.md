@@ -14,8 +14,11 @@ simulator, then comparing the per-request and per-tick metrics with
 committed `bench/examples/<hardware>/<model>/validation/summary.txt`, so it is
 reproducible rather than quoted.
 
-**The three dense configurations stay within 1.6% across their 15 metrics.
-The DP+EP MoE configuration reaches +5.6% and remains a separate accuracy target.**
+**The largest displayed absolute error across the three dense configurations is 1.5%.
+The DP+EP MoE configuration reaches +5.9% and remains a separate accuracy target.**
+
+The additional stored DeepSeek diagnostic has larger errors and is reported
+separately below; it is not included in the four headline configurations.
 
 > **Want to validate your own change?** See
 > **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**
@@ -27,8 +30,8 @@ The DP+EP MoE configuration reaches +5.6% and remains a separate accuracy target
 | --- | --- |
 | **Workload** | 300 ShareGPT-derived requests, ~10 sps Poisson arrivals |
 | **Hardware** | RTXPRO6000 and RTX 4090, single node (profile bundles in `profiler/perf/<hardware>/`) |
-| **vLLM version** | `v0.28.0` for the three RTXPRO6000 truths, which the bench container pins. The RTX 4090 truth stays on `v0.19.0`: that card is no longer in the machine, so it cannot be re-recorded — see the note under its section |
-| **Block size** | 16 |
+| **vLLM version** | `v0.28.0` for the three RTXPRO6000 headline truths, which the bench container pins. The RTX 4090 truth stays on `v0.19.0`: that card is no longer in the machine, so it cannot be re-recorded — see the note under its section |
+| **Block size** | 16 for the headline examples; 64 for the additional DeepSeek diagnostic |
 | **Engine flags** | Defaults except where the cluster config dictates otherwise |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
 | **KV capacity** | `mem_util` `0.9`, except the RTX 4090 example which is calibrated to the measured block count (see below) |
@@ -52,12 +55,11 @@ resolved, read out of that run's own `meta.json`:
 That matters because the simulator does not model vLLM's activation peak or
 CUDA context, so the default `mem_util: 0.9` yields *more* KV cache than vLLM
 gets at the same fraction — less preemption, an early finish, and every
-latency metric moving with it:
+latency metric moving with it.
 
-| | KV tokens | blocks | TTFT mean | TPOT mean | Latency mean |
-| --- | --- | --- | --- | --- | --- |
-| `mem_util: 0.9` (default) | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
-| `mem_util: 0.833919` (matched) | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
+The example uses `mem_util: 0.833919` to reproduce those 2,588 blocks.
+This matches a recorded capacity, not a latency target; its current errors
+are listed in the result tables below.
 
 The three RTXPRO6000 configurations stay at `0.9`, and the reason is not that
 they are far from the ceiling — Qwen3-32B's pool reaches 97% of its budget.
@@ -81,10 +83,10 @@ Mean error vs. real vLLM, per metric, on the four configurations summarized here
 
 | Hardware | Model | Parallelism | TTFT mean | TPOT mean | Latency mean | worst of 15 |
 | --- | --- | --- | --- | --- | --- | --- |
-| RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.3% | +0.2% | +0.3% | +1.1% |
-| RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +0.9% | +0.1% | +0.3% | +1.5% |
-| RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.3% | -0.6% | -1.0% |
-| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +3.6% | +0.7% | +0.8% | +5.6% |
+| RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.5% | +0.4% | +0.5% | +1.2% |
+| RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +1.0% | +0.1% | +0.3% | +1.5% |
+| RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.2% | -0.5% | -1.0% |
+| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +4.8% | +0.9% | +1.0% | +5.9% |
 
 These workloads were used during development, including skew-axis selection.
 Their results are useful regression checks, not an independent estimate of
@@ -92,34 +94,24 @@ generalization to other models, hardware or request distributions.
 
 The last column is the largest absolute error across all fifteen metrics
 (TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
-summary of a run: a mean can be small because two errors cancelled. TPOT and
-end-to-end latency means are inside 1% on all four, but the MoE TTFT tail is not.
+summary of a run: a mean can be small because two errors cancelled. The MoE TTFT tail remains outside the target even though its TPOT and latency
+means are much closer.
 
-Queueing can amplify a small step-cost error into a larger TTFT error.
-The current Llama reference over-predicts mean TTFT by 0.9%, while
-Qwen3-32B is at -1.0% TTFT and -0.3% TPOT. These aggregate
-signs do not identify a unique kernel-level cause or establish generalization.
-The default tables are measured profiles; no end-to-end benchmark coefficient
-is fitted for these endpoint corrections.
+Queueing can amplify small step-cost differences into larger TTFT errors.
+The signs of aggregate errors do not identify a unique kernel-level cause or
+establish generalization. Target CUDA graph padding applies before DP
+synchronization; these examples use measured kernel tables without a fitted
+per-step graph-time correction.
 
 Per-percentile numbers are in the same `summary.txt` files under
 [`bench/examples/`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench/examples).
 
-:::caution[The DP+EP row is a single draw, and its tail has a wide error bar]
-The MoE configuration's TTFT tail is not reproducible **on the engine side**.
-Twelve runs of it with identical flags, weights and workload spread 16.9% on
-TTFT mean and 22.1% on TTFT P90, because which data-parallel member's batch
-pairs with which in a round depends on arrival timing vLLM does not control.
-Scoring one fixed simulator output against all twelve gives a TTFT mean
-anywhere from -10.2% to +5.0%.
-
-That spread is vLLM's, not the simulator's — the simulator is deterministic and
-returns the same clock every time. So the committed truth is chosen for
-**representativeness**, by distance to the twelve runs' own median, and not for
-agreement: the runs that agree best with the simulator are the least
-representative ones, which is exactly how a compensating error gets published.
-TPOT, end-to-end latency and the run *span* are far tighter (the span is
-deterministic to 0.05% on both sides) and are the metrics to trust here.
+:::caution[One recorded run does not establish generalization]
+The simulator is deterministic, while real DP batch pairing and queueing can
+vary between executions. A stored truth is a reproducible reference, not a
+guarantee of the same error on another run. Report all fifteen statistics
+against each fixed repeat when repeated references are available; TTFT and
+failing percentiles remain part of the accuracy assessment.
 :::
 
 ## Per-configuration results
@@ -132,23 +124,18 @@ Throughput timeline, vLLM (orange) vs. simulator (blue):
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 65.49 s | 65.70 s | **+0.3%** |
-| TTFT median | 60.13 s | 60.36 s | +0.4% |
-| TTFT P99 | 137.36 s | 137.91 s | +0.4% |
-| TPOT mean | 32.4 ms | 32.5 ms | **+0.2%** |
-| TPOT P99 | 56.0 ms | 56.6 ms | +1.1% |
-| Latency mean | 86.61 s | 86.87 s | **+0.3%** |
-| Latency P99 | 153.63 s | 154.22 s | +0.4% |
+| TTFT mean | 65.49 s | 65.81 s | **+0.5%** |
+| TTFT median | 60.13 s | 60.46 s | +0.6% |
+| TTFT P99 | 137.36 s | 138.15 s | +0.6% |
+| TPOT mean | 32.4 ms | 32.6 ms | **+0.4%** |
+| TPOT P99 | 56.0 ms | 56.7 ms | +1.2% |
+| Latency mean | 86.61 s | 87.02 s | **+0.5%** |
+| Latency P99 | 153.63 s | 154.52 s | +0.6% |
 
-The tightest configuration in the set: all fifteen metrics land between
-+0.2% and +1.1%. Two things make it the cleanest comparison available.
-The 24 GB card genuinely saturates its KV cache — the simulator preempts
-198 times here and zero times on the other three — so the scheduler is
-under real memory pressure on both sides rather than running with slack;
-and its `mem_util` is calibrated to the block count vLLM actually
-resolved, so the two are working from the same capacity. The latency
-model itself is untouched — profiled latencies go in as measured — so
-TPOT at +0.2% is a free prediction rather than a fit.
+The 24 GB configuration saturates its KV cache. Its memory utilization
+setting matches the recorded KV block count, so memory-pressure behavior
+can be compared at the same capacity. Compute latencies are supplied by
+the profile bundle rather than fitted to the end-to-end results.
 
 It is also the one truth still recorded on vLLM `v0.19.0`, because the card has
 since left the machine. Its profile bundle is the matching 0.19 one and its
@@ -162,34 +149,19 @@ the author's choice rather than measured.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 6.55 s | 6.60 s | **+0.9%** |
-| TTFT median | 8.43 s | 8.39 s | -0.5% |
-| TTFT P99 | 18.49 s | 18.64 s | +0.8% |
+| TTFT mean | 6.55 s | 6.61 s | **+1.0%** |
+| TTFT median | 8.43 s | 8.41 s | -0.2% |
+| TTFT P99 | 18.49 s | 18.65 s | +0.9% |
 | TPOT mean | 31.5 ms | 31.6 ms | **+0.1%** |
 | TPOT P99 | 36.4 ms | 37.0 ms | +1.5% |
-| Latency mean | 27.04 s | 27.11 s | **+0.3%** |
-| Latency P99 | 36.17 s | 36.19 s | +0.0% |
+| Latency mean | 27.04 s | 27.13 s | **+0.3%** |
+| Latency P99 | 36.17 s | 36.22 s | +0.2% |
 
-This bundle includes broader measured skew geometry and uses reference-aligned,
-offline weighted-median calibration. Its fifteen absolute errors improve over
-the previous bundled skew fit. This does not show that the acquisition defaults
-reproduce the same accuracy on a fresh model or GPU.
-
-The same model and parallelism on a 96 GB card. It never preempts, though its
-block pool does reach 79% of budget. On one controlled uniform-KV shape, the
-simulator charges a decode step **1.6% above production** (production 26.04 ms
-against the simulator's 26.47 at n=128, kv 1190). The
-saturated queue can amplify a step-level discrepancy. This single shape does
-not identify the entire run's residual or establish a universal correction.
-
-Two observed measurement sensitivities are token layout and profiled depth.
-`dense.csv` records only the **prefill** token layout, because the profiler
-packs a shot's tokens into one request, and the same token count spread over
-decode sequences measures 2-4% cheaper on the projections (`down_proj` at
-0.998-1.002 is the control that says this is a layout effect, not a scale
-factor). And the per-layer figures come from a 1-layer boot, which reads
-attention 1.1% high against a real 32-layer depth. Both are properties of how a
-bundle is measured rather than of the simulator, and both are still open.
+This bundle includes measured heterogeneous attention geometry and
+reference-aligned offline weighted-median skew calibration. Local graph
+padding changes forward rows without inventing requests or KV history.
+A good result on this stored workload does not establish the same accuracy
+for another model, GPU or execution contract.
 
 ### RTXPRO6000 — Qwen3-32B (TP=2 dense)
 
@@ -200,10 +172,10 @@ bundle is measured rather than of the simulator, and both are still open.
 | TTFT mean | 35.62 s | 35.28 s | **-1.0%** |
 | TTFT median | 39.47 s | 39.21 s | -0.7% |
 | TTFT P99 | 89.43 s | 88.63 s | -0.9% |
-| TPOT mean | 77.4 ms | 77.1 ms | **-0.3%** |
+| TPOT mean | 77.4 ms | 77.2 ms | **-0.2%** |
 | TPOT P99 | 94.3 ms | 93.8 ms | -0.5% |
-| Latency mean | 87.17 s | 86.68 s | **-0.6%** |
-| Latency P99 | 120.69 s | 120.36 s | -0.3% |
+| Latency mean | 87.17 s | 86.70 s | **-0.5%** |
+| Latency P99 | 120.69 s | 120.52 s | -0.1% |
 
 TP=2 exercises the decoder all-reduces, plus the previously omitted shared
 embedding all-reduce and logits all-gather. Head tensor sizes now use the
@@ -211,11 +183,10 @@ same per-sequence row count as the profile lookup, with padded vocabulary
 shards and full-vocabulary sampler inputs. These results include broader TP2
 skew measurements and the same calibration rule used for Llama.
 
-All fifteen errors remain below 1% in absolute value, but only two improve
-over the previous bundled fit; thirteen worsen. More profile rows and a shared
-estimator are not by themselves evidence of improved generalization. The communication
-parameters and profiled compute times were not fitted to these results.
-This checkpoint does not validate MoE dispatch/combine or alternative heads.
+More profile rows and a shared calibration rule are not by themselves
+evidence of improved generalization. Communication parameters and profiled
+compute times are not fitted to these results. This dense TP example does
+not validate MoE dispatch/combine or alternative heads.
 
 ### RTXPRO6000 — Qwen3-30B-A3B-Instruct-2507 (DP=2 × EP=2 MoE)
 
@@ -223,33 +194,43 @@ This checkpoint does not validate MoE dispatch/combine or alternative heads.
 
 | Metric | vLLM | Sim | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 1.11 s | 1.15 s | **+3.6%** |
-| TTFT median | 0.17 s | 0.18 s | +3.4% |
-| TTFT P99 | 9.78 s | 10.29 s | +5.2% |
-| TPOT mean | 47.2 ms | 47.5 ms | **+0.7%** |
-| TPOT P99 | 53.1 ms | 54.3 ms | +2.3% |
-| Latency mean | 32.29 s | 32.54 s | **+0.8%** |
-| Latency P99 | 43.78 s | 44.00 s | +0.5% |
+| TTFT mean | 1.11 s | 1.16 s | **+4.8%** |
+| TTFT median | 0.17 s | 0.18 s | +3.3% |
+| TTFT P99 | 9.78 s | 10.36 s | +5.9% |
+| TPOT mean | 47.2 ms | 47.6 ms | **+0.9%** |
+| TPOT P99 | 53.1 ms | 54.3 ms | +2.4% |
+| Latency mean | 32.29 s | 32.63 s | **+1.0%** |
+| Latency P99 | 43.78 s | 44.10 s | +0.7% |
 
-The disaggregated path: data-parallel across two instances, expert-parallel
-within each, with wave-synchronized collectives. TPOT and end-to-end latency
-means stay below 1%. The skew table was recompiled with the common rule;
-this migration does not change or validate MoE communication modelling.
+This is DP+EP, not prefill/decode disaggregation: two data-parallel
+members share experts and execute wave-synchronized collectives. The
+simulator first resolves each member's local graph padding and then the
+common DP mode. The head and attention request geometry remain separate
+from padded forward rows.
 
-Its TTFT tail (+5.6% at P90 and +5.2% at P99) is the widest error on the page, and it is also
-the one number here that a single vLLM run cannot pin down: see the caution
-under the headline table for the 22.1% engine-side spread across twelve
-identical runs, and why the committed truth is chosen for representativeness
-rather than for agreement. This run also has the most memory headroom of the
-four (59% of budget), so nothing about it is a capacity effect.
+The current aggregate dispatch/combine representation uses a worst-rank
+analytical approximation for unequal contributions. It does not reproduce
+native grouped multi-tensor NCCL timing exactly. This configuration remains
+an accuracy limitation; graph-shape alignment alone does not establish a
+complete MoE execution model.
 
-Three modelling details it exercises that the dense runs do not, each measured
-rather than assumed: a DP round is padded only while it fits the CUDA-graph
-capture range; the EP dispatch/combine is **ragged**, so its cost is
-`gathered - min` rather than the average rank's share; and the number of
-distinct experts a batch activates is read from a measured gate curve
-(`--gate-stats`) rather than from the uniform closed form, which runs 0.87x of
-it through the middle of the range.
+### Additional diagnostic: DeepSeek-V3.2-Exp-16L64E
+
+This stored dummy-weight checkpoint reduces depth and expert count so the
+sparse model fits one card. It is not a full-size DeepSeek deployment. Its
+simulator-side refresh uses the recorded block size of 64.
+
+| Metric | vLLM | Sim | Diff |
+| --- | --- | --- | --- |
+| TTFT mean | 29.55 s | 24.83 s | **-16.0%** |
+| TTFT median | 32.09 s | 27.18 s | -15.3% |
+| TTFT P99 | 64.81 s | 60.55 s | -6.6% |
+| TPOT mean | 55.7 ms | 57.3 ms | **+2.8%** |
+| TPOT P99 | 77.3 ms | 71.6 ms | -7.4% |
+| Latency mean | 66.80 s | 63.03 s | **-5.6%** |
+
+It remains an accuracy limitation even when its deterministic regression
+digest matches. All fifteen statistics are retained in its `summary.txt`.
 
 ## Reproducing locally
 

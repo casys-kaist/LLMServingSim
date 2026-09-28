@@ -69,6 +69,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `pp_size` | Integer | No | Pipeline parallel degree (default: 1) |
 | `ep_size` | Integer | No | Expert parallel degree (default: `tp_size` for MoE, 1 for dense) |
 | `dp_group` | String/null | No | DP group ID. Instances with the same string form one data-parallel group, wave-synchronized per iteration; for MoE they also share experts across the group |
+| `cudagraph` | Object | No | Target forward graph mode and capture grid; applies to independent instances as well as DP members. See the [graph contract](../../docs/docs/reference/cluster-config.md#cuda-graph-contract) |
 | `max_num_seqs` | Integer | No | Per-instance override for `--max-num-seqs` (`0` = unlimited) |
 | `max_num_batched_tokens` | Integer | No | Per-instance override for `--max-num-batched-tokens` (`0` = capped at the model's `max_position_embeddings`, see below) |
 | `long_prefill_token_threshold` | Integer | No | Per-instance override for `--long-prefill-token-threshold` |
@@ -86,7 +87,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 
 ### Per-instance runtime overrides
 
-The 14 runtime fields listed above (`max_num_seqs`, `max_num_batched_tokens`, etc.) support **per-instance overrides** in the cluster config. This enables heterogeneous deployments where different instances in the same cluster use different scheduler limits.
+The runtime fields listed above (`max_num_seqs`, `max_num_batched_tokens`, etc.) support **per-instance overrides** in the cluster config. This enables heterogeneous deployments where different instances in the same cluster use different scheduler limits. `cudagraph` is a config-only object, not a CLI override.
 
 **Precedence rule:**
 ```

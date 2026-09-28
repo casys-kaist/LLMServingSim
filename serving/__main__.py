@@ -18,9 +18,9 @@ from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
 from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
-                                num_mtp_layers, get_architecture,
-                                _cudagraph_capture_ceiling)
-from serving.core.hardware_defaults import apply_hardware_defaults
+                                num_mtp_layers, get_architecture)
+from serving.core.hardware_defaults import apply_hardware_defaults, load_hardware_yaml
+from serving.core.cudagraph import resolve_graph_config, resolve_dp_shapes
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
@@ -40,34 +40,27 @@ from pyinstrument import Profiler
 
 
 def _pad_batch_to_max(batch, max_len):
-    """Pad a batch up to ``max_len`` for DP-sync.
+    """Pad model-forward rows without inventing requests or KV history.
 
-    Mirrors vLLM's CUDA-graph DP padding: every DP rank's forward runs at
-    ``max(num_tokens_across_dp)``. We bump the high-level counters so
-    dense layers, lm_head, and the MoE compute path all reflect the
-    padded shape — but we deliberately leave ``decode_k_list`` /
-    prefill lists untouched so attention continues to see only the real
-    decodes. FlashAttention's varlen kernel gives padded ``seq_len=0``
-    entries zero compute in real vLLM, and extending ``decode_k_list``
-    with ``kv=1`` dummies would instead collapse ``kv_decode_mean``
-    toward 1 and push the attention lookup far outside the profiled
-    sweep.
-
-    Applied only while the round fits vLLM's CUDA-graph capture range --
-    see ``_cudagraph_capture_ceiling``. Above it vLLM pads nothing, so a
-    prefill round runs each rank at its own length and the MoE AG/RS
-    size is the plain sum of those, not ``group_size x max``.
-
-    Request-completion accounting (`scheduler.add_done`) reads
-    ``batch.requests`` and ``batch.end``, not these mutated token-list
-    fields, so it is unaffected.
+    Dense/MoE work and forward collectives use total_len. Attention lookup
+    retains real query/KV lists; logits run outside the padded forward.
+    Request-completion accounting uses requests/end/scheduled_tokens, not
+    total_len. Padding is not a new decode sequence, even under speculation.
     """
-    pad = max_len - batch.total_len
-    if pad <= 0:
-        return
-    batch.total_len = max_len
-    batch.kv_len += pad                  # each dummy contributes kv=1
-    batch.num_decode += pad              # counted for lm_head / dense shape
+    batch.total_len = max(batch.total_len, max_len)
+
+
+def _pad_dp_round(round_batches, runtime_configs):
+    """Apply local dispatch and DP sync (one member for an independent instance)."""
+    configs = [runtime_configs[i]["cudagraph"] for i in round_batches]
+    batches = [batch for batch, _ in round_batches.values()]
+    uniform = [bool(batch.q_list) and all(q == config.query_length for q in batch.q_list)
+               for batch, config in zip(batches, configs)]
+    mode, sizes = resolve_dp_shapes([b.total_len for b in batches], uniform, configs)
+    for batch, size in zip(batches, sizes):
+        _pad_batch_to_max(batch, size)
+        batch.cudagraph_mode = mode
+    return max(sizes), sum(sizes), min(sizes)
 
 
 def _pass_response(router, current, state_changed=False):
@@ -317,6 +310,36 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
             "spec_acceptance_policy": instance.get(
                 "spec_acceptance_policy", args.spec_acceptance_policy),
         })
+        cfg = runtime_configs[-1]
+        hardware = load_hardware_yaml(instance["hardware"]) or {}
+        capability = hardware.get("spec", {}).get("compute_capability")
+        options = instance.get("cudagraph")
+        if options is not None and not isinstance(options, dict):
+            raise ValueError("cudagraph must be an object")
+        # Attention offloading/sub-batch interleaving is a simulator extension,
+        # not the vLLM GPU forward whose graph keys this resolver describes.
+        if enable_attn_offloading:
+            if options is not None and options.get("mode", "NONE") != "NONE":
+                raise ValueError("CUDA graph replay is not modeled with attention offloading")
+            options = {"mode": "NONE"}
+        cfg["cudagraph"] = resolve_graph_config(
+            options, cfg["max_num_seqs"], cfg["max_num_batched_tokens"],
+            cfg["num_speculative_tokens"], instance.get("tp_size", 1), capability)
+        graph = cfg["cudagraph"]
+        log = get_logger("CUDAGraph")
+        log.info("Instance %s graph contract: mode=%s, capture_sizes=%s, "
+                 "query_length=%s, compiler_sp_multiple=%s", instance_id,
+                 graph.mode, graph.capture_sizes, graph.query_length, graph.sp_multiple)
+        if capability is None and graph.mode != "NONE" and not any(
+                key in (options or {}) for key in ("capture_sizes", "max_capture_size")):
+            log.warning("No compute capability for %s; assuming the non-SM10x "
+                        "CUDA graph cap of 512. Set cudagraph.capture_sizes or "
+                        "max_capture_size to describe a different target.", instance["hardware"])
+    graph_groups = {}
+    for instance, cfg in zip(instances, runtime_configs):
+        group = instance.get("dp_group")
+        if group is not None and graph_groups.setdefault(group, cfg["cudagraph"]) != cfg["cudagraph"]:
+            raise ValueError(f"DP group {group!r} members must share one target CUDA graph contract")
     return runtime_configs
 
 
@@ -980,8 +1003,10 @@ def main():
                 # brings it (and any undersized real peers) up to the
                 # group's max_total_len, matching vLLM's CUDA-graph DP padding.
                 logger.debug(f"Instance {instance_id} is idle but DP group {dg} has pending batches. Creating dummy batch for synchronization.")
+                dummy_query = instance_runtime_configs[instance_id]["cudagraph"].query_length
                 dummy = Batch(schedulers[instance_id].get_batch_id(), instances[instance_id]["model_name"],
-                              1, 1, [1], [], 0, 1, [], [], [1], current, 0)
+                              dummy_query, 1, [dummy_query], [], 0, 1, [], [], [1], current, 0,
+                              decode_q_len=dummy_query)
                 dummy.fired.append(sys)
                 # Register it the way scheduler._build_batch registers a real
                 # batch. Without this the instance's other NPUs get nothing:
@@ -1000,59 +1025,8 @@ def main():
                     round_batches = {i: dp_pending[dg][i].popleft() for i in dp_groups[dg]}
                     own_workload = None
                     config = get_config(instances[instance_id]["model_name"])
-                    max_total_len = max(b.total_len for b, _ in round_batches.values())
-                    # Padding is conditional, not automatic. vLLM pads a DP
-                    # round to the group max only while every rank is still
-                    # inside the CUDA-graph capture range; a prefill chunk is
-                    # not, and one such rank unpads the round for everyone
-                    # (the synced mode is the min). Padding unconditionally
-                    # charged the small rank's dense and MoE layers at the big
-                    # rank's token count and inflated both EP collectives with
-                    # it -- which lands on exactly the mixed prefill/decode
-                    # rounds, i.e. the TTFT tail.
-                    inst_cfg0 = instance_runtime_configs[dp_groups[dg][0]]
-                    dp_pad = max_total_len <= _cudagraph_capture_ceiling(
-                        inst_cfg0["max_num_seqs"],
-                        inst_cfg0["max_num_batched_tokens"],
-                        args.num_speculative_tokens,
-                    )
-                    if dp_pad:
-                        for b, _ in round_batches.values():
-                            _pad_batch_to_max(b, max_total_len)
-                    # The gathered size, which is what both EP collectives are
-                    # sized from. vLLM's ``AgRsAll2AllManager.dispatch_router_logits``
-                    # all-gathers ``[hidden_states, router_logits]`` with
-                    # ``sizes[rank] == hidden_states.shape[0]``, so every rank
-                    # contributes *all* of its own tokens and the result is the
-                    # concatenation over the group; ``combine`` reduce-scatters a
-                    # buffer of that same gathered size. The trace generator turns
-                    # this into ASTRA-Sim's two conventions by dividing by
-                    # ``ep_total`` for the AllGather's per-rank chunk and passing it
-                    # whole for the ReduceScatter's pre-scatter total -- both of
-                    # which are right only if this really is the sum.
-                    #
-                    # It used to be set to ``max_total_len``, i.e. ep_total times
-                    # too small, on the grounds that ASTRA-Sim's Ring model is "2x
-                    # over real AG/RS". It is not: ``Ring.cc`` gives AllGather
-                    # ``(N-1) x chunk``, ReduceScatter ``(N-1) x total/N`` and
-                    # AllReduce ``2(N-1) x total/N`` per rank, which is exactly
-                    # NCCL's ring algorithm for all three. What that halving really
-                    # compensated for was the MoE *compute* being 1.33x over from
-                    # the sub-top_k clamp; with the compute measured per EP slice,
-                    # the halving is a 2x under-count of the collective and shows up
-                    # as -23% TTFT on the dp+ep bench example while the TP-only one
-                    # (which never takes this path) sits at +1%.
-                    sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
-                                     else sum(b.total_len
-                                              for b, _ in round_batches.values()))
-                    # The *smallest* member's contribution, which is what sets
-                    # a ragged collective's cost -- see ``_emit_moe``. Equal to
-                    # ``max_total_len`` on a padded round, so the two agree
-                    # wherever vLLM pads and only diverge on the mixed
-                    # prefill/decode rounds that vLLM leaves ragged.
-                    min_total_len = (max_total_len if dp_pad
-                                     else min(b.total_len
-                                              for b, _ in round_batches.values()))
+                    max_total_len, sum_total_len, min_total_len = _pad_dp_round(
+                        round_batches, instance_runtime_configs)
 
                     # Shared workload folder for all DP members
                     first_inst_id = dp_groups[dg][0]
@@ -1140,26 +1114,8 @@ def main():
                         round_batches = {i: dp_pending[dg][i].popleft() for i in dp_groups[dg]}
                         own_workload = None
                         config = get_config(instance["model_name"])
-                        max_total_len = max(b.total_len for b, _ in round_batches.values())
-                        # See the twin block above for both of these: padding
-                        # holds only while the whole round fits vLLM's
-                        # CUDA-graph capture range, and the collective is sized
-                        # from the gathered total, which is the sum either way.
-                        inst_cfg0 = instance_runtime_configs[dp_groups[dg][0]]
-                        dp_pad = max_total_len <= _cudagraph_capture_ceiling(
-                            inst_cfg0["max_num_seqs"],
-                            inst_cfg0["max_num_batched_tokens"],
-                            args.num_speculative_tokens,
-                        )
-                        if dp_pad:
-                            for b, _ in round_batches.values():
-                                _pad_batch_to_max(b, max_total_len)
-                        sum_total_len = (max_total_len * len(dp_groups[dg]) if dp_pad
-                                         else sum(b.total_len
-                                                  for b, _ in round_batches.values()))
-                        min_total_len = (max_total_len if dp_pad
-                                         else min(b.total_len
-                                                  for b, _ in round_batches.values()))
+                        max_total_len, sum_total_len, min_total_len = _pad_dp_round(
+                            round_batches, instance_runtime_configs)
 
                         # Shared workload folder for all DP members
                         first_inst_id = dp_groups[dg][0]
@@ -1220,6 +1176,7 @@ def main():
                 else:
                     # Independent instance: generate trace immediately
                     inst_cfg = instance_runtime_configs[instance_id]
+                    _pad_dp_round({instance_id: (new_req, node_id)}, instance_runtime_configs)
                     trace_data = generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
                                    instance["local_ep"], instance["ep_total"],
                                    instance["pd_type"],

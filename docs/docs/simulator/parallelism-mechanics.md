@@ -263,28 +263,37 @@ forward joins the same collective as rank B's *j*-th. The queue matters
 at `pp_size > 1`, where a member can have up to `pp_size` batches
 outstanding at once. When a wave assembles:
 
-- **Padding is conditional.** vLLM pads a DP round to the group's
-  `max_total_len` only while every rank is still inside the CUDA-graph
-  capture range: `_synchronize_dp_ranks` sets
-  `should_dp_pad = synced_cudagraph_mode != 0`, and the synced mode is the
-  **minimum** across ranks, so one member outside the range unpads the round
-  for everyone. A prefill chunk is always outside it — the ceiling is
-  `min(max_num_seqs * (1 + num_spec) * 2, 512, max_num_batched_tokens)`,
-  i.e. 256 tokens at 128 seqs, against chunks of up to 2048.
+- **Local graph padding comes first, including without DP.** Each rank
+  selects a supported FULL or PIECEWISE graph and rounds its forward rows
+  up to that graph's capture size. Small prefill/mixed batches can use
+  PIECEWISE; prefill is not categorically outside the graph range.
+- **DP synchronizes modes after local dispatch.** The common mode is the
+  minimum across ranks. When it is non-NONE, all ranks use the largest
+  locally padded size. When it is NONE, each rank **retains its local
+  padding**, not its original unpadded count. With a grid containing 8 and
+  ending at 256, `[6, 1529]` executes as `[8, 1529]`, not `[6, 1529]` or
+  `[1529, 1529]`. A single independent six-token batch can likewise use
+  eight forward rows.
+- **Padding does not create requests.** Dense/model-forward work and its
+  collectives use padded rows; attention lookup retains real query and KV
+  geometry, and the head uses real selected rows. Zero-length graph padding
+  is not a new decode with KV=1. Graph-bound attention-kernel behavior is a
+  separate profiling concern, not a per-step timing correction here.
 - **The MoE collective is sized from the gathered total**, the sum of the
   group's per-rank token counts — `max_total_len * dp_group_size` on a padded
-  round, the plain sum on an unpadded one. Every rank contributes *all* of its
-  own tokens: `dispatch_router_logits` all-gathers with
-  `sizes[rank] == hidden_states.shape[0]`.
-- **An unpadded round is ragged**, and its cost is set by the worst-off rank
-  rather than the average one, so the emitted chunk is
+  round, the plain sum otherwise. Each member contributes its post-padding
+  forward rows. This is the simulator's aggregate dispatch/combine model,
+  not an exact representation of vLLM's grouped, multi-tensor NCCL path.
+- **Unequal per-rank sizes use a worst-rank analytical approximation**
+  rather than an average-rank chunk. The emitted chunk is
   `(gathered - min) / (ep_total - 1)`. On a padded round that is exactly
-  `gathered / ep_total`, so decode rounds are unaffected.
+  `gathered / ep_total`. Equal sizes can also occur without DP padding.
 - All members of one round generate their traces with the same `comm_size`,
   which is what makes the collectives match across the group's `.et` files.
 
 If one DP member has no pending requests, the scheduler synthesizes a
-**dummy batch** (1 decode token) so the wave still runs. When
+**dummy batch** (one decode query: one token, or `1 + num_speculative_tokens`
+under speculation) so the wave still runs. When
 all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
@@ -390,10 +399,11 @@ A rough decision tree (the *configuration* angle is on
 2. **Dummy batches are real ASTRA-Sim work.** A DP group with one
    idle instance still pays the collective's cost on the dummy batch.
    This is what production looks like, wave-sync is wave-sync.
-3. **`comm_size` is synchronized to the max.** Even if one DP
-   member's batch is much smaller, the message size matches
-   the largest member's. This is *correct* (matches production
-   padding) but worth knowing.
+3. **Local graph padding precedes DP synchronization.** Even a NONE
+   common mode retains each rank's earlier local padding. The collective
+   uses the sum of the resulting forward rows, not an unconditional group
+   maximum. Target graph settings are [per-instance configuration](/docs/reference/cluster-config#cuda-graph-contract), independent of
+   the profiler's eager settings.
 4. **PP models inter-stage forwarding via send/recv, not via
    micro-batch splitting inside an iteration.** Activation shipment
    between stages goes through ASTRA-Sim send/recv (so link bandwidth

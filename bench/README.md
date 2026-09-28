@@ -52,6 +52,11 @@ Ordinary compute compilation and CUDA graphs remain enabled by default.
 Historical artifacts retain their original
 settings; inspect their metadata before comparing them.
 
+Simulator examples include local CUDA graph padding before DP synchronization.
+Use per-instance `cudagraph` settings to describe the effective target worker
+mode and capture grid; the profiler's eager configuration is not that target.
+A simulator-side refresh preserves the recorded vLLM truth.
+
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
 ./bench/bench.sh

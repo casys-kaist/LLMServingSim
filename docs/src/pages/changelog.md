@@ -30,6 +30,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Resolve local CUDA graph capture shapes before DP synchronization, including
+  independent TP1/TPN instances. Preserve local padding when the common mode
+  is NONE; keep actual attention queries, KV history and head rows separate
+  from padded forward rows. Add per-instance target graph contracts with
+  scheduler-derived grids, speculative query rounding and compiler-SP support,
+  including full speculative queries on idle DP ranks, without a per-step
+  timing correction or changes to profiling tables.
 - Fit hardware link parameters against the analytical backend's per-collective
   Ring phase counts at the measured rank count, binary GiB/s network units,
   and separate local-memory reduction and endpoint costs. Record assumptions

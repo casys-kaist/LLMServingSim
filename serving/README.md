@@ -17,6 +17,7 @@ serving/                        Python package
 │   ├── router.py               request routing across instances
 │   ├── gate_function.py        MoE expert token routing (incl. group-limited)
 │   ├── spec_decode.py          speculative-decoding acceptance model
+│   ├── cudagraph.py            target graph capture grid and local/DP forward shapes
 │   ├── config_builder.py       cluster config -> ASTRA-Sim input files
 │   ├── power_model.py          power / energy estimation
 │   ├── pim_model.py            PIM device model
@@ -55,6 +56,13 @@ from one list is visible against the other.
 
 Boolean flags use `argparse.BooleanOptionalAction`, so each has a
 `--no-` form (`--no-enable-prefix-caching`).
+
+The per-instance `cudagraph` object describes target execution, independently
+of the profiler's eager engine. Local graph padding applies with or without DP;
+DP then synchronizes the selected modes and forward sizes. Real attention
+queries, KV history and head rows are not expanded into dummy requests.
+See the [graph contract](https://llmservingsim.ai/docs/reference/cluster-config#cuda-graph-contract)
+for overrides and scope; it adds no fitted per-step timing adjustment.
 
 **There is no dtype flag, and no `dtype` cluster-config field.** A modern
 checkpoint carries five cache dtypes decided in four different places —

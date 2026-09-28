@@ -2104,27 +2104,29 @@ through two mechanisms:
    shared workload folder. The EP collectives in both files have matching stream
    IDs, causing ASTRA-Sim to block until both NPUs reach the collective.
 
-**A DP round is padded only while it fits the CUDA-graph capture range.**
-`dp_utils._synchronize_dp_ranks` sets `should_dp_pad = synced_cudagraph_mode
-!= 0`, and the synced mode is the **minimum** across ranks, so one member
-outside the range unpads the round for everyone. A prefill chunk is always
-outside it: `_cudagraph_capture_ceiling` mirrors vLLM's own derivation,
-`min(max_num_seqs * (1 + num_speculative_tokens) * 2, 512,
-max_num_batched_tokens)`, which is 256 tokens at 128 seqs against chunks of up
-to 2048. (512 rather than 1024 because the 1024 branch is SM100 -- B100/B200;
-RTX PRO 6000 is SM120. The `max_num_seqs` term usually binds anyway.)
+**Local graph padding precedes DP synchronization; it also applies at DP=1.**
+`serving/core/cudagraph.py` resolves the target MRV1 capture grid and local
+FULL/PIECEWISE/NONE mode. Both DP completion paths and the independent-instance
+path share that resolver. Small prefills can use PIECEWISE graphs. The common
+DP mode is the minimum of the local modes: non-NONE broadcasts the largest
+locally padded size; NONE retains each local padded count. With an 8-token
+capture point and maximum 256, `[6, 1529]` therefore becomes `[8, 1529]`.
+Do not replace this with a threshold-only `max <= cap` rule.
 
-So a padded round runs every member at `max_total_len` and gathers
-`max_total_len * dp_group_size`; an unpadded one runs each member at its own
-length and gathers the plain sum. Padding unconditionally charged the small
-rank's dense and MoE layers at the big rank's token count and inflated both
-collectives with it, on exactly the mixed prefill/decode rounds -- which showed
-as a TTFT tail (median -6.2%, P90 +33.3%) rather than a uniform shift. Both
-completion paths need the rule: fixing only the one that opens a round left the
-example at +16.6% where fixing both gives -18.5%, so the other path carries
-most of the rounds.
+The per-instance `cudagraph` object describes deployment behavior independently
+of the profiler's eager settings. Defaults derive the grid from scheduler
+limits, speculative query length and hardware compute capability; explicit
+mode/grid/cap and compiler-SP overrides describe other targets. Use the effective
+mode after attention-backend resolution. LoRA keys, cascade/encoder restrictions,
+DBO, MRV2 and drafter graph dispatch are not inferred. Attention offloading is
+outside this GPU graph contract and uses NONE.
 
-When one DP instance is idle (no requests), a dummy batch (1 decode token) is created
+Padding changes model-forward rows, not requests, query/KV lists, decode counts
+or head rows. Keep those domains separate in trace lookup and completion
+accounting. This is a shape rule, never a benchmark-fitted graph-time correction.
+
+When one DP instance is idle (no requests), a dummy batch (one decode query,
+`1 + num_speculative_tokens` tokens, matching `GPUWorker.execute_dummy_batch`) is created
 so it can participate in the sync. When one instance finishes all requests, it
 continues generating dummy batches until all DP group members are done.
 
@@ -2311,40 +2313,12 @@ the DP+EP example, computing TTFT against `queued_ts` reads a **+22 to +30%**
 median error where the correct anchor reads **+3.5%** -- and TPOT and span are
 unaffected either way, since neither uses an arrival timestamp.
 
-Two more rules for the same reason:
-
-- **`span` is the one metric to trust when a DP example's tail looks wrong.**
-  It is `max(last_token_ts) - min(queued_ts)` on the truth side and the same
-  span of the simulator's own CSV, deterministic to 0.05% on the simulator and
-  0.05% on the engine, against a TTFT p90 whose engine-side spread is 22%
-  across twelve identical runs.
-- **A DP example's committed accuracy is a single draw, and the tail's error
-  bar is wide.** Twelve identical-flag runs of the dp+ep example -- same
-  weights, same workload, same flags -- spread on the truth side alone:
-
-  | | min | max | spread | sd/mean |
-  |---|---|---|---|---|
-  | TTFT mean | 1086.5 | 1270.7 | 16.9% | 5.8% |
-  | TTFT p50 | 163.1 | 185.2 | 13.5% | 3.8% |
-  | **TTFT p90** | **5332.6** | **6511.8** | **22.1%** | **7.4%** |
-  | TTFT p99 | 9781.8 | 10476.6 | 7.1% | 2.5% |
-
-  The cause is which member's batch pairs with which in a DP round, which
-  depends on arrival timing the engine does not control. That spread is the
-  **engine's**, not the simulator's -- the simulator is deterministic and
-  returns the same clock every time -- so no single run is "the" truth and a
-  one-run comparison cannot resolve anything below it. TPOT and latency are
-  far tighter, and the run *span* is deterministic to 0.05%.
-- **Compare against a *representative* truth run, and pick it by
-  representativeness rather than agreement.** `bench/results/` holds twelve
-  identical-flag DP+EP runs; ranking them by summed relative distance to their
-  own median puts `q30_real_rep7` first at 0.010 and the committed
-  `q30_028_real` **ninth at 0.254**, 25x further out. Against the medoid the
-  same simulator reads TTFT mean -1.8% and p90 -3.7%; against the committed
-  run, -11.7% and -8.4%. The runs that agree *best* with the simulator rank
-  11th, 10th, 9th and 12th, so choosing by agreement selects the least
-  representative run -- which is exactly how a compensating error gets written
-  into a published figure.
+Report all fifteen TTFT, TPOT and latency statistics, including every fixed
+repeat when repeated references are available. The simulator's deterministic
+regression digests establish reproducibility, not benchmark accuracy. Engine
+timing variation does not justify omitting a failing TTFT percentile or
+replacing it with run span. Preserve recorded vLLM references when refreshing
+simulator-side examples, and explain intentional changes in either direction.
 
 ## Testing & Validation
 

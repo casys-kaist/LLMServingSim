@@ -45,6 +45,8 @@ Hardware characterization, including backend-aligned Ring calibration and its li
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
+Model-forward shapes include local CUDA graph padding and subsequent DP synchronization;
+see [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

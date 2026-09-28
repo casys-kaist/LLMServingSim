@@ -59,7 +59,7 @@ A clean run ends with:
 
 ```
 Behaviour: 70/70 scenarios match their baselines.
-Accuracy: all 8 sim.csv + summary.txt files are byte-identical.
+Accuracy: all 10 sim.csv + summary.txt files are byte-identical.
 ```
 
 That is the bar for a change that claims to be behaviour-preserving. A
@@ -157,27 +157,23 @@ simulator's output for the same dataset:
 
 Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 
-- `summary.txt`: aggregate error on TTFT / TPOT / throughput.
+- `summary.txt`: mean, median, P90, P95 and P99 errors for TTFT, TPOT and latency.
 - Three PNGs: `latency.png` (per-request latency CDF), `throughput.png`
   (throughput timeline), `requests.png` (running / waiting curves).
 
-The committed reference baselines land **every one of their 15 metrics
-inside 5%**: TPOT and end-to-end latency means inside 2%, and the worst
-single metric anywhere is +4.5% — see
-**[Validation](/docs/validation)** for the per-configuration table.
-**A regression beyond ~5% against those baselines is a blocker.**
-Smaller movements need an explanation in the PR description (e.g.,
-"this fixes an under-counting bug; the new error is closer to ground
-truth than the old").
+Compare all fifteen statistics against
+`bench/examples/<hardware>/<model>/validation/summary.txt`; do not use only a
+mean or the figure in the abstract. The bundled examples do **not** all meet a
+5% absolute-error target. See **[Validation](/docs/validation)** for the
+current per-configuration results and remaining limitations.
 
-Compare against the numbers in
-`bench/examples/<hardware>/<model>/validation/summary.txt`, not against the ~5%
-figure in the abstract. All four configurations currently clear 5% on every
-metric, so a metric crossing it is a real regression rather than the status
-quo. One caveat on the MoE configuration: its TTFT tail has a **22.1%
-engine-side spread** across twelve identical vLLM runs, so judge that one on
-TPOT, end-to-end latency and the run span, which are deterministic to 0.05% on
-both sides.
+A matching regression digest establishes reproducibility, not agreement with
+vLLM. Explain every intentional movement, including regressions; correcting
+execution geometry can expose an independent timing error. Update the
+simulator-side examples and their public summaries together, preserving the
+recorded vLLM references. When fixed repeated references are available, report
+all fifteen statistics against each one. Engine-side variation is not a reason
+to omit TTFT or a failing percentile.
 
 For deeper detail on the validation methodology, see
 [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).
