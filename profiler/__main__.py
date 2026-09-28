@@ -620,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_hardware.add_argument(
         "--npus", type=int, default=2, dest="hw_npus",
-        help="How many GPUs to all-reduce across (default 2). Recorded, "
+        help="How many GPUs to benchmark collectives across (default 2). Recorded, "
              "because a config asking for more is extrapolating: eight cards "
              "over NVLink are not two over PCIe.",
     )

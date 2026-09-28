@@ -41,7 +41,7 @@ For dynamic heterogeneous profiling and reusable CPU-built attention corrections
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
 Skew-only refreshes can target a TP degree independently and automatically
 supplement undersampled lookup cells from the attention references.
-Hardware characterization is covered in the
+Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).

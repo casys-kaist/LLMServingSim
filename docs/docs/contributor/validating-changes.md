@@ -212,19 +212,18 @@ It feeds the simulator, so a change there can move every clock in
 the mean residual and the worst one, plus a per-collective breakdown; the
 residual per size is kept in the file. Two things to check:
 
-- **Every collective's mean residual should be single-digit percent.** One
-  `(bandwidth, latency)` pair has to serve AllReduce, AllGather and
-  ReduceScatter, which is defensible because at N=2 they very nearly share one
-  curve on the charged-traffic axis (AllGather/AllReduce 0.94-1.16,
-  ReduceScatter/AllReduce 1.00-1.14). If one collective's residual is far worse
-  than the others, that assumption has stopped holding on this interconnect.
-- **The samples must be the graphed ones.** Each is timed both inside a CUDA
-  graph -- how production issues it -- and with a sync around every call, and
-  the two differ by 1.4-2.2x at the small end. Fitting the isolated numbers put
-  `link_latency` at 16,100 ns where the graphed measurement says 6,600, and
-  that pair then over-charged an EP dispatch at a decode round by 1.46x. The
-  file records `fit.timing`; if it says anything but `graphed`, graph capture
-  failed for some sizes and the fit is against the wrong target.
+- **Check each collective against the backend, not just the fit equation.**
+  The [calibration contract](../profiler/adding-hardware#calibration-contract)
+  specifies Ring phases, GiB/s network units and local reduction costs. At
+  two ranks, AllReduce has two network phases but AllGather/ReduceScatter have
+  one. A common pair may leave substantial residuals even with the correct
+  formula; report them rather than tuning against a model benchmark. CPU
+  single-collective traces can verify the equation against the ASTRA binary.
+- **Check the timing scope.** `fit.timing` records graphed, isolated or mixed
+  inputs. For a captured execution target, verify that graph capture succeeded;
+  isolated timings include host launch/synchronisation overhead. Individual
+  primitives also do not validate grouped multi-tensor or uneven-rank MoE
+  dispatch/combine, which require their own execution-path checks.
 
 Two GPUs are needed for the second one. Without them the command writes the
 spec section, records `interconnect: null`, and exits non-zero.

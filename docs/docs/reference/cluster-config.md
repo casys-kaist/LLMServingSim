@@ -36,7 +36,7 @@ describe an interconnect you do not have.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `num_nodes` | int | ✓ |  | Number of physical nodes in the cluster |
-| `link_bw` | float or float[] | — | *inherited* | ASTRA-Sim topology link bandwidth in **GB/s**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value from `profiler/perf/<hw>/hardware.yaml` is used — see [Hardware facts are inherited](#hardware-facts-are-inherited) |
+| `link_bw` | float or float[] | — | *inherited* | ASTRA-Sim topology link bandwidth in **GiB/s** (binary). Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value from `profiler/perf/<hw>/hardware.yaml` is used — see [Hardware facts are inherited](#hardware-facts-are-inherited) |
 | `link_latency` | float or float[] | — | *inherited* | ASTRA-Sim topology link latency in **ns**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value is used |
 | `nodes` | array | ✓ |  | Length must equal `num_nodes` |
 | `cxl_mem` | object | optional | absent | CXL memory expansion (see below) |
@@ -44,6 +44,12 @@ describe an interconnect you do not have.
 Example: if `network.yml` will end up with `npus_count: [4, 2]`, you may set
 `link_bw: [900, 100]` and `link_latency: [0, 20000]` to assign different
 bandwidth/latency per topology dimension.
+
+`link_latency` is charged per network hop, not once per whole collective.
+The hardware profiler fits the [single-chunk Ring contract](../profiler/adding-hardware#calibration-contract).
+Unlike network `link_bw`, `npu_mem.mem_bw` is decimal **GB/s** and also drives
+the backend's local reduction cost. Calibration parameters depend on these
+assumptions; they are not universal physical-link constants.
 
 ## Hardware facts are inherited
 
@@ -67,11 +73,10 @@ it. Each inherited value is logged with where it came from:
 ```
 
 `measured` came from a benchmark on that machine, `spec` from a device query,
-`assumed` from nobody. The distinction earns its place: the examples carried
-`link_latency: 20000` for four months as a value fitted against an older vLLM,
-NCCL measures 16,100 ns, and the fitted number over-charged a decode-sized
-all-reduce by 10.4% — while being free to absorb whatever else was
-mis-modelled, since nothing in a run's output said it was a guess.
+`assumed` from an assumption. The log above illustrates provenance, not a
+current calibration recommendation. Check the hardware file's fit assumptions
+and residuals before adopting its effective BW/latency pair for a different
+configuration.
 
 ### Three rules
 

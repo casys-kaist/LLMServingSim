@@ -44,7 +44,7 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | Field | Type | Description |
 | --- | --- | --- |
 | `num_nodes` | Integer | Number of nodes in the cluster |
-| `link_bw` | Float or Array<Float> | ASTRA-Sim topology link bandwidth in GB/s. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited from `profiler/perf/<hw>/hardware.yaml` when omitted** — see below |
+| `link_bw` | Float or Array<Float> | ASTRA-Sim topology link bandwidth in GiB/s (binary). A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited from `profiler/perf/<hw>/hardware.yaml` when omitted** — see below |
 | `link_latency` | Float or Array<Float> | ASTRA-Sim topology link latency in ns. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited when omitted** |
 
 ### Per-node fields
@@ -199,10 +199,13 @@ provenance:
 ```
 
 `measured` / `spec` / `assumed` tells you whether a number came from a
-benchmark, a device query, or nobody. That distinction is the point: the
-examples carried `link_latency: 20000` for four months as a fitted value, and
-NCCL puts it at 16,100 ns — the fitted number over-charged a decode-sized
-all-reduce by 10.4% and was free to absorb whatever else was mis-modelled.
+benchmark, a device query, or an assumption. The log above is an example, not
+a current calibration recommendation. Network `link_bw` is binary GiB/s;
+`npu_mem.mem_bw` is decimal GB/s and also controls ASTRA's local reduction
+cost. Measured BW and latency are effective parameters under the profiler's
+[Ring calibration contract](../../docs/docs/profiler/adding-hardware.md#calibration-contract).
+Check its assumptions and residuals before using the pair with another
+topology, rank count or local-memory setting.
 
 Three rules:
 

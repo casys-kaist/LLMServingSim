@@ -759,22 +759,9 @@ tp_size, num_npus, mem_util, dp_group      what the user wants to simulate
 link_bw, link_latency, npu_mem.mem_*       what the hardware actually is
 ```
 
-The first has to stay the user's — describing hardware nobody owns is the point
-of the simulator. The second, for hardware that *is* owned and is being
-validated against, should be measured, and was not: the committed examples
-carried `link_latency: 20000`, fitted against a vLLM 0.19 truth. Measured with
-NCCL it is **6,600 ns**.
-
-Worse than the error was its mobility. A value nobody had measured was free to
-absorb whatever else was mis-modelled — lowering it to 12,000 closed Qwen3-32B's
-error from 7.8% to 1.2%, which looks like a fix and is a compensating pair.
-Only a measurement separates the two terms, and **an end-to-end agreement is
-not one**: sweeping `link_latency` against the Qwen3-32B example puts its error
-minimum at 14,000-16,100 ns and its TTFT mean at exactly 0.0% at 16,100. The
-first NCCL measurement landed at 16,100 too, which read as confirmation — but
-it was timed with a `cuda.synchronize()` around every call, so it had absorbed
-the same per-call cost the end-to-end fit was absorbing. Two different wrong
-methods agreeing is the hardest kind of error to see.
+The first stays under the user's control. For owned hardware, the second
+should be characterised independently of model benchmarks. Fitting link
+parameters against end-to-end accuracy can conceal unrelated model errors.
 
 `python -m profiler hardware --hardware <hw> --npus 2` writes
 `profiler/perf/<hw>/hardware.yaml`: one file per hardware folder, shared by
@@ -784,74 +771,46 @@ Three sections:
 
 - **`spec`** — queried from the device. GPU name, SM count, bus width, clocks,
   PCIe generation and width, driver, power limit, and `memory_bw_gbps` derived
-  from the reported clock and bus width rather than hardcoded (12,481 MHz x
-  512 bit / 8 x 2 = 1597.6 GB/s, against the 1597 the configs carried).
+  from the reported clock and bus width rather than hardcoded.
 - **`measured`** — the NCCL sweep: **all three collectives** the simulator
-  emits (AllReduce, AllGather, ReduceScatter), twelve sizes each, timed **two
-  ways** with the raw samples kept alongside the fit.
+  emits (AllReduce, AllGather, ReduceScatter), timed inside CUDA graphs and
+  separately in isolated calls, with raw samples retained alongside the fit.
 - **`defaults`** — what a cluster config inherits, each entry carrying its own
-  `source`: `measured`, `spec`, or `assumed`. A run logs every inherited value
-  with that provenance, which is the whole point: `link_latency: 20000` survived
-  four months because nothing in a run's output said whether it had been
-  measured.
+  `source`: `measured`, `spec`, or `assumed`, and units. A run logs each
+  inherited value with that provenance.
 
-**One pair serves all three collectives, and that is measured rather than
-assumed.** ASTRA-Sim charges, at N=2 on a FullyConnected 1-hop topology,
-`2(N-1) * total/N` for AllReduce, `(N-1) * chunk` for AllGather and
-`(N-1) * total/N` for ReduceScatter — all of which reduce to
-`charged/BW + 2L`, so one axis (the charged traffic) serves the three. Swept on
-that axis they very nearly share one curve: AllGather/AllReduce is 0.94-1.16
-(median 1.04) and ReduceScatter/AllReduce 1.00-1.14 (median 1.09) from 10 KB to
-21 MB. That is what makes a single pair defensible for a simulator that emits
-all three, and it is why the sweep measures all three rather than extrapolating
-from one.
+**Fit the model the backend executes.** `_ring_terms` in
+`profiler/core/hardware.py` represents one local-dimension, single-chunk Ring
+on a one-hop FullyConnected topology. With `N` ranks, AllReduce has `2(N-1)`
+network phases; AllGather and ReduceScatter have `N-1`, not the same latency
+multiplier. Raw sample bytes mean AllReduce input, AllGather local input, or
+ReduceScatter local output. Convert them to Ring message size before counting
+traffic; they equal charged traffic only at `N=2`.
 
-**Each collective is timed inside a CUDA graph, because that is how production
-issues it.** vLLM replays a captured graph for every batch in the capture
-range, so no per-call Python launch happens. The same all-reduce of 10 KB:
+Network BW uses **GiB/s**, as `NetworkFunction.cpp` multiplies it by `2^30`;
+local-memory BW uses decimal **GB/s**. `PacketBundle.cc` separately charges
+three local transfers per reduction step and `MemBus.cc` adds endpoint events.
+Include these known costs in the fit, using the integer local-memory spec
+that `config_builder.py` supplies to ASTRA; do not let them be absorbed into
+link BW. The detailed formula is in
+`docs/docs/profiler/adding-hardware.md#calibration-contract`.
 
-| timing | us |
-|---|---|
-| a `cuda.synchronize()` around every call | 36.1 |
-| back to back, one sync at the end | 25.0 |
-| **replayed from a graph** | **16.2** |
+**One pair is an approximation, not proof that NCCL shares a curve.** The
+objective remains relative squared error over the primitive sweep, solved
+as nonnegative least squares in latency and inverse BW without model-specific
+coefficients or hardware-specific search bounds. The network term is continuous
+for fitting; saved predictions use serialized parameters and the backend's
+integer truncation. Record fit version, rank count, units, assumptions, timing
+source and per-size/per-collective residuals. Invalid or unidentifiable inputs
+must fail rather than emit link defaults. A zero-latency boundary is flagged.
 
-The three converge above ~5 MB (0.95-0.99 of each other) and diverge by 2.2x at
-the floor, so which one is measured decides the **latency** parameter and
-barely touches the bandwidth one. Fitting the isolated numbers put
-`link_latency` at 16,100 ns; that pair then charged 1.24-1.51x of real NCCL at
-the sizes the simulator emits while being accurate to 0.97 on a prefill chunk
-— the signature of a latency term carrying a cost the graph does not pay. The
-graphed fit lands at **15.92 GB/s / 6,600 ns** and prices every collective the
-simulator emits to within 5%:
-
-| | old pair | measured pair |
-|---|---|---|
-| EP dispatch, decode (557 KB) | 1.46 | **1.04** |
-| EP combine, decode (524 KB) | 1.39 | **0.99** |
-| TP all-reduce, Qwen3-32B decode (1.31 MB) | 1.24 | **1.05** |
-| EP dispatch, prefill chunk (8.9 MB) | 0.97 | **0.97** |
-
-Two independent runs of the sweep give 15.92 / 6,600 and 15.90 / 6,600, with
-the 36 graphed samples reproducing at a median ratio of 1.0004.
-
-**The objective is still relative error over the whole sweep.** Two
-alternatives were measured and rejected:
-
-| objective | mean \|err\| | max \|err\| |
-|---|---|---|
-| anchored on one message size | 6.3% | 24.2% |
-| ordinary least squares | 4.8% | 13.4% |
-| **relative error (this)** | **2.4%** | **7.1%** |
-
-Anchoring was worse and wrong in kind: the size it anchored on was a *model's*
-(1.31 MB is Qwen3-32B at 128 sequences, hidden 5120), and a hardware file must
-not privilege one model's shape. Plain least squares is dominated by the
-largest sample — 21 MB against 10 KB is a 2000x lever on the squared residual.
-The residual at every size is recorded rather than smoothed away, per
-collective as well as overall (AllGather 3.8%, ReduceScatter 4.8%, AllReduce
-6.0%), because a reader deciding whether to trust the number for their message
-size needs to see it.
+The primitive sweep does **not** measure grouped multi-tensor or ragged MoE
+communication. Summing their payload bytes into one primitive does not make
+their execution equivalent. Other topology, splitting, rank count or memory
+settings require validation against that contract. Existing `hardware.yaml`
+files are not automatically rewritten by a code update; old fit residuals
+cannot certify the corrected formula. Refit retained samples with their
+measurement context or re-measure before validating new defaults.
 
 **Three inheritance rules** (`serving/core/hardware_defaults.py`, applied at
 both config load sites):
@@ -882,9 +841,10 @@ and its bench example keeps `link_bw` / `link_latency` in the config — where a
 reader can see they are the author's choice rather than a measurement.
 
 **`mem_bw` is deliberately not measured.** A profiled kernel latency already
-contains the card's real memory behaviour; `mem_bw` only bites on the
+contains the card's real memory behaviour; `mem_bw` applies to the
 explicitly-modelled memory paths (`--prefix-storage` KV recall, PIM, remote
-memory). It is carried from the spec, marked `spec`, and `mem_latency` is
+memory) and ASTRA's local reduction cost. It is carried from the spec,
+marked `spec`, and `mem_latency` is
 marked `assumed` because every committed config has carried 0 and nobody has
 checked it. What will matter is **CPU** memory bandwidth, which those paths do
 read.

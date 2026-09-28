@@ -17,7 +17,8 @@ current table contract, required measurement inputs, CPU-only rebuild command
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,
 automatic reference-cell support completion, and migration of enabled bundles.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
-hardware characterization and its optional logging override.
+hardware characterization, backend-aligned Ring calibration, bandwidth units,
+recorded residuals and the distinction from grouped MoE communication.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 NCCL baseline and recorded communicator and compilation settings.
 

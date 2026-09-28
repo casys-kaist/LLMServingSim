@@ -39,13 +39,15 @@ Use `--log-level DEBUG`, `INFO`, `WARNING` or `ERROR` to override it.
 Invalid levels are rejected before probing the GPU.
 
 Writes `profiler/perf/<LABEL>/hardware.yaml`: the card's spec, queried from the
-device, and an NCCL all-reduce sweep that gives `link_bw` / `link_latency`.
+device, and NCCL AllReduce, AllGather and ReduceScatter sweeps used to fit
+shared `link_bw` / `link_latency` parameters for the analytical backend.
 Cluster configs on this hardware then inherit those instead of carrying a
 guess, and every inherited value is logged with its provenance
 (`measured` / `spec` / `assumed`).
 
-Do this first and once — it characterises the machine, not a model, and the
-same file serves every model bundle in the folder.
+Do this first — it characterises the machine, not a model, and the same file
+serves every model bundle in the folder. Re-measure after interconnect or
+communication-software changes.
 
 **It needs two of the cards.** With one, the spec section is still written,
 `interconnect` is `null` with the reason, and the command exits non-zero; a
@@ -53,13 +55,69 @@ cluster config then has to set `link_bw` and `link_latency` explicitly. That is
 the honest outcome: a link has two ends, and the simulator will not substitute
 a number nobody measured.
 
+#### Calibration contract
+
+The fit models a **single-chunk Ring in one local dimension on a one-hop
+FullyConnected topology**. It uses the actual measured rank count `N`.
+The raw `samples[].bytes` field, denoted `S` below, has these meanings:
+
+| Collective | `S` means | Ring message bytes `C` | Network phases `P` | Reduction steps `R` |
+| --- | --- | --- | --- | --- |
+| AllReduce | Full input per rank | `floor(S/N)` | `2(N-1)` | `N-1` |
+| AllGather | Local input per rank | `S` | `N-1` | `0` |
+| ReduceScatter | Local output per rank; input is `N*S` | `S` | `N-1` | `N-1` |
+
+The prediction, in nanoseconds, follows `Ring.cc`, `PacketBundle.cc`,
+`MemBus.cc` and the analytical network backend:
+
+```text
+time_ns = P * floor(L + C * 1e9 / (B * 2^30))
+        + 3 * R * floor(C / M)
+        + (P + 1) * E
+```
+
+`B` is network bandwidth in **GiB/s**; `L` is link latency in ns.
+`M` is local-memory bandwidth in decimal **GB/s**, using the integer spec
+value that `config_builder.py` supplies to ASTRA. `E` is the local endpoint
+event cost defined by the backend's `MemBus::Transmition::Fast` path.
+The local reduction and endpoint terms are accounted for separately, not
+mistaken for network transmission. At two ranks, AllReduce pays two network
+phases but AllGather and ReduceScatter pay only one.
+
+The fitter minimises relative squared error over the primitive sweep, with
+nonnegative latency and inverse bandwidth. It uses the continuous network
+term to solve the two-variable fit; saved residuals use the serialized
+parameters and the backend's integer-nanosecond truncation. No model benchmark
+or model-specific correction coefficient participates.
+
+The hardware file retains raw graphed and isolated timings, the timing source,
+fit version and assumptions, and per-size/per-collective residuals. The legacy
+key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
+unit explicit. Inherited defaults also record their units.
+
+:::caution[Calibration is not an exact NCCL model]
+
+A shared BW/latency pair need not match all three NCCL curves. Inspect the
+residuals rather than assuming a successful fit proves accuracy. Different
+rank counts, topologies, dataset splitting or local-memory overrides change
+the model contract. Grouped multi-tensor MoE dispatch, uneven rank sizes and
+their broadcast/reduce implementations are **not measured by this primitive
+sweep**; summing bytes does not reproduce their execution costs.
+
+Updating profiler code does not migrate existing `hardware.yaml` values.
+Old fit residuals do not certify the corrected backend contract. Refit retained
+raw samples with their original rank count and hardware spec, or re-measure,
+then validate before adopting new defaults.
+
+:::
+
 ### 1. Confirm vLLM support
 
-The profiler runs vLLM `0.19.0` by default
+The profiler runs vLLM `0.28.0` by default
 (`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Check
 that vLLM's release notes mention your GPU.
 
-| GPU family | vLLM 0.19.0 support |
+| GPU family | Image/backend notes |
 | --- | --- |
 | NVIDIA A100, H100, H200 | Yes |
 | NVIDIA RTX PRO 6000, RTX 6000 Ada, L40S | Yes |

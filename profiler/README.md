@@ -309,17 +309,22 @@ python -m profiler hardware --hardware RTXPRO6000 --npus 2
 
 writes `profiler/perf/RTXPRO6000/hardware.yaml` — **one file per hardware
 folder**, shared by every model bundle under it. It carries the card's spec
-(queried from the device), an NCCL all-reduce sweep, and a `defaults` block
+(queried from the device), NCCL AllReduce/AllGather/ReduceScatter sweeps, and a `defaults` block
 that cluster configs inherit `link_bw` / `link_latency` /
 `npu_mem.mem_size|mem_bw|mem_latency` from when they omit them. Each default
 records its `source` — `measured`, `spec`, or `assumed` — and a simulation logs
 it, so a run says whether its link numbers came from a benchmark or from
 nobody.
 
-That distinction is why the command exists: the committed examples carried
-`link_latency: 20000` as a fitted value for four months, NCCL puts it at
-16,100 ns, and the fitted number over-charged a decode-sized all-reduce by
-10.4% while being free to absorb whatever else was mis-modelled.
+The shared BW/latency fit uses the analytical backend's single-chunk,
+one-hop Ring costs at the measured rank count, including local reductions.
+Network bandwidth is **GiB/s**; local memory bandwidth is decimal **GB/s**.
+Per-size and per-collective residuals describe where one pair cannot match
+NCCL. This measures individual collectives, not grouped MoE dispatches, and
+does not fit coefficients against model benchmarks. See the
+[hardware guide](../docs/docs/profiler/adding-hardware.md#calibration-contract)
+for the formulas, assumptions and saved metadata. Updating the code alone
+does not rewrite existing hardware measurements or defaults.
 
 **Two GPUs are the floor** — a link has two ends. On a single-GPU machine the
 command still writes the spec section, records `interconnect: null` with the

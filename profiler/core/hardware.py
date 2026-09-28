@@ -9,11 +9,8 @@ things a cluster config carries are not that shape at all:
 
 They live in ``configs/cluster/*.json`` because the simulator's whole point is
 describing hardware you do not have, so they have to stay overridable. But for
-hardware you *do* have and are validating against, a guess is a liability: the
-committed examples carried ``link_latency: 20000`` fitted against a vLLM 0.19
-truth, and measuring it here gives 16.0 us -- the fitted value over-charged a
-decode-sized all-reduce by 10.4%, and that error was free to migrate into
-whatever else was being tuned.
+hardware you *do* have and are validating against, measure collectives rather
+than tuning link parameters against a model's end-to-end benchmark.
 
 So this writes ``profiler/perf/<hw>/hardware.yaml``: the spec the device
 reports, the interconnect we benchmarked, and a ``defaults`` block the
@@ -29,15 +26,19 @@ inherit it. That is the RTX 4090 case: the card is gone, its examples keep the
 values their configs already carry, and the file records that nothing here was
 measured rather than implying it was.
 
-**The measurement is topology-specific.** An all-reduce across two PCIe-linked
-cards is not the same physics as eight over NVLink, so ``npus`` is recorded and
-a config asking for more is extrapolating.
+**The calibration is backend-specific.** The fit uses the analytical backend's
+single-chunk Ring on a one-hop FullyConnected topology: per-operation phase
+counts, binary GiB/s network bandwidth, and its local reduction costs. One
+shared pair is an approximation to NCCL, not a guarantee that all operations
+share a curve. Raw timings and per-operation residuals remain in the file.
+``npus`` is recorded; other group sizes or topologies are extrapolation.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import statistics
 from pathlib import Path
@@ -45,18 +46,9 @@ from typing import Any
 
 from profiler.core import logger as log
 
-# Message sizes to benchmark, as **charged traffic per rank** -- the quantity
-# ASTRA-Sim's model multiplies by ``1/BW``. At N=2 all three collectives it
-# emits reduce to ``charged/BW + 2L``:
-#
-#   AllReduce      2(N-1) * total/N  ->  total
-#   AllGather        (N-1) * chunk   ->  chunk
-#   ReduceScatter    (N-1) * total/N ->  total/2
-#
-# so one axis serves all three, and measured they very nearly share one curve:
-# AllGather/AllReduce is 0.94-1.16 (median 1.04) and ReduceScatter/AllReduce
-# 1.00-1.14 (median 1.09) across this range. That is what makes a single
-# (bandwidth, latency) pair defensible for a simulator that emits all three.
+# Sample bytes mean AllReduce input, AllGather local input, or ReduceScatter
+# local output. They equal per-rank Ring traffic only at N=2. _ring_terms
+# converts this axis to message sizes and phase counts at the measured N.
 #
 # The range brackets what the simulator actually emits rather than reporting a
 # peak from a large-message benchmark: a TP all-reduce on ``o_proj`` /
@@ -87,25 +79,10 @@ _COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter")
 _GRAPH_OPS = 20
 _GRAPH_REPLAYS = 5
 
-# ASTRA-Sim's analytical model is ``t = 2L + size/BW`` for a Ring AllReduce at
-# N=2 (``BasicTopology::compute_communication_delay``, hops=1 on
-# FullyConnected). Two parameters cannot follow NCCL's real curve -- it
-# switches algorithm and channel count with message size -- so a fit has to
-# choose where to be wrong.
-#
-# The choice is **relative** error, minimised over the whole sweep. Two
-# alternatives were measured and rejected:
-#
-#   anchored on one message size   mean |err| 6.3%, max 24.2%
-#   ordinary least squares         mean |err| 4.8%, max 13.4%
-#   relative error (this)          mean |err| 4.7%, max 11.7%
-#
-# Anchoring was worse and, more importantly, wrong in kind: the size it
-# anchored on was a *model's* -- 1.31 MB is Qwen3-32B at 128 sequences and
-# hidden 5120 -- and a hardware file must not privilege one model's shape.
-# Plain least squares is dominated by the largest sample (20 MB against
-# 10 KB is a 2000x lever on the squared residual), which is why the relative
-# form is the one used.
+# The fit minimises relative squared error over the sweep, not an end-to-end
+# benchmark or a chosen model's tensor size. NCCL's algorithm/channel changes
+# need not follow a single Ring curve; retain the mismatch as residuals.
+_RING_ENDPOINT_NS = 10  # MemBus::Transmition::Fast, for the local dimension
 
 _WARMUP = 20
 _ITERS = 100
@@ -185,26 +162,12 @@ def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> Non
     Times each collective **inside a CUDA graph**, because that is how
     production issues them: vLLM replays a captured graph for every batch in
     the capture range, so no per-call Python launch happens at all. The
-    difference is not small at the sizes the simulator emits.
+    difference is important for small messages. These are individual NCCL
+    primitives, not grouped MoE dispatches or whole model steps.
 
-    Measured on two PCIe-linked RTX PRO 6000, an all-reduce of 10 KB:
-
-        a sync around every call   36.1 us
-        back to back, one sync     25.0 us
-        replayed from a graph      16.2 us
-
-    The three converge above ~5 MB (0.95-0.99 of each other) and diverge by
-    2.2x at the floor, so which one is measured decides the *latency*
-    parameter and barely touches the bandwidth one. Fitting the isolated
-    numbers put ``link_latency`` at 16,100 ns, and that pair then over-charged
-    an EP dispatch at a decode round by **1.46x** while being accurate to
-    0.97 on a prefill chunk -- the signature of a latency term carrying a
-    per-call cost the graph does not pay. The graphed numbers fit to
-    0.97-1.05 across every collective and size the simulator emits.
-
-    A sync-per-call measurement is kept alongside as ``us_isolated``: it is
-    what an eager engine pays, and the gap between the two is the launch
-    overhead the cudagraph term (``step.csv``) accounts for separately.
+    A sync-per-call measurement is kept alongside as ``us_isolated``. It
+    includes host launch/synchronisation overhead and is labelled separately;
+    a capture failure must not silently masquerade as a graphed measurement.
     """
     import time
 
@@ -218,9 +181,8 @@ def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> Non
     results = []
     for nbytes in sizes:
         n = max(1, nbytes // 2)                     # bf16 elements
-        # Each collective is shaped so ASTRA-Sim charges ``nbytes`` for it:
-        # AllReduce on a buffer of that size, AllGather contributing it per
-        # rank, ReduceScatter consuming ``world`` times it.
+        # AllReduce input, AllGather local input, ReduceScatter local output.
+        # Ring traffic is derived from this and world, not assumed equal.
         ar = torch.ones(n, dtype=torch.bfloat16, device=dev)
         ag_in = torch.ones(n, dtype=torch.bfloat16, device=dev)
         ag_out = torch.empty(n * world, dtype=torch.bfloat16, device=dev)
@@ -290,7 +252,7 @@ def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> Non
             if rank == 0:
                 results.append({
                     "collective": name,
-                    "bytes": nbytes,
+                    "bytes": n * 2,
                     "us": graphed if graphed is not None
                           else round(statistics.median(iso), 2),
                     "us_graphed": graphed,
@@ -305,50 +267,94 @@ def _worker(rank: int, world: int, sizes: tuple[int, ...], out_path: str) -> Non
     dist.destroy_process_group()
 
 
-def _fit(samples: list[dict]) -> dict[str, Any]:
-    """Fit ASTRA-Sim's two parameters by minimising *relative* error.
+def _ring_terms(collective: str, sample_bytes: int, npus: int,
+                local_mem_bw_gbps: float) -> dict[str, int]:
+    """One local-dimension, single-chunk Ring on FullyConnected (one hop).
 
-    Grid search rather than a closed form: the objective is
-    ``sum((model/measured - 1)^2)``, which is not linear in the parameters, and
-    the grid is small enough that this costs milliseconds. The bounds bracket
-    what any current interconnect could plausibly give; a fit that lands on an
-    edge says the bounds are wrong, so that is reported rather than clipped.
-
-    The residual at every size is recorded. It is not a fit that needs more
-    iterations -- it is the part of NCCL's curve the model's shape cannot
-    represent, and a reader deciding whether to trust the number for their
-    message size needs to see it.
+    Ring.cc supplies phase counts and message sizes. PacketBundle.cc charges
+    three truncated local-memory transfers per reduction. MemBus.cc adds a
+    Fast endpoint event before the first send and after every receive.
+    Network bandwidth is GiB/s; local memory bandwidth is decimal GB/s.
     """
-    lo_lat, hi_lat, step_lat = 0, 40_000, 100          # ns
-    lo_bw, hi_bw, step_bw = 1.0, 400.0, 0.01           # GB/s
+    if type(npus) is not int or npus < 2:
+        raise ValueError("Ring calibration requires an integer npus >= 2")
+    if type(sample_bytes) is not int or sample_bytes <= 0:
+        raise ValueError("Ring sample bytes must be a positive integer")
+    if not math.isfinite(local_mem_bw_gbps) or local_mem_bw_gbps <= 0:
+        raise ValueError("Ring calibration requires positive local memory GB/s")
+    if collective not in _COLLECTIVES:
+        raise ValueError(f"Unsupported Ring calibration collective: {collective}")
+    phases = (npus - 1) * (2 if collective == "all_reduce" else 1)
+    chunk = sample_bytes // npus if collective == "all_reduce" else sample_bytes
+    if not chunk:
+        raise ValueError("AllReduce sample is smaller than the Ring group")
+    reductions = 0 if collective == "all_gather" else npus - 1
+    local_ns = 3 * reductions * int(chunk / local_mem_bw_gbps)
+    return {"phases": phases, "chunk_bytes": chunk,
+            "charged_bytes": phases * chunk,
+            "fixed_ns": local_ns + (phases + 1) * _RING_ENDPOINT_NS}
 
-    usable = [s for s in samples if s.get("us")]
+
+def _fit(samples: list[dict], *, npus: int,
+         local_mem_bw_gbps: float) -> dict[str, Any]:
+    """Fit shared Ring parameters, without model/workload-specific coefficients.
+
+    Relative least squares is linear in latency and *inverse* bandwidth once
+    backend-local costs are removed. Solve the two-variable nonnegative
+    problem, including its boundary solutions, without a hardware-specific
+    bandwidth range. The continuous network term is used for fitting; reported
+    predictions use the backend's integer-nanosecond truncation and the saved
+    parameter values. This fit does not model grouped/ragged NCCL operations.
+    """
+    usable = sorted((s for s in samples if s.get("us") is not None),
+                    key=lambda s: s["bytes"])
     if not usable:
-        return {"error": "no usable samples"}
-    usable = sorted(usable, key=lambda s: s["bytes"])
+        raise ValueError("No usable interconnect samples")
+    rows = []
+    for sample in usable:
+        measured_ns = float(sample["us"]) * 1e3
+        if not math.isfinite(measured_ns) or measured_ns <= 0:
+            raise ValueError("Interconnect timings must be finite and positive")
+        terms = _ring_terms(sample.get("collective", "all_reduce"),
+                            sample["bytes"], npus, local_mem_bw_gbps)
+        rows.append((terms, terms["phases"] / measured_ns,
+                     terms["charged_bytes"] * (1e9 / (1 << 30)) / measured_ns,
+                     1 - terms["fixed_ns"] / measured_ns))
 
-    best = None
-    # Bandwidth first from the largest sample, where the term it governs
-    # dominates, then a joint refinement -- a full 2-D grid over both at this
-    # resolution would be 16M points for no gain.
-    big = usable[-1]
-    bw_seed = big["bytes"] / (big["us"] * 1e3)
-    for bw_i in range(-200, 201):
-        bw = bw_seed * (1 + bw_i * 0.001)
-        if not (lo_bw <= bw <= hi_bw):
-            continue
-        for lat in range(lo_lat, hi_lat + 1, step_lat):
-            err = sum(((2 * lat + s["bytes"] / bw) / 1e3 / s["us"] - 1) ** 2
-                      for s in usable)
-            if best is None or err < best[0]:
-                best = (err, lat, bw)
-    _, lat, bw = best
+    aa = math.fsum(a * a for _, a, _, _ in rows)
+    bb = math.fsum(b * b for _, _, b, _ in rows)
+    ab = math.fsum(a * b for _, a, b, _ in rows)
+    ay = math.fsum(a * y for _, a, _, y in rows)
+    by = math.fsum(b * y for _, _, b, y in rows)
+    determinant = aa * bb - ab * ab
+    if determinant <= 1e-12 * aa * bb:
+        raise ValueError("Sample sizes do not identify both latency and bandwidth")
+    candidates = [(0.0, max(0.0, by / bb)), (max(0.0, ay / aa), 0.0)]
+    lat = (ay * bb - by * ab) / determinant
+    inverse_bw = (by * aa - ay * ab) / determinant
+    if lat >= 0 and inverse_bw >= 0:
+        candidates.append((lat, inverse_bw))
+    lat, inverse_bw = min(candidates, key=lambda pair: math.fsum(
+        (a * pair[0] + b * pair[1] - y) ** 2 for _, a, b, y in rows))
+    if inverse_bw <= 0:
+        raise ValueError("Ring fit cannot identify a finite positive bandwidth; "
+                         "check the timings and local-memory assumptions")
+    bw = round(1 / inverse_bw, 6)
+    lat = round(lat)
+    if not math.isfinite(bw) or bw <= 0:
+        raise ValueError("Ring fit produced an invalid bandwidth")
 
-    def _err(s):
-        return round(100 * ((2 * lat + s["bytes"] / bw) / 1e3 / s["us"] - 1), 1)
-
-    resid = [{"collective": s.get("collective", "all_reduce"),
-              "bytes": s["bytes"], "err_pct": _err(s)} for s in usable]
+    resid = []
+    for sample, (terms, _, _, _) in zip(usable, rows):
+        # BasicTopology::compute_communication_delay truncates each hop.
+        predicted_ns = terms["phases"] * int(
+            lat + terms["chunk_bytes"] * 1e9 / (bw * (1 << 30))) + terms["fixed_ns"]
+        resid.append({"collective": sample.get("collective", "all_reduce"),
+                      "bytes": sample["bytes"],
+                      "charged_bytes": terms["charged_bytes"],
+                      "phases": terms["phases"],
+                      "predicted_us": predicted_ns / 1e3,
+                      "err_pct": round(100 * (predicted_ns / 1e3 / sample["us"] - 1), 3)})
     worst = max(resid, key=lambda r: abs(r["err_pct"]))
     per_coll = {}
     for r in resid:
@@ -357,29 +363,37 @@ def _fit(samples: list[dict]) -> dict[str, Any]:
               else "isolated" if not any(s.get("us_graphed") for s in usable)
               else "mixed (graph capture failed for some sizes)")
     out = {
-        "model": "astra-sim analytical: t = 2*latency + charged_bytes/bandwidth "
-                 "(Ring, N=2, FullyConnected 1 hop). charged_bytes is what the "
-                 "model multiplies by 1/BW: total for AllReduce, the per-rank "
-                 "chunk for AllGather, total/N for ReduceScatter -- all equal "
-                 "at N=2, which is why one pair can serve the three.",
-        "objective": "minimise relative error over the whole sweep",
+        "model": "astra-sim analytical Ring: phases * floor(latency_ns + "
+                 "chunk_bytes * 1e9 / (bandwidth * 2^30)) + "
+                 "3 * reductions * floor(chunk_bytes / local_mem_bw_gbps) + "
+                 "(phases + 1) * endpoint_ns",
+        "model_version": 2,
+        "assumptions": {"npus": npus, "topology": "FullyConnected",
+                        "hops": 1, "dimensions": 1,
+                        "preferred_dataset_splits": 1,
+                        "local_mem_bw_gbps": local_mem_bw_gbps,
+                        "local_mem_bw_unit": "GB/s (decimal)",
+                        "endpoint_ns": _RING_ENDPOINT_NS},
+        "objective": "nonnegative relative least squares over the whole sweep; "
+                     "continuous network term for fitting, integer ns for residuals",
         "timing": target,
-        "bandwidth_gbps": round(bw, 2),
-        "latency_ns": round(lat),
+        # Keep the legacy key for readers, but state the backend's actual unit.
+        "bandwidth_gbps": bw,
+        "bandwidth_unit": "GiB/s",
+        "latency_ns": lat,
         "residual_pct_by_size": resid,
         "worst_residual": worst,
         "mean_abs_residual_pct": round(
-            sum(abs(r["err_pct"]) for r in resid) / len(resid), 1),
+            sum(abs(r["err_pct"]) for r in resid) / len(resid), 3),
         "mean_abs_residual_pct_by_collective": {
-            k: round(sum(v) / len(v), 1) for k, v in sorted(per_coll.items())},
+            k: round(sum(v) / len(v), 3) for k, v in sorted(per_coll.items())},
     }
-    if lat in (lo_lat, hi_lat):
-        out["warning"] = (f"latency landed on a search bound ({lat} ns); the "
-                          f"bounds do not bracket this interconnect")
+    if lat == 0:
+        out["warning"] = "latency reached zero; inspect model residuals before use"
     return out
 
 
-def measure_interconnect(npus: int) -> dict[str, Any] | None:
+def measure_interconnect(npus: int, *, local_mem_bw_gbps: float) -> dict[str, Any] | None:
     """Benchmark the collectives across ``npus`` GPUs, or explain why not.
 
     Returns None with the reason logged when fewer than two GPUs are visible:
@@ -391,6 +405,8 @@ def measure_interconnect(npus: int) -> dict[str, Any] | None:
     import torch
     import torch.multiprocessing as mp
 
+    if npus < 2:
+        raise ValueError("Interconnect measurement requires --npus >= 2")
     visible = torch.cuda.device_count()
     if visible < 2:
         log.warning(
@@ -413,6 +429,8 @@ def measure_interconnect(npus: int) -> dict[str, Any] | None:
         "npus": world,
         "collectives": list(_COLLECTIVES),
         "dtype": "bfloat16",
+        "sample_bytes": "AllReduce input; AllGather per-rank input; "
+                        "ReduceScatter per-rank output (input is npus times larger)",
         "timing": "each collective replayed from a CUDA graph, which is how "
                   "production issues it; us_isolated is the same call with a "
                   "sync around it, i.e. what an eager engine pays.",
@@ -420,7 +438,7 @@ def measure_interconnect(npus: int) -> dict[str, Any] | None:
                 "is extrapolating, and an 8-GPU NVLink domain is not this "
                 "physics.",
         "samples": samples,
-        "fit": _fit(samples),
+        "fit": _fit(samples, npus=world, local_mem_bw_gbps=local_mem_bw_gbps),
     }
 
 
@@ -433,8 +451,8 @@ def _defaults(spec: dict, inter: dict | None) -> dict[str, Any]:
 
     Every entry carries its own ``source``, so a run can report whether its
     link numbers were measured or assumed instead of leaving the reader to
-    guess -- which is how ``link_latency: 20000`` survived as a fitted value
-    long enough to be 10.4% off and to shelter other errors.
+    guess. Measured link defaults are effective calibration parameters under
+    the recorded backend assumptions, not universal physical constants.
 
     Sources:
         measured  benchmarked on this machine
@@ -451,13 +469,13 @@ def _defaults(spec: dict, inter: dict | None) -> dict[str, Any]:
         frm = (f"{colls} across {inter['npus']} npus, "
                f"{inter['fit'].get('timing', 'graphed')}")
         d["link_bw"] = {"value": inter["fit"]["bandwidth_gbps"],
-                        "source": "measured", "from": frm}
+                        "source": "measured", "unit": "GiB/s", "from": frm}
         d["link_latency"] = {"value": inter["fit"]["latency_ns"],
-                             "source": "measured", "from": frm}
+                             "source": "measured", "unit": "ns", "from": frm}
     d["npu_mem"] = {
         "mem_size": {"value": round(spec["memory_total_gib"]),
                      "source": "spec", "unit": "GiB"},
-        "mem_bw": {"value": spec["memory_bw_gbps"], "source": "spec",
+        "mem_bw": {"value": spec["memory_bw_gbps"], "source": "spec", "unit": "GB/s",
                    "from": "memory_clock x bus_width, checked against the "
                            "vendor figure"},
         # Never measured, and every committed config carries 0. It only bites
@@ -519,10 +537,12 @@ def run_hardware(hardware: str, out_root: Path, npus: int = 2) -> tuple[Path, bo
              spec["memory_bw_gbps"], spec.get("pcie_gen_max", "?"),
              spec.get("pcie_width_max", "?"))
     with log.stage(f"Measuring the interconnect across {npus} GPUs"):
-        inter = measure_interconnect(npus)
+        # config_builder writes int(npu_mem.mem_bw) to ASTRA's local-mem-bw.
+        inter = measure_interconnect(
+            npus, local_mem_bw_gbps=int(spec["memory_bw_gbps"]))
     if inter:
         fit = inter["fit"]
-        log.info("collective fit (%s): link_bw=%.2f GB/s  link_latency=%d ns  "
+        log.info("collective fit (%s): link_bw=%.6f GiB/s  link_latency=%d ns  "
                  "mean |residual| %.1f%%  (worst %+.1f%% on %s at %d bytes)",
                  fit.get("timing", "?"), fit["bandwidth_gbps"],
                  fit["latency_ns"], fit["mean_abs_residual_pct"],
@@ -532,6 +552,8 @@ def run_hardware(hardware: str, out_root: Path, npus: int = 2) -> tuple[Path, bo
         for coll, err in fit.get(
                 "mean_abs_residual_pct_by_collective", {}).items():
             log.info("  %-15s mean |residual| %.1f%%", coll, err)
+        if fit.get("warning"):
+            log.warning("%s", fit["warning"])
     else:
         log.error(
             "The interconnect was NOT measured: fewer than two GPUs are "

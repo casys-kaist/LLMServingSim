@@ -27,6 +27,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Fit hardware link parameters against the analytical backend's per-collective
+  Ring phase counts at the measured rank count, binary GiB/s network units,
+  and separate local-memory reduction and endpoint costs. Record assumptions
+  and backend-consistent residuals; use nonnegative relative least squares
+  without hardware-specific bandwidth search bounds. Existing hardware files
+  and benchmark results are unchanged; grouped MoE communication is not covered
+  by this primitive-collective calibration.
 - Align skew acquisition with the fitted lookup's per-partition support floor.
   Automatically select additional batches from attention references, without
   benchmark inputs or skew-latency targets. Share the bounded plan with CPU
