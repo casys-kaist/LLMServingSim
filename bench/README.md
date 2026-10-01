@@ -176,9 +176,14 @@ The simulator's `sim.csv` exposes `arrival`, `end_time`, and a per-token
 ITL list directly; bench computes the same fields from vLLM's
 `RequestStateStats` (`vllm/v1/metrics/stats.py`).
 
+Non-speculative head rows count real requests, not CUDA graph padding; idle
+DP forwards omit logits and sampling. A scheduling-delay change need not
+change the latency summary, so inspect per-request outputs too. Regenerate
+the example's validation artifacts whenever its simulation output changes.
+
 ## Canonical examples (`bench/examples/`)
 
-Four end-to-end validation runs are committed under `bench/examples/`,
+Four headline end-to-end validation runs are committed under `bench/examples/`,
 keyed by `<hardware>/<model>`: a dense single-GPU baseline, a TP=2 dense
 run, and a DP+EP MoE run on RTXPRO6000, plus the same dense baseline on
 an RTX 4090. Each example bundles its cluster `config.json`, the vLLM
@@ -187,15 +192,16 @@ bench artifacts, the simulator output, and the resulting
 
 | Example | Parallelism | Workload (300 reqs) | TTFT mean | TPOT mean | Latency mean |
 | --- | --- | --- | --- | --- | --- |
-| `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.3% | +0.2% | +0.3% |
-| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.9% | +0.1% | +0.3% |
-| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.3% | -0.6% |
-| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | +3.6% | +0.7% | +0.8% |
+| `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.5% | +0.4% | +0.5% |
+| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +1.0% | +0.1% | +0.3% |
+| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.2% | -0.5% |
+| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | +4.8% | +0.9% | +1.0% |
 
 The dense RTXPRO6000 bundles include broader measured skew geometry and
 reference-aligned calibration. Check all fifteen statistics, not just these
-means: the common rule improves Llama but worsens most Qwen3-32B metrics,
-and the MoE TTFT P90 reaches +5.6%. See the public validation page for limits.
+means: the MoE TTFT P99 reaches +5.9%. Additional stored diagnostics include
+a reduced DeepSeek model with larger errors. See the public validation page
+for those results and the limits of these workload-specific comparisons.
 
 Diff% is `(sim - vLLM) / vLLM × 100`. All runs use `bf16` weights,
 `max_num_batched_tokens=2048` and `block_size=16`; the RTXPRO6000 runs

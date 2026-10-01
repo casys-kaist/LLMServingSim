@@ -298,6 +298,12 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   when a sequence layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
   `_emit_final_layers()` — per-section wrappers over `_emit_sequence`.
+  Non-speculative head lookup and TP logits gathering use real request rows.
+  Idle DP forwards retain backbone/final-norm work but omit logits and sampling,
+  ending with a zero-byte host store. Speculative head/drafter behavior is unchanged.
+  The matching ASTRA-Sim backend numbers collectives separately by dimension
+  scope; rebuild it when updating this contract so a skipped TP logits gather
+  does not shift the next EP operation's message tag.
 - `_emit_drafter()` / `_emit_drafter_block()` / `_drafter_spec()` /
   `_drafter_loop_bctx()` — speculative decoding's draft passes, emitted after
   the target's head because that is where vLLM runs them (from

@@ -2141,6 +2141,33 @@ Padding changes model-forward rows, not requests, query/KV lists, decode counts
 or head rows. Keep those domains separate in trace lookup and completion
 accounting. This is a shape rule, never a benchmark-fitted graph-time correction.
 
+For non-speculative execution, `_build_batch_ctx` uses the number of actual
+requests for per-sequence head lookup, tensor sizes and TP logits gathering.
+vLLM selects `hidden_states[logits_indices]` outside the padded model forward;
+an idle DP `_dummy_run` returns hidden states without logits or sampling.
+`_emit_final_layers` therefore retains the final norm but skips per-sequence
+head entries on idle ranks, including their power costs. Keep a zero-byte
+REMOTE output on the final trace row so Chakra can emit its terminal store
+without transferring nonexistent token IDs. Speculative execution retains its
+existing head/drafter row contract: changing it independently can skip
+DP-synchronized drafter collectives.
+Batch-context construction participates in the skew lookup fingerprint. Refit
+enabled bundles through `profiler refit-skew` when it changes; a head-only fix
+can refresh the reference identity without changing any numerical CSV values.
+Never silence the stale-fit guard by manually replacing a fingerprint.
+
+Idle-head omission also requires communicator-scoped collective numbering.
+When Chakra supplies `involved_dim` rather than an explicit communicator,
+ASTRA-Sim allocates stream tags from separate dimension-mask counters, with
+distinct tag residues for overlapping scopes. A TP-only logits gather must
+not advance the next EP collective's sequence. Disjoint groups may reuse a
+scope's tags because matching includes source and destination ranks. The
+allocator lives on `Sys`, so its counters persist across batch graphs; it
+fails on namespace exhaustion rather than wrapping. Explicit communicator
+handling and all timing parameters remain unchanged. Rebuild ASTRA-Sim with
+this frontend change; omitting the head against the old global counter can
+deadlock a later EP wave when DP members have different head participation.
+
 When one DP instance is idle (no requests), a dummy batch (one decode query,
 `1 + num_speculative_tokens` tokens, matching `GPUWorker.execute_dummy_batch`) is created
 so it can participate in the sync. When one instance finishes all requests, it

@@ -103,7 +103,7 @@ skew_fit:
         tp: 1
       reference:
         attention_sha256: 1b4d542b16c67ae808d3636c96d193121b46fa46d5de074655a54b23adf4da0d
-        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
         skew_sha256: 4c779c5e978e1fc8edce26519a4719728029045270eebe83563003f24f760f98
         key_saturation: 2048
         saturation_by_layer:

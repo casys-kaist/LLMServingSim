@@ -1209,11 +1209,14 @@ def _build_batch_ctx(batch, ctx):
     # and num_computed_tokens already absorbs any prefix-cache hit, so no further
     # subtraction is needed even when prefix caching is on.
     total_len = batch.total_len
-    # DP padding (see serving.__main__._pad_batch_to_max) adds dummy decodes without
-    # touching batch.requests. vLLM keeps lm_head's output shape pinned to
-    # num_tokens_after_padding for CUDA-graph replay, so each padded decode
-    # also contributes a logit. Track it via num_prefill + num_decode.
-    lm_head_len = max(len(batch.requests), batch.num_prefill + batch.num_decode)
+    # vLLM computes logits OUTSIDE the padded model forward, selecting
+    # query_start_loc[:num_reqs + 1][1:] - 1. Graph-padding tokens are not
+    # additional requests. An idle DP _dummy_run returns hidden states without
+    # executing compute_logits or the sampler. The deferred speculative path
+    # also uses this field for DP-synchronized drafter forwards; changing its
+    # dummy-row contract without auditing those forwards can skip EP calls.
+    lm_head_len = (max(len(batch.requests), batch.num_prefill + batch.num_decode)
+                   if ctx.num_speculative_tokens > 0 else len(batch.requests))
 
     # 4D attention keys: the profiler sweeps (prefill_chunk, prefill_key,
     # n_decode, kv_decode). The kv_decode axis carries a single value per
@@ -2088,9 +2091,20 @@ def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
     converter places a MEM_STORE node back to CPU.
     """
     head_layers = _shared_layers(ctx.perf_db, "head")
+    idle = bctx.lm_head_len == 0
+    if idle:
+        # The dummy forward still runs its final norm, but no logits/sampling.
+        head_layers = [name for name in head_layers
+                       if _layer_category(ctx.perf_db, name) != "per_sequence"]
     for i, layer_name in enumerate(head_layers):
         output_loc = f'REMOTE:{ctx.node_id}' if i == len(head_layers) - 1 else 'LOCAL'
         _emit_layer(ctx, bctx, layer_name, rows, None, batch_tag, output_loc=output_loc)
+    if idle and rows:
+        # Retain a normal final trace row for the converter, with no token IDs
+        # sent back to the host. Its compute and TP dependencies are unchanged.
+        last = list(rows[-1])
+        last[6:8] = [f'REMOTE:{ctx.node_id}', '0']
+        rows[-1] = tuple(last)
 
     if ctx.power_model is not None:
         for layer_name in head_layers:

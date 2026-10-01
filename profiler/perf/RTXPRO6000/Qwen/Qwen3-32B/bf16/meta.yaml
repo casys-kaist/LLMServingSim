@@ -119,7 +119,7 @@ skew_fit:
         tp: 1
       reference:
         attention_sha256: 30887f500366f14acdb572425fd5365fc4fb11b32c10ea4727f40aa3e8ecea71
-        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
         skew_sha256: a9a00058e9f398aeda2ab21c3c3c71d38889439086ae668b0b567cb13240655f
         key_saturation: null
         saturation_by_layer:
@@ -174,7 +174,7 @@ skew_fit:
         tp: 2
       reference:
         attention_sha256: 8aa35343a39655d210811f1162ec0c5bac4f7d0c8025d52f079dd39ebbecca7f
-        lookup_sha256: 88b6a088ae2d3429f3976cafaed5f07b4e9fdc9fe4a225a1bb5f3fbb7bb8e111
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
         skew_sha256: ad455c2d1fcd7a3e8410d68a6f9ee65bfb4335b4b0b5b062530f2d7bb4e358e5
         key_saturation: null
         saturation_by_layer:

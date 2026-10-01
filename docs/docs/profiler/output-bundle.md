@@ -269,6 +269,12 @@ and `bucket_table_sha256`. Kernel/query keys have the form `attention|q=1`.
 `reference` records attention and raw-skew checksums, the lookup fingerprint
 and key-saturation semantics. The fitted CSV contains the cells, not raw shots.
 
+The lookup fingerprint covers batch-context construction as well as attention
+lookup. A head-row change can therefore invalidate a fit without changing its
+attention reference values. Run the CPU-only `profiler refit-skew` command to
+refresh the bundle, rather than replacing fingerprints manually. A successful
+refit can leave all numerical CSV values unchanged.
+
 Legacy files have `layer, n_label, pc_label, lev_label, alpha, n_samples`
 and no schema field. They are no longer accepted when skew is enabled:
 run `profiler refit-skew` first. Disabled bundles do not read these tables.

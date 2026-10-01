@@ -45,7 +45,9 @@ Hardware characterization, including backend-aligned Ring calibration and its li
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
-Model-forward shapes include local CUDA graph padding and subsequent DP synchronization;
+Model-forward shapes include local CUDA graph padding and subsequent DP synchronization.
+Non-speculative logits and sampling use real requests, not padded forward rows.
+Independent TP/EP collective numbering lets idle DP members omit the head;
 see [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
 DP members select their own global expert ranks for MoE latency lookup, and
 round-robin routing advances across gathered token positions; see

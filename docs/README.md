@@ -24,6 +24,9 @@ NCCL baseline and recorded communicator and compilation settings.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
 local CUDA graph padding from DP synchronization; target graph overrides live
 in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
+It also separates non-speculative head rows from forward padding and explains
+why idle DP forwards run the backbone without logits or sampling, with
+independent TP/EP collective numbering in the backend.
 The [expert routing guide](docs/simulator/moe-expert-routing.md) distinguishes
 global EP-rank lookup from instance-local trace markers, and documents
 round-robin top-k assignment over gathered token positions.

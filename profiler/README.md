@@ -575,6 +575,10 @@ python -m profiler plan-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp 
 python -m profiler refit-skew meta-llama/Llama-3.1-8B --hardware RTXPRO6000 --tp 1
 ```
 
+The lookup fingerprint includes batch-context construction. A change there
+can require a CPU refit even when attention references and fitted CSV values
+remain unchanged; do not bypass the stale-fit check by editing hashes.
+
 `--skip-skew` skips acquisition, not existing calibration. `--only-skew`
 requires an existing attention table. Existing raw rows are retained unless
 `--force` is explicit. `plan-skew` includes support additions and unresolved

@@ -30,6 +30,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Size non-speculative logits, sampling and TP logits gathering by actual
+  requests rather than padded forward rows. Idle DP forwards retain their
+  backbone and final norm but omit the per-sequence head, with a zero-byte
+  terminal host store for the graph converter. Preserve speculative
+  head/drafter behavior; do not change profiling tables or network parameters.
+  Number dimension-scoped ASTRA-Sim collectives independently so skipping an
+  idle member's TP logits gather cannot misalign a later EP operation; rebuild
+  the backend with the frontend update.
+  Rebuild enabled calibration reference identities through the CPU fitter;
+  attention, raw skew and fitted numerical tables remain unchanged.
 - Advance the token ordinal during EP round-robin routing instead of selecting
   the first token's experts repeatedly. Preserve top-k and group restrictions,
   source counts and seeded RAND draws; keep BALANCED and CUSTOM unchanged.

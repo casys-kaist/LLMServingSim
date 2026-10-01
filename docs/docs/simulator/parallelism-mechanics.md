@@ -298,6 +298,36 @@ all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
 
+#### Head rows are not graph-padding rows
+
+Without speculative decoding, logits and sampling operate on one selected
+hidden-state row per actual request, even when the backbone runs a larger
+CUDA graph. Their latency lookup, tensor sizes and TP logits gather therefore
+use the real request count, not the padded forward count.
+
+An idle DP member still runs the backbone and its final norm to participate
+in the coordinated wave, but does not compute logits or sample tokens. The
+trace omits those per-sequence head operations and their energy costs. A
+zero-byte terminal host store preserves the graph converter's output contract;
+it does not represent CPU execution or fabricated sampled tokens.
+
+This distinction does not change the existing speculative head/drafter
+contract, profiling tables, attention lookup or network parameters. Idle
+speculative drafter participation requires a separate collective-order audit.
+
+Skipping a TP logits gather must not shift later EP messages. For collectives
+described by `involved_dim`, the backend maintains an independent sequence
+counter for each dimension scope and uses distinct tags for overlapping
+scopes. Source and destination ranks distinguish disjoint groups. Counters
+persist across batch graphs; exhausting the tag namespace fails explicitly
+instead of wrapping onto an outstanding message. Explicit communicator
+handling is unchanged.
+
+Update and rebuild the ASTRA-Sim submodule together with this frontend
+contract. A backend with one global collective counter can wait forever on
+an EP operation after one DP member skipped a TP-only head operation. This
+fix changes message matching, not bandwidth, latency or compute time.
+
 A wave's graphs cannot be emitted at schedule time — the padded
 `max_total_len` is not known until the barrier assembles — so each
 member's graph is handed to the NPU that opened its round on that NPU's
