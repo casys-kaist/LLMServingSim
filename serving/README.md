@@ -72,6 +72,9 @@ the legacy EP table, while corrupt or out-of-support installed data is rejected.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
 Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
+The bundled Qwen3-30B DP2/EP2 example consumes native tables automatically.
+Historical multi-GPU example configs can pin their original links instead of
+inheriting the hardware folder's refreshed transport calibration.
 
 The per-instance `cudagraph` object describes target execution, independently
 of the profiler's eager engine. Local graph padding applies with or without DP;

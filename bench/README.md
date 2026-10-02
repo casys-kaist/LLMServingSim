@@ -57,6 +57,12 @@ Use per-instance `cudagraph` settings to describe the effective target worker
 mode and capture grid; the profiler's eager configuration is not that target.
 A simulator-side refresh preserves the recorded vLLM truth.
 
+The RTXPRO6000 Qwen3-30B DP2/EP2 example includes native component measurements
+and an NCCL-only reference under the refreshed host interconnect. The older
+Qwen3-32B example pins its original common link and disables operation-map
+inheritance, preserving its recorded communication environment. Do not compare
+historical references against a different host calibration without stating the change.
+
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
 ./bench/bench.sh

@@ -10,6 +10,13 @@ operate on local rows, experts operate on gathered rows, and finalization return
 to local rows. Native component profiling measures these GPU regions separately
 while leaving communication to the network model.
 
+The shipped RTXPRO6000 BF16 Qwen3-30B bundle includes a TP1/DP2/EP2 component
+index. Its contracts define the actual bounds and backend; the same model name
+at another TP or DP degree does not imply coverage. Published bundles contain
+the runtime files, not the original per-forward acquisition streams. Keep the
+original acquisition directory to resume it, or choose a separate `--out-root`
+for a new measurement.
+
 The adapter follows vLLM 0.28 internal APIs. A vLLM upgrade or a different
 expert backend requires auditing that execution contract, not merely reusing
 the same CSV column names.

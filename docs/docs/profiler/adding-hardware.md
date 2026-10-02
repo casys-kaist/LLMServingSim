@@ -96,6 +96,18 @@ fit version and assumptions, and per-size/per-collective residuals. The legacy
 key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
 unit explicit. Inherited defaults also record their units.
 
+A retained-data bandwidth refresh can instead hold an independently calibrated
+latency fixed. The bundled post-configuration-change RTXPRO6000 calibration uses
+that contract: the existing 6,600 ns common latency is retained, and common and
+per-operation bandwidths are recomputed from NCCL primitives. Its file records
+`fixed_latency_ns`, the source of that constraint, repetitions and residuals.
+This is not the same optimization as a fresh `profiler hardware` run, which
+estimates both common parameters. Do not silently relabel one as the other.
+
+Historical examples can pin their original transport values with explicit
+`link_bw`, `link_latency` and `collective_links: {}`. Their compute profiles and
+benchmark truths then remain comparable when shared hardware defaults change.
+
 The same primitive samples also feed `collective_fits`: one bandwidth fit
 per operation, with latency fixed to the saved shared fit. This solves the
 remaining one-variable problem in inverse bandwidth using the same relative

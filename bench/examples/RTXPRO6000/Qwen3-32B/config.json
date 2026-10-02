@@ -21,5 +21,8 @@
                 }
             ]
         }
-    ]
+    ],
+    "link_bw": 15.92,
+    "link_latency": 6600,
+    "collective_links": {}
 }

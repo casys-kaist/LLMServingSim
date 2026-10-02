@@ -96,6 +96,9 @@ exceed `--measurement-iterations` to cover matched weight cycles. These CLI-only
 options have no `profile.sh` variable. See the
 [native MoE guide](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported backends, CUDA attribution, quality checks and runtime fallback.
+The shipped RTXPRO6000 Qwen3-30B component index covers TP1/DP2/EP2. Its
+contract states measured bounds; other deployments still require their own data.
+Only the runtime subset is bundled, so use a separate output root for acquisition.
 
 The five that decide how long a run takes, in rough order of effect:
 

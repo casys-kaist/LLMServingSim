@@ -1,0 +1,5550 @@
+{
+  "schema": "moe-components-v1",
+  "contract_id": "1bab816900f45218fbe1a37b885878164202f9e55f26772cc7390736e0b9b535",
+  "complete": true,
+  "completed_rounds": 1542,
+  "expected_rounds": 1542,
+  "points": 514,
+  "conditioning_controls": [
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1,
+        "activated_experts": 4,
+        "local_assignments": 4
+      },
+      "selected_us": 41.12,
+      "control_us": 41.1495,
+      "relative_change": 0.0007168981397102092,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 14.047,
+      "control_us": 14.049999999999999,
+      "relative_change": 0.00021352313167244397,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2,
+        "activated_experts": 4,
+        "local_assignments": 8
+      },
+      "selected_us": 41.214,
+      "control_us": 41.088,
+      "relative_change": 0.003066588785046731,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2,
+        "activated_experts": 6,
+        "local_assignments": 8
+      },
+      "selected_us": 55.105000000000004,
+      "control_us": 55.071999999999996,
+      "relative_change": 0.0005992155723417714,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2,
+        "activated_experts": 8,
+        "local_assignments": 8
+      },
+      "selected_us": 71.488,
+      "control_us": 71.44,
+      "relative_change": 0.0006718924972004547,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 15.234,
+      "control_us": 15.264000000000001,
+      "relative_change": 0.0019654088050314877,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 4,
+        "local_assignments": 12
+      },
+      "selected_us": 41.214999999999996,
+      "control_us": 41.184,
+      "relative_change": 0.00075271950271949,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 6,
+        "local_assignments": 12
+      },
+      "selected_us": 55.36,
+      "control_us": 55.32599999999999,
+      "relative_change": 0.0006145392762897384,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 8,
+        "local_assignments": 12
+      },
+      "selected_us": 71.536,
+      "control_us": 71.56800000000001,
+      "relative_change": 0.0004471272076906896,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 11,
+        "local_assignments": 12
+      },
+      "selected_us": 86.15950000000001,
+      "control_us": 86.28800000000001,
+      "relative_change": 0.0014891989616169221,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 12,
+        "local_assignments": 12
+      },
+      "selected_us": 92.48,
+      "control_us": 92.544,
+      "relative_change": 0.0006915629322267192,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 3,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 16.926000000000002,
+      "control_us": 16.992,
+      "relative_change": 0.003884180790960423,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 4,
+        "local_assignments": 16
+      },
+      "selected_us": 41.712999999999994,
+      "control_us": 41.632,
+      "relative_change": 0.0019456187548039239,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 6,
+        "local_assignments": 16
+      },
+      "selected_us": 55.263999999999996,
+      "control_us": 55.2,
+      "relative_change": 0.001159420289855051,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 8,
+        "local_assignments": 16
+      },
+      "selected_us": 71.503,
+      "control_us": 71.63199999999999,
+      "relative_change": 0.0018008711190528048,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 11,
+        "local_assignments": 16
+      },
+      "selected_us": 85.9695,
+      "control_us": 86.0165,
+      "relative_change": 0.0005464067940452733,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 16,
+        "local_assignments": 16
+      },
+      "selected_us": 120.2245,
+      "control_us": 120.33600000000001,
+      "relative_change": 0.000926572264326575,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 18.337000000000003,
+      "control_us": 18.240000000000002,
+      "relative_change": 0.005317982456140458,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 4,
+        "local_assignments": 24
+      },
+      "selected_us": 42.879000000000005,
+      "control_us": 42.8475,
+      "relative_change": 0.000735165412217853,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 6,
+        "local_assignments": 24
+      },
+      "selected_us": 56.512,
+      "control_us": 56.51299999999999,
+      "relative_change": 1.7695043618148887e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 8,
+        "local_assignments": 24
+      },
+      "selected_us": 71.328,
+      "control_us": 71.392,
+      "relative_change": 0.0008964589870011919,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 11,
+        "local_assignments": 24
+      },
+      "selected_us": 86.65549999999999,
+      "control_us": 86.7825,
+      "relative_change": 0.0014634286866592738,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 16,
+        "local_assignments": 24
+      },
+      "selected_us": 120.92799999999998,
+      "control_us": 121.16799999999999,
+      "relative_change": 0.0019807209824377336,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 23,
+        "local_assignments": 24
+      },
+      "selected_us": 163.774,
+      "control_us": 163.312,
+      "relative_change": 0.002828940922896095,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 24,
+        "local_assignments": 24
+      },
+      "selected_us": 171.727,
+      "control_us": 171.8075,
+      "relative_change": 0.00046854764780346336,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 6,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 20.960000000000004,
+      "control_us": 20.862000000000002,
+      "relative_change": 0.0046975361902024115,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 4,
+        "local_assignments": 32
+      },
+      "selected_us": 44.128,
+      "control_us": 44.06399999999999,
+      "relative_change": 0.0014524328249820861,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 6,
+        "local_assignments": 32
+      },
+      "selected_us": 58.590500000000006,
+      "control_us": 58.655,
+      "relative_change": 0.0010996504986786615,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 8,
+        "local_assignments": 32
+      },
+      "selected_us": 72.16,
+      "control_us": 72.2415,
+      "relative_change": 0.0011281604064147244,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 11,
+        "local_assignments": 32
+      },
+      "selected_us": 87.7585,
+      "control_us": 87.8075,
+      "relative_change": 0.0005580388918943191,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 16,
+        "local_assignments": 32
+      },
+      "selected_us": 121.616,
+      "control_us": 121.807,
+      "relative_change": 0.0015680543811110725,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 23,
+        "local_assignments": 32
+      },
+      "selected_us": 164.24,
+      "control_us": 164.25549999999998,
+      "relative_change": 9.436518107441838e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 32,
+        "local_assignments": 32
+      },
+      "selected_us": 221.02349999999996,
+      "control_us": 220.73700000000002,
+      "relative_change": 0.0012979246795958854,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 8,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 23.743000000000002,
+      "control_us": 23.553,
+      "relative_change": 0.008066912919797886,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 4,
+        "local_assignments": 44
+      },
+      "selected_us": 46.6545,
+      "control_us": 46.623999999999995,
+      "relative_change": 0.0006541695264241643,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 6,
+        "local_assignments": 44
+      },
+      "selected_us": 62.2565,
+      "control_us": 62.175999999999995,
+      "relative_change": 0.0012947117858981283,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 8,
+        "local_assignments": 44
+      },
+      "selected_us": 74.1745,
+      "control_us": 74.24,
+      "relative_change": 0.0008822737068965303,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 11,
+        "local_assignments": 44
+      },
+      "selected_us": 90.065,
+      "control_us": 90.14500000000001,
+      "relative_change": 0.0008874590936824855,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 16,
+        "local_assignments": 44
+      },
+      "selected_us": 123.42399999999999,
+      "control_us": 123.727,
+      "relative_change": 0.0024489400050111687,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 23,
+        "local_assignments": 44
+      },
+      "selected_us": 168.8155,
+      "control_us": 168.71949999999998,
+      "relative_change": 0.0005689917288753676,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 32,
+        "local_assignments": 44
+      },
+      "selected_us": 223.5845,
+      "control_us": 223.631,
+      "relative_change": 0.00020793181625089474,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 44,
+        "local_assignments": 44
+      },
+      "selected_us": 298.54449999999997,
+      "control_us": 298.60850000000005,
+      "relative_change": 0.00021432745551475119,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 11,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 26.112000000000002,
+      "control_us": 26.174000000000003,
+      "relative_change": 0.002368762894475518,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 4,
+        "local_assignments": 64
+      },
+      "selected_us": 52.8635,
+      "control_us": 52.672,
+      "relative_change": 0.0036357077764277435,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 6,
+        "local_assignments": 64
+      },
+      "selected_us": 68.3175,
+      "control_us": 68.12799999999999,
+      "relative_change": 0.0027815288868013877,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 8,
+        "local_assignments": 64
+      },
+      "selected_us": 79.96749999999999,
+      "control_us": 80.002,
+      "relative_change": 0.00043123921901966344,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 11,
+        "local_assignments": 64
+      },
+      "selected_us": 93.72800000000001,
+      "control_us": 93.88900000000001,
+      "relative_change": 0.001714790870069982,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 16,
+        "local_assignments": 64
+      },
+      "selected_us": 129.344,
+      "control_us": 129.568,
+      "relative_change": 0.0017288219313411624,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 23,
+        "local_assignments": 64
+      },
+      "selected_us": 177.28050000000002,
+      "control_us": 177.3915,
+      "relative_change": 0.0006257346039690859,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 32,
+        "local_assignments": 64
+      },
+      "selected_us": 229.983,
+      "control_us": 229.936,
+      "relative_change": 0.00020440470391758225,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 45,
+        "local_assignments": 64
+      },
+      "selected_us": 312.302,
+      "control_us": 312.462,
+      "relative_change": 0.0005120622667715846,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 64,
+        "local_assignments": 64
+      },
+      "selected_us": 427.7735,
+      "control_us": 427.55150000000003,
+      "relative_change": 0.0005192356944134779,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 16,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 30.975,
+      "control_us": 30.848000000000003,
+      "relative_change": 0.004116960580912821,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 4,
+        "local_assignments": 92
+      },
+      "selected_us": 61.2785,
+      "control_us": 61.18599999999999,
+      "relative_change": 0.001511783741378947,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 6,
+        "local_assignments": 92
+      },
+      "selected_us": 70.752,
+      "control_us": 70.7045,
+      "relative_change": 0.000671810139383,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 8,
+        "local_assignments": 92
+      },
+      "selected_us": 82.208,
+      "control_us": 82.36800000000001,
+      "relative_change": 0.0019425019425021173,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 11,
+        "local_assignments": 92
+      },
+      "selected_us": 95.8715,
+      "control_us": 95.8875,
+      "relative_change": 0.00016686220831707566,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 16,
+        "local_assignments": 92
+      },
+      "selected_us": 131.67950000000002,
+      "control_us": 131.745,
+      "relative_change": 0.0004971725682187955,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 23,
+        "local_assignments": 92
+      },
+      "selected_us": 180.38400000000001,
+      "control_us": 180.49599999999998,
+      "relative_change": 0.0006205123659248635,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 32,
+        "local_assignments": 92
+      },
+      "selected_us": 232.673,
+      "control_us": 232.401,
+      "relative_change": 0.0011703908330857882,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 45,
+        "local_assignments": 92
+      },
+      "selected_us": 316.273,
+      "control_us": 316.30449999999996,
+      "relative_change": 9.958758095418574e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 64,
+        "local_assignments": 92
+      },
+      "selected_us": 429.5675,
+      "control_us": 429.695,
+      "relative_change": 0.0002967220935780057,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 23,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 33.023999999999994,
+      "control_us": 33.056,
+      "relative_change": 0.0009680542110359625,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 4,
+        "local_assignments": 128
+      },
+      "selected_us": 62.080000000000005,
+      "control_us": 62.111999999999995,
+      "relative_change": 0.0005151983513651537,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 6,
+        "local_assignments": 128
+      },
+      "selected_us": 72.638,
+      "control_us": 72.51350000000001,
+      "relative_change": 0.0017169216766532713,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 8,
+        "local_assignments": 128
+      },
+      "selected_us": 82.9105,
+      "control_us": 82.99199999999999,
+      "relative_change": 0.0009820223636012315,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 11,
+        "local_assignments": 128
+      },
+      "selected_us": 96.14249999999998,
+      "control_us": 96.112,
+      "relative_change": 0.0003173381055434632,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 16,
+        "local_assignments": 128
+      },
+      "selected_us": 132.2075,
+      "control_us": 132.09449999999998,
+      "relative_change": 0.0008554481829299299,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 23,
+        "local_assignments": 128
+      },
+      "selected_us": 182.20850000000002,
+      "control_us": 182.14350000000002,
+      "relative_change": 0.0003568614855868901,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 32,
+        "local_assignments": 128
+      },
+      "selected_us": 233.5505,
+      "control_us": 233.7595,
+      "relative_change": 0.0008940813100644096,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 45,
+        "local_assignments": 128
+      },
+      "selected_us": 318.046,
+      "control_us": 318.20799999999997,
+      "relative_change": 0.0005091009654062395,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 64,
+        "local_assignments": 128
+      },
+      "selected_us": 431.9345,
+      "control_us": 432.13100000000003,
+      "relative_change": 0.00045472322050488234,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 32,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 33.504999999999995,
+      "control_us": 33.727999999999994,
+      "relative_change": 0.006611717267552164,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 4,
+        "local_assignments": 180
+      },
+      "selected_us": 48.257000000000005,
+      "control_us": 48.19200000000001,
+      "relative_change": 0.0013487715803452982,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 6,
+        "local_assignments": 180
+      },
+      "selected_us": 58.6565,
+      "control_us": 58.625,
+      "relative_change": 0.0005373134328359175,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 8,
+        "local_assignments": 180
+      },
+      "selected_us": 71.93599999999999,
+      "control_us": 71.9365,
+      "relative_change": 6.950574464981152e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 11,
+        "local_assignments": 180
+      },
+      "selected_us": 91.87100000000001,
+      "control_us": 91.9195,
+      "relative_change": 0.0005276355941883359,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 16,
+        "local_assignments": 180
+      },
+      "selected_us": 126.5915,
+      "control_us": 126.656,
+      "relative_change": 0.0005092534108136482,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 23,
+        "local_assignments": 180
+      },
+      "selected_us": 169.072,
+      "control_us": 169.055,
+      "relative_change": 0.00010055898967786803,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 32,
+        "local_assignments": 180
+      },
+      "selected_us": 229.79299999999998,
+      "control_us": 229.61650000000003,
+      "relative_change": 0.0007686729829954331,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 45,
+        "local_assignments": 180
+      },
+      "selected_us": 307.98449999999997,
+      "control_us": 308.2415,
+      "relative_change": 0.0008337618393370327,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 64,
+        "local_assignments": 180
+      },
+      "selected_us": 425.839,
+      "control_us": 426.001,
+      "relative_change": 0.0003802807974628841,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 45,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 24.512999999999998,
+      "control_us": 24.543999999999997,
+      "relative_change": 0.0012630378096479822,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 4,
+        "local_assignments": 256
+      },
+      "selected_us": 48.8815,
+      "control_us": 48.768,
+      "relative_change": 0.0023273458005250713,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 6,
+        "local_assignments": 256
+      },
+      "selected_us": 63.6635,
+      "control_us": 63.61600000000001,
+      "relative_change": 0.000746667505030052,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 8,
+        "local_assignments": 256
+      },
+      "selected_us": 72.0965,
+      "control_us": 72.273,
+      "relative_change": 0.002442129149198058,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 11,
+        "local_assignments": 256
+      },
+      "selected_us": 92.512,
+      "control_us": 92.46600000000001,
+      "relative_change": 0.0004974801548676133,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 16,
+        "local_assignments": 256
+      },
+      "selected_us": 127.696,
+      "control_us": 127.36099999999999,
+      "relative_change": 0.0026303185433531606,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 23,
+        "local_assignments": 256
+      },
+      "selected_us": 170.1605,
+      "control_us": 170.27299999999997,
+      "relative_change": 0.0006607036934802579,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 32,
+        "local_assignments": 256
+      },
+      "selected_us": 229.48850000000002,
+      "control_us": 229.873,
+      "relative_change": 0.0016726627311601794,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 45,
+        "local_assignments": 256
+      },
+      "selected_us": 309.2615,
+      "control_us": 309.519,
+      "relative_change": 0.0008319360039286128,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 64,
+        "local_assignments": 256
+      },
+      "selected_us": 428.25600000000003,
+      "control_us": 428.8950000000001,
+      "relative_change": 0.0014898751442662395,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 64,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 25.248,
+      "control_us": 25.151999999999997,
+      "relative_change": 0.003816793893129944,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 4,
+        "local_assignments": 364
+      },
+      "selected_us": 48.959999999999994,
+      "control_us": 48.897000000000006,
+      "relative_change": 0.001288422602613526,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 6,
+        "local_assignments": 364
+      },
+      "selected_us": 57.568000000000005,
+      "control_us": 57.678999999999995,
+      "relative_change": 0.0019244439050606355,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 8,
+        "local_assignments": 364
+      },
+      "selected_us": 71.84,
+      "control_us": 71.8405,
+      "relative_change": 6.959862473121525e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 11,
+        "local_assignments": 364
+      },
+      "selected_us": 92.176,
+      "control_us": 92.114,
+      "relative_change": 0.0006730790107909446,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 16,
+        "local_assignments": 364
+      },
+      "selected_us": 123.3125,
+      "control_us": 123.16799999999999,
+      "relative_change": 0.00117319433619123,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 23,
+        "local_assignments": 364
+      },
+      "selected_us": 169.872,
+      "control_us": 169.712,
+      "relative_change": 0.0009427736400491327,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 32,
+        "local_assignments": 364
+      },
+      "selected_us": 233.07049999999998,
+      "control_us": 233.0555,
+      "relative_change": 6.436235145690361e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 45,
+        "local_assignments": 364
+      },
+      "selected_us": 308.001,
+      "control_us": 308.5265,
+      "relative_change": 0.0017032572566700876,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 64,
+        "local_assignments": 364
+      },
+      "selected_us": 432.7525,
+      "control_us": 432.368,
+      "relative_change": 0.0008892887540243866,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 91,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 20.577,
+      "control_us": 20.672,
+      "relative_change": 0.004595588235294046,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 4,
+        "local_assignments": 512
+      },
+      "selected_us": 53.663999999999994,
+      "control_us": 53.6155,
+      "relative_change": 0.0009045891579859688,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 6,
+        "local_assignments": 512
+      },
+      "selected_us": 60.048500000000004,
+      "control_us": 60.047999999999995,
+      "relative_change": 8.32667199590631e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 8,
+        "local_assignments": 512
+      },
+      "selected_us": 72.3685,
+      "control_us": 72.448,
+      "relative_change": 0.0010973387809186663,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 11,
+        "local_assignments": 512
+      },
+      "selected_us": 89.98399999999998,
+      "control_us": 90.017,
+      "relative_change": 0.0003665974204873912,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 16,
+        "local_assignments": 512
+      },
+      "selected_us": 127.4085,
+      "control_us": 127.37599999999999,
+      "relative_change": 0.00025515010677068517,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 23,
+        "local_assignments": 512
+      },
+      "selected_us": 173.34449999999998,
+      "control_us": 173.28,
+      "relative_change": 0.00037222991689733753,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 32,
+        "local_assignments": 512
+      },
+      "selected_us": 240.9115,
+      "control_us": 240.92649999999998,
+      "relative_change": 6.225965180250981e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 45,
+        "local_assignments": 512
+      },
+      "selected_us": 314.176,
+      "control_us": 314.9935,
+      "relative_change": 0.0025952916488752864,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 64,
+        "local_assignments": 512
+      },
+      "selected_us": 445.0405,
+      "control_us": 444.896,
+      "relative_change": 0.00032479500827165,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 128,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 21.281000000000002,
+      "control_us": 21.121000000000002,
+      "relative_change": 0.0075753988920979065,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 4,
+        "local_assignments": 724
+      },
+      "selected_us": 57.93599999999999,
+      "control_us": 57.439499999999995,
+      "relative_change": 0.008643877471078198,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 6,
+        "local_assignments": 724
+      },
+      "selected_us": 60.7675,
+      "control_us": 59.919500000000006,
+      "relative_change": 0.014152321030716175,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 8,
+        "local_assignments": 724
+      },
+      "selected_us": 78.22349999999999,
+      "control_us": 78.3845,
+      "relative_change": 0.002053977508308602,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 11,
+        "local_assignments": 724
+      },
+      "selected_us": 94.9605,
+      "control_us": 95.392,
+      "relative_change": 0.004523440120764888,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 16,
+        "local_assignments": 724
+      },
+      "selected_us": 128.06400000000002,
+      "control_us": 128.369,
+      "relative_change": 0.0023759630440369772,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 23,
+        "local_assignments": 724
+      },
+      "selected_us": 174.9445,
+      "control_us": 175.4395,
+      "relative_change": 0.0028214854693499047,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 32,
+        "local_assignments": 724
+      },
+      "selected_us": 242.976,
+      "control_us": 243.777,
+      "relative_change": 0.003285789881736112,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 45,
+        "local_assignments": 724
+      },
+      "selected_us": 315.7445,
+      "control_us": 316.0,
+      "relative_change": 0.0008085443037973983,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 64,
+        "local_assignments": 724
+      },
+      "selected_us": 443.55199999999996,
+      "control_us": 448.78499999999997,
+      "relative_change": 0.011660371892999954,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 181,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 22.208,
+      "control_us": 22.303000000000004,
+      "relative_change": 0.004259516656952234,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 4,
+        "local_assignments": 1024
+      },
+      "selected_us": 77.056,
+      "control_us": 77.056,
+      "relative_change": 0.0,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 6,
+        "local_assignments": 1024
+      },
+      "selected_us": 82.6565,
+      "control_us": 82.81649999999999,
+      "relative_change": 0.001931982153314804,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 8,
+        "local_assignments": 1024
+      },
+      "selected_us": 79.26499999999999,
+      "control_us": 79.088,
+      "relative_change": 0.0022380133522150736,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 11,
+        "local_assignments": 1024
+      },
+      "selected_us": 96.3355,
+      "control_us": 96.672,
+      "relative_change": 0.003480842436279441,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 16,
+        "local_assignments": 1024
+      },
+      "selected_us": 131.072,
+      "control_us": 130.8955,
+      "relative_change": 0.001348403879430471,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 23,
+        "local_assignments": 1024
+      },
+      "selected_us": 178.1285,
+      "control_us": 178.4785,
+      "relative_change": 0.001961020515075962,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 32,
+        "local_assignments": 1024
+      },
+      "selected_us": 245.1035,
+      "control_us": 245.3745,
+      "relative_change": 0.0011044342423520703,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 45,
+        "local_assignments": 1024
+      },
+      "selected_us": 320.06600000000003,
+      "control_us": 320.4785,
+      "relative_change": 0.0012871378267184097,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 64,
+        "local_assignments": 1024
+      },
+      "selected_us": 447.0725,
+      "control_us": 456.54099999999994,
+      "relative_change": 0.02073964879386503,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 256,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 25.055,
+      "control_us": 25.025,
+      "relative_change": 0.0011988011988013358,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 4,
+        "local_assignments": 1448
+      },
+      "selected_us": 91.0245,
+      "control_us": 91.233,
+      "relative_change": 0.002285357272039712,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 6,
+        "local_assignments": 1448
+      },
+      "selected_us": 92.385,
+      "control_us": 92.352,
+      "relative_change": 0.00035732848232838954,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 8,
+        "local_assignments": 1448
+      },
+      "selected_us": 94.94550000000001,
+      "control_us": 94.60900000000001,
+      "relative_change": 0.0035567440729740163,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 11,
+        "local_assignments": 1448
+      },
+      "selected_us": 121.008,
+      "control_us": 121.2175,
+      "relative_change": 0.0017282983067626878,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 16,
+        "local_assignments": 1448
+      },
+      "selected_us": 149.632,
+      "control_us": 150.20850000000002,
+      "relative_change": 0.003837998515397012,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 23,
+        "local_assignments": 1448
+      },
+      "selected_us": 183.983,
+      "control_us": 184.1615,
+      "relative_change": 0.0009692579610830476,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 32,
+        "local_assignments": 1448
+      },
+      "selected_us": 251.5685,
+      "control_us": 251.726,
+      "relative_change": 0.0006256803031867708,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 45,
+        "local_assignments": 1448
+      },
+      "selected_us": 326.913,
+      "control_us": 327.4875,
+      "relative_change": 0.0017542654299782523,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 64,
+        "local_assignments": 1448
+      },
+      "selected_us": 469.409,
+      "control_us": 469.0235,
+      "relative_change": 0.0008219204368224986,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 362,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 27.967999999999996,
+      "control_us": 27.936,
+      "relative_change": 0.0011454753722792699,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 4,
+        "local_assignments": 2048
+      },
+      "selected_us": 118.303,
+      "control_us": 118.417,
+      "relative_change": 0.0009626996123868192,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 6,
+        "local_assignments": 2048
+      },
+      "selected_us": 121.12199999999999,
+      "control_us": 121.36099999999999,
+      "relative_change": 0.0019693311689916726,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 8,
+        "local_assignments": 2048
+      },
+      "selected_us": 119.79150000000001,
+      "control_us": 119.90450000000001,
+      "relative_change": 0.0009424166732691086,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 11,
+        "local_assignments": 2048
+      },
+      "selected_us": 127.999,
+      "control_us": 127.6635,
+      "relative_change": 0.0026280025222558123,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 16,
+        "local_assignments": 2048
+      },
+      "selected_us": 156.272,
+      "control_us": 156.4485,
+      "relative_change": 0.0011281667769266202,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 23,
+        "local_assignments": 2048
+      },
+      "selected_us": 193.329,
+      "control_us": 193.839,
+      "relative_change": 0.002631049479206893,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 32,
+        "local_assignments": 2048
+      },
+      "selected_us": 258.01500000000004,
+      "control_us": 258.077,
+      "relative_change": 0.00024023837846831597,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 45,
+        "local_assignments": 2048
+      },
+      "selected_us": 336.6415,
+      "control_us": 336.99399999999997,
+      "relative_change": 0.0010460126886531196,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 64,
+        "local_assignments": 2048
+      },
+      "selected_us": 475.4525,
+      "control_us": 470.304,
+      "relative_change": 0.0109471745934544,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 512,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 32.961999999999996,
+      "control_us": 33.12,
+      "relative_change": 0.0047705314009661715,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 4,
+        "local_assignments": 2896
+      },
+      "selected_us": 146.49699999999999,
+      "control_us": 146.994,
+      "relative_change": 0.0033810903846416274,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 6,
+        "local_assignments": 2896
+      },
+      "selected_us": 146.94350000000003,
+      "control_us": 147.49,
+      "relative_change": 0.0037053359549799048,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 8,
+        "local_assignments": 2896
+      },
+      "selected_us": 147.68,
+      "control_us": 148.2235,
+      "relative_change": 0.0036667599941979656,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 11,
+        "local_assignments": 2896
+      },
+      "selected_us": 189.5045,
+      "control_us": 189.44,
+      "relative_change": 0.0003404771959460984,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 16,
+        "local_assignments": 2896
+      },
+      "selected_us": 196.67249999999999,
+      "control_us": 196.60950000000003,
+      "relative_change": 0.00032043212560917134,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 23,
+        "local_assignments": 2896
+      },
+      "selected_us": 209.05649999999997,
+      "control_us": 208.9795,
+      "relative_change": 0.0003684571931694691,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 32,
+        "local_assignments": 2896
+      },
+      "selected_us": 291.552,
+      "control_us": 291.8415,
+      "relative_change": 0.0009919768093296089,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 45,
+        "local_assignments": 2896
+      },
+      "selected_us": 359.6005,
+      "control_us": 359.44,
+      "relative_change": 0.0004465279323391247,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 64,
+        "local_assignments": 2896
+      },
+      "selected_us": 500.981,
+      "control_us": 501.156,
+      "relative_change": 0.00034919266655497605,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 724,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 42.464,
+      "control_us": 42.528999999999996,
+      "relative_change": 0.0015283688777069093,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 4,
+        "local_assignments": 4096
+      },
+      "selected_us": 194.881,
+      "control_us": 195.6505,
+      "relative_change": 0.003933033649287876,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 6,
+        "local_assignments": 4096
+      },
+      "selected_us": 203.361,
+      "control_us": 204.14499999999998,
+      "relative_change": 0.0038404075534546056,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 8,
+        "local_assignments": 4096
+      },
+      "selected_us": 196.43349999999998,
+      "control_us": 197.1365,
+      "relative_change": 0.003566057021404112,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 11,
+        "local_assignments": 4096
+      },
+      "selected_us": 200.704,
+      "control_us": 200.86450000000002,
+      "relative_change": 0.0007990461231328627,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 16,
+        "local_assignments": 4096
+      },
+      "selected_us": 209.2,
+      "control_us": 209.04,
+      "relative_change": 0.0007654037504782885,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 23,
+        "local_assignments": 4096
+      },
+      "selected_us": 239.61700000000002,
+      "control_us": 239.7435,
+      "relative_change": 0.0005276472563384704,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 32,
+        "local_assignments": 4096
+      },
+      "selected_us": 308.1445,
+      "control_us": 307.6635,
+      "relative_change": 0.001563396372985304,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 45,
+        "local_assignments": 4096
+      },
+      "selected_us": 378.5315,
+      "control_us": 378.5465,
+      "relative_change": 3.9625250794816935e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 64,
+        "local_assignments": 4096
+      },
+      "selected_us": 521.635,
+      "control_us": 521.3119999999999,
+      "relative_change": 0.0006195905714814209,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1024,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 52.129,
+      "control_us": 52.162,
+      "relative_change": 0.000632644453816944,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 4,
+        "local_assignments": 5792
+      },
+      "selected_us": 261.409,
+      "control_us": 263.13599999999997,
+      "relative_change": 0.006563146053751634,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 6,
+        "local_assignments": 5792
+      },
+      "selected_us": 264.11150000000004,
+      "control_us": 265.37649999999996,
+      "relative_change": 0.004766812434408907,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 8,
+        "local_assignments": 5792
+      },
+      "selected_us": 267.361,
+      "control_us": 267.4565,
+      "relative_change": 0.0003570674109621974,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 11,
+        "local_assignments": 5792
+      },
+      "selected_us": 273.53549999999996,
+      "control_us": 273.72849999999994,
+      "relative_change": 0.000705078207055454,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 16,
+        "local_assignments": 5792
+      },
+      "selected_us": 269.936,
+      "control_us": 269.8395,
+      "relative_change": 0.00035761999262517996,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 23,
+        "local_assignments": 5792
+      },
+      "selected_us": 262.30549999999994,
+      "control_us": 262.57499999999993,
+      "relative_change": 0.0010263734171188643,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 32,
+        "local_assignments": 5792
+      },
+      "selected_us": 359.15049999999997,
+      "control_us": 359.08799999999997,
+      "relative_change": 0.00017405204295317667,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 45,
+        "local_assignments": 5792
+      },
+      "selected_us": 422.73650000000004,
+      "control_us": 422.626,
+      "relative_change": 0.00026146048752329065,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 64,
+        "local_assignments": 5792
+      },
+      "selected_us": 550.9739999999999,
+      "control_us": 550.8665000000001,
+      "relative_change": 0.00019514710006851566,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 1448,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 63.583999999999996,
+      "control_us": 63.456,
+      "relative_change": 0.0020171457387794245,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 4,
+        "local_assignments": 8192
+      },
+      "selected_us": 335.6485,
+      "control_us": 335.7125,
+      "relative_change": 0.0001906393119111005,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 6,
+        "local_assignments": 8192
+      },
+      "selected_us": 338.46500000000003,
+      "control_us": 338.5285,
+      "relative_change": 0.0001875765260531681,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 8,
+        "local_assignments": 8192
+      },
+      "selected_us": 338.5615,
+      "control_us": 338.54499999999996,
+      "relative_change": 4.873798165694332e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 11,
+        "local_assignments": 8192
+      },
+      "selected_us": 346.801,
+      "control_us": 346.60850000000005,
+      "relative_change": 0.0005553816481707052,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 16,
+        "local_assignments": 8192
+      },
+      "selected_us": 350.977,
+      "control_us": 350.99350000000004,
+      "relative_change": 4.700941755353405e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 23,
+        "local_assignments": 8192
+      },
+      "selected_us": 362.7045,
+      "control_us": 362.799,
+      "relative_change": 0.00026047480836488557,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 32,
+        "local_assignments": 8192
+      },
+      "selected_us": 392.881,
+      "control_us": 393.1845,
+      "relative_change": 0.0007719022494530048,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 45,
+        "local_assignments": 8192
+      },
+      "selected_us": 476.031,
+      "control_us": 475.9525,
+      "relative_change": 0.00016493242497950256,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 64,
+        "local_assignments": 8192
+      },
+      "selected_us": 591.251,
+      "control_us": 591.3240000000001,
+      "relative_change": 0.00012345177939687701,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2048,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 83.71,
+      "control_us": 83.67999999999999,
+      "relative_change": 0.0003585086042066088,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 4,
+        "local_assignments": 11584
+      },
+      "selected_us": 446.274,
+      "control_us": 446.78700000000003,
+      "relative_change": 0.0011481981346816994,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 6,
+        "local_assignments": 11584
+      },
+      "selected_us": 483.71500000000003,
+      "control_us": 483.329,
+      "relative_change": 0.0007986278497669197,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 8,
+        "local_assignments": 11584
+      },
+      "selected_us": 486.20900000000006,
+      "control_us": 486.2745,
+      "relative_change": 0.00013469758336071003,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 11,
+        "local_assignments": 11584
+      },
+      "selected_us": 491.71349999999995,
+      "control_us": 491.52150000000006,
+      "relative_change": 0.0003906238079105506,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 16,
+        "local_assignments": 11584
+      },
+      "selected_us": 494.735,
+      "control_us": 495.32950000000005,
+      "relative_change": 0.0012002111725629705,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 23,
+        "local_assignments": 11584
+      },
+      "selected_us": 472.193,
+      "control_us": 472.465,
+      "relative_change": 0.0005757040204036334,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 32,
+        "local_assignments": 11584
+      },
+      "selected_us": 514.656,
+      "control_us": 515.1205,
+      "relative_change": 0.0009017307600843738,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 45,
+        "local_assignments": 11584
+      },
+      "selected_us": 634.178,
+      "control_us": 634.48,
+      "relative_change": 0.00047598033034934595,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 64,
+        "local_assignments": 11584
+      },
+      "selected_us": 688.114,
+      "control_us": 686.049,
+      "relative_change": 0.0030099890824124564,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 2896,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 119.52,
+      "control_us": 119.519,
+      "relative_change": 8.366870539289195e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 4,
+        "local_assignments": 16384
+      },
+      "selected_us": 675.49,
+      "control_us": 675.123,
+      "relative_change": 0.0005436046468569877,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 6,
+        "local_assignments": 16384
+      },
+      "selected_us": 682.1635000000001,
+      "control_us": 682.5315,
+      "relative_change": 0.000539169254459182,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 8,
+        "local_assignments": 16384
+      },
+      "selected_us": 677.316,
+      "control_us": 677.5074999999999,
+      "relative_change": 0.0002826536975604199,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 11,
+        "local_assignments": 16384
+      },
+      "selected_us": 694.115,
+      "control_us": 694.1795,
+      "relative_change": 9.291544910206007e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 16,
+        "local_assignments": 16384
+      },
+      "selected_us": 685.2535,
+      "control_us": 685.5699999999999,
+      "relative_change": 0.0004616596408826279,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 23,
+        "local_assignments": 16384
+      },
+      "selected_us": 714.387,
+      "control_us": 714.195,
+      "relative_change": 0.00026883414193590305,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 32,
+        "local_assignments": 16384
+      },
+      "selected_us": 703.5074999999999,
+      "control_us": 703.569,
+      "relative_change": 8.741146923763043e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 45,
+        "local_assignments": 16384
+      },
+      "selected_us": 737.6475,
+      "control_us": 737.6985,
+      "relative_change": 6.913393479845986e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 64,
+        "local_assignments": 16384
+      },
+      "selected_us": 781.4435,
+      "control_us": 780.9929999999999,
+      "relative_change": 0.0005768297539159306,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "eager",
+        "tokens": 4096,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 224.03,
+      "control_us": 224.25400000000002,
+      "relative_change": 0.0009988673557662642,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1,
+        "activated_experts": 4,
+        "local_assignments": 4
+      },
+      "selected_us": 40.3525,
+      "control_us": 40.288000000000004,
+      "relative_change": 0.0016009729944399531,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 13.024,
+      "control_us": 13.056,
+      "relative_change": 0.002450980392156854,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2,
+        "activated_experts": 4,
+        "local_assignments": 8
+      },
+      "selected_us": 40.416,
+      "control_us": 40.352000000000004,
+      "relative_change": 0.0015860428231559975,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2,
+        "activated_experts": 6,
+        "local_assignments": 8
+      },
+      "selected_us": 54.432,
+      "control_us": 54.3535,
+      "relative_change": 0.0014442492203814439,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2,
+        "activated_experts": 8,
+        "local_assignments": 8
+      },
+      "selected_us": 70.3675,
+      "control_us": 70.41749999999999,
+      "relative_change": 0.000710050768629733,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 14.304,
+      "control_us": 14.272,
+      "relative_change": 0.0022421524663676085,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 4,
+        "local_assignments": 12
+      },
+      "selected_us": 40.416,
+      "control_us": 40.383,
+      "relative_change": 0.0008171755441643835,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 6,
+        "local_assignments": 12
+      },
+      "selected_us": 54.528000000000006,
+      "control_us": 54.479,
+      "relative_change": 0.0008994291378330299,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 8,
+        "local_assignments": 12
+      },
+      "selected_us": 70.3685,
+      "control_us": 70.4,
+      "relative_change": 0.00044744318181833,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 11,
+        "local_assignments": 12
+      },
+      "selected_us": 85.21549999999999,
+      "control_us": 85.2325,
+      "relative_change": 0.00019945443346158775,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 12,
+        "local_assignments": 12
+      },
+      "selected_us": 91.39200000000001,
+      "control_us": 91.488,
+      "relative_change": 0.0010493179433367361,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 3,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 15.839,
+      "control_us": 15.808000000000002,
+      "relative_change": 0.0019610323886638525,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 4,
+        "local_assignments": 16
+      },
+      "selected_us": 40.767999999999994,
+      "control_us": 40.70399999999999,
+      "relative_change": 0.0015723270440251014,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 6,
+        "local_assignments": 16
+      },
+      "selected_us": 54.4155,
+      "control_us": 54.432,
+      "relative_change": 0.00030313051146391157,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 8,
+        "local_assignments": 16
+      },
+      "selected_us": 70.352,
+      "control_us": 70.399,
+      "relative_change": 0.000667623119646521,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 11,
+        "local_assignments": 16
+      },
+      "selected_us": 85.0725,
+      "control_us": 85.184,
+      "relative_change": 0.0013089312546956666,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 16,
+        "local_assignments": 16
+      },
+      "selected_us": 119.0565,
+      "control_us": 119.0395,
+      "relative_change": 0.0001428097396241057,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 16.96,
+      "control_us": 16.992,
+      "relative_change": 0.0018832391713747842,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 4,
+        "local_assignments": 24
+      },
+      "selected_us": 42.144,
+      "control_us": 42.0775,
+      "relative_change": 0.0015804170875171053,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 6,
+        "local_assignments": 24
+      },
+      "selected_us": 55.6795,
+      "control_us": 55.617000000000004,
+      "relative_change": 0.001123757124620095,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 8,
+        "local_assignments": 24
+      },
+      "selected_us": 70.4325,
+      "control_us": 70.35050000000001,
+      "relative_change": 0.0011655922843476496,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 11,
+        "local_assignments": 24
+      },
+      "selected_us": 85.84049999999999,
+      "control_us": 85.918,
+      "relative_change": 0.0009020228590053136,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 16,
+        "local_assignments": 24
+      },
+      "selected_us": 119.5515,
+      "control_us": 119.74349999999998,
+      "relative_change": 0.0016034273259089016,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 23,
+        "local_assignments": 24
+      },
+      "selected_us": 161.839,
+      "control_us": 161.8555,
+      "relative_change": 0.00010194278229658238,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 24,
+        "local_assignments": 24
+      },
+      "selected_us": 169.34300000000002,
+      "control_us": 169.4715,
+      "relative_change": 0.0007582395860069591,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 6,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 19.712000000000003,
+      "control_us": 19.713,
+      "relative_change": 5.072794602534181e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 4,
+        "local_assignments": 32
+      },
+      "selected_us": 43.263999999999996,
+      "control_us": 43.281,
+      "relative_change": 0.00039278205217074813,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 6,
+        "local_assignments": 32
+      },
+      "selected_us": 57.632999999999996,
+      "control_us": 57.665,
+      "relative_change": 0.0005549293332177685,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 8,
+        "local_assignments": 32
+      },
+      "selected_us": 70.959,
+      "control_us": 70.97550000000001,
+      "relative_change": 0.00023247458630104578,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 11,
+        "local_assignments": 32
+      },
+      "selected_us": 87.008,
+      "control_us": 87.13650000000001,
+      "relative_change": 0.0014746977443438336,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 16,
+        "local_assignments": 32
+      },
+      "selected_us": 120.2405,
+      "control_us": 120.416,
+      "relative_change": 0.001457447515280319,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 23,
+        "local_assignments": 32
+      },
+      "selected_us": 163.808,
+      "control_us": 163.84050000000002,
+      "relative_change": 0.0001983636524548471,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 32,
+        "local_assignments": 32
+      },
+      "selected_us": 219.648,
+      "control_us": 219.64600000000002,
+      "relative_change": 9.10556076583191e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 8,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 22.337000000000003,
+      "control_us": 22.336000000000002,
+      "relative_change": 4.4770773639069006e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 4,
+        "local_assignments": 44
+      },
+      "selected_us": 45.647000000000006,
+      "control_us": 45.6005,
+      "relative_change": 0.0010197256609030259,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 6,
+        "local_assignments": 44
+      },
+      "selected_us": 61.08800000000001,
+      "control_us": 61.024,
+      "relative_change": 0.001048767697954922,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 8,
+        "local_assignments": 44
+      },
+      "selected_us": 72.864,
+      "control_us": 72.96,
+      "relative_change": 0.001315789473684048,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 11,
+        "local_assignments": 44
+      },
+      "selected_us": 89.05499999999999,
+      "control_us": 89.00800000000001,
+      "relative_change": 0.0005280424231528524,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 16,
+        "local_assignments": 44
+      },
+      "selected_us": 122.08000000000001,
+      "control_us": 122.1125,
+      "relative_change": 0.00026614801924440545,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 23,
+        "local_assignments": 44
+      },
+      "selected_us": 168.14350000000002,
+      "control_us": 168.512,
+      "relative_change": 0.002186787884542296,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 32,
+        "local_assignments": 44
+      },
+      "selected_us": 222.01749999999998,
+      "control_us": 221.85750000000002,
+      "relative_change": 0.0007211836426532781,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 44,
+        "local_assignments": 44
+      },
+      "selected_us": 296.5285,
+      "control_us": 297.137,
+      "relative_change": 0.0020478769052658663,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 11,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 24.864,
+      "control_us": 24.832000000000004,
+      "relative_change": 0.0012886597938142064,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 4,
+        "local_assignments": 64
+      },
+      "selected_us": 51.581999999999994,
+      "control_us": 51.4565,
+      "relative_change": 0.002438953290643475,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 6,
+        "local_assignments": 64
+      },
+      "selected_us": 66.9605,
+      "control_us": 66.79899999999999,
+      "relative_change": 0.0024177008637853437,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 8,
+        "local_assignments": 64
+      },
+      "selected_us": 78.27199999999999,
+      "control_us": 78.272,
+      "relative_change": 2.220446049250313e-16,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 11,
+        "local_assignments": 64
+      },
+      "selected_us": 92.28999999999999,
+      "control_us": 92.35249999999999,
+      "relative_change": 0.0006767548252618605,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 16,
+        "local_assignments": 64
+      },
+      "selected_us": 127.50300000000001,
+      "control_us": 127.63299999999998,
+      "relative_change": 0.0010185453605255912,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 23,
+        "local_assignments": 64
+      },
+      "selected_us": 177.3115,
+      "control_us": 177.248,
+      "relative_change": 0.0003582551001986012,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 32,
+        "local_assignments": 64
+      },
+      "selected_us": 228.44600000000003,
+      "control_us": 228.191,
+      "relative_change": 0.0011174849139536924,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 45,
+        "local_assignments": 64
+      },
+      "selected_us": 311.231,
+      "control_us": 311.58399999999995,
+      "relative_change": 0.0011329208175000494,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 64,
+        "local_assignments": 64
+      },
+      "selected_us": 426.511,
+      "control_us": 426.158,
+      "relative_change": 0.000828331276193417,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 16,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 29.346,
+      "control_us": 29.345000000000002,
+      "relative_change": 3.4077355597128545e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 4,
+        "local_assignments": 92
+      },
+      "selected_us": 59.55199999999999,
+      "control_us": 59.488,
+      "relative_change": 0.0010758472296932275,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 6,
+        "local_assignments": 92
+      },
+      "selected_us": 69.184,
+      "control_us": 69.15199999999999,
+      "relative_change": 0.00046274872744112017,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 8,
+        "local_assignments": 92
+      },
+      "selected_us": 80.64099999999999,
+      "control_us": 80.72,
+      "relative_change": 0.0009786917740337575,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 11,
+        "local_assignments": 92
+      },
+      "selected_us": 94.52799999999999,
+      "control_us": 94.56,
+      "relative_change": 0.00033840947546537326,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 16,
+        "local_assignments": 92
+      },
+      "selected_us": 129.8245,
+      "control_us": 129.904,
+      "relative_change": 0.0006119903929054926,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 23,
+        "local_assignments": 92
+      },
+      "selected_us": 180.0945,
+      "control_us": 180.367,
+      "relative_change": 0.0015108085181878561,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 32,
+        "local_assignments": 92
+      },
+      "selected_us": 230.893,
+      "control_us": 230.94299999999998,
+      "relative_change": 0.0002165036394261577,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 45,
+        "local_assignments": 92
+      },
+      "selected_us": 315.039,
+      "control_us": 315.24699999999996,
+      "relative_change": 0.0006598000932601655,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 64,
+        "local_assignments": 92
+      },
+      "selected_us": 429.28049999999996,
+      "control_us": 429.0845,
+      "relative_change": 0.00045678648378100206,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 23,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 31.458000000000002,
+      "control_us": 31.423,
+      "relative_change": 0.0011138338159948358,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 4,
+        "local_assignments": 128
+      },
+      "selected_us": 60.06550000000001,
+      "control_us": 60.064,
+      "relative_change": 2.4973361747671063e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 6,
+        "local_assignments": 128
+      },
+      "selected_us": 70.5265,
+      "control_us": 70.46300000000001,
+      "relative_change": 0.0009011821807187737,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 8,
+        "local_assignments": 128
+      },
+      "selected_us": 81.03999999999999,
+      "control_us": 80.992,
+      "relative_change": 0.0005926511260370138,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 11,
+        "local_assignments": 128
+      },
+      "selected_us": 94.5425,
+      "control_us": 94.528,
+      "relative_change": 0.00015339370345301973,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 16,
+        "local_assignments": 128
+      },
+      "selected_us": 130.159,
+      "control_us": 130.2715,
+      "relative_change": 0.0008635810595565285,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 23,
+        "local_assignments": 128
+      },
+      "selected_us": 180.9755,
+      "control_us": 180.959,
+      "relative_change": 9.118087522597129e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 32,
+        "local_assignments": 128
+      },
+      "selected_us": 231.79149999999998,
+      "control_us": 231.9665,
+      "relative_change": 0.0007544192803702332,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 45,
+        "local_assignments": 128
+      },
+      "selected_us": 316.7835,
+      "control_us": 317.18449999999996,
+      "relative_change": 0.0012642484106252239,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 64,
+        "local_assignments": 128
+      },
+      "selected_us": 430.642,
+      "control_us": 430.047,
+      "relative_change": 0.0013835697028463656,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 32,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 31.968,
+      "control_us": 31.967000000000002,
+      "relative_change": 3.128225983028976e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 4,
+        "local_assignments": 180
+      },
+      "selected_us": 47.007999999999996,
+      "control_us": 46.944,
+      "relative_change": 0.0013633265167005693,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 6,
+        "local_assignments": 180
+      },
+      "selected_us": 57.744499999999995,
+      "control_us": 57.664,
+      "relative_change": 0.0013960183129855253,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 8,
+        "local_assignments": 180
+      },
+      "selected_us": 70.88000000000001,
+      "control_us": 70.911,
+      "relative_change": 0.0004371677172793076,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 11,
+        "local_assignments": 180
+      },
+      "selected_us": 90.56,
+      "control_us": 90.78200000000001,
+      "relative_change": 0.00244541869533621,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 16,
+        "local_assignments": 180
+      },
+      "selected_us": 125.05600000000001,
+      "control_us": 125.0245,
+      "relative_change": 0.00025195061767901983,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 23,
+        "local_assignments": 180
+      },
+      "selected_us": 168.337,
+      "control_us": 167.934,
+      "relative_change": 0.0023997522836352037,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 32,
+        "local_assignments": 180
+      },
+      "selected_us": 228.8145,
+      "control_us": 228.68650000000002,
+      "relative_change": 0.0005597182168601833,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 45,
+        "local_assignments": 180
+      },
+      "selected_us": 307.29449999999997,
+      "control_us": 307.13800000000003,
+      "relative_change": 0.000509542941609098,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 64,
+        "local_assignments": 180
+      },
+      "selected_us": 424.7645,
+      "control_us": 425.04449999999997,
+      "relative_change": 0.0006587545539348261,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 45,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 23.328000000000003,
+      "control_us": 23.296000000000003,
+      "relative_change": 0.0013736263736263687,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 4,
+        "local_assignments": 256
+      },
+      "selected_us": 47.775,
+      "control_us": 47.68,
+      "relative_change": 0.001992449664429463,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 6,
+        "local_assignments": 256
+      },
+      "selected_us": 62.368,
+      "control_us": 62.3035,
+      "relative_change": 0.0010352548412209117,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 8,
+        "local_assignments": 256
+      },
+      "selected_us": 71.34400000000001,
+      "control_us": 71.34450000000001,
+      "relative_change": 7.008248708806342e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 11,
+        "local_assignments": 256
+      },
+      "selected_us": 91.377,
+      "control_us": 91.519,
+      "relative_change": 0.0015515903801397446,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 16,
+        "local_assignments": 256
+      },
+      "selected_us": 126.30449999999999,
+      "control_us": 126.2715,
+      "relative_change": 0.0002613416329100282,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 23,
+        "local_assignments": 256
+      },
+      "selected_us": 169.3105,
+      "control_us": 169.2015,
+      "relative_change": 0.0006442023268113939,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 32,
+        "local_assignments": 256
+      },
+      "selected_us": 229.11950000000002,
+      "control_us": 229.2945,
+      "relative_change": 0.000763210630869815,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 45,
+        "local_assignments": 256
+      },
+      "selected_us": 308.2725,
+      "control_us": 308.46400000000006,
+      "relative_change": 0.0006208179884851228,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 64,
+        "local_assignments": 256
+      },
+      "selected_us": 426.59350000000006,
+      "control_us": 427.19849999999997,
+      "relative_change": 0.001416203474497002,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 64,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 23.807000000000002,
+      "control_us": 23.872000000000003,
+      "relative_change": 0.0027228552278820706,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 4,
+        "local_assignments": 364
+      },
+      "selected_us": 47.0555,
+      "control_us": 46.9935,
+      "relative_change": 0.001319331396895329,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 6,
+        "local_assignments": 364
+      },
+      "selected_us": 57.42250000000001,
+      "control_us": 57.312000000000005,
+      "relative_change": 0.0019280429927415188,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 8,
+        "local_assignments": 364
+      },
+      "selected_us": 70.944,
+      "control_us": 71.0555,
+      "relative_change": 0.001569195910239074,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 11,
+        "local_assignments": 364
+      },
+      "selected_us": 91.1505,
+      "control_us": 91.0555,
+      "relative_change": 0.0010433197335690814,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 16,
+        "local_assignments": 364
+      },
+      "selected_us": 122.3835,
+      "control_us": 122.41549999999998,
+      "relative_change": 0.00026140480576386516,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 23,
+        "local_assignments": 364
+      },
+      "selected_us": 169.215,
+      "control_us": 169.279,
+      "relative_change": 0.00037807406707268676,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 32,
+        "local_assignments": 364
+      },
+      "selected_us": 232.0335,
+      "control_us": 232.2415,
+      "relative_change": 0.0008956194306357634,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 45,
+        "local_assignments": 364
+      },
+      "selected_us": 307.75699999999995,
+      "control_us": 308.2885,
+      "relative_change": 0.0017240344677146302,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 64,
+        "local_assignments": 364
+      },
+      "selected_us": 431.3455,
+      "control_us": 430.943,
+      "relative_change": 0.0009339982317848605,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 91,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 19.488,
+      "control_us": 19.488,
+      "relative_change": 0.0,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 4,
+        "local_assignments": 512
+      },
+      "selected_us": 50.9765,
+      "control_us": 50.976,
+      "relative_change": 9.80853735099707e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 6,
+        "local_assignments": 512
+      },
+      "selected_us": 59.6485,
+      "control_us": 59.599500000000006,
+      "relative_change": 0.0008221545482762771,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 8,
+        "local_assignments": 512
+      },
+      "selected_us": 71.968,
+      "control_us": 72.096,
+      "relative_change": 0.001775410563692903,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 11,
+        "local_assignments": 512
+      },
+      "selected_us": 89.44,
+      "control_us": 89.6165,
+      "relative_change": 0.00196950338386348,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 16,
+        "local_assignments": 512
+      },
+      "selected_us": 126.208,
+      "control_us": 126.32049999999998,
+      "relative_change": 0.0008905917883477166,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 23,
+        "local_assignments": 512
+      },
+      "selected_us": 172.255,
+      "control_us": 172.336,
+      "relative_change": 0.0004700120694458576,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 32,
+        "local_assignments": 512
+      },
+      "selected_us": 239.51999999999998,
+      "control_us": 239.8245,
+      "relative_change": 0.0012696784523683613,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 45,
+        "local_assignments": 512
+      },
+      "selected_us": 313.54949999999997,
+      "control_us": 313.6145,
+      "relative_change": 0.00020726082499389342,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 64,
+        "local_assignments": 512
+      },
+      "selected_us": 445.0400000000001,
+      "control_us": 444.80099999999993,
+      "relative_change": 0.0005373189358839348,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 128,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 20.064,
+      "control_us": 20.096,
+      "relative_change": 0.0015923566878981443,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 4,
+        "local_assignments": 724
+      },
+      "selected_us": 57.3765,
+      "control_us": 57.47200000000001,
+      "relative_change": 0.0016616787305123726,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 6,
+        "local_assignments": 724
+      },
+      "selected_us": 60.448,
+      "control_us": 60.352,
+      "relative_change": 0.0015906680805939377,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 8,
+        "local_assignments": 724
+      },
+      "selected_us": 74.24,
+      "control_us": 74.4635,
+      "relative_change": 0.0030014705191133695,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 11,
+        "local_assignments": 724
+      },
+      "selected_us": 94.4005,
+      "control_us": 94.656,
+      "relative_change": 0.002699247802569471,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 16,
+        "local_assignments": 724
+      },
+      "selected_us": 127.21799999999999,
+      "control_us": 127.3275,
+      "relative_change": 0.0008599870412911992,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 23,
+        "local_assignments": 724
+      },
+      "selected_us": 173.9685,
+      "control_us": 174.23950000000002,
+      "relative_change": 0.0015553304503285181,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 32,
+        "local_assignments": 724
+      },
+      "selected_us": 241.47199999999998,
+      "control_us": 241.45450000000002,
+      "relative_change": 7.247742328253537e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 45,
+        "local_assignments": 724
+      },
+      "selected_us": 315.888,
+      "control_us": 315.9535,
+      "relative_change": 0.0002073089869238931,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 64,
+        "local_assignments": 724
+      },
+      "selected_us": 442.75450000000006,
+      "control_us": 442.53049999999996,
+      "relative_change": 0.0005061798000365325,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 181,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 21.346,
+      "control_us": 21.441,
+      "relative_change": 0.004430763490508749,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 4,
+        "local_assignments": 1024
+      },
+      "selected_us": 74.72,
+      "control_us": 74.72,
+      "relative_change": 0.0,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 6,
+        "local_assignments": 1024
+      },
+      "selected_us": 79.00699999999999,
+      "control_us": 78.928,
+      "relative_change": 0.0010009122237988333,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 8,
+        "local_assignments": 1024
+      },
+      "selected_us": 76.256,
+      "control_us": 76.49450000000002,
+      "relative_change": 0.0031178712194996905,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 11,
+        "local_assignments": 1024
+      },
+      "selected_us": 95.908,
+      "control_us": 96.463,
+      "relative_change": 0.005753501342483536,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 16,
+        "local_assignments": 1024
+      },
+      "selected_us": 130.0795,
+      "control_us": 130.2095,
+      "relative_change": 0.0009983910544161256,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 23,
+        "local_assignments": 1024
+      },
+      "selected_us": 178.349,
+      "control_us": 178.1755,
+      "relative_change": 0.0009737590184957234,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 32,
+        "local_assignments": 1024
+      },
+      "selected_us": 244.368,
+      "control_us": 244.274,
+      "relative_change": 0.0003848137746955693,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 45,
+        "local_assignments": 1024
+      },
+      "selected_us": 319.8365,
+      "control_us": 319.6325,
+      "relative_change": 0.0006382329706773326,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 64,
+        "local_assignments": 1024
+      },
+      "selected_us": 445.90049999999997,
+      "control_us": 446.077,
+      "relative_change": 0.00039567159929798645,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 256,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 23.52,
+      "control_us": 23.616,
+      "relative_change": 0.004065040650406471,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 4,
+        "local_assignments": 1448
+      },
+      "selected_us": 89.92150000000001,
+      "control_us": 90.113,
+      "relative_change": 0.002125109584632523,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 6,
+        "local_assignments": 1448
+      },
+      "selected_us": 91.072,
+      "control_us": 91.16749999999999,
+      "relative_change": 0.001047522417528035,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 8,
+        "local_assignments": 1448
+      },
+      "selected_us": 90.70400000000001,
+      "control_us": 91.07249999999999,
+      "relative_change": 0.004046226907134187,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 11,
+        "local_assignments": 1448
+      },
+      "selected_us": 121.42350000000002,
+      "control_us": 121.50399999999999,
+      "relative_change": 0.000662529628653985,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 16,
+        "local_assignments": 1448
+      },
+      "selected_us": 149.4405,
+      "control_us": 149.423,
+      "relative_change": 0.00011711717740903183,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 23,
+        "local_assignments": 1448
+      },
+      "selected_us": 183.7135,
+      "control_us": 183.7135,
+      "relative_change": 0.0,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 32,
+        "local_assignments": 1448
+      },
+      "selected_us": 251.4235,
+      "control_us": 251.82349999999997,
+      "relative_change": 0.0015884141074997693,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 45,
+        "local_assignments": 1448
+      },
+      "selected_us": 327.21400000000006,
+      "control_us": 327.08900000000006,
+      "relative_change": 0.00038215898425209005,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 64,
+        "local_assignments": 1448
+      },
+      "selected_us": 461.67999999999995,
+      "control_us": 466.371,
+      "relative_change": 0.010058515645269606,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 362,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 26.909999999999997,
+      "control_us": 26.912,
+      "relative_change": 7.431629013088248e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 4,
+        "local_assignments": 2048
+      },
+      "selected_us": 118.912,
+      "control_us": 118.8475,
+      "relative_change": 0.0005427122993753031,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 6,
+        "local_assignments": 2048
+      },
+      "selected_us": 121.4735,
+      "control_us": 121.8725,
+      "relative_change": 0.00327391331104232,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 8,
+        "local_assignments": 2048
+      },
+      "selected_us": 120.1935,
+      "control_us": 120.64,
+      "relative_change": 0.0037010941644561868,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 11,
+        "local_assignments": 2048
+      },
+      "selected_us": 126.2225,
+      "control_us": 126.55949999999999,
+      "relative_change": 0.0026627791671109957,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 16,
+        "local_assignments": 2048
+      },
+      "selected_us": 156.2395,
+      "control_us": 156.11149999999998,
+      "relative_change": 0.0008199267831006107,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 23,
+        "local_assignments": 2048
+      },
+      "selected_us": 192.081,
+      "control_us": 192.11249999999998,
+      "relative_change": 0.0001639664259223128,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 32,
+        "local_assignments": 2048
+      },
+      "selected_us": 259.0245,
+      "control_us": 259.04049999999995,
+      "relative_change": 6.176640332289374e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 45,
+        "local_assignments": 2048
+      },
+      "selected_us": 337.681,
+      "control_us": 337.35949999999997,
+      "relative_change": 0.0009529893185162841,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 64,
+        "local_assignments": 2048
+      },
+      "selected_us": 474.32,
+      "control_us": 474.30449999999996,
+      "relative_change": 3.26794285105958e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 512,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 31.488,
+      "control_us": 31.52,
+      "relative_change": 0.0010152284263958977,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 4,
+        "local_assignments": 2896
+      },
+      "selected_us": 146.465,
+      "control_us": 146.72200000000004,
+      "relative_change": 0.001751611891877336,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 6,
+        "local_assignments": 2896
+      },
+      "selected_us": 147.07299999999998,
+      "control_us": 147.68099999999998,
+      "relative_change": 0.0041169818730913965,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 8,
+        "local_assignments": 2896
+      },
+      "selected_us": 147.808,
+      "control_us": 148.497,
+      "relative_change": 0.004639824373556478,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 11,
+        "local_assignments": 2896
+      },
+      "selected_us": 188.99349999999998,
+      "control_us": 189.0575,
+      "relative_change": 0.0003385213493251049,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 16,
+        "local_assignments": 2896
+      },
+      "selected_us": 194.04900000000004,
+      "control_us": 194.06349999999998,
+      "relative_change": 7.471781143775225e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 23,
+        "local_assignments": 2896
+      },
+      "selected_us": 206.82000000000002,
+      "control_us": 206.8975,
+      "relative_change": 0.0003745816165008353,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 32,
+        "local_assignments": 2896
+      },
+      "selected_us": 289.649,
+      "control_us": 289.917,
+      "relative_change": 0.0009244025014054635,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 45,
+        "local_assignments": 2896
+      },
+      "selected_us": 358.8945,
+      "control_us": 358.7985,
+      "relative_change": 0.0002675596469885466,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 64,
+        "local_assignments": 2896
+      },
+      "selected_us": 500.164,
+      "control_us": 500.7845,
+      "relative_change": 0.001239055921259502,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 724,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 41.696,
+      "control_us": 41.632999999999996,
+      "relative_change": 0.0015132226839287277,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 4,
+        "local_assignments": 4096
+      },
+      "selected_us": 194.079,
+      "control_us": 194.83350000000002,
+      "relative_change": 0.0038725373203274405,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 6,
+        "local_assignments": 4096
+      },
+      "selected_us": 202.65550000000002,
+      "control_us": 203.4565,
+      "relative_change": 0.003936959497484627,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 8,
+        "local_assignments": 4096
+      },
+      "selected_us": 195.40949999999998,
+      "control_us": 196.67399999999998,
+      "relative_change": 0.0064294212758168046,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 11,
+        "local_assignments": 4096
+      },
+      "selected_us": 200.20950000000002,
+      "control_us": 200.082,
+      "relative_change": 0.0006372387321200712,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 16,
+        "local_assignments": 4096
+      },
+      "selected_us": 208.43050000000002,
+      "control_us": 208.495,
+      "relative_change": 0.0003093599366890132,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 23,
+        "local_assignments": 4096
+      },
+      "selected_us": 240.0965,
+      "control_us": 239.9205,
+      "relative_change": 0.0007335763304927578,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 32,
+        "local_assignments": 4096
+      },
+      "selected_us": 309.24850000000004,
+      "control_us": 309.058,
+      "relative_change": 0.0006163891567279034,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 45,
+        "local_assignments": 4096
+      },
+      "selected_us": 378.609,
+      "control_us": 378.544,
+      "relative_change": 0.00017171055412323888,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 64,
+        "local_assignments": 4096
+      },
+      "selected_us": 521.423,
+      "control_us": 521.392,
+      "relative_change": 5.9456224874798735e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1024,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 51.327000000000005,
+      "control_us": 51.263,
+      "relative_change": 0.0012484638043035456,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 4,
+        "local_assignments": 5792
+      },
+      "selected_us": 260.54449999999997,
+      "control_us": 261.7125,
+      "relative_change": 0.004462912547165354,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 6,
+        "local_assignments": 5792
+      },
+      "selected_us": 263.024,
+      "control_us": 264.1775,
+      "relative_change": 0.004366382451192918,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 8,
+        "local_assignments": 5792
+      },
+      "selected_us": 266.14300000000003,
+      "control_us": 266.14549999999997,
+      "relative_change": 9.393358144094144e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 11,
+        "local_assignments": 5792
+      },
+      "selected_us": 271.76,
+      "control_us": 271.6005,
+      "relative_change": 0.0005872595963556382,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 16,
+        "local_assignments": 5792
+      },
+      "selected_us": 268.65700000000004,
+      "control_us": 268.688,
+      "relative_change": 0.00011537545405804206,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 23,
+        "local_assignments": 5792
+      },
+      "selected_us": 262.019,
+      "control_us": 262.01649999999995,
+      "relative_change": 9.541383844346996e-06,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 32,
+        "local_assignments": 5792
+      },
+      "selected_us": 358.2875,
+      "control_us": 358.1445,
+      "relative_change": 0.0003992801788106348,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 45,
+        "local_assignments": 5792
+      },
+      "selected_us": 422.862,
+      "control_us": 422.543,
+      "relative_change": 0.000754952750370963,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 64,
+        "local_assignments": 5792
+      },
+      "selected_us": 551.0255,
+      "control_us": 551.1675,
+      "relative_change": 0.0002576349294907132,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 1448,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 62.946000000000005,
+      "control_us": 62.976,
+      "relative_change": 0.000476371951219412,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 4,
+        "local_assignments": 8192
+      },
+      "selected_us": 334.97849999999994,
+      "control_us": 334.882,
+      "relative_change": 0.00028816120305052983,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 6,
+        "local_assignments": 8192
+      },
+      "selected_us": 337.521,
+      "control_us": 337.85850000000005,
+      "relative_change": 0.0009989389048966624,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 8,
+        "local_assignments": 8192
+      },
+      "selected_us": 337.79449999999997,
+      "control_us": 337.66650000000004,
+      "relative_change": 0.0003790722502823307,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 11,
+        "local_assignments": 8192
+      },
+      "selected_us": 345.761,
+      "control_us": 345.665,
+      "relative_change": 0.00027772554351757073,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 16,
+        "local_assignments": 8192
+      },
+      "selected_us": 350.93,
+      "control_us": 350.94350000000003,
+      "relative_change": 3.846773056070951e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 23,
+        "local_assignments": 8192
+      },
+      "selected_us": 362.7035,
+      "control_us": 362.81600000000003,
+      "relative_change": 0.0003100745281354733,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 32,
+        "local_assignments": 8192
+      },
+      "selected_us": 393.1835,
+      "control_us": 393.711,
+      "relative_change": 0.001339815245192666,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 45,
+        "local_assignments": 8192
+      },
+      "selected_us": 476.273,
+      "control_us": 475.93449999999996,
+      "relative_change": 0.0007112323229352402,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 64,
+        "local_assignments": 8192
+      },
+      "selected_us": 590.6524999999999,
+      "control_us": 591.3439999999999,
+      "relative_change": 0.0011693701128278056,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2048,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 83.52199999999999,
+      "control_us": 83.648,
+      "relative_change": 0.0015063121652639788,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 4,
+        "local_assignments": 11584
+      },
+      "selected_us": 450.59400000000005,
+      "control_us": 450.38699999999994,
+      "relative_change": 0.00045960473992390227,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 6,
+        "local_assignments": 11584
+      },
+      "selected_us": 485.587,
+      "control_us": 485.23400000000004,
+      "relative_change": 0.0007274840592372822,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 8,
+        "local_assignments": 11584
+      },
+      "selected_us": 488.7545,
+      "control_us": 488.59600000000006,
+      "relative_change": 0.0003243988898802286,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 11,
+        "local_assignments": 11584
+      },
+      "selected_us": 494.56199999999995,
+      "control_us": 494.5785000000001,
+      "relative_change": 3.33617413618148e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 16,
+        "local_assignments": 11584
+      },
+      "selected_us": 496.70550000000003,
+      "control_us": 497.2345,
+      "relative_change": 0.0010638843443083745,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 23,
+        "local_assignments": 11584
+      },
+      "selected_us": 473.8435,
+      "control_us": 474.355,
+      "relative_change": 0.0010783063317557628,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 32,
+        "local_assignments": 11584
+      },
+      "selected_us": 520.514,
+      "control_us": 521.0575,
+      "relative_change": 0.0010430710622147954,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 45,
+        "local_assignments": 11584
+      },
+      "selected_us": 636.1645000000001,
+      "control_us": 636.9615000000001,
+      "relative_change": 0.0012512530192170246,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 64,
+        "local_assignments": 11584
+      },
+      "selected_us": 689.4085,
+      "control_us": 690.3359999999999,
+      "relative_change": 0.0013435486487737291,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 2896,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 123.29599999999999,
+      "control_us": 123.359,
+      "relative_change": 0.0005107045290574375,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 4,
+        "local_assignments": 16384
+      },
+      "selected_us": 676.9485,
+      "control_us": 677.03,
+      "relative_change": 0.00012037871290782043,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 6,
+        "local_assignments": 16384
+      },
+      "selected_us": 684.4345000000001,
+      "control_us": 684.2929999999999,
+      "relative_change": 0.0002067827670313438,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 8,
+        "local_assignments": 16384
+      },
+      "selected_us": 679.3305,
+      "control_us": 679.2195,
+      "relative_change": 0.00016342286992632182,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 11,
+        "local_assignments": 16384
+      },
+      "selected_us": 696.0039999999999,
+      "control_us": 696.1315,
+      "relative_change": 0.0001831550504467483,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 16,
+        "local_assignments": 16384
+      },
+      "selected_us": 687.4739999999999,
+      "control_us": 687.9215,
+      "relative_change": 0.0006505102689771114,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 23,
+        "local_assignments": 16384
+      },
+      "selected_us": 716.2755,
+      "control_us": 715.8265,
+      "relative_change": 0.0006272469655705937,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 32,
+        "local_assignments": 16384
+      },
+      "selected_us": 704.884,
+      "control_us": 704.9445000000001,
+      "relative_change": 8.582235906517965e-05,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 45,
+        "local_assignments": 16384
+      },
+      "selected_us": 739.7305000000001,
+      "control_us": 740.0515,
+      "relative_change": 0.00043375359687791715,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 64,
+        "local_assignments": 16384
+      },
+      "selected_us": 783.3310000000001,
+      "control_us": 782.675,
+      "relative_change": 0.0008381512121891088,
+      "supported": true
+    },
+    {
+      "point": {
+        "component": "experts",
+        "mode": "graph",
+        "tokens": 4096,
+        "activated_experts": 0,
+        "local_assignments": 0
+      },
+      "selected_us": 228.57600000000002,
+      "control_us": 228.479,
+      "relative_change": 0.00042454667606217633,
+      "supported": true
+    }
+  ],
+  "quality_supported": true,
+  "table_sha256": "a40b266d7f17bb72928b576ed21eae59a489e15ad9f9ed0218f3f856862fe9e8"
+}

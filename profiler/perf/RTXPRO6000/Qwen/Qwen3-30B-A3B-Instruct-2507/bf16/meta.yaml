@@ -202,3 +202,11 @@ skew_fit:
         - 256
       bucket_table: tp2/skew_fit.csv
       bucket_table_sha256: d2e07dbc593c22d2ccf202ae1b30d4e16a9d2607fe3e89629e48601c57069558
+moe_components:
+  schema: moe-components-v1
+  per_tp:
+    1:
+      index: tp1/moe_components.json
+      sha256: 1d89a1720d701c6fcf1d1b98fa244290a93de493178fd5dbad214364ea586134
+      measured_at: '2026-10-02T00:20:04+00:00'
+      vllm_version: 0.28.0

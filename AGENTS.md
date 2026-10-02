@@ -2068,6 +2068,21 @@ last dependency through ranks it skips. The ragged Ring envelope and independent
 logical collective costs remain approximations of grouped NCCL execution.
 See `docs/docs/profiler/native-moe-components.md` for flags and exact limits.
 
+Shipped native data is the runtime subset: index, contract, coverage and CSV.
+Its acquisition fingerprints remain historical provenance, not hashes to rewrite
+when packaging or changing unrelated code. Original per-forward streams are
+required for acquisition resume; use a separate output root when remeasuring a
+published bundle. Treat the indexed target and contract bounds as authoritative;
+the shipped Qwen3-30B TP1/DP2/EP2 data does not imply TP2 or another model is covered.
+
+Hardware refreshes and historical examples have different ownership. The shipped
+RTXPRO6000 operation fits retain the previously calibrated common latency and
+refit bandwidth from NCCL primitives with the backend's actual formula. Record
+that constraint and residuals; do not relabel it as an unconstrained automatic
+fit. An older multi-GPU example explicitly retains its original common link and
+disables operation-map inheritance, instead of silently acquiring a newer host's
+transport behavior. Refresh benchmark outputs, summaries and public plots together.
+
 ### The legacy MoE grid is per EP degree
 
 The following describes retained `moe.csv` acquisition and fallback, not the
@@ -2365,7 +2380,10 @@ The runner also pins `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`:
 these compiler passes can bypass the communicator via non-NCCL fused kernels.
 Record these explicit overrides under `engine_kwargs.compilation_config`.
 Ordinary compute compilation and CUDA graphs retain their defaults. Custom
-all-reduce and per-collective link parameters are not part of this baseline.
+all-reduce is excluded. Simulator-side collective link parameters may be
+calibrated from NCCL primitive measurements; they do not change the benchmark's
+communication backend. Keep each example's network parameters consistent with
+its recorded hardware environment.
 
 Snapshot resolved engine settings and KV capacity before shutdown. Normal
 serving runs write `engine_start.json` before submitting requests, exclusively;

@@ -47,6 +47,8 @@ Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-conf
 select effective bandwidth and latency per Ring operation without changing tensor sizes.
 Deployment-matched [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
 separates local routing, gathered experts and finalization under DP+EP.
+The bundled Qwen3-30B DP2/EP2 example uses measured native components and
+NCCL-calibrated operation links; historical examples preserve their own network settings.
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
 Model-forward shapes include local CUDA graph padding and subsequent DP synchronization.

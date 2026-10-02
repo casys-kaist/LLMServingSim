@@ -124,6 +124,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Publish qualified RTXPRO6000 Qwen3-30B TP1/DP2/EP2 native component tables,
+  immutable acquisition contracts and coverage checks alongside the existing
+  attention/skew bundle. Refresh its NCCL-only end-to-end example and validation
+  artifacts. Recalibrate common and operation-specific bandwidths from retained
+  NCCL primitives at the previously calibrated common latency, recording units,
+  repetitions, assumptions and residuals. Pin the older Qwen3-32B example's
+  original communication settings; preserve all other recorded benchmark truths.
 - Require documentation updates with every commit across READMEs, repository
   guidance, changelog and public docs. Exclude intermediate work and temporary
   diagnostic or fix-verification scripts, tests and results from commits.
@@ -153,16 +160,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   request distributions. Raw alpha can lie outside the endpoint interval;
   clipping is regularization, and development benchmarks are not independent
   generalization evidence.
-
-- **Qwen3-30B-A3B's committed ground truth is a representative run, not the
-  best-agreeing one.** Its DP+EP tail has a wide error bar on the *engine*
-  side -- twelve identical-flag runs spread 16.9% on TTFT mean and 22.1% on
-  TTFT p90 -- so scoring one simulator output against all twelve gives TTFT
-  mean anywhere from -10.2% to +5.0%. The run that was committed sat at the
-  slow-TTFT end and, precisely because it agreed best in aggregate, was the
-  least representative choice: it is the only truth against which a metric
-  exceeds 5%. Re-anchored to `q30_real_rep5`, the only run where all 15 metrics
-  land inside 5% and whose worst is the smallest of the twelve (4.6%).
 
 - **`hardware.yaml` measures every collective the simulator emits, inside a
   CUDA graph.** The sweep was one AllReduce curve timed with a

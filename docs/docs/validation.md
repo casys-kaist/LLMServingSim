@@ -15,7 +15,7 @@ committed `bench/examples/<hardware>/<model>/validation/summary.txt`, so it is
 reproducible rather than quoted.
 
 **The largest displayed absolute error across the three dense configurations is 1.5%.
-The DP+EP MoE configuration reaches +5.9% and remains a separate accuracy target.**
+The bundled DP+EP MoE example is within 2.6% across all fifteen statistics.**
 
 The additional stored DeepSeek diagnostic has larger errors and is reported
 separately below; it is not included in the four headline configurations.
@@ -34,6 +34,7 @@ separately below; it is not included in the four headline configurations.
 | **Block size** | 16 for the headline examples; 64 for the additional DeepSeek diagnostic |
 | **Engine flags** | Defaults except where the cluster config dictates otherwise |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
+| **Interconnect** | The Qwen3-30B example uses the refreshed NCCL calibration; the older Qwen3-32B reference pins its original link settings |
 | **KV capacity** | `mem_util` `0.9`, except the RTX 4090 example which is calibrated to the measured block count (see below) |
 
 Inputs and outputs (vLLM token IDs, sampling params, per-request
@@ -86,7 +87,7 @@ Mean error vs. real vLLM, per metric, on the four configurations summarized here
 | RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.5% | +0.4% | +0.5% | +1.2% |
 | RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +1.0% | +0.1% | +0.3% | +1.5% |
 | RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.2% | -0.5% | -1.0% |
-| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | +4.8% | +0.9% | +1.0% | +5.9% |
+| RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | -1.1% | +0.2% | +0.1% | -2.6% |
 
 These workloads were used during development, including skew-axis selection.
 Their results are useful regression checks, not an independent estimate of
@@ -94,8 +95,9 @@ generalization to other models, hardware or request distributions.
 
 The last column is the largest absolute error across all fifteen metrics
 (TTFT / TPOT / latency x mean / median / P90 / P95 / P99), which is the honest
-summary of a run: a mean can be small because two errors cancelled. The MoE TTFT tail remains outside the target even though its TPOT and latency
-means are much closer.
+summary of a run: a mean can be small because two errors cancelled. The native
+MoE example remains inside 3% on this reference; that does not cover arbitrary
+deployments or eliminate execution-to-execution TTFT variation.
 
 Queueing can amplify small step-cost differences into larger TTFT errors.
 The signs of aggregate errors do not identify a unique kernel-level cause or
@@ -118,7 +120,7 @@ failing percentiles remain part of the accuracy assessment.
 
 ### RTX 4090 — Llama-3.1-8B (TP=1 dense)
 
-Throughput timeline, vLLM (orange) vs. simulator (blue):
+Throughput timeline, vLLM (blue) vs. simulator (orange, dashed):
 
 ![RTX 4090 Llama-3.1-8B throughput](/img/validation/rtx4090-llama-3.1-8b-throughput.png)
 
@@ -188,19 +190,31 @@ evidence of improved generalization. Communication parameters and profiled
 compute times are not fitted to these results. This dense TP example does
 not validate MoE dispatch/combine or alternative heads.
 
+This reference predates the host interconnect change. Its config retains
+`link_bw: 15.92`, `link_latency: 6600` and an empty `collective_links` map, so a
+refresh of shared hardware defaults does not change its historical transport.
+
 ### RTXPRO6000 — Qwen3-30B-A3B-Instruct-2507 (DP=2 × EP=2 MoE)
 
 ![Qwen3-30B-A3B throughput](/img/validation/rtxpro6000-qwen3-30b-a3b-throughput.png)
 
-| Metric | vLLM | Sim | Diff |
+| Metric | vLLM (ms) | Sim (ms) | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 1.11 s | 1.16 s | **+4.8%** |
-| TTFT median | 0.17 s | 0.18 s | +3.3% |
-| TTFT P99 | 9.78 s | 10.36 s | +5.9% |
-| TPOT mean | 47.2 ms | 47.6 ms | **+0.9%** |
-| TPOT P99 | 53.1 ms | 54.3 ms | +2.4% |
-| Latency mean | 32.29 s | 32.63 s | **+1.0%** |
-| Latency P99 | 43.78 s | 44.10 s | +0.7% |
+| TTFT mean | 1046.2 | 1034.8 | **-1.1%** |
+| TTFT median | 162.4 | 158.2 | -2.6% |
+| TTFT P90 | 4964.9 | 4967.9 | +0.1% |
+| TTFT P95 | 8051.6 | 7858.3 | -2.4% |
+| TTFT P99 | 9453.6 | 9624.1 | +1.8% |
+| TPOT mean | 46.8 | 46.9 | **+0.2%** |
+| TPOT median | 48.4 | 48.5 | +0.2% |
+| TPOT P90 | 51.4 | 51.9 | +0.8% |
+| TPOT P95 | 51.9 | 52.3 | +0.7% |
+| TPOT P99 | 52.6 | 53.1 | +0.8% |
+| Latency mean | 32002.7 | 32037.1 | **+0.1%** |
+| Latency median | 31103.0 | 31233.4 | +0.4% |
+| Latency P90 | 38059.2 | 38132.0 | +0.2% |
+| Latency P95 | 39208.5 | 39297.2 | +0.2% |
+| Latency P99 | 43455.0 | 43532.0 | +0.2% |
 
 This is DP+EP, not prefill/decode disaggregation: two data-parallel
 members share experts and execute wave-synchronized collectives. The
@@ -208,11 +222,17 @@ simulator first resolves each member's local graph padding and then the
 common DP mode. The head and attention request geometry remain separate
 from padded forward rows.
 
-The current aggregate dispatch/combine representation uses a worst-rank
-analytical approximation for unequal contributions. It does not reproduce
-native grouped multi-tensor NCCL timing exactly. This configuration remains
-an accuracy limitation; graph-shape alignment alone does not establish a
-complete MoE execution model.
+This example uses NCCL-only communication and deployment-matched native MoE
+tables, with local routing, gathered experts and local finalization measured
+separately in eager and graph modes. Hidden states, top-k weights and IDs have
+separate collective payloads. Transport bandwidths come from primitive NCCL
+measurements, not these end-to-end timings; the calibration retains the existing
+common latency. Attention and skew tables are unchanged by this refresh.
+
+The transport path still uses a worst-rank Ring approximation for unequal
+contributions and does not reproduce grouped NCCL kernel execution exactly.
+The measured native contract covers this TP1/DP2/EP2 deployment, not arbitrary
+TP/DP degrees, routing histograms, quantized backends or other model families.
 
 ### Additional diagnostic: DeepSeek-V3.2-Exp-16L64E
 
