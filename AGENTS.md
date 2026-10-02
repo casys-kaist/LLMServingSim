@@ -228,6 +228,15 @@ also changes with the batch regime — a GDN block runs one set for pure prefill
 another for pure decode, a third for a mixed batch — so a catalog written from
 a single shot binds the wrong kernel for the others.
 
+Kernel wildcards must not reclaim a bound module's descendants. DeepSeek/GLM
+`indexer_glue` excludes `LayerNorm` and `SparseAttnIndexer`, whose copy/fill
+kernels are already included in `indexer_k_norm` and `indexer`. A coverage
+report with no gaps does not establish non-overlap: coverage counts a bound
+parent once, while latency extraction continues into its children. Audit
+nested bindings on the live tree, including across categories; a dense-only
+slice still must not claim work owned by an attention entry. Refresh old
+`indexer_glue` rows through dense acquisition after changing this guard.
+
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.

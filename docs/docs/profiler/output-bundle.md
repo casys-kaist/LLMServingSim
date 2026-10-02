@@ -79,6 +79,13 @@ Layers it covers: `embedding`, `layernorm`, `qkv_proj`, `qk_norm`,
 `final_layernorm`. (Anything in the YAML's catalog with category
 `dense`.)
 
+DeepSeek/GLM `indexer_glue` measures only residual work outside the indexer's
+`LayerNorm` and `SparseAttnIndexer` subtrees. Their copy/fill kernels already
+belong to `indexer_k_norm` and `indexer`; wildcard kernel bindings must not
+charge them a second time, including when profiling the dense category alone.
+Refresh older glue rows with `profiler slice --group dense --force` for the
+affected bundle. Updating the catalog does not rewrite stored latency tables.
+
 ## `per_sequence.csv`
 
 ```

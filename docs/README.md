@@ -34,6 +34,8 @@ also explains whole-block MoE invocation normalization and when existing
 hybrid-stack tables need remeasurement. Forced-routing grids retain native
 top-k GPU work, warm the requested distribution, and reject bypassed hooks;
 older grids that omitted routing kernels also require a refresh.
+The same table guide explains non-overlapping sparse-indexer glue ownership
+and the dense-category refresh needed for older DeepSeek/GLM glue rows.
 The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
 and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
 and keeps each recorded reference matched to its transport calibration.

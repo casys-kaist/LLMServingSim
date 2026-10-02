@@ -45,6 +45,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Exclude already-counted normalization and sparse-scoring subtrees from
+  DeepSeek/GLM indexer glue profiling. Keep those kernels in their owning
+  entries instead of charging them again through wildcard kernel bindings;
+  existing glue timings require a dense-category refresh.
 - Repair skew CUDA-kernel ownership through native launch correlations and
   OS-thread-matched CPU module scopes. Preserve recorded GPU durations and
   activity coverage, reject missing or ambiguous ownership, and include the

@@ -226,6 +226,9 @@ catalog:
       # coverage.
       vllm: ["void at::native::*", "Memcpy*", "Memset*"]
       within: Indexer
+      # These subtrees already belong to indexer_k_norm and indexer;
+      # their copy/fill kernels are not additional Indexer glue.
+      not_within: [LayerNorm, SparseAttnIndexer]
 
     # --- dense MLP (layers 0..2) -------------------------------------------
     # not_within excludes the shared expert, which is the same class nested

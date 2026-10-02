@@ -706,6 +706,14 @@ Run it whenever you write or edit a catalog, and after a vLLM upgrade.
 
 ### The opposite failure: an entry that binds too much
 
+Kernel wildcards must also exclude already-owned subtrees. DeepSeek/GLM
+`indexer_glue` excludes `LayerNorm` and `SparseAttnIndexer`: their copy, fill and
+normalization kernels are already included in `indexer_k_norm` or `indexer`.
+Coverage can report no gaps while latency extraction still double-counts a
+parent binding and its bound child. Audit nested matches as well. Existing
+`indexer_glue` rows need a dense-category refresh; changing the catalog does
+not repair stored CSV timings.
+
 Coverage reports what is *un*bound, so it is blind to an entry that also claims
 the **target's** nodes. That happens whenever the guard is missing or wrong —
 the drafter's modules are the same classes as the target's, and so is
