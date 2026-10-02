@@ -83,7 +83,7 @@ def _fire_one_category(
     out_dir: Path,
     *,
     wipe: bool | None = None,
-) -> None:
+) -> bool:
     """Sweep all of this category's shots, write the resulting CSV.
 
     Resume behaviour: unless ``args.force`` is set, an existing CSV is
@@ -100,8 +100,10 @@ def _fire_one_category(
     """
     if wipe is None:
         wipe = args.force
-    sink = sink_for(category, out_dir)
     catalog_slice = category.catalog_slice(arch)
+    from .measurement import layerwise_measurement
+    measurement = layerwise_measurement(catalog_slice, args.measurement_iterations)
+    sink = sink_for(category, out_dir, measurement=measurement)
 
     prior_keys: set[tuple] = set()
     if not wipe:
@@ -123,7 +125,7 @@ def _fire_one_category(
             "category %s produced no shots for tp=%d; skipping",
             category.label, tp,
         )
-        return
+        return False
 
     if prior_keys:
         shots = [s for s in all_shots if category.shot_key(s) not in prior_keys]
@@ -137,11 +139,8 @@ def _fire_one_category(
         shots = all_shots
 
     if not shots:
-        # Nothing to fire; still flush so the CSV is rewritten with
-        # preloaded rows (a no-op schema repair if anything changed).
-        sink.flush()
         log.info("%s: nothing to do (all shots already measured)", category.label)
-        return
+        return False
 
     label = f"TP={tp}  {category.label}"
     # A long sweep is otherwise unobservable: the progress bar needs a TTY and
@@ -160,6 +159,10 @@ def _fire_one_category(
             # TP rank). The timings are identical across ranks; take
             # rank 0's.
             timings_dicts = raw[0]
+            if not timings_dicts or any(
+                    any(d.get(k) != v for k, v in measurement.items())
+                    for d in timings_dicts):
+                raise ValueError('Worker timings do not match the requested acquisition method')
             timings = [
                 TimingSample(
                     layer=d["layer"],
@@ -180,6 +183,7 @@ def _fire_one_category(
 
     sink.flush()
     log.success("%s → %s", category.label, sink.path)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +222,7 @@ def run_full(
     # depth), and it is what the provenance stamp has to record -- not the
     # flag, the firing.
     skew_measured = False
+    acquired_categories = set()
 
     for tp in args.tp_degrees:
         # Skip TPs with nothing non-tp_stable to do. The post-pass
@@ -305,9 +310,10 @@ def run_full(
             try:
                 if not args.only_skew:
                     for category in by_depth[depth]:
-                        _fire_one_category(
+                        if _fire_one_category(
                             llm, category, arch, args, limits, tp, tp_root,
-                        )
+                        ):
+                            acquired_categories.add(category.name)
                 else:
                     log.info("only_skew mode: skipping dense / per_seq / "
                              "attention / moe categories")
@@ -344,10 +350,11 @@ def run_full(
                 try:
                     # ep=1 rode the main engine above and has already wiped
                     # under --force; these passes add to that file.
-                    _fire_one_category(
+                    if _fire_one_category(
                         llm, moe_category, arch, args, ep_limits, tp, tp_root,
                         wipe=False,
-                    )
+                    ):
+                        acquired_categories.add(moe_category.name)
                 finally:
                     spin_down(llm, tmpdir)
 
@@ -368,9 +375,10 @@ def run_full(
                     llm, _, tmpdir = spin_up(args, tp)
                     mtp_limits = probe_limits(llm, args)
                 try:
-                    _fire_one_category(
+                    if _fire_one_category(
                         llm, mtp_category, arch, args, mtp_limits, tp, tp_root,
-                    )
+                    ):
+                        acquired_categories.add(mtp_category.name)
                 finally:
                     spin_down(llm, tmpdir)
 
@@ -390,9 +398,7 @@ def run_full(
     # all, so claiming them would relabel dense / attention / per_sequence as
     # freshly measured on a run that only touched skew.csv -- the exact failure
     # the per-artifact block exists to prevent.
-    measured: tuple[str, ...] = () if args.only_skew else tuple(
-        c.name for c in categories_for(arch, args.tp_degrees[0])
-        if c.name != "moe" or args.moe_dp_degrees is None)
+    measured = tuple(sorted(acquired_categories))
     if skew_measured:
         measured += ("skew",)
     # And what it is entitled to *describe*. A skew-only run sweeps no
@@ -472,6 +478,7 @@ def run_slice(
     eps = (tuple(args.moe_ep_degrees or (1,)) if group == "moe" else (1,))
     engine_kwargs: dict = {}
     limits = None
+    acquired = False
     for ep in eps:
         stage = f"TP={tp}  booting vLLM engine ({depth} layer(s))"
         if ep != 1:
@@ -487,10 +494,10 @@ def run_slice(
             log.info("TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
                      tp, ep, limits.num_experts, limits.top_k)
         try:
-            _fire_one_category(
+            acquired = _fire_one_category(
                 llm, category, arch, args, limits, tp, tp_root,
                 wipe=(args.force and ep == eps[0]),
-            )
+            ) or acquired
         finally:
             spin_down(llm, tmpdir)
 
@@ -517,7 +524,7 @@ def run_slice(
         # derives its grid from this run's args, which are the defaults
         # unless the caller happened to repeat every SKEW_* factor.
         records_skew=False,
-        measured_categories=(group,),
+        measured_categories=(group,) if acquired else (),
     )
     if not records_engine:
         log.info(

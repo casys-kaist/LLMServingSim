@@ -154,11 +154,16 @@ class Extension:
                     if measured_out is None:
                         self.model_runner.sample_tokens(None)
 
-        stats = hook.results.convert_stats_to_dict()
+        from .cuda_timing import from_vllm
+        from profiler.core.measurement import layerwise_measurement
+
+        measured, _ = from_vllm(hook.results)
+        stats = measured.convert_stats_to_dict()
         summary = stats["summary_stats"]
 
         samples = extract_samples(summary, slice_, iterations=iterations)
-        return [s.as_dict() for s in samples]
+        acquisition = layerwise_measurement(slice_, iterations)
+        return [dict(s.as_dict(), **acquisition) for s in samples]
 
     def coverage(
         self,

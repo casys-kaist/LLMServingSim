@@ -15,8 +15,9 @@ coefficients are no longer supported; rebuild old enabled bundles. Disabled
 bundles, including RTX4090, are unchanged. Rebuilding is not an accuracy guarantee. The broader shipped Llama TP1 and
 Qwen3-32B TP2 raw data are retained measurements, not a completed run of the
 new acquisition defaults. Their metadata distinguishes historical coverage
-from the new protocol; planned cases lacking verified repetitions are
-remeasured on the next sweep.
+from the new protocol. Use a separate output root or explicit `--force` for
+new acquisition when the retained data has an incompatible timing method;
+historical raw data is not relabelled by a CPU refit.
 
 ## Measurements and lookup references
 
@@ -32,6 +33,13 @@ native OS-thread identities before locating the innermost launching module.
 This repairs misplaced kernel leaves while preserving recorded durations and
 activity coverage. CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
+
+`native-skew-per-forward-v2` uses the same per-call CUDA interval unions as
+ordinary attention profiling. Overlapping activities on one device count once
+inside each module invocation; distinct calls remain separate before averaging.
+CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints
+must match, and older kernel-sum measurements cannot satisfy the new resume
+contract or be silently appended to a current-method sweep.
 
 The default fit instead reconstructs the requests and computes both references
 through the **same attention lookup used by serving**:
@@ -99,7 +107,8 @@ of exhaustive coverage of every reachable distribution.
 The CPU preview includes these additions and deficits. Selected identities
 are compact; their request arrays are regenerated one batch at a time.
 
-Existing raw measurements are retained unless `--force` is explicit. The
+Existing raw measurements are retained unless `--force` is explicit; acquisition
+refuses to mix incompatible timing methods or resolved block sizes. The
 support check accounts for their usable heterogeneous prefill envelope so its partitions match
 the eventual merged fit, but counts support on the new plan alone; legacy
 rows cannot hide gaps in the current measurement protocol.
@@ -108,16 +117,16 @@ Only the actual shot consumes KV capacity: its allocation is page-aligned,
 includes all scheduled queries, and respects the context boundary plus one
 sampler token. The collector verifies executed geometry and finite warmup
 output, restores unambiguous CPU module containment, and excludes GPU user
-annotations from kernel-duration sums.
+annotations from CUDA activity accounting.
 
 Some sparse indexers discard query boundaries when they split their backend
 metadata into prefill and decode regions. The warmup verifies the shared
 query/history metadata passed to the actual builder and associates that
 check with the exact returned object used by the model. Unknown or mismatched
 geometry still fails; sparse backends are not exempted. Builder hooks are
-restored before timed forwards, including on failure. Ordinary attention
-also retains its direct backend-metadata check. No CPU verification time is
-included in the measured CUDA kernel sum.
+restored before timed forwards, including on failure. Backends that retain
+query boundaries use the direct geometry check. No CPU verification time is
+included in the measured CUDA interval union.
 
 The plan streams batches rather than allocating the full Cartesian product.
 Raw checkpoints are replaced atomically. Successful cases survive failures;

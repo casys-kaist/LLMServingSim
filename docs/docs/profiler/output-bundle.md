@@ -53,6 +53,36 @@ multiplies by 1000 and rounds to nanoseconds at load time. If you're
 hand-authoring CSVs (see [Adding non-GPU hardware](./adding-hardware#adding-non-gpu-hardware)),
 remember to use μs.
 
+## CUDA activity and acquisition identity
+
+New ordinary layerwise measurements use `cuda-active-union-per-call-v1`.
+For each raw module invocation, merge overlapping CUDA intervals on the same
+device, then apply the existing per-call normalization. Distinct calls remain
+separate before averaging, even when their device execution overlaps.
+CPU launch scopes establish ownership only; CPU duration, GPU annotations and
+gaps between device activities do not contribute latency. The result is
+device-active time, not whole-step elapsed time. Separate catalog components
+can still overlap, so adding their costs is not an exact global interval union.
+
+Ordinary category CSVs add `measurement_protocol` and `measurement_sha256` to
+the numerical columns shown in the examples below. The fingerprint binds the
+timing implementation, catalog, repetitions and library versions. Host and
+worker identities must agree before writing. These columns are stored
+atomically with the timing rows; TP-stable replication retains them.
+Unchanged numerical columns remain readable by the simulator.
+
+Resume requires the same identity. Historical files without one remain valid
+simulation inputs but cannot be extended as if they had been measured by the
+current method. Use a separate output root or explicitly refresh the selected
+category with `--force`. No-op ordinary sweeps preserve the category's previous
+measurement provenance. TP-stable replication rejects mixed timing methods
+before replacing a destination file.
+
+Skew uses the same interval accounting with its separate per-forward
+`native-skew-per-forward-v2` protocol. Native DP+EP component bundles retain
+their own recorded measurement contract; they are not converted by this change.
+Catalog coverage remains a kernel-work accounting check, not a latency union.
+
 ## `dense.csv`
 
 ```

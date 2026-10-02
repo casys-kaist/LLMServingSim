@@ -149,9 +149,7 @@ def partition_cpu_roots(roots, iterations, windows=None):
 
 def extract_forwards(results, catalog, iterations):
     from torch._C._profiler import _EventType
-    from torch.autograd import DeviceType
-    from vllm.profiler.utils import event_has_module
-    from .activity_ownership import reparent_cuda_activity
+    from .cuda_timing import from_vllm
 
     windows = {}
 
@@ -170,33 +168,7 @@ def extract_forwards(results, catalog, iterations):
         find_markers(event)
     if set(windows) != set(range(iterations)):
         raise ValueError('Missing timed-forward scopes')
-    original = results
-    results = copy.copy(original)
-    removed = []
-
-    def without_annotations(node, parent=None):
-        if not node.children:
-            event = original._get_kineto_gpu_event(node)
-            if event is not None and event.is_user_annotation():
-                removed.append(event.name())
-                return None
-        clean = copy.copy(node)
-        clean.parent = parent
-        clean.children = [child for item in node.children
-                          if (child := without_annotations(item, clean)) is not None]
-        return clean
-
-    # GPU user annotations carry duration but are not kernel activity.
-    # Upstream's generic CUDA-event sum includes them, doubling a tiny Linear
-    # control when our forward marker is attached to that module's tree.
-    results._module_tree = [root for item in original._module_tree
-                            if (root := without_annotations(item)) is not None]
-    results._module_tree, _ = canonical_module_tree(results._module_tree, event_has_module)
-    results._module_tree, ownership = reparent_cuda_activity(
-        results._module_tree, event_has_module, results._get_kineto_gpu_event,
-        [event for event in results._kineto_results.events()
-         if event.device_type() == DeviceType.CPU])
-    results._build_stats_trees()
+    results, activity_audit = from_vllm(results)
     groups = partition_cpu_roots(results._module_tree, iterations, [windows[i] for i in range(iterations)])
     forwards, kernels = [], []
     for roots in groups:
@@ -233,9 +205,13 @@ def extract_forwards(results, catalog, iterations):
         deltas[name] = mean-value
         if not math.isclose(mean, value, rel_tol=1e-6, abs_tol=1e-5):
             raise ValueError(f'Per-forward attribution does not conserve {name}: {mean} vs {value}')
+    from profiler.core.skew import PROTOCOL, measurement_fingerprint
     return dict(per_forward_us=forwards, aggregate_us=aggregate,
+                measurement_protocol=PROTOCOL, measurement_sha256=measurement_fingerprint(),
                 conservation_delta_us=deltas, cuda_kernel_counts=kernels,
-                excluded_gpu_annotations=removed, activity_ownership=ownership)
+                excluded_gpu_annotations=activity_audit['excluded_gpu_annotations'],
+                activity_ownership=activity_audit['activity_ownership'],
+                cuda_activity=activity_audit)
 
 
 def initialize(runner):
@@ -265,7 +241,7 @@ def initialize(runner):
     with torch.inference_mode():
         clear(caches)
     torch.cuda.synchronize()
-    return dict(cache_bytes=total, protocol="native-skew-per-forward-v1",
+    return dict(cache_bytes=total, protocol="native-skew-per-forward-v2",
                 kv_initialization="zeroed once; native query writes thereafter")
 
 

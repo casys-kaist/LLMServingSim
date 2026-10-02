@@ -655,7 +655,29 @@ discard them. During untimed warmup, verify the common metadata passed to the
 actual builder and retain the exact returned object's identity. Use that
 evidence only when direct backend geometry is unavailable; never skip an
 unknown backend by name. Restore builder methods before timing and on failure.
-Attention and other ordinary categories retain their existing measurement path.
+Attention and ordinary categories use the same per-call CUDA activity union as
+skew, but retain their category-specific averaging and axes.
+
+`hooks/cuda_timing.py` forms the interval union within each raw module call,
+separately per device, before vLLM merges same-class invocations. Overlapping
+streams on one device count once; different calls must not be pooled before
+normalization. Resolve a native activity by correlation, name and exact device
+interval, but use CPU launch scopes for ownership. Exclude annotations and
+device gaps, reject missing/ambiguous activities, and preserve event coverage.
+This is device-active time, not whole-step wall time. Catalog components may
+overlap each other, so their summed unions need not equal a global union.
+Coverage remains a kernel-work audit, not a union-latency percentage.
+
+Ordinary CSV rows carry `measurement_protocol` and `measurement_sha256` in the
+same atomic write as their timings. Host and worker identities include the
+catalog, repetitions, timing source and library versions. Resume rejects
+missing or incompatible identities; use a separate output root or explicitly
+remeasure with `--force`. TP-stable replication preserves row identities and
+rejects mixed timing methods before replacing the destination. Fully skipped
+ordinary categories do not acquire a new measurement timestamp. Skew uses
+`native-skew-per-forward-v2`, with the common interval helper in its acquisition
+fingerprint; earlier raw measurements must not be retagged. Native DP+EP
+component contracts remain separate and retain their recorded timing method.
 
 Module-tree repair alone is insufficient: CUDA leaves can remain beside the
 module that launched them. `hooks/activity_ownership.py` connects each retained
@@ -718,7 +740,10 @@ The isolated-wall-time correction also compensated a second error rather
 than identifying a production term. This does not establish execution-mode
 invariance: exact-step controls are needed to measure any remaining difference.
 
-**What the profiled sum actually is.** `layerwise_profile` builds its tree from
+**What the historical profiled sum is.** The measurements below predate
+per-call interval-union acquisition; they describe retained kernel-sum bundles,
+not a claim that the two measurement definitions always agree.
+Upstream `layerwise_profile` builds its tree from
 per-module CUDA events and `_cumulative_cuda_time` sums **leaf kernel
 durations**, so a bundle's per-layer latencies are kernel time -- not the wall
 time of an eager engine. Summed for a shape and compared against that shape's

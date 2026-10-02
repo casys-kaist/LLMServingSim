@@ -217,20 +217,25 @@ See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FORCE` | unset | Set to `1` to wipe every CSV for this variant and re-profile from scratch |
+| `FORCE` | unset | Set to `1` to replace the existing acquisitions for the categories and TP degrees selected by this run |
 
-Default is **resume**: existing CSVs are preloaded row by row, and
+Default is **resume** within the same acquisition method: existing CSVs are preloaded row by row, and
 only shots whose identity key isn't already present get fired. This
 lets you extend an earlier sweep after changing feasibility (e.g.,
 raising `MAX_NUM_SEQS` from 128 to 256) in **minutes** instead of
-hours. Resume applies to every category plus skew; `FORCE=1` nukes
-them all.
+hours. Resume applies to ordinary categories and skew. Historical files without
+the current identity or files measured with a different method require a
+separate output root or explicit `--force`; they are not silently mixed with
+new timings. See [acquisition identity](./output-bundle#cuda-activity-and-acquisition-identity).
+Fully skipped ordinary categories retain their previous measurement timestamp.
 
 Skew resume additionally requires a matching measurement implementation
 fingerprint, resolved block size, complete kernel set and sufficient per-forward
 repetitions. A change to timing attribution requires remeasurement even when
 the requested geometry is unchanged. Retained historical rows are not proof
-that the current acquisition protocol has completed.
+that the current acquisition protocol has completed. Current skew acquisition
+uses the same per-call CUDA interval union as the ordinary attention reference
+sweep; old kernel-sum rows are not relabelled as interval-union measurements.
 
 ## Output naming
 

@@ -178,7 +178,9 @@ SKEW_SEED=0
 # keys aren't already present get fired. Lets you extend an existing
 # profile after changing feasibility (e.g. adding pc=2048 cases) in
 # minutes instead of hours. Applies to every category plus skew.
-# Set FORCE=1 to wipe each CSV and re-profile from scratch.
+# Set FORCE=1 to replace selected category/TP acquisitions. Incompatible
+# measurement identities cannot be resumed; use a separate output root to
+# preserve old data while remeasuring.
 # FORCE=1
 
 # --- Output naming ----------------------------------------------------------

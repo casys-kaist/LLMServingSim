@@ -20,6 +20,9 @@ It also describes common-metadata geometry validation for sparse indexers
 whose backend-specific metadata does not retain query boundaries.
 Skew timing documentation separates launch-correlated kernel ownership from
 latency: CPU scopes identify the launching module but contribute no time.
+The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
+defines per-call CUDA interval unions, acquisition identity columns and
+incompatible-resume protection; existing tables are not automatically converted.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.

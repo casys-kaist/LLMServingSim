@@ -147,14 +147,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Removed
 - **Remove the isolated-wall-time cudagraph correction and its `step.csv`.**
-  The simulator consumes profiled CUDA kernel sums, not isolated eager wall
+  The simulator consumes profiled CUDA work, not isolated eager wall
   time. Subtracting an isolated eager-versus-graph wall-time difference is
-  not a justified correction to those sums. This does not imply that eager
+  not a justified correction to kernel sums or per-call interval unions. This does not imply that eager
   and captured execution have identical costs.
   Remove the step profiler, hook, flags, profile files and serving subtraction
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Measure ordinary layerwise and skew latency from per-call CUDA activity
+  unions, avoiding duplicate time from overlapping kernels without adding CPU
+  duration or device gaps. Preserve call normalization and native launch
+  ownership; version ordinary CSV rows and skew acquisitions, reject mismatched
+  worker results and incompatible resumes or TP-stable replication, and keep
+  skipped ordinary categories' prior provenance. Stored profiles and native
+  DP+EP component contracts are not automatically converted.
 - Align public MoE descriptions with deployment-matched component lookup,
   ordered tensor collectives and current graph-padding rules. Correct stale
   validation and profile-coverage statements, document recursive submodule

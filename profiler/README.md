@@ -23,6 +23,12 @@ module's CPU scope, with OS-thread mapping across profiler event namespaces.
 This changes ownership only, not GPU durations or CPU overhead. Missing or
 ambiguous launch evidence rejects the measurement. Resume checks the timing
 implementation fingerprint, so old rows are not relabelled as new acquisitions.
+Ordinary layerwise categories and skew use per-call CUDA interval unions: streams
+on the same device share an interval union, while distinct module calls remain
+separate before averaging. CPU time and gaps are excluded. Ordinary CSV rows
+carry `measurement_protocol` and `measurement_sha256`; worker/host mismatches,
+incompatible resumes and mixed-method TP-stable replication are rejected.
+Native DP+EP components retain their separately versioned measurement contract.
 
 ## Directory layout
 
@@ -380,16 +386,19 @@ extrapolating.
 #### Resume vs force
 
 ```bash
-FORCE=1                             # wipe every CSV for this variant and re-profile
-                                    # from scratch.
+FORCE=1                             # replace acquisitions for the selected categories
+                                    # and TP degrees; use a new output root to preserve them.
 ```
 
-Default is **resume**: existing CSVs are preloaded row by row, and only
+Default is **resume** within the same acquisition method: existing CSVs are preloaded row by row, and only
 shots whose identity key isn't already present get fired. This lets you
 extend an earlier sweep after changing feasibility (e.g. raising
 `MAX_NUM_SEQS` from 128 to 256 so mixed `n=128` corners become feasible)
 in minutes instead of hours. Resume applies to every category plus
-skew; `FORCE=1` nukes them all.
+skew. Historical or incompatible acquisition identities require a separate
+output root or explicit `--force`, which replaces the categories and TP degrees
+selected by the run. A fully skipped ordinary category keeps its prior
+measurement timestamp. Updating profiler code alone never updates stored times.
 
 Skew feasibility uses the resolved block size for the actual heterogeneous
 shot; uniform reference batches are looked up offline, not measured. Skew checkpoints use atomic file
@@ -622,7 +631,8 @@ remain unchanged; do not bypass the stale-fit check by editing hashes.
 
 `--skip-skew` skips acquisition, not existing calibration. `--only-skew`
 requires an existing attention table. Existing raw rows are retained unless
-`--force` is explicit. `plan-skew` includes support additions and unresolved
+`--force` is explicit; incompatible acquisition methods are rejected rather
+than merged into a new sweep. `plan-skew` includes support additions and unresolved
 deficits in its preview. New acquisitions record completion
 and resolved limits in `tp<N>/skew.meta.yaml`. Refit rejects unfinished
 acquisitions and absent raw data

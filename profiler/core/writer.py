@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import csv
 import datetime
+import math
 import os
 import platform
 import subprocess
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+from profiler.core.measurement import FIELDS as MEASUREMENT_FIELDS
 
 from profiler import __version__ as profiler_version
 from profiler.core import logger as log
@@ -57,7 +60,7 @@ class DedupSink:
     Duplicate detection key = every field except ``microseconds``.
     """
 
-    def __init__(self, out_path: Path, key_fields: list[str]) -> None:
+    def __init__(self, out_path: Path, key_fields: list[str], measurement=None) -> None:
         """
         Args:
             out_path: full CSV path, e.g. ``perf/.../tp1/dense.csv``.
@@ -67,6 +70,12 @@ class DedupSink:
         """
         self.out_path = out_path
         self.key_fields = key_fields
+        self.measurement = dict(measurement) if measurement is not None else None
+        if self.measurement is not None and (
+                set(self.measurement) != set(MEASUREMENT_FIELDS)
+                or any(not isinstance(v, str) or not v for v in self.measurement.values())):
+            raise ValueError('Incomplete measurement identity')
+        self._row_measurements = {}
         # key tuple -> (running_sum, count)
         self._bucket: dict[tuple, tuple[float, int]] = {}
         # Track fieldnames in the order we first see them so the CSV
@@ -89,7 +98,13 @@ class DedupSink:
             self._fieldnames = ordered
 
         key = tuple(d[f] for f in self.key_fields)
+        if self.measurement is None and self._row_measurements:
+            raise ValueError('New samples need an identity when extending a versioned table')
         us = float(d["microseconds"])
+        if self.measurement is not None and (not math.isfinite(us) or us <= 0):
+            raise ValueError('Versioned measurements require positive finite CUDA time')
+        if self.measurement is not None:
+            self._row_measurements[key] = self.measurement
         prev = self._bucket.get(key)
         if prev is None:
             self._bucket[key] = (us, 1)
@@ -118,6 +133,10 @@ class DedupSink:
             field_order = reader.fieldnames or []
             if not field_order:
                 return 0
+            if self.measurement is not None and any(k not in field_order for k in MEASUREMENT_FIELDS):
+                raise ValueError(
+                    f'{self.out_path} has no current measurement identity; '
+                    'use a separate output root or --force to remeasure')
             # A prior file that predates one of this sink's key fields cannot
             # be preloaded at all -- every row would fail the key build below --
             # and adopting its column order would pin ``flush`` to a schema too
@@ -136,14 +155,22 @@ class DedupSink:
             # Establish ordering now so flush preserves the original
             # schema even when no new rows come in.
             if self._fieldnames is None:
-                ordered = [f for f in field_order if f != "time_us"]
-                ordered.append("microseconds")
+                ordered = ['microseconds' if f == 'time_us' else f for f in field_order]
                 self._fieldnames = ordered
             for row in reader:
+                recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
+                if self.measurement is not None and recorded != self.measurement:
+                    raise ValueError(
+                        f'{self.out_path} uses a different measurement method; '
+                        'use a separate output root or --force to remeasure')
                 try:
                     us = float(row["time_us"])
                 except (KeyError, ValueError):
+                    if self.measurement is not None:
+                        raise ValueError(f'Invalid measurement time in {self.out_path}')
                     continue
+                if self.measurement is not None and (not math.isfinite(us) or us <= 0):
+                    raise ValueError(f'Invalid measurement time in {self.out_path}')
                 key_parts: list[Any] = []
                 bad = False
                 for kf in self.key_fields:
@@ -165,6 +192,10 @@ class DedupSink:
                 key = tuple(key_parts)
                 # Single-sample bucket entry: preserve the exact value.
                 self._bucket[key] = (us, 1)
+                if any(recorded.values()):
+                    if not all(recorded.values()):
+                        raise ValueError(f'Incomplete measurement identity in {self.out_path}')
+                    self._row_measurements[key] = recorded
                 count += 1
         return count
 
@@ -209,6 +240,7 @@ class DedupSink:
             avg_us = total_us / count
             row = {f: v for f, v in zip(self.key_fields, key)}
             row["time_us"] = _format_time_us(avg_us)
+            row.update(self._row_measurements.get(key, {}))
             rows.append(row)
 
         assert self._fieldnames is not None
@@ -218,6 +250,8 @@ class DedupSink:
             "time_us" if f == "microseconds" else f
             for f in header
         ]
+        if self._row_measurements:
+            header.extend(k for k in MEASUREMENT_FIELDS if k not in header)
 
         # Write beside the target and rename. Opening ``out_path`` directly
         # truncates it before the first row is validated, so one bad row
@@ -235,6 +269,7 @@ class DedupSink:
 
         log.debug("wrote %d rows → %s", len(rows), self.out_path)
         self._bucket.clear()
+        self._row_measurements.clear()
 
     # ------------------------------------------------------------------
     # Convenience: attach a human-friendly 'layer' prefix
@@ -256,11 +291,11 @@ def _format_time_us(v: float) -> str:
 # Sink factory per category
 # ---------------------------------------------------------------------------
 
-def sink_for(category: Category, out_dir: Path) -> DedupSink:
+def sink_for(category: Category, out_dir: Path, measurement=None) -> DedupSink:
     """Build a DedupSink pre-configured for a given category's schema."""
     csv_path = out_dir / category.sink_filename
     key_fields = _KEY_FIELDS_BY_CATEGORY[category.name]
-    return DedupSink(out_path=csv_path, key_fields=key_fields)
+    return DedupSink(out_path=csv_path, key_fields=key_fields, measurement=measurement)
 
 
 # The only place where category→key-field mapping is specified. Adding
@@ -778,6 +813,16 @@ def _replicate_layer_file(
     else:
         merged = src_stable
 
+    protocols = {row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
+                 for row in merged}
+    if len(protocols) > 1:
+        raise ValueError(
+            f'TP-stable replication would mix timing methods in {dst}; '
+            'remeasure the destination category with the current profiler first')
+    if any(bool(row.get(MEASUREMENT_FIELDS[0])) != bool(row.get(MEASUREMENT_FIELDS[1]))
+           for row in merged):
+        raise ValueError('TP-stable replication encountered an incomplete measurement identity')
+
     # Re-sort for deterministic output.
     merged.sort(key=lambda r: tuple(
         int(r[k]) if k != "layer" else r[k]
@@ -805,10 +850,15 @@ def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
         return
     fieldnames = list(rows[0].keys())
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    try:
+        with temporary.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

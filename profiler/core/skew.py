@@ -19,14 +19,14 @@ from .skew_calibration import atomic_yaml, measurement_shape
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
-PROTOCOL = "native-skew-per-forward-v1"
+PROTOCOL = "native-skew-per-forward-v2"
 
 
 def measurement_fingerprint():
     """Changing timing attribution or batch construction requires remeasurement."""
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
-    for name in ("skew_measurement.py", "activity_ownership.py", "timings.py",
+    for name in ("skew_measurement.py", "activity_ownership.py", "cuda_timing.py", "timings.py",
                  "batch.py", "sampler_shim.py"):
         value.update((hooks / name).read_bytes())
     return value.hexdigest()
@@ -133,6 +133,15 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     for name in catalog:
         if not set(args.attention_decode_q_lens) <= set(table.get(name, {})):
             raise ValueError(f"Missing exact attention query slices for {name}")
+    if out.exists() and not args.force:
+        recorded = pd.read_csv(out, low_memory=False).fillna('')
+        expected = dict(measurement_protocol=PROTOCOL,
+                        measurement_sha256=measurement_fingerprint(),
+                        block_size=limits.block_size)
+        if any(k not in recorded or not (recorded[k] == v).all() for k, v in expected.items()):
+            raise ValueError(
+                'Existing skew uses a different acquisition method or block size; '
+                'use a separate output root or --force to remeasure')
     prior = set() if args.force else _existing_keys(
         out, catalog, args.skew_rounds, args.measurement_iterations, block_size=limits.block_size)
     log.info("TP=%d skew: checking reference-cell support before acquisition", tp)
@@ -166,6 +175,9 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
             for _ in range(args.skew_rounds):
                 result = llm.collective_rpc("skew_measure", args=(
                     shot.as_dict(), catalog, args.measurement_iterations))[0]
+                if (result.get('measurement_protocol') != PROTOCOL
+                        or result.get('measurement_sha256') != plan['measurement_sha256']):
+                    raise ValueError('Worker skew timings do not match the requested acquisition method')
                 forwards = result["per_forward_us"]
                 if len(forwards) != args.measurement_iterations:
                     raise ValueError("Incomplete skew timed-forward set")
