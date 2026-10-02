@@ -45,6 +45,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Repair skew CUDA-kernel ownership through native launch correlations and
+  OS-thread-matched CPU module scopes. Preserve recorded GPU durations and
+  activity coverage, reject missing or ambiguous ownership, and include the
+  attribution helper in acquisition fingerprints so old rows require remeasurement.
 - Retain native top-k routing GPU work in whole-block MoE profiling while
   replacing only the selected expert distribution. Warm up that same
   distribution, reject unconsumed routing hooks, and restore prior instance

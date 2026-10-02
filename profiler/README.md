@@ -18,6 +18,11 @@ not arbitrary expert-load imbalance.
 Skew warmups verify the backend's query/history geometry. When a backend
 discards query boundaries, verification follows its common-metadata builder
 and exact returned object; no backend is exempted from the check.
+Timed skew kernels are assigned by native launch correlation and the launching
+module's CPU scope, with OS-thread mapping across profiler event namespaces.
+This changes ownership only, not GPU durations or CPU overhead. Missing or
+ambiguous launch evidence rejects the measurement. Resume checks the timing
+implementation fingerprint, so old rows are not relabelled as new acquisitions.
 
 ## Directory layout
 

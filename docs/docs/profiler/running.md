@@ -226,6 +226,12 @@ raising `MAX_NUM_SEQS` from 128 to 256) in **minutes** instead of
 hours. Resume applies to every category plus skew; `FORCE=1` nukes
 them all.
 
+Skew resume additionally requires a matching measurement implementation
+fingerprint, resolved block size, complete kernel set and sufficient per-forward
+repetitions. A change to timing attribution requires remeasurement even when
+the requested geometry is unchanged. Retained historical rows are not proof
+that the current acquisition protocol has completed.
+
 ## Output naming
 
 | Variable | Default | Meaning |

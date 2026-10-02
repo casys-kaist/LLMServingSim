@@ -1,7 +1,7 @@
 """Native per-forward skew timing for vLLM 0.28, with CPU-scope ownership.
 
-CUDA activity is neither moved nor scaled. CPU containment only reconstructs
-module ownership and excludes user annotations from kernel duration sums.
+CUDA activity is neither shifted in time nor scaled. CPU call intervals and
+native launch correlations establish ownership; GPU annotations are excluded.
 """
 
 from collections import Counter
@@ -149,7 +149,9 @@ def partition_cpu_roots(roots, iterations, windows=None):
 
 def extract_forwards(results, catalog, iterations):
     from torch._C._profiler import _EventType
+    from torch.autograd import DeviceType
     from vllm.profiler.utils import event_has_module
+    from .activity_ownership import reparent_cuda_activity
 
     windows = {}
 
@@ -190,6 +192,10 @@ def extract_forwards(results, catalog, iterations):
     results._module_tree = [root for item in original._module_tree
                             if (root := without_annotations(item)) is not None]
     results._module_tree, _ = canonical_module_tree(results._module_tree, event_has_module)
+    results._module_tree, ownership = reparent_cuda_activity(
+        results._module_tree, event_has_module, results._get_kineto_gpu_event,
+        [event for event in results._kineto_results.events()
+         if event.device_type() == DeviceType.CPU])
     results._build_stats_trees()
     groups = partition_cpu_roots(results._module_tree, iterations, [windows[i] for i in range(iterations)])
     forwards, kernels = [], []
@@ -229,7 +235,7 @@ def extract_forwards(results, catalog, iterations):
             raise ValueError(f'Per-forward attribution does not conserve {name}: {mean} vs {value}')
     return dict(per_forward_us=forwards, aggregate_us=aggregate,
                 conservation_delta_us=deltas, cuda_kernel_counts=kernels,
-                excluded_gpu_annotations=removed)
+                excluded_gpu_annotations=removed, activity_ownership=ownership)
 
 
 def initialize(runner):

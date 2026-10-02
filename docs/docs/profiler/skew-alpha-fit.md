@@ -26,6 +26,13 @@ by default. Its target is the median of the per-context forward medians.
 Every forward time is retained, per attention-category kernel. Historical
 measured controls remain diagnostic; they are not relabelled lookup estimates.
 
+Native launch correlations, not GPU timestamp containment, assign retained
+CUDA activities to CPU module calls. Python-call intervals are matched to
+native OS-thread identities before locating the innermost launching module.
+This repairs misplaced kernel leaves while preserving recorded durations and
+activity coverage. CPU scopes contribute no latency, and missing or ambiguous
+launch ownership is a measurement error rather than a zero-valued sample.
+
 The default fit instead reconstructs the requests and computes both references
 through the **same attention lookup used by serving**:
 

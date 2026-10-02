@@ -45,6 +45,8 @@ For dynamic heterogeneous profiling and reusable CPU-built attention corrections
 Skew-only refreshes can target a TP degree independently and automatically
 supplement undersampled lookup cells from the attention references, with
 warmup geometry checks for ordinary attention and sparse-indexer backends.
+Skew kernel ownership follows correlated CPU launches without adding CPU time;
+unresolved ownership rejects a measurement rather than silently losing kernels.
 Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)

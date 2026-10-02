@@ -18,6 +18,8 @@ dynamic acquisition, resumable repetitions, independent skew-only TP selection,
 automatic reference-cell support completion, and migration of enabled bundles.
 It also describes common-metadata geometry validation for sparse indexers
 whose backend-specific metadata does not retain query boundaries.
+Skew timing documentation separates launch-correlated kernel ownership from
+latency: CPU scopes identify the launching module but contribute no time.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.

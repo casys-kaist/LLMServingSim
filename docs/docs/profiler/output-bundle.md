@@ -246,6 +246,14 @@ their full request lists. Measured controls, when present, remain diagnostics.
 The compiler obtains mean/max references through the unchanged serving
 attention lookup, never by relabelling measured control values.
 
+Kernel ownership is verified through native CUDA launch correlation IDs and
+the innermost launching CPU module scope, after mapping profiler thread
+identities to native OS threads. This can repair misplaced CUDA leaves in
+the upstream profile tree without shifting timestamps, changing GPU durations,
+or adding CPU overhead. Missing or ambiguous launch ownership rejects the shot.
+The timing implementation fingerprint covers this attribution logic; older
+rows remain historical measurements, not completed new-protocol acquisitions.
+
 `skew.meta.yaml` accompanies new acquisitions with the actual per-TP plan,
 resolved page size/capacity, seed, family counts and completion status.
 Interrupted or failed runs retain an incomplete status and checkpointed rows.

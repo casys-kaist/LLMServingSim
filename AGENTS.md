@@ -648,6 +648,16 @@ evidence only when direct backend geometry is unavailable; never skip an
 unknown backend by name. Restore builder methods before timing and on failure.
 Attention and other ordinary categories retain their existing measurement path.
 
+Module-tree repair alone is insufficient: CUDA leaves can remain beside the
+module that launched them. `hooks/activity_ownership.py` connects each retained
+CUDA activity's native correlation ID to its runtime/driver launch and selects
+the innermost containing CPU module call. Match Python-call intervals to native
+OS-thread resource IDs first; logical thread IDs across event namespaces are
+not interchangeable. Missing or ambiguous ownership invalidates the shot.
+Preserve every retained activity and its duration; never assign ownership by
+GPU timestamp containment or add CPU duration. The skew measurement fingerprint
+includes this helper, so older acquisitions cannot satisfy the new resume check.
+
 Raw CSV rows preserve ordered requests, query roles, repetitions, protocol
 and actual time. Complete kernel sets and sufficient repetitions are required
 for resume. Failed acquisition raises after checkpointing instead of silently

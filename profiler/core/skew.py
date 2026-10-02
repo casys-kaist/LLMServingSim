@@ -26,7 +26,8 @@ def measurement_fingerprint():
     """Changing timing attribution or batch construction requires remeasurement."""
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
-    for name in ("skew_measurement.py", "timings.py", "batch.py", "sampler_shim.py"):
+    for name in ("skew_measurement.py", "activity_ownership.py", "timings.py",
+                 "batch.py", "sampler_shim.py"):
         value.update((hooks / name).read_bytes())
     return value.hexdigest()
 
