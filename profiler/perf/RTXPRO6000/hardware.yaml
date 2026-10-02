@@ -1607,6 +1607,7 @@ measured:
           reduce_scatter: 15.622
         fixed_latency_ns: 6600
 defaults:
+  # Common fallback for operations without a measured override.
   link_bw:
     value: 28.731784
     source: measured
@@ -1617,6 +1618,7 @@ defaults:
     source: measured
     unit: ns
     from: allreduce+allgather+reducescatter across 2 npus, graphed
+  # Inherited with the common link when the cluster omits all link settings.
   collective_links:
     all_reduce:
       link_bw:

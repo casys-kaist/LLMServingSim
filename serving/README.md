@@ -73,6 +73,8 @@ See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-co
 for supported configurations and remaining analytical communication assumptions.
 Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
 The bundled Qwen3-30B DP2/EP2 example consumes native tables automatically.
+It and the Qwen3-32B TP2 example omit link overrides, so the measured
+per-operation hardware defaults apply without an additional CLI switch.
 Historical multi-GPU example configs can pin their original links instead of
 inheriting the hardware folder's refreshed transport calibration.
 

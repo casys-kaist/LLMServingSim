@@ -83,6 +83,10 @@ objects and mismatched dimension counts are errors.
   either common value therefore describes a custom link without silently
   adding the measured hardware's operation curves.
 
+The bundled RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples use this
+default path: their cluster configs omit `link_bw`, `link_latency` and
+`collective_links`. No enable flag or model-specific bandwidth is needed.
+
 The generated `network.yml` references same-topology sidecar files through
 `collective_networks`. The backend selects a link using the original collective:
 AllReduce retains its own settings through internal scatter/gather phases.

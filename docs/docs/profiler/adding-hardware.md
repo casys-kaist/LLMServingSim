@@ -116,6 +116,8 @@ cannot identify positive finite bandwidth records `unavailable` rather than
 publishing a value. The shared fit is retained as the fallback.
 
 Usable operation fits populate `defaults.collective_links.<operation>.link_bw`.
+The bundled RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples consume
+these values directly, with recorded NCCL references for that interconnect.
 They are inherited when the entire link is inherited, not when a user specifies
 a hypothetical common link. An explicit `collective_links` map can override
 bandwidth and latency or disable the operation defaults. See the

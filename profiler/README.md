@@ -336,7 +336,9 @@ one-hop Ring costs at the measured rank count, including local reductions.
 Network bandwidth is **GiB/s**; local memory bandwidth is decimal **GB/s**.
 Per-size and per-collective residuals describe where one pair cannot match
 NCCL. Additional `collective_fits` derive individual bandwidths at the shared
-latency and populate optional `defaults.collective_links` entries. Explicit
+latency and populate optional `defaults.collective_links` entries. The shipped
+RTXPRO6000 bundle supplies these defaults to both Qwen TP2 and DP2/EP2 examples
+when their cluster configs omit link overrides. Explicit
 common-link settings suppress automatic inheritance of those operation curves;
 an explicit operation map replaces them. This measures individual collectives,
 not grouped MoE dispatches, and

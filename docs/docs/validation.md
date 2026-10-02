@@ -34,7 +34,7 @@ separately below; it is not included in the four headline configurations.
 | **Block size** | 16 for the headline examples; 64 for the additional DeepSeek diagnostic |
 | **Engine flags** | Defaults except where the cluster config dictates otherwise |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
-| **Interconnect** | The Qwen3-30B example uses the refreshed NCCL calibration; the older Qwen3-32B reference pins its original link settings |
+| **Interconnect** | Qwen3-32B and Qwen3-30B use matched NCCL-only references and inherit per-operation BW and common latency from `profiler/perf/RTXPRO6000/hardware.yaml` |
 | **KV capacity** | `mem_util` `0.9`, except the RTX 4090 example which is calibrated to the measured block count (see below) |
 
 Inputs and outputs (vLLM token IDs, sampling params, per-request
@@ -86,7 +86,7 @@ Mean error vs. real vLLM, per metric, on the four configurations summarized here
 | --- | --- | --- | --- | --- | --- | --- |
 | RTX 4090 | Llama-3.1-8B | TP=1 dense | +0.5% | +0.4% | +0.5% | +1.2% |
 | RTXPRO6000 | Llama-3.1-8B | TP=1 dense | +1.0% | +0.1% | +0.3% | +1.5% |
-| RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.2% | -0.5% | -1.0% |
+| RTXPRO6000 | Qwen3-32B | TP=2 dense | -1.0% | -0.7% | -0.8% | -1.1% |
 | RTXPRO6000 | Qwen3-30B-A3B-Instruct-2507 | DP=2 x EP=2 MoE | -1.1% | +0.2% | +0.1% | -2.6% |
 
 These workloads were used during development, including skew-axis selection.
@@ -169,15 +169,23 @@ for another model, GPU or execution contract.
 
 ![Qwen3-32B throughput](/img/validation/rtxpro6000-qwen3-32b-throughput.png)
 
-| Metric | vLLM | Sim | Diff |
+| Metric | vLLM (ms) | Sim (ms) | Diff |
 | --- | --- | --- | --- |
-| TTFT mean | 35.62 s | 35.28 s | **-1.0%** |
-| TTFT median | 39.47 s | 39.21 s | -0.7% |
-| TTFT P99 | 89.43 s | 88.63 s | -0.9% |
-| TPOT mean | 77.4 ms | 77.2 ms | **-0.2%** |
-| TPOT P99 | 94.3 ms | 93.8 ms | -0.5% |
-| Latency mean | 87.17 s | 86.70 s | **-0.5%** |
-| Latency P99 | 120.69 s | 120.52 s | -0.1% |
+| TTFT mean | 27585.4 | 27319.5 | **-1.0%** |
+| TTFT median | 31163.9 | 30868.5 | -0.9% |
+| TTFT P90 | 64888.6 | 64235.3 | -1.0% |
+| TTFT P95 | 67643.3 | 66927.8 | -1.1% |
+| TTFT P99 | 71965.6 | 71183.8 | -1.1% |
+| TPOT mean | 67.5 | 67.0 | **-0.7%** |
+| TPOT median | 70.5 | 70.1 | -0.6% |
+| TPOT P90 | 78.3 | 77.8 | -0.6% |
+| TPOT P95 | 79.5 | 79.1 | -0.6% |
+| TPOT P99 | 79.9 | 79.4 | -0.6% |
+| Latency mean | 72511.3 | 71916.3 | **-0.8%** |
+| Latency median | 79037.3 | 78440.3 | -0.8% |
+| Latency P90 | 94694.1 | 93715.9 | -1.0% |
+| Latency P95 | 99169.2 | 98128.8 | -1.0% |
+| Latency P99 | 102326.2 | 101175.3 | -1.1% |
 
 TP=2 exercises the decoder all-reduces, plus the previously omitted shared
 embedding all-reduce and logits all-gather. Head tensor sizes now use the
@@ -190,9 +198,10 @@ evidence of improved generalization. Communication parameters and profiled
 compute times are not fitted to these results. This dense TP example does
 not validate MoE dispatch/combine or alternative heads.
 
-This reference predates the host interconnect change. Its config retains
-`link_bw: 15.92`, `link_latency: 6600` and an empty `collective_links` map, so a
-refresh of shared hardware defaults does not change its historical transport.
+This reference uses NCCL-only communication with the calibrated interconnect.
+Its config omits `link_bw`, `link_latency` and `collective_links`, inheriting
+the hardware bundle's AllReduce and AllGather bandwidths and common latency.
+No benchmark-fitted bandwidth or model-specific override is applied.
 
 ### RTXPRO6000 — Qwen3-30B-A3B-Instruct-2507 (DP=2 × EP=2 MoE)
 

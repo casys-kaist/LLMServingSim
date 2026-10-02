@@ -25,8 +25,9 @@ precedence, without changing collective payloads or the common fallback.
 The [native MoE guide](docs/profiler/native-moe-components.md) describes explicit-DP
 single-rank acquisition, publication checks, component lookup and supported
 execution contracts. It distinguishes measured GPU work from analytical transport.
-The [validation page](docs/validation.md) reports the bundled native Qwen3-30B
-example and distinguishes refreshed transport data from pinned historical examples.
+The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
+and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
+and keeps each recorded reference matched to its transport calibration.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 NCCL baseline and recorded communicator and compilation settings.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes

@@ -57,11 +57,11 @@ Use per-instance `cudagraph` settings to describe the effective target worker
 mode and capture grid; the profiler's eager configuration is not that target.
 A simulator-side refresh preserves the recorded vLLM truth.
 
-The RTXPRO6000 Qwen3-30B DP2/EP2 example includes native component measurements
-and an NCCL-only reference under the refreshed host interconnect. The older
-Qwen3-32B example pins its original common link and disables operation-map
-inheritance, preserving its recorded communication environment. Do not compare
-historical references against a different host calibration without stating the change.
+The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples use NCCL-only
+references under the calibrated host interconnect. Both omit link overrides
+and inherit the hardware bundle's per-operation bandwidths and common latency;
+the MoE example also includes native component measurements. Keep recorded
+references and their interconnect calibration matched when refreshing examples.
 
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
@@ -200,8 +200,8 @@ bench artifacts, the simulator output, and the resulting
 | --- | --- | --- | --- | --- | --- |
 | `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.5% | +0.4% | +0.5% |
 | `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +1.0% | +0.1% | +0.3% |
-| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.2% | -0.5% |
-| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | +4.8% | +0.9% | +1.0% |
+| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.7% | -0.8% |
+| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | -1.1% | +0.2% | +0.1% |
 
 The dense RTXPRO6000 bundles include broader measured skew geometry and
 reference-aligned calibration. Check all fifteen statistics, not just these

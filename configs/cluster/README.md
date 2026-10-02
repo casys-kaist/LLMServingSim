@@ -55,6 +55,10 @@ See the [collective-link reference](../../docs/docs/reference/cluster-config.md#
 for scalar/per-dimension values, precedence and supported backends. Rebuild
 ASTRA-Sim before using these settings.
 
+The RTXPRO6000 Qwen3-32B and Qwen3-30B configs under `bench/examples/` omit
+`link_bw`, `link_latency` and `collective_links` to use the measured operation
+defaults directly. No per-model bandwidth or extra enable flag is required.
+
 ### Per-node fields
 
 | Field | Type | Description |

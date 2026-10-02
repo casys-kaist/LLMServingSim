@@ -837,6 +837,12 @@ it. This precedence must remain idempotent across both config readers, so a
 hypothetical explicit interconnect never silently gains the measured card's
 operation curves.
 
+The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples omit all three
+link keys and consume the measured operation defaults automatically. Refresh
+each example's recorded NCCL truth, simulator output, validation plots and
+regression digests together when adopting a changed interconnect. Do not
+pair refreshed hardware defaults with an older transport reference.
+
 **Three inheritance rules** (`serving/core/hardware_defaults.py`, applied at
 both config load sites):
 

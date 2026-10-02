@@ -127,13 +127,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Refresh the RTXPRO6000 Qwen3-32B TP2 example with an NCCL-only reference for
+  the calibrated interconnect. Remove its historical common-link override so
+  dense TP and native DP+EP examples both inherit per-operation hardware
+  defaults. Regenerate simulator output, all fifteen validation statistics,
+  plots and regression digests without changing compute or skew profiles.
 - Publish qualified RTXPRO6000 Qwen3-30B TP1/DP2/EP2 native component tables,
   immutable acquisition contracts and coverage checks alongside the existing
   attention/skew bundle. Refresh its NCCL-only end-to-end example and validation
   artifacts. Recalibrate common and operation-specific bandwidths from retained
   NCCL primitives at the previously calibrated common latency, recording units,
-  repetitions, assumptions and residuals. Pin the older Qwen3-32B example's
-  original communication settings; preserve all other recorded benchmark truths.
+  repetitions, assumptions and residuals. Preserve unrelated recorded benchmark
+  truths and explicit user link overrides.
 - Require documentation updates with every commit across READMEs, repository
   guidance, changelog and public docs. Exclude intermediate work and temporary
   diagnostic or fix-verification scripts, tests and results from commits.
