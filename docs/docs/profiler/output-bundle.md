@@ -192,6 +192,15 @@ ep,tokens,activated_experts,time_us
 | `activated_experts` | Distinct experts touched on that rank |
 | `time_us` | Measured whole-block latency in microseconds |
 
+Whole-block timing is divided by the matched MoE node's own invocation count.
+A merged decoder parent can count dense and MoE layers together; its count
+would understate the cost of one MoE block. Other categories retain their
+parent/occurrence normalization so merged projection pairs remain sums.
+Remeasure affected hybrid-stack tables with `slice --group moe --force`:
+updating the profiler does not change stored CSV values, and the correction
+is not a universal multiplier. This normalization does not change native
+DP+EP component measurements or imply support for additional backends.
+
 The legacy consumer uses two-dimensional interpolation over tokens and active
 experts within an EP grid. An unprofiled EP degree falls back to the nearest
 with a warning. Acquire this retained path with `--moe-ep-degrees` (or

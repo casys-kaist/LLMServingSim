@@ -45,6 +45,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Normalize whole-block MoE profiles by actual MoE invocations when decoder
+  parents also include dense layers. Preserve parent/occurrence normalization
+  for merged projections and repeated norms. Existing hybrid-stack MoE tables
+  need remeasurement; this changes neither stored data nor native DP+EP
+  component timing.
 - Chain expert-marker collectives and preserve the dispatch dependency on
   ranks that skip earlier expert rows. Restore the required ReduceScatter to
   TP AllGather ordering in existing MoE traces as well as native components;

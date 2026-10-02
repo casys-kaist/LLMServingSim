@@ -301,7 +301,10 @@ three hold:
 
 `moe` is the rule working in the other direction: one entry binds the whole
 `DeepseekV2MoE` block — gate, routed experts and shared expert — because
-everything in it scales with tokens, so a 4-shot grid covers it.
+its compute is profiled over tokens and activated experts. Whole-block entries
+use their own invocation count: a decoder parent can include dense layers
+which never call that MoE block. This exception does not change the summed
+normalization of merged child projections.
 
 **Finer than the rule requires is allowed, and is often right.** DeepSeek's
 seven indexer entries could be three under the rule above. They are not merged

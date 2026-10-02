@@ -496,7 +496,7 @@ Four things a catalog here must get right:
 ### The top-level normalization trap (vLLM 0.28)
 Worth knowing well beyond MTP: it made **every latency in a 0.28-profiled
 bundle 3x too large**, not just the top-level ones. Every profile node is
-divided by **its parent's** invocation count to get a per-call figure, and the
+normally divided by **its parent's** invocation count to get a per-call figure, and the
 top level has no parent node to read that from — so the whole subtree under it
 inherits the error. Two things go wrong at once under 0.28:
 
@@ -511,6 +511,15 @@ inherits the error. Two things go wrong at once under 0.28:
 - The root's own invocation count is the **forward count**, so
   `extract_samples` takes `iterations` and uses it as the top level's
   `parent_invocations`. It used to hardcode 1.
+
+Whole-block MoE is a distinct normalization contract. `_entry_dict` marks the
+MoE category with `normalization: invocations`; `extract_samples` divides by
+the matched MoE node's calls, not the merged decoder parent's calls. A hybrid
+stack's parent includes dense layers that do not invoke MoE. Keep the parent
+times occurrence denominator for other categories, including intentionally
+merged projection pairs. Remeasure affected stored `moe.csv` grids rather
+than applying a model-specific multiplier. Native DP+EP components have their
+own per-forward attribution and are not changed by this fix.
 
 Two controlled experiments, same model / hardware / flags, against the trusted
 `vllm=0.19.0` bundle for Llama-3.1-8B on RTXPRO6000:

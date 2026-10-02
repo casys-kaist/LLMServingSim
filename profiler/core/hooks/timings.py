@@ -48,8 +48,10 @@ The denominator that gets both cases right is
 
     parent_invocations  x  occurrences of the layer in one block's sequence
 
-which the host passes in as ``occurrences``. For a layer the sequence emits
-twice per block (an input and a post-attention layernorm) this is the
+which the host passes in as ``occurrences``. Whole-block MoE bindings instead
+use the matched node's own invocation count: a heterogeneous decoder parent
+also includes dense layers that do not execute that block. For a layer the
+sequence emits twice per block (an input and a post-attention layernorm) this is the
 per-call mean, as before; for a fused pair emitted once it is their sum. When
 ``invocations == parent_invocations x occurrences`` — every homogeneous
 model — it is identical to dividing by ``invocations``.
@@ -246,8 +248,15 @@ def extract_samples(
                 occurrences = max(
                     1, int(slice_[canonical].get("occurrences") or 1)
                 )
+                normalization = slice_[canonical].get("normalization", "parent")
+                if normalization == "invocations":
+                    denominator = invocations
+                elif normalization == "parent":
+                    denominator = parent_invocations * occurrences
+                else:
+                    raise ValueError(f"Unknown timing normalization: {normalization!r}")
                 totals[canonical] = totals.get(canonical, 0.0) + (
-                    cuda_us / (parent_invocations * occurrences)
+                    cuda_us / denominator
                 )
 
             # Always recurse, even after a match. Some catalog entries

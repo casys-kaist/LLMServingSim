@@ -6,6 +6,10 @@ latency. Output CSVs feed the simulator's trace generator.
 The tracked `perf/` bundles and their metadata define available model, precision
 and parallelism coverage. Native MoE additionally requires a matching TP/DP/EP
 component contract; a legacy EP table alone does not establish that coverage.
+Whole-block MoE timings use the matched block's invocation count, not a
+decoder parent's count that can include dense layers. Refresh affected old
+hybrid-stack `moe.csv` grids with `slice --group moe --force`; a code update
+does not repair stored timings. Native DP+EP component measurements are separate.
 
 ## Directory layout
 

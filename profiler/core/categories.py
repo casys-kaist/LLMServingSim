@@ -238,6 +238,11 @@ def _entry_dict(
     many trace nodes the architecture emits for it. See ``hooks/timings.py``.
     """
     occurrences = arch.layer_occurrences()
+    # A whole MoE block is emitted only for MoE layers. Its parent decoder
+    # class can also include dense layers, so parent calls are not the number
+    # of MoE trace nodes. Other categories can intentionally merge siblings
+    # (e.g. q_b_proj + kv_b_proj) and retain parent-based normalization.
+    normalization = "invocations" if entries is arch.catalog.moe else "parent"
     return {
         name: {
             "vllm": e.vllm,
@@ -245,6 +250,7 @@ def _entry_dict(
             "not_within": e.not_within,
             "tp_stable": e.tp_stable,
             "occurrences": occurrences.get(name, 1),
+            "normalization": normalization,
         }
         for name, e in entries.items()
     }
