@@ -2032,7 +2032,47 @@ gathered reading, since the profiler cuts both `E/ep` and `k/ep`, so a shot at
 `tokens = T` measures `T * k/ep` pairs -- what a rank computes over the
 gathered set.
 
-### The MoE grid is per EP degree
+### Native DP+EP component profiles
+
+Explicit profiler `--dp` uses the native component adapter rather than shrinking
+the checkpoint's global expert count/top-k. The target is full EP=TP*DP with
+DP>=2, independently of the one-GPU acquisition process. `MoeTarget` is shared
+with serving: local gate/finalization rows and gathered expert rows differ,
+and sequence-parallel wrappers require per-member ceil division before gathering.
+Pass the full already-padded DP vector through both wave-completion paths; its
+sum/minimum cannot reconstruct the sequence-parallel geometry.
+
+The index `tp<N>/moe_components.json` selects immutable contracts containing
+rank ownership, native backend, dtypes, source fingerprints, coverage and CSV
+checksums. `moe_components` metadata is separately owned; a MoE refresh must not
+restamp attention/skew or the main engine. Individual CUDA activities are counted
+once per forward, in separate eager/graph measurements. No CPU duration is added.
+Expert measurements rotate positions and L2-sized weight banks, compare B/2B
+under identical complete-cycle work, independently verify graph outputs and
+require the recorded stability gate before publication. Those rules condition
+the measurement; they do not prove full-model cache equivalence.
+
+Serving automatically consumes matching tables for the supported modular,
+unquantized DP+EP path. Local components use token interpolation, experts use
+the feasible token/active-expert surface with balanced assignment totals, and
+caches are bounded. Missing deployment/policy coverage warns and retains the
+legacy EP table; corruption and out-of-support queries are errors. Shared,
+quantized, monolithic, deferred, tensor-sharded and arbitrary-routing variants
+need separate contracts, not guessed aliases. Keep historical acquisition
+fingerprints as provenance; do not relabel old samples after changing a method.
+
+Trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,
+ReduceScatter, finalize-copy, then the wrapper's optional TP AllGather (SP) or
+AllReduce (non-SP). Chakra must chain every marker collective and retain the
+last dependency through ranks it skips. The ragged Ring envelope and independent
+logical collective costs remain approximations of grouped NCCL execution.
+See `docs/docs/profiler/native-moe-components.md` for flags and exact limits.
+
+### The legacy MoE grid is per EP degree
+
+The following describes retained `moe.csv` acquisition and fallback, not the
+native full-top-k component contract above. A reduced-top-k checkpoint is an
+approximation and must not be presented as the native distributed kernel.
 An EP rank does not run the model's MoE block; it runs a **slice** of it, and
 the slice differs three ways at once: it permutes over `E/ep` local experts
 rather than all E, a token contributes `k/ep` of its k expert assignments

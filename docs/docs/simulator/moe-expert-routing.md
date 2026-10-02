@@ -11,6 +11,13 @@ needs an answer to two questions: **which experts do I activate** and
 function; the second is determined by how the simulator assigns
 experts to ranks. This page is about both.
 
+With a matching native DP+EP profile installed, the component consumer uses
+the recorded rank placement and balanced assignment surface. See
+[Native MoE components](../profiler/native-moe-components) for local/gathered
+token domains, supported policies and warnings. The legacy whole-block
+`moe.csv` path remains the fallback; its reduced-top-k acquisition is not
+equivalent to the native distributed expert kernel.
+
 > Configuration angle (`--expert-routing-policy` flag, when to use
 > which) is on **[Examples → Expert parallel](/docs/examples/parallelism/expert-parallel)**.
 > This page is the internal mechanics.

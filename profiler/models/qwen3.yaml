@@ -106,3 +106,4 @@ catalog:
     # the expert sweep is skipped for it.
     moe:
       vllm: Qwen3MoeSparseMoeBlock
+      sequence_parallel: true

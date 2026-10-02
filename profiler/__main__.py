@@ -185,6 +185,13 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "counts). Each degree past 1 costs one extra engine "
                         "boot and the same ~57 shots. Default '1', which "
                         "reproduces bundles written before the axis existed.")
+    p.add_argument("--dp", default=None, dest="moe_dp_degrees",
+                   help="Target DP degrees for native MoE component profiling, "
+                        "comma separated. Experts retain global top-k and IDs; "
+                        "EP is TP*DP. The profiler still uses one physical GPU. "
+                        "Only profile or slice --group moe accept this option.")
+    p.add_argument("--moe-rounds", type=int, default=3,
+                   help="Independent measurement contexts per native MoE point.")
     p.add_argument("--hf-override", action="append", default=None,
                    dest="hf_override", metavar="KEY=VALUE",
                    help="Override one model-config field, repeatable. The "
@@ -450,6 +457,20 @@ def _build_profile_args(
     architecture: str,
     model_config: dict,
 ) -> ProfileArgs:
+    raw_dp = getattr(ns, "moe_dp_degrees", None)
+    dp_degrees = None
+    if raw_dp is not None:
+        dp_degrees = tuple(sorted({int(value.strip()) for value in raw_dp.split(",")}))
+        if not dp_degrees or min(dp_degrees) < 1:
+            raise ValueError("DP degrees must be positive integers")
+        if ns.cmd != "profile" and not (ns.cmd == "slice" and ns.group == "moe"):
+            raise ValueError("--dp is only supported for profile or slice --group moe")
+        if getattr(ns, "only_skew", False) or getattr(ns, "profile_mtp", False):
+            raise ValueError("Native MoE profiling cannot be combined with skew-only or MTP")
+        if str(getattr(ns, "moe_ep_degrees", "1")) != "1":
+            raise ValueError("With --dp, EP is TP*DP; omit the legacy --moe-ep-degrees option")
+        if ns.moe_rounds < 1 or ns.measurement_iterations < 1:
+            raise ValueError("Native MoE profiling requires positive repeat counts")
     return ProfileArgs(
         architecture=architecture,
         model=hf_id,
@@ -467,6 +488,8 @@ def _build_profile_args(
         max_model_len=getattr(ns, "max_model_len", None),
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
         profile_mtp=bool(getattr(ns, "profile_mtp", False)),
+        moe_dp_degrees=dp_degrees,
+        moe_rounds=ns.moe_rounds,
         moe_ep_degrees=tuple(sorted({
             max(1, int(v))
             for v in str(getattr(ns, "moe_ep_degrees", "1") or "1").split(",")

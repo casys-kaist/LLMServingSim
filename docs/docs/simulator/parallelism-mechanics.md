@@ -162,50 +162,54 @@ flowchart LR
     COMB --> OUTPUT[Output residue]
 ```
 
-For MoE models, `trace_generator` wraps the MoE block with the EP
-all-to-all: dispatch routes each token to its assigned expert's rank,
-combine brings the expert outputs back. Both are scoped to the EP
-dimension.
+MoE dispatch/combine is a logical all-to-all. The supported vLLM
+`allgather_reducescatter` path realizes it with gather/scatter collectives;
+other backends require their own execution contracts.
 
-:::info[The all-to-all is emitted as AllGather + ReduceScatter]
-An MoE all-to-all is a *logical* operation with several possible
-implementations, and vLLM picks one with `--all2all-backend`. Its
-default is `allgather_reducescatter` — literally "all2all based on
-allgather and reducescatter" in vLLM's own option list — so that is
-what the simulator emits, because ASTRA-Sim models the collective it
-is actually given:
+### Deployment-matched native components
 
-```
-EXPERT 0 ALLGATHER:0,1 21760
-expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
-EXPERT END REDUCESCATTER:0,1 40960
-```
+When a matching [native component table](../profiler/native-moe-components)
+is installed, the trace keeps local gate/routing before dispatch, gathered
+expert work between dispatch and combine, and local finalization afterward.
+For the modular path, dispatch carries three distinct tensors:
 
-The two halves are sized differently, because the collectives are:
+| Tensor | Bytes per local row |
+| --- | --- |
+| Hidden states | `hidden_dim * input_dtype_bytes` |
+| Top-k weights | `global_top_k * topk_weights_dtype_bytes` |
+| Top-k IDs | `global_top_k * topk_ids_dtype_bytes` |
 
-| | `comm_size` | Why |
-| --- | --- | --- |
-| Dispatch (`EXPERT 0`) | `chunk * (hidden + num_experts) * fp` | ASTRA-Sim's AllGather `data_size` is the **per-rank local chunk**, and the dispatch carries the router logits alongside the hidden state |
-| Combine (`EXPERT END`) | `chunk * ep_total * hidden * fp` | ASTRA-Sim's ReduceScatter `data_size` is the **pre-scatter total buffer**, hidden state only |
+These are emitted as separate ordered AllGathers. Combine is a ReduceScatter
+of hidden-state output. Sequence-parallel wrappers dispatch over EP and restore
+TP output with an AllGather; non-SP wrappers dispatch within DP and restore
+TP output with an AllReduce when TP is greater than one. The complete padded
+DP token vector determines local/gathered rows, including SP ceil division.
 
-`chunk` is `(gathered - min) / (ep_total - 1)`: both collectives are ragged,
-so a rank's ingress is `gathered - sizes[r]` and the cost is set by the
-worst-off rank. With uniform sizes it reduces to `gathered / ep_total`.
+Chakra chains every collective a marker carries and preserves the latest
+compute/communication dependency through skipped expert ranks. Reinstall the
+converter when updating this execution path; editing its source without
+reinstallation does not change the installed converter.
 
-The example above is a real trace line: Qwen3-30B-A3B (`hidden 2048`,
-128 experts, bf16) with 10 tokens at `ep_total 2` gives
-`5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
+For unequal dispatch counts the analytical envelope uses
+`remote_rows = gathered_rows - min(dispatch_rows)`. With group size `G`,
+a tensor of width `W` uses `ceil(remote_rows * W / (G - 1))` as its equivalent
+AllGather local chunk; ReduceScatter uses that hidden-state chunk times `G`.
+Equal counts recover the ordinary local chunk. This is a worst-rank Ring
+approximation, not a claim that NCCL packs these tensors or executes grouped
+calls as independent kernel startups.
 
-Other vLLM backends (`deepep_*`, `mori_*`, `flashinfer_*`) implement
-the same all-to-all with different kernels and would emit a different
-collective. Only the default is modelled.
-:::
+### Retained whole-block fallback
 
-Each EP rank gets a per-rank latency from
-`profiler/perf/<hw>/<model>/<variant>/tp1/moe.csv` keyed on its
-**local** token count (after dispatch) and the **activated experts**
-per token. Ranks execute in parallel and synchronize at the collective,
-slower ranks gate the others.
+Without a supported native table, the legacy path uses `moe.csv` and warns for
+unverified DP/backend coverage. Its dispatch approximation combines hidden state
+and full router logits into one AllGather payload. It does not become a modular
+full-top-k measurement merely because its EP degree matches. Legacy lookup uses
+gathered input rows and the appropriate global rank's activated-expert count;
+these are not the unique local-token counts from a dispatch-routing histogram.
+
+Ranks execute in parallel and synchronize at their collectives, so the slower
+rank constrains progress. Separate component tables and operation-specific link
+parameters do not remove that dependency or model other all-to-all backends.
 
 Token routing decisions come from `gate_function.py`. See
 **[MoE expert routing](./moe-expert-routing)** for the policies.
@@ -385,24 +389,21 @@ topology dim, `config_builder` generates this automatically:
 
 ## Communication sizes (ASTRA-Sim semantics)
 
-Every `comm_size` in the trace is the **total** data size, not
-per-NPU. ASTRA-Sim divides internally by the number of nodes in the
-ring (`msg_size = data_size / nodes_in_ring`).
+The size convention depends on the collective:
 
-So:
+- AllReduce takes the full replicated input size; Ring divides it into chunks.
+- AllGather takes a per-rank input chunk, not the full gathered output.
+- ReduceScatter takes the full pre-scatter input, not one rank's output.
 
-- ALLREDUCE on `o_proj`: pass the **full output tensor size**
-  (`total_len * hidden_size * fp_size`).
-- MoE: the dispatch AllGather takes the **per-rank chunk**
-  (`chunk * (hidden + num_experts) * fp`) and the combine ReduceScatter the
-  **pre-scatter total** (`chunk * ep_total * hidden * fp`), matching
-  ASTRA-Sim's `data_size` convention for each. `chunk` is
-  `(gathered - min) / (ep_total - 1)`, not `gathered / ep_total`, because the
-  collectives are ragged — see the DP+EP section above.
+Native MoE dispatch applies the AllGather convention separately to hidden state,
+top-k weights and IDs, and combine applies the ReduceScatter convention to
+hidden states. The retained fallback instead aggregates hidden/router-logit
+bytes. Unequal DP counts use the analytical envelope described above.
 
-If you see surprisingly fast collectives in your trace logs, check
-that you're not accidentally passing per-rank sizes, that's a
-common mistake when extending the trace generator.
+Network bandwidth overrides must not alter these tensor sizes or local-memory
+reduction charges. AllReduce retains its original operation's link settings
+even through internal scatter/gather phases. See
+[Collective-specific links](../reference/cluster-config#collective-specific-links).
 
 ## When to use which
 

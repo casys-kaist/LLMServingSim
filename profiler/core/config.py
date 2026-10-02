@@ -281,6 +281,9 @@ class LayerEntry(BaseModel):
     """If True, profile this layer only at TP=1 and replicate the
     results into every tp{N}/ folder."""
 
+    sequence_parallel: bool | None = None
+    """Whether the MoE wrapper sequence-shards its input under DP+TP."""
+
     key_saturates: bool = False
     """If True, this kernel's cost stops growing once a sequence's key window
     passes the checkpoint's bound (``probe_key_saturation``), so the
@@ -825,6 +828,13 @@ class ProfileArgs:
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
     moe_ep_degrees: tuple[int, ...] = (1,)
+    moe_dp_degrees: tuple[int, ...] | None = None
+    """Explicit target DP degrees for native, separately timed MoE components.
+
+    None retains legacy whole-block acquisition. This is target metadata, not
+    the number of actual profiler processes. EP is resolved as TP times DP.
+    """
+    moe_rounds: int = 3
     profile_mtp: bool = False
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one

@@ -75,3 +75,4 @@ catalog:
   moe:
     moe:
       vllm: PhiMoE
+      sequence_parallel: false

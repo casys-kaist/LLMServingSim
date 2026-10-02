@@ -78,7 +78,7 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
-| **MoE expert parallelism** | `--moe-ep-degrees` (default `1`; needed whenever the deployment runs EP > 1) |
+| **MoE parallelism** | `--moe-ep-degrees` for legacy whole-block grids; explicit `--dp` selects native DP+EP components with EP=TP*DP; `--moe-rounds` controls native repetitions |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
@@ -88,6 +88,14 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
 | **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
 | **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
+
+Native MoE components use one physical GPU to emulate each deployment rank,
+preserving global expert IDs and top-k. Explicit DP acquisition has immutable,
+resumable contracts rather than `--force` replacement; expert forward counts may
+exceed `--measurement-iterations` to cover matched weight cycles. These CLI-only
+options have no `profile.sh` variable. See the
+[native MoE guide](https://llmservingsim.ai/docs/profiler/native-moe-components)
+for supported backends, CUDA attribution, quality checks and runtime fallback.
 
 The five that decide how long a run takes, in rough order of effect:
 

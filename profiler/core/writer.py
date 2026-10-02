@@ -630,12 +630,36 @@ def persist_meta(
             else prior.get("skew_profile") or None
         ),
         "skew_fit": _calibrated_skew_fit_block(variant_root, args),
+        "moe_components": prior.get("moe_components"),
     }
     variant_root.mkdir(parents=True, exist_ok=True)
     out = variant_root / "meta.yaml"
     from profiler.core.skew_calibration import atomic_yaml
     atomic_yaml(out, meta, Dumper=_CompactDumper)
     log.debug("wrote meta.yaml → %s", out)
+
+
+def persist_moe_component_meta(args, variant_root, tps):
+    """Record native-component ownership without restamping other categories."""
+    import hashlib
+    from .skew_calibration import atomic_yaml
+    prior = _prior_meta(variant_root)
+    for key, value in (("model", args.model), ("hardware", args.hardware),
+                       ("variant", args.effective_variant)):
+        if key in prior and prior[key] != value:
+            raise ValueError("Native MoE output identity differs from the existing bundle")
+        prior[key] = value
+    block = prior.setdefault("moe_components", {})
+    if block is None:
+        block = prior["moe_components"] = {}
+    block["schema"] = "moe-components-v1"
+    entries = block.setdefault("per_tp", {})
+    for tp in tps:
+        index = variant_root/f"tp{tp}"/"moe_components.json"
+        entries[tp] = dict(index=str(index.relative_to(variant_root)),
+                           sha256=hashlib.sha256(index.read_bytes()).hexdigest(),
+                           measured_at=_utcnow_iso(), vllm_version=_vllm_version())
+    atomic_yaml(variant_root/"meta.yaml", prior, Dumper=_CompactDumper)
 
 
 def _calibrated_skew_fit_block(variant_root, args):

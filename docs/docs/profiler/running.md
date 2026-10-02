@@ -83,43 +83,24 @@ on a single GPU by dividing the model's per-rank shapes via
 | `MAX_NUM_BATCHED_TOKENS` | `2048` | Profiler internally bumps this by `+MSQ` for shot-bypass headroom; subtracted back when recording meta |
 | `MAX_NUM_SEQS` | `256` | Profile with `MSQ > runtime MSQ` so mixed-regime cases at `n = runtime_MSQ` stay feasible |
 
+## MoE parallelism
+
+For supported unquantized DP+EP models, explicit CLI `--dp` selects
+[native component profiling](./native-moe-components), with EP=TP*DP and
+preserved global expert IDs/top-k. It accepts `profile` or `slice --group moe`;
+`--moe-rounds` controls repeated contexts. Target ranks are emulated on one
+physical GPU, and communication is measured separately. These options are
+CLI-only; the editable `profile.sh` retains its legacy MoE sweep.
+
+Without `--dp`, `--moe-ep-degrees` selects retained whole-block `moe.csv`
+profiles. That path shrinks the expert/top-k checkpoint shape and approximates
+rank-local work; it is not the native DP+EP execution contract. Do not combine
+the two acquisition modes or infer DP/backend coverage from the legacy EP axis.
+See [Output bundle](./output-bundle) for compatibility and fallback behavior.
+
 ## Attention grid
 
 :::note[The `decode_q_len` axis is opt-in]
-### `--moe-ep-degrees`: profile the MoE block at the EP degrees you will simulate
-
-Default `1`, which measures the whole MoE block on one rank. That is right for
-a single-rank deployment and wrong for every other one: an EP rank runs a
-**slice** — `E/ep` local experts, and `k/ep` of a token's k expert assignments
-— so it permutes over less, does fewer GEMM rows, and activates fewer distinct
-experts than the whole block does.
-
-The last of those is not interpolated away. `activated_experts` is the one
-lookup axis whose minimum is a positive number the runtime goes under: it
-floors at `top_k`, because a token cannot activate fewer experts than it
-selects, and the simulator clamps below the grid rather than extrapolating.
-A GLM-5 EP=2 run asked for `activated=4` against a floor of 8 in 98.4% of its
-MoE lookups. At one token on the rank that clamp reads 1.7x to 4.8x over:
-
-| model | ep=1 | ep=8 |
-| --- | --- | --- |
-| DeepSeek-V3.2 | 84.7 us | 28.1 us |
-| GLM-5 | 162.6 us | 33.7 us |
-| MiniMax-M3 | 139.5 us | 47.3 us |
-| Qwen3-30B-A3B | 47.8 us | 27.8 us |
-
-Extrapolating instead of measuring would over-correct: a
-`fixed + per_expert * a` fit through Qwen3-30B-A3B's own grid predicts 16.8 us
-at `a=4` where the ep=2 slice measures 36.2, because the fixed permute cost
-does not vanish with the expert count. The curve saturates from ep=8 on for
-the same reason — once `k/ep` floors at 1, one expert plus that fixed cost is
-all that is left.
-
-Each degree past 1 costs one engine boot and the same ~57 shots, so
-`--moe-ep-degrees 1,2,4,8,16,32` is about ten minutes. `n_group` has to divide
-the local expert count, which is the only real constraint (it costs
-DeepSeek-V3.2 `ep=64`). A bundle with no `ep` column reads as ep=1 and prices
-exactly as it did before the axis existed.
 
 `--attention-decode-q-lens` (default `1`) sweeps how many query tokens each
 decode sequence submits. Ordinary decoding is 1; a **speculative-decoding**

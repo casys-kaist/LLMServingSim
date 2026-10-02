@@ -45,6 +45,8 @@ Hardware characterization, including backend-aligned Ring calibration and its li
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
 select effective bandwidth and latency per Ring operation without changing tensor sizes.
+Deployment-matched [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
+separates local routing, gathered experts and finalization under DP+EP.
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
 Model-forward shapes include local CUDA graph padding and subsequent DP synchronization.

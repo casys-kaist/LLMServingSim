@@ -41,11 +41,11 @@ moe_pp 1834594784
 moe_dp_ep 1918533372
 moe_dp_tp 3254475464
 moe_dp_pp 1852933267
-moe_dp_tp_pp 1689731245
-dual_node_moe_dp_ep 2077891162
+moe_dp_tp_pp 1752141377
+dual_node_moe_dp_ep 1469552912
 dp_pp_uneven 14546377273
 moe_dp_pp_uneven 6266277794
-moe_dp_tp_pp_uneven 10691065592
+moe_dp_tp_pp_uneven 11570673913
 moe_dp_ep_uneven 14753341559
 pd 1658182709
 pd_per_instance_config 1658182709

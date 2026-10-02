@@ -22,6 +22,9 @@ recorded residuals and the distinction from grouped MoE communication.
 The [collective-link schema](docs/reference/cluster-config.md#collective-specific-links)
 documents optional per-operation analytical Ring links and configuration
 precedence, without changing collective payloads or the common fallback.
+The [native MoE guide](docs/profiler/native-moe-components.md) describes explicit-DP
+single-rank acquisition, publication checks, component lookup and supported
+execution contracts. It distinguishes measured GPU work from analytical transport.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 NCCL baseline and recorded communicator and compilation settings.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes

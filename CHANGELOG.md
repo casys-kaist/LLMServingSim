@@ -7,6 +7,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Added
 
+- Add deployment-matched native MoE component profiling with explicit target DP,
+  full TP*DP expert placement and preserved global top-k. Measure local routing,
+  gathered experts and finalization separately in eager and CUDA graph modes;
+  retain per-forward GPU timings, matched-work expert conditioning controls,
+  immutable resumable contracts and publication quality checks. Automatically
+  consume matching tables with bounded interpolation and caches, warn on missing
+  deployment coverage, and reject corrupt or out-of-support data. Emit recorded
+  hidden/top-k tensor collectives in dependency order, with audited TP restoration.
+  Keep legacy tables for unsupported paths; do not infer arbitrary routing,
+  quantized/shared-expert support or exact grouped NCCL execution.
 - Support optional per-collective logical link parameters for analytical Ring
   AllReduce, AllGather and ReduceScatter. Preserve the parent operation through
   internal phases, physical message bytes, local reduction costs and the common
@@ -35,6 +45,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Chain expert-marker collectives and preserve the dispatch dependency on
+  ranks that skip earlier expert rows. Restore the required ReduceScatter to
+  TP AllGather ordering in existing MoE traces as well as native components;
+  keep operation counts, tensor bytes and profiled compute costs unchanged.
+  Reinstall Chakra to use the corrected converter.
 - Size non-speculative logits, sampling and TP logits gathering by actual
   requests rather than padded forward rows. Idle DP forwards retain their
   backbone and final norm but omit the per-sequence head, with a zero-byte

@@ -66,3 +66,4 @@ catalog:
   moe:
     moe:
       vllm: MixtralMoE
+      sequence_parallel: false

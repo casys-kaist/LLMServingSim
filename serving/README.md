@@ -64,6 +64,15 @@ of hardware-specific operation curves; `{}` disables that inheritance too.
 See the [cluster reference](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
 for the schema and backend restrictions. Rebuild ASTRA-Sim after updating.
 
+When a deployment-matched `moe_components.json` is installed, DP+EP execution
+uses separate local routing, gathered expert and local finalization timings.
+The full padded DP token vector determines each stage's shape; recorded dtypes
+determine the hidden/top-k collective payloads. Missing coverage warns and retains
+the legacy EP table, while corrupt or out-of-support installed data is rejected.
+See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
+for supported configurations and remaining analytical communication assumptions.
+Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
+
 The per-instance `cudagraph` object describes target execution, independently
 of the profiler's eager engine. Local graph padding applies with or without DP;
 DP then synchronizes the selected modes and forward sizes. Real attention

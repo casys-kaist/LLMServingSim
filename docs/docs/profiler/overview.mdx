@@ -17,7 +17,9 @@ output IS the simulator's input.
 ## When you need to run it
 
 You **don't** need to run the profiler if your hardware × model
-combination is already in the bundled profile data. Otherwise:
+combination and required execution geometry are already covered by the bundled
+profile data. For native MoE, that includes target TP/DP/EP, backend and rank
+ownership, not just a matching model name. Otherwise:
 
 | Scenario | Profile? |
 | --- | --- |
@@ -48,6 +50,11 @@ Times are stored in **microseconds** (`time_us` column); the
 simulator multiplies by 1000 and rounds to ns at load time.
 
 Schema details on **[Output bundle](./output-bundle)**.
+
+Explicit-DP [native MoE profiling](./native-moe-components) adds a versioned
+component index and deployment-specific tables alongside this bundle. It
+preserves global top-k and separates local routing, gathered expert work and
+local finalization, with independently measured eager/graph GPU timings.
 
 ## How it fits the bigger picture
 

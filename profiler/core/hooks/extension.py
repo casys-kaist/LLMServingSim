@@ -48,6 +48,22 @@ class Extension:
     ``collective_rpc`` call.
     """
 
+    def moe_component_initialize(self, target, local_budget):
+        from .moe_components import ComponentMeasurement
+        self._moe_components = None
+        self._moe_components = ComponentMeasurement(self.model_runner, target, local_budget)
+        return self._moe_components.contract
+
+    def moe_component_measure(self, point, iterations, failure_dir=None):
+        try:
+            return self._moe_components.measure(point, iterations, failure_dir)
+        except Exception as exc:
+            import traceback
+            raise RuntimeError(f"Native MoE point {point}:\n{traceback.format_exc()}") from exc
+
+    def moe_component_release(self):
+        self._moe_components = None
+
     def skew_initialize(self):
         from .skew_measurement import initialize
         return initialize(self.model_runner)

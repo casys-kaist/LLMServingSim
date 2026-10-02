@@ -202,6 +202,10 @@ def run_full(
 
     log.banner(args, variant_root)
 
+    if args.moe_dp_degrees is not None:
+        from .moe_profile import validate_request
+        validate_request(arch, args)
+
     last_engine_kwargs: dict[str, Any] | None = None
     # Keyed by TP, not a single "last": the engine resolves a different
     # block size per TP degree on a hybrid stack, because both the mamba page
@@ -242,6 +246,8 @@ def run_full(
         for category in wanted:
             if category.name == "mtp":
                 continue  # second pass, with the drafter built
+            if category.name == "moe" and args.moe_dp_degrees is not None:
+                continue
             if category.name == "moe" and 1 not in moe_eps:
                 continue  # every requested EP slice needs its own engine
             depth = minimal_layer_count_for(
@@ -323,7 +329,7 @@ def run_full(
         # measured grid point instead of a clamp against the ep=1 floor.
         moe_category = next(
             (c for c in categories_for(arch, tp) if c.name == "moe"), None)
-        if moe_category is not None and not args.only_skew:
+        if moe_category is not None and not args.only_skew and args.moe_dp_degrees is None:
             for ep in (e for e in moe_eps if e != 1):
                 with log.stage(f"TP={tp}  booting vLLM engine at EP={ep} "
                                f"for the MoE slice"):
@@ -368,6 +374,10 @@ def run_full(
                 finally:
                     spin_down(llm, tmpdir)
 
+    if args.moe_dp_degrees is not None:
+        from .moe_profile import run_components
+        run_components(arch_path, args, args.tp_degrees, variant_root)
+
     # After every tp has run, copy tp_stable rows from tp1 into the rest.
     # Skip when only_skew=True (nothing new to replicate).
     if not args.only_skew:
@@ -381,7 +391,8 @@ def run_full(
     # freshly measured on a run that only touched skew.csv -- the exact failure
     # the per-artifact block exists to prevent.
     measured: tuple[str, ...] = () if args.only_skew else tuple(
-        c.name for c in categories_for(arch, args.tp_degrees[0]))
+        c.name for c in categories_for(arch, args.tp_degrees[0])
+        if c.name != "moe" or args.moe_dp_degrees is None)
     if skew_measured:
         measured += ("skew",)
     # And what it is entitled to *describe*. A skew-only run sweeps no
@@ -425,6 +436,13 @@ def run_slice(
         raise ValueError(
             f"tp={tp} is not in the session's tp_degrees ({args.tp_degrees})"
         )
+
+    if args.moe_dp_degrees is not None:
+        if group != "moe":
+            raise ValueError("Explicit DP applies only to the MoE slice")
+        from .moe_profile import run_components
+        run_components(arch_path, args, [tp], variant_root)
+        return
 
 
     category_cls = CATEGORY_BY_NAME[group]

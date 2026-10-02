@@ -165,52 +165,44 @@ geometric grid lands only on boundaries, so interpolating between two samples
 underestimates most of the token counts a chunked-prefill scheduler actually
 produces.
 
-## `moe.csv` (MoE models only)
+## Native DP+EP components
 
-```
+Explicit `--dp` acquisition publishes `tp<N>/moe_components.json` and
+contract-specific `contract.json`, `coverage.json` and `components.csv` files.
+These are separate from the legacy whole-block `moe.csv`: local gate/routing,
+gathered experts and local finalization have different token domains and
+separate eager/graph measurements. Global expert count and top-k are preserved.
+Matching tables are selected automatically, with deployment, dtype, coverage
+and checksum validation. See [Native MoE components](./native-moe-components)
+for the full schema, raw repetitions, resume and unsupported-path behavior.
+
+## `moe.csv` (legacy whole-block MoE profiles)
+
+```csv
 ep,tokens,activated_experts,time_us
 1,1,8,47.8
 2,1,4,36.1
 4,1,2,30.2
-...
 ```
 
 | Column | Meaning |
 | --- | --- |
-| `ep` | EP degree this grid was measured at — the engine ran `E/ep` local experts and `k/ep` assignments per token |
-| `tokens` | Local tokens on a single rank after dispatch |
+| `ep` | EP degree used by the legacy expert/top-k-shrunk acquisition |
+| `tokens` | Input rows presented to the profiled rank; the AgRs consumer uses gathered rows |
 | `activated_experts` | Distinct experts touched on that rank |
-| `time_us` | Measured MoE block latency on a single rank |
+| `time_us` | Measured whole-block latency in microseconds |
 
-Simulator: **2D linear interpolation** on `(tokens, activated_experts)`
-within the grid for this instance's total EP degree. An unprofiled degree
-falls back to the nearest with a one-shot warning rather than interpolating
-across `ep` — `E/ep` has to be a whole number of experts and the permute width
-is a staircase in it.
+The legacy consumer uses two-dimensional interpolation over tokens and active
+experts within an EP grid. An unprofiled EP degree falls back to the nearest
+with a warning. Acquire this retained path with `--moe-ep-degrees` (or
+`MOE_EP_DEGREES` in `profile.sh`) when no native adapter covers the deployment.
 
-**One grid per EP degree, because a rank runs a slice and not the block.**
-It permutes over `E/ep` local experts rather than all E, a token contributes
-`k/ep` of its k expert assignments rather than all k, and so the distinct
-experts it activates start at `k/ep` rather than at `top_k`. Profiling only at
-ep=1 gets all three wrong in the same direction, and the third one is not even
-interpolated: `activated_experts` is the one lookup axis whose minimum is a
-positive number the runtime goes under, and the lookup clamps below the grid.
-Measured at one token on the rank:
-
-| model | ep=1 | ep=8 (a real rank at EP=8) |
-| --- | --- | --- |
-| DeepSeek-V3.2 | 84.7 us | **28.1 us** |
-| GLM-5 | 162.6 us | **33.7 us** |
-| MiniMax-M3 | 139.5 us | **47.3 us** |
-| Qwen3-30B-A3B | 47.8 us | **27.8 us** |
-
-Sweep it with `--moe-ep-degrees 1,2,4,8` (or `MOE_EP_DEGREES` in
-`profile.sh`) whenever the deployment runs EP > 1. Each degree past 1 costs one
-engine boot and the same ~57 shots — about 10 minutes for a full sweep. A
-bundle with no `ep` column is read as ep=1 and prices exactly as it did before
-the axis existed.
-
-Still profiled at **TP=1**: expert weights shard by `ep_size`, not `tp_size`.
+This acquisition changes the expert/top-k checkpoint shape to approximate a
+local rank. It does not reproduce global top-k routing or separate local and
+gathered regions of the native DP+EP kernel. An EP column alone does not establish
+a matching DP/backend measurement; active DP fallback warns that accuracy may
+degrade. A bundle without the EP column is read as EP1. Existing CSVs remain
+usable but are not relabelled as native component measurements.
 
 
 ## `skew.csv` (skew-enabled runs)

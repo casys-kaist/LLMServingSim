@@ -113,6 +113,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'profiler/running',
         'profiler/output-bundle',
+        'profiler/native-moe-components',
         'profiler/skew-alpha-fit',
         'profiler/adding-hardware',
         'profiler/adding-model-architecture',
