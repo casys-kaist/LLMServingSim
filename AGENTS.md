@@ -679,6 +679,15 @@ ordinary categories do not acquire a new measurement timestamp. Skew uses
 fingerprint; earlier raw measurements must not be retagged. Native DP+EP
 component contracts remain separate and retain their recorded timing method.
 
+Ordinary category sweeps checkpoint the accumulated CSV between completed
+shots, including early in a new run. `DedupSink.flush(clear=False)` retains
+all rows, acquisition identities and duplicate counts; writing only the most
+recent rows would erase earlier progress. Failed worker calls or interrupted
+writes leave the previous checkpoint available for compatible resume. This
+does not turn a partially acquired table into a completed simulation bundle:
+finish the requested sweep before adopting it. Checkpoint I/O is outside the
+CUDA timing context and does not add simulated CPU time.
+
 Module-tree repair alone is insufficient: CUDA leaves can remain beside the
 module that launched them. `hooks/activity_ownership.py` connects each retained
 CUDA activity's native correlation ID to its runtime/driver launch and selects

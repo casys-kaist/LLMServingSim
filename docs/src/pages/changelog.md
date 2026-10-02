@@ -155,6 +155,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Periodically checkpoint ordinary profiler categories between completed
+  shots, retaining accumulated rows, duplicate counts and acquisition identities.
+  Interrupted measurements can resume from the last atomic checkpoint instead
+  of losing a whole category sweep.
 - Use the common fine token grid for whole-block MoE acquisition instead of
   power-of-two token counts. Preserve resolved feasibility limits and the
   active-expert axis; compatible resumes add missing points without changing

@@ -88,8 +88,9 @@ def _fire_one_category(
 
     Resume behaviour: unless ``args.force`` is set, an existing CSV is
     preloaded into the sink and shots whose key is already covered are
-    skipped. The sink's flush at the end writes both preserved and
-    newly-measured rows. ``--force`` restores wipe-and-rewrite.
+    skipped. Periodic atomic checkpoints include both preserved and newly
+    measured rows; only completed shots reach them. ``--force`` replaces
+    the selected category rather than appending to its prior acquisition.
 
     ``wipe`` overrides that for a category swept more than once in a single
     run. ``moe`` is: it fires once per EP degree, each on its own engine, and
@@ -116,9 +117,7 @@ def _fire_one_category(
                 category.label, preloaded, len(prior_keys),
             )
 
-    # Materialize shots up-front so the progress bar has a total.
-    # Grids are small enough (<a few thousand shots) that holding them
-    # in memory is fine.
+    # Retain the planned shots for progress totals and resume filtering.
     all_shots = list(category.compose_shots(arch, args, limits, tp))
     if not all_shots:
         log.warning(
@@ -143,11 +142,11 @@ def _fire_one_category(
         return False
 
     label = f"TP={tp}  {category.label}"
-    # A long sweep is otherwise unobservable: the progress bar needs a TTY and
-    # the sink only writes its CSV after the last shot, so a run redirected to
-    # a file shows nothing between "firing N" and "done". Heartbeat at INFO.
+    # Checkpoint between complete shots, never while processing a worker
+    # result. Interrupted writes retain the previous atomically replaced CSV.
     heartbeat = max(1, len(shots) // 100)
     t_start = time.monotonic()
+    checkpoint_at = t_start + 60
     with log.progress(label, total=len(shots)) as bar:
         for done, shot in enumerate(shots, start=1):
             raw = llm.collective_rpc(
@@ -173,6 +172,11 @@ def _fire_one_category(
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
             bar.advance(1)
+            if done == 1 or done % 100 == 0 or time.monotonic() >= checkpoint_at:
+                # Retain the complete accumulator, including duplicate counts:
+                # flushing only the newest rows would erase earlier checkpoints.
+                sink.flush(clear=False)
+                checkpoint_at = time.monotonic() + 60
             if done % heartbeat == 0 or done == len(shots):
                 rate = done / max(1e-9, time.monotonic() - t_start)
                 log.info(

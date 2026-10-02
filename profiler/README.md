@@ -32,6 +32,9 @@ Native DP+EP components retain their separately versioned measurement contract.
 Whole-block MoE uses the same fine token grid as dense layers instead of only
 powers of two. Expert-count coordinates and feasibility checks are unchanged;
 new sweeps extend compatible tables without changing runtime lookup.
+Ordinary categories save periodic atomic checkpoints between completed shots.
+Resume preserves earlier rows and their acquisition identities; publish a
+bundle only after the requested sweeps have completed.
 
 ## Directory layout
 

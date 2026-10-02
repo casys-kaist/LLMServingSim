@@ -229,6 +229,15 @@ separate output root or explicit `--force`; they are not silently mixed with
 new timings. See [acquisition identity](./output-bundle#cuda-activity-and-acquisition-identity).
 Fully skipped ordinary categories retain their previous measurement timestamp.
 
+Ordinary sweeps checkpoint accumulated rows atomically between completed
+shots, including near the start of a new acquisition. A worker failure or
+interruption leaves the last checkpoint intact; resume skips its completed
+coordinates and remeasures work since that checkpoint. Checkpoint writes retain
+earlier rows and acquisition identities rather than replacing them with just
+the latest samples. Use a separate output root for a new bundle and finish the
+requested sweep before using its table in simulation: a partial checkpoint is
+progress, not a completed profile.
+
 Skew resume additionally requires a matching measurement implementation
 fingerprint, resolved block size, complete kernel set and sufficient per-forward
 repetitions. A change to timing attribution requires remeasurement even when

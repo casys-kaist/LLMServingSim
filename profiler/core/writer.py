@@ -217,8 +217,8 @@ class DedupSink:
     # Output
     # ------------------------------------------------------------------
 
-    def flush(self) -> None:
-        """Write the accumulated rows to ``out_path`` and clear state.
+    def flush(self, *, clear: bool = True) -> None:
+        """Atomically write accumulated rows, optionally retaining checkpoint state.
 
         CSV conventions:
           * Rows sorted lexicographically by key fields (deterministic
@@ -268,8 +268,9 @@ class DedupSink:
             tmp.unlink(missing_ok=True)
 
         log.debug("wrote %d rows → %s", len(rows), self.out_path)
-        self._bucket.clear()
-        self._row_measurements.clear()
+        if clear:
+            self._bucket.clear()
+            self._row_measurements.clear()
 
     # ------------------------------------------------------------------
     # Convenience: attach a human-friendly 'layer' prefix
