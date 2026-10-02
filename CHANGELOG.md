@@ -45,6 +45,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Validate skew warmup geometry through the actual common-metadata builder
+  when sparse-indexer metadata omits query boundaries. Retain exact output
+  identity and direct ordinary-attention checks, restore hooks before timing
+  and on failure, and continue rejecting unknown or mismatched geometry.
 - Normalize whole-block MoE profiles by actual MoE invocations when decoder
   parents also include dense layers. Preserve parent/occurrence normalization
   for merged projections and repeated norms. Existing hybrid-stack MoE tables

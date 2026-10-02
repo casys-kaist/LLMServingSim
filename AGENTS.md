@@ -631,6 +631,11 @@ ownership; correlated GPU annotations are not kernel work. Native history is
 initialized once, and warmups verify finite output and executed geometry.
 Recurrent state groups are identified by vLLM KV-cache spec, not model names;
 the paged attention groups supply the history/query geometry in hybrid stacks.
+Backend metadata need not retain query starts: sparse indexers split and
+discard them. During untimed warmup, verify the common metadata passed to the
+actual builder and retain the exact returned object's identity. Use that
+evidence only when direct backend geometry is unavailable; never skip an
+unknown backend by name. Restore builder methods before timing and on failure.
 Attention and other ordinary categories retain their existing measurement path.
 
 Raw CSV rows preserve ordered requests, query roles, repetitions, protocol

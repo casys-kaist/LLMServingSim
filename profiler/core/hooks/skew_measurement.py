@@ -5,6 +5,7 @@ module ownership and excludes user annotations from kernel duration sums.
 """
 
 from collections import Counter
+from contextlib import contextmanager
 import copy
 import math
 
@@ -262,6 +263,66 @@ def initialize(runner):
                 kv_initialization="zeroed once; native query writes thereafter")
 
 
+def _verify_request_geometry(metadata, requests):
+    starts = getattr(metadata, "query_start_loc", None)
+    lengths = getattr(metadata, "seq_lens", None)
+    if starts is None or lengths is None:
+        raise ValueError("Attention geometry requires query starts and sequence lengths")
+    starts, lengths = starts.cpu().tolist(), lengths.cpu().tolist()
+    if (len(starts) != len(lengths) + 1 or not starts or starts[0] != 0
+            or any(b < a or h < b - a
+                   for a, b, h in zip(starts, starts[1:], lengths))):
+        raise ValueError("Invalid attention query/history boundaries")
+    pairs = [(b - a, h - (b - a)) for a, b, h
+             in zip(starts, starts[1:], lengths) if b > a]
+    if Counter(pairs) != Counter(map(tuple, requests)):
+        raise ValueError("Executed query/history geometry differs from requested shot")
+
+
+@contextmanager
+def _verified_builder_outputs(runner, requests, state_layers):
+    """Verify common geometry before a backend discards query boundaries.
+
+    Sparse indexer metadata can omit query_start_loc after splitting prefill
+    and decode. Retain exact output-object identities, not a backend-name
+    exemption. Wrappers exist only during the untimed warmup.
+    """
+    outputs, patched = {}, []
+    try:
+        for groups in getattr(runner, "attn_groups", ()):
+            for group in groups:
+                if all(name in state_layers for name in group.layer_names):
+                    continue
+                for builder in group.metadata_builders:
+                    if any(builder is entry[0] for entry in patched):
+                        continue
+                    original = builder.build
+                    had_local = "build" in vars(builder)
+                    local = vars(builder).get("build")
+
+                    def build(*args, _original=original, **kwargs):
+                        # GPUModelRunner passes common metadata by keyword.
+                        common = kwargs.get("common_attn_metadata")
+                        if common is None:
+                            raise ValueError("Missing common attention metadata at build")
+                        _verify_request_geometry(common, requests)
+                        result = _original(*args, **kwargs)
+                        # Keep the object alive so id reuse cannot validate
+                        # unrelated metadata produced later in the warmup.
+                        outputs[id(result)] = result
+                        return result
+
+                    builder.build = build
+                    patched.append((builder, had_local, local))
+        yield outputs
+    finally:
+        for builder, had_local, local in reversed(patched):
+            if had_local:
+                builder.build = local
+            else:
+                del builder.build
+
+
 def measure(runner, shot_dict, catalog, iterations=3):
     """Warm up, verify executed geometry and retain individual kernel times."""
     import torch
@@ -296,15 +357,11 @@ def measure(runner, shot_dict, catalog, iterations=3):
             for name, item in bundle.items():
                 if name in state_layers:
                     continue
-                starts = getattr(item, "query_start_loc", None)
-                lengths = getattr(item, "seq_lens", None)
-                if starts is None or lengths is None:
+                if (getattr(item, "query_start_loc", None) is not None
+                        and getattr(item, "seq_lens", None) is not None):
+                    _verify_request_geometry(item, shot.requests)
+                elif id(item) not in verified_outputs:
                     raise ValueError(f"Cannot verify attention geometry for {name}")
-                starts, lengths = starts.cpu().tolist(), lengths.cpu().tolist()
-                pairs = [(b - a, h - (b - a)) for a, b, h
-                         in zip(starts, starts[1:], lengths) if b > a]
-                if Counter(pairs) != Counter(map(tuple, shot.requests)):
-                    raise ValueError("Executed query/history geometry differs from requested shot")
                 checked.append(name)
 
     def check_tensor(value):
@@ -328,7 +385,8 @@ def measure(runner, shot_dict, catalog, iterations=3):
         handles = [runner.model.register_forward_pre_hook(before),
                    runner.model.register_forward_hook(after)]
         try:
-            fire()
+            with _verified_builder_outputs(runner, shot.requests, state_layers) as verified_outputs:
+                fire()
         finally:
             for handle in handles:
                 handle.remove()

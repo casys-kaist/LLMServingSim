@@ -103,6 +103,15 @@ sampler token. The collector verifies executed geometry and finite warmup
 output, restores unambiguous CPU module containment, and excludes GPU user
 annotations from kernel-duration sums.
 
+Some sparse indexers discard query boundaries when they split their backend
+metadata into prefill and decode regions. The warmup verifies the shared
+query/history metadata passed to the actual builder and associates that
+check with the exact returned object used by the model. Unknown or mismatched
+geometry still fails; sparse backends are not exempted. Builder hooks are
+restored before timed forwards, including on failure. Ordinary attention
+also retains its direct backend-metadata check. No CPU verification time is
+included in the measured CUDA kernel sum.
+
 The plan streams batches rather than allocating the full Cartesian product.
 Raw checkpoints are replaced atomically. Successful cases survive failures;
 incomplete kernel sets, missing repetitions or a changed protocol need

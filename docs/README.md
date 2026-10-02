@@ -16,6 +16,8 @@ The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,
 automatic reference-cell support completion, and migration of enabled bundles.
+It also describes common-metadata geometry validation for sparse indexers
+whose backend-specific metadata does not retain query boundaries.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.
