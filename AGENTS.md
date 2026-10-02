@@ -812,6 +812,31 @@ files are not automatically rewritten by a code update; old fit residuals
 cannot certify the corrected formula. Refit retained samples with their
 measurement context or re-measure before validating new defaults.
 
+**Optional per-operation links retain physical bytes.** `collective_links`
+in the cluster config selects `link_bw` / `link_latency` for `all_reduce`,
+`all_gather` and `reduce_scatter`, each scalar or one value per topology
+dimension. Missing fields and operations use the common link. The builder
+emits same-topology sidecar YAML files referenced by `collective_networks`.
+The congestion-unaware analytical frontend supports these overrides for Ring
+only; ns-3 and other collective algorithms are rejected. Preserve the original
+collective on the stream/request: AllReduce's internal scatter/gather phases
+must use its AllReduce curve, not standalone ReduceScatter/AllGather curves.
+Do not change message bytes, rank groups or local-memory charges to emulate BW.
+
+The hardware command keeps the joint fit and records `collective_fits` at its
+fixed latency, with separate residuals. Each identifiable operation supplies
+`defaults.collective_links.<operation>.link_bw`; an unavailable fit records its
+reason and supplies no override. These effective primitive fits do not model
+NCCL's grouped launch semantics or establish accuracy at other rank counts.
+Existing hardware files are unchanged until explicitly refreshed.
+
+Hardware operation defaults are inherited only when neither common link value
+nor an explicit `collective_links` key is supplied, and every instance shares
+one hardware label. An explicit map replaces the hardware map; `{}` disables
+it. This precedence must remain idempotent across both config readers, so a
+hypothetical explicit interconnect never silently gains the measured card's
+operation curves.
+
 **Three inheritance rules** (`serving/core/hardware_defaults.py`, applied at
 both config load sites):
 

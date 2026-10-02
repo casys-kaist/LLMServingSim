@@ -40,7 +40,8 @@ Invalid levels are rejected before probing the GPU.
 
 Writes `profiler/perf/<LABEL>/hardware.yaml`: the card's spec, queried from the
 device, and NCCL AllReduce, AllGather and ReduceScatter sweeps used to fit
-shared `link_bw` / `link_latency` parameters for the analytical backend.
+shared `link_bw` / `link_latency` parameters for the analytical backend,
+plus per-operation bandwidths at the shared fitted latency.
 Cluster configs on this hardware then inherit those instead of carrying a
 guess, and every inherited value is logged with its provenance
 (`measured` / `spec` / `assumed`).
@@ -94,6 +95,20 @@ The hardware file retains raw graphed and isolated timings, the timing source,
 fit version and assumptions, and per-size/per-collective residuals. The legacy
 key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
 unit explicit. Inherited defaults also record their units.
+
+The same primitive samples also feed `collective_fits`: one bandwidth fit
+per operation, with latency fixed to the saved shared fit. This solves the
+remaining one-variable problem in inverse bandwidth using the same relative
+objective and local costs. Per-operation residuals remain visible; a fit that
+cannot identify positive finite bandwidth records `unavailable` rather than
+publishing a value. The shared fit is retained as the fallback.
+
+Usable operation fits populate `defaults.collective_links.<operation>.link_bw`.
+They are inherited when the entire link is inherited, not when a user specifies
+a hypothetical common link. An explicit `collective_links` map can override
+bandwidth and latency or disable the operation defaults. See the
+[configuration precedence](../reference/cluster-config#collective-specific-links).
+Updating code alone does not add these values to existing hardware files.
 
 :::caution[Calibration is not an exact NCCL model]
 

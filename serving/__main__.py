@@ -650,6 +650,8 @@ def main():
     cluster = build_cluster_config(
         astra_sim, args.cluster_config, build_enable_local_offloading, build_enable_attn_offloading,
         inputs_root=run_paths.inputs_root)
+    if cluster.get("collective_links") and network_backend != 'analytical':
+        raise ValueError("collective_links requires the congestion-unaware analytical backend")
     num_nodes = cluster["num_nodes"]
     num_instances = cluster["num_instances"]
     instances = cluster["instances"]

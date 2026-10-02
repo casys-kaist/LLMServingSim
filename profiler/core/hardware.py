@@ -296,7 +296,7 @@ def _ring_terms(collective: str, sample_bytes: int, npus: int,
 
 
 def _fit(samples: list[dict], *, npus: int,
-         local_mem_bw_gbps: float) -> dict[str, Any]:
+         local_mem_bw_gbps: float, fixed_latency_ns: int | None = None) -> dict[str, Any]:
     """Fit shared Ring parameters, without model/workload-specific coefficients.
 
     Relative least squares is linear in latency and *inverse* bandwidth once
@@ -306,6 +306,9 @@ def _fit(samples: list[dict], *, npus: int,
     predictions use the backend's integer-nanosecond truncation and the saved
     parameter values. This fit does not model grouped/ragged NCCL operations.
     """
+    if fixed_latency_ns is not None and (type(fixed_latency_ns) is not int
+                                          or fixed_latency_ns < 0):
+        raise ValueError("Fixed Ring latency must be a nonnegative integer in ns")
     usable = sorted((s for s in samples if s.get("us") is not None),
                     key=lambda s: s["bytes"])
     if not usable:
@@ -326,16 +329,20 @@ def _fit(samples: list[dict], *, npus: int,
     ab = math.fsum(a * b for _, a, b, _ in rows)
     ay = math.fsum(a * y for _, a, _, y in rows)
     by = math.fsum(b * y for _, _, b, y in rows)
-    determinant = aa * bb - ab * ab
-    if determinant <= 1e-12 * aa * bb:
-        raise ValueError("Sample sizes do not identify both latency and bandwidth")
-    candidates = [(0.0, max(0.0, by / bb)), (max(0.0, ay / aa), 0.0)]
-    lat = (ay * bb - by * ab) / determinant
-    inverse_bw = (by * aa - ay * ab) / determinant
-    if lat >= 0 and inverse_bw >= 0:
-        candidates.append((lat, inverse_bw))
-    lat, inverse_bw = min(candidates, key=lambda pair: math.fsum(
-        (a * pair[0] + b * pair[1] - y) ** 2 for _, a, b, y in rows))
+    if fixed_latency_ns is None:
+        determinant = aa * bb - ab * ab
+        if determinant <= 1e-12 * aa * bb:
+            raise ValueError("Sample sizes do not identify both latency and bandwidth")
+        candidates = [(0.0, max(0.0, by / bb)), (max(0.0, ay / aa), 0.0)]
+        lat = (ay * bb - by * ab) / determinant
+        inverse_bw = (by * aa - ay * ab) / determinant
+        if lat >= 0 and inverse_bw >= 0:
+            candidates.append((lat, inverse_bw))
+        lat, inverse_bw = min(candidates, key=lambda pair: math.fsum(
+            (a * pair[0] + b * pair[1] - y) ** 2 for _, a, b, y in rows))
+    else:
+        lat = fixed_latency_ns
+        inverse_bw = math.fsum(b * (y - a * lat) for _, a, b, y in rows) / bb
     if inverse_bw <= 0:
         raise ValueError("Ring fit cannot identify a finite positive bandwidth; "
                          "check the timings and local-memory assumptions")
@@ -390,7 +397,32 @@ def _fit(samples: list[dict], *, npus: int,
     }
     if lat == 0:
         out["warning"] = "latency reached zero; inspect model residuals before use"
+    if fixed_latency_ns is not None:
+        out["fixed_latency_ns"] = fixed_latency_ns
+        out["objective"] = ("nonnegative relative least squares over the whole sweep "
+                            "with shared latency fixed; continuous network term "
+                            "for fitting, integer ns for residuals")
     return out
+
+
+def _fit_collectives(samples: list[dict], *, npus: int, local_mem_bw_gbps: float,
+                     fixed_latency_ns: int) -> dict[str, Any]:
+    """Fit operation-specific bandwidths with one independently calibrated latency.
+
+    No model benchmark is an input. The shared fit remains available alongside
+    these curves; grouped/ragged collectives and new topologies still require
+    separate validation. Unsupported fits are recorded, never silently clipped.
+    """
+    fits = {}
+    for operation in _COLLECTIVES:
+        selected = [s for s in samples if s.get("collective") == operation]
+        try:
+            fits[operation] = _fit(selected, npus=npus,
+                                   local_mem_bw_gbps=local_mem_bw_gbps,
+                                   fixed_latency_ns=fixed_latency_ns)
+        except ValueError as exc:
+            fits[operation] = {"unavailable": str(exc)}
+    return fits
 
 
 def measure_interconnect(npus: int, *, local_mem_bw_gbps: float) -> dict[str, Any] | None:
@@ -425,6 +457,7 @@ def measure_interconnect(npus: int, *, local_mem_bw_gbps: float) -> dict[str, An
                  join=True)
         samples = json.loads(Path(out).read_text())
 
+    fit = _fit(samples, npus=world, local_mem_bw_gbps=local_mem_bw_gbps)
     return {
         "npus": world,
         "collectives": list(_COLLECTIVES),
@@ -438,7 +471,9 @@ def measure_interconnect(npus: int, *, local_mem_bw_gbps: float) -> dict[str, An
                 "is extrapolating, and an 8-GPU NVLink domain is not this "
                 "physics.",
         "samples": samples,
-        "fit": _fit(samples, npus=world, local_mem_bw_gbps=local_mem_bw_gbps),
+        "fit": fit,
+        "collective_fits": _fit_collectives(samples, npus=world,
+            local_mem_bw_gbps=local_mem_bw_gbps, fixed_latency_ns=fit["latency_ns"]),
     }
 
 
@@ -472,6 +507,16 @@ def _defaults(spec: dict, inter: dict | None) -> dict[str, Any]:
                         "source": "measured", "unit": "GiB/s", "from": frm}
         d["link_latency"] = {"value": inter["fit"]["latency_ns"],
                              "source": "measured", "unit": "ns", "from": frm}
+        links = {}
+        for operation, fitted in inter.get("collective_fits", {}).items():
+            if "unavailable" in fitted:
+                continue
+            links[operation] = {
+                "link_bw": {"value": fitted["bandwidth_gbps"], "source": "measured",
+                            "unit": "GiB/s", "from": f"{operation} across {inter['npus']} npus; "
+                            f"{fitted['timing']}; shared latency fixed"}}
+        if links:
+            d["collective_links"] = links
     d["npu_mem"] = {
         "mem_size": {"value": round(spec["memory_total_gib"]),
                      "source": "spec", "unit": "GiB"},

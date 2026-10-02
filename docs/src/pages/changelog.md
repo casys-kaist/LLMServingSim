@@ -10,6 +10,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Added
 
+- Support optional per-collective logical link parameters for analytical Ring
+  AllReduce, AllGather and ReduceScatter. Preserve the parent operation through
+  internal phases, physical message bytes, local reduction costs and the common
+  fallback. Accept scalar or per-dimension cluster overrides and measured
+  hardware defaults with explicit configuration precedence; reject unsupported
+  backends, operations and invalid values. Hardware profiling retains the shared
+  fit and also derives per-operation bandwidths at that shared latency from
+  primitive measurements, with residuals and unavailable-fit reasons.
 - Generate heterogeneous skew coverage from configured token, sequence and KV
   bounds, including history families, request ordering and multi-prefill batches.
   Record native per-forward repetitions and resumable completion; add CPU-only

@@ -57,6 +57,10 @@ profiling flags below have a `profile.sh` variable of the same name in caps
 unless noted. Hardware characterization runs separately as
 `python -m profiler hardware --hardware <hw> --npus 2`; it defaults to INFO
 logging and accepts an explicit `--log-level` override.
+Hardware characterization saves a shared Ring fit and optional per-collective
+bandwidth fits at its fixed latency, using primitive NCCL measurements rather
+than model benchmarks. See the [calibration contract](https://llmservingsim.ai/docs/profiler/adding-hardware#calibration-contract)
+for units, residuals and the limits of grouped or ragged communication.
 **[Profiler → Running](https://llmservingsim.ai/docs/profiler/running)**
 carries the semantics; this is the index, so a flag missing from one list is
 visible against the other.
@@ -149,8 +153,8 @@ shots exist, not just the numbers in them.
 ./scripts/docker-vllm.sh
 ```
 
-The official vLLM image (`vllm/vllm-openai:v0.19.0`, or `:v0.19.0-cu130`
-for CUDA 13.x GPUs — edit `scripts/docker-vllm.sh`) already includes every
+The official vLLM image (`vllm/vllm-openai:v0.28.0`, selected by
+`scripts/docker-vllm.sh`) already includes every
 dependency the profiler needs: vllm, pydantic, pyyaml, rich,
 huggingface_hub. No extra pip installs.
 
@@ -320,7 +324,11 @@ The shared BW/latency fit uses the analytical backend's single-chunk,
 one-hop Ring costs at the measured rank count, including local reductions.
 Network bandwidth is **GiB/s**; local memory bandwidth is decimal **GB/s**.
 Per-size and per-collective residuals describe where one pair cannot match
-NCCL. This measures individual collectives, not grouped MoE dispatches, and
+NCCL. Additional `collective_fits` derive individual bandwidths at the shared
+latency and populate optional `defaults.collective_links` entries. Explicit
+common-link settings suppress automatic inheritance of those operation curves;
+an explicit operation map replaces them. This measures individual collectives,
+not grouped MoE dispatches, and
 does not fit coefficients against model benchmarks. See the
 [hardware guide](../docs/docs/profiler/adding-hardware.md#calibration-contract)
 for the formulas, assumptions and saved metadata. Updating the code alone

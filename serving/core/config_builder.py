@@ -689,7 +689,9 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
     _sync_system_collective_dims(system_config_path, total_instances)
 
     # Generate the final ASTRA-Sim input files after all instances are known.
-    _create_network_config(network_config_path, total_instances, link_bw, link_latency)
+    collective_links = cluster_config.get("collective_links")
+    _create_network_config(network_config_path, total_instances, link_bw, link_latency,
+                           collective_links)
     with open(memory_config_path, "w", encoding="utf-8") as f:
         json.dump(memory_config, f, ensure_ascii=False, indent=2)
     _validate_memory_config(memory_config_path, placement, enable_local_offloading)
@@ -715,6 +717,7 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
         "pim_models": pim_models,
         "link_bw": link_bw,
         "link_latency": link_latency,
+        "collective_links": collective_links,
         "inputs_root": inputs_root,
         "network_config_path": network_config_path,
         "system_config_path": system_config_path,
@@ -725,7 +728,8 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
     return cluster
 
 # generates topology according to the input arguments
-def _create_network_config(network_config_path, instances, link_bw, link_latency):
+def _create_network_config(network_config_path, instances, link_bw, link_latency,
+                           collective_links=None):
     """Create ASTRA-Sim network topology config.
 
     Topology dimensions:
@@ -741,6 +745,44 @@ def _create_network_config(network_config_path, instances, link_bw, link_latency
         "bandwidth": _normalize_network_dim_values(link_bw, num_dims, "link_bw"),
         "latency": _normalize_network_dim_values(link_latency, num_dims, "link_latency"),
     }
+
+    # Validate every override before publishing any file. Only timing changes:
+    # rank dimensions, topology and the bytes emitted by collectives stay fixed.
+    networks = {}
+    if collective_links is not None:
+        if not isinstance(collective_links, dict):
+            raise TypeError("'collective_links' must be an object")
+        allowed = {"all_reduce", "all_gather", "reduce_scatter"}
+        for operation, settings in collective_links.items():
+            if operation not in allowed:
+                raise ValueError(f"Unsupported collective link: {operation!r}")
+            if not isinstance(settings, dict) or not settings:
+                raise ValueError(f"collective_links.{operation} must be a nonempty object")
+            if set(settings) - {"link_bw", "link_latency"}:
+                raise ValueError(f"Unknown link setting in collective_links.{operation}")
+            network = dict(topology_data)
+            for field, axis, default in (("link_bw", "bandwidth", link_bw),
+                                         ("link_latency", "latency", link_latency)):
+                value = settings.get(field, default)
+                values = value if isinstance(value, list) else [value]
+                name = f"collective_links.{operation}.{field}"
+                if any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) or v < 0 or (field == "link_bw" and v == 0)
+                       for v in values):
+                    raise ValueError(f"{name} must contain finite "
+                                     "positive bandwidths or nonnegative latencies")
+                network[axis] = _normalize_network_dim_values(value, num_dims, name)
+            networks[operation] = network
+    if networks:
+        directory = os.path.dirname(network_config_path)
+        stem = os.path.splitext(os.path.basename(network_config_path))[0]
+        paths = {}
+        for operation, network in networks.items():
+            name = f"{stem}.{operation}.yml"
+            with open(os.path.join(directory, name), 'w') as yaml_file:
+                yaml.dump(network, yaml_file, default_flow_style=False, sort_keys=False)
+            paths[operation] = name
+        topology_data["collective_networks"] = paths
 
     with open(network_config_path, 'w') as yaml_file:
         yaml.dump(topology_data, yaml_file, default_flow_style=False, sort_keys=False)

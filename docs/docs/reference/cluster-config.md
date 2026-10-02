@@ -38,6 +38,7 @@ describe an interconnect you do not have.
 | `num_nodes` | int | ✓ |  | Number of physical nodes in the cluster |
 | `link_bw` | float or float[] | — | *inherited* | ASTRA-Sim topology link bandwidth in **GiB/s** (binary). Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value from `profiler/perf/<hw>/hardware.yaml` is used — see [Hardware facts are inherited](#hardware-facts-are-inherited) |
 | `link_latency` | float or float[] | — | *inherited* | ASTRA-Sim topology link latency in **ns**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank. Omit it and the measured value is used |
+| `collective_links` | object | — | *optional inheritance* | Per-operation analytical Ring link settings; see [Collective-specific links](#collective-specific-links). `{}` keeps the common link for every operation |
 | `nodes` | array | ✓ |  | Length must equal `num_nodes` |
 | `cxl_mem` | object | optional | absent | CXL memory expansion (see below) |
 
@@ -50,6 +51,53 @@ The hardware profiler fits the [single-chunk Ring contract](../profiler/adding-h
 Unlike network `link_bw`, `npu_mem.mem_bw` is decimal **GB/s** and also drives
 the backend's local reduction cost. Calibration parameters depend on these
 assumptions; they are not universal physical-link constants.
+
+### Collective-specific links
+
+The congestion-unaware analytical backend can use different effective link
+parameters for `all_reduce`, `all_gather` and `reduce_scatter`. For example,
+this hypothetical single-dimension link overrides only AllGather bandwidth:
+
+```json
+{
+  "link_bw": 100,
+  "link_latency": 1000,
+  "collective_links": {
+    "all_gather": {"link_bw": 80}
+  }
+}
+```
+
+Each operation accepts `link_bw` and/or `link_latency`, with the same units
+and scalar-or-array shape as the common fields. Bandwidth must be finite and
+positive; latency must be finite and nonnegative. Unknown names, empty operation
+objects and mismatched dimension counts are errors.
+
+- An unspecified operation uses the common link. A missing field within an
+  operation also uses its common value.
+- An explicit map replaces the hardware operation map; missing entries do not
+  inherit other operation overrides. An empty map, `{}`, disables inheritance.
+- With no explicit map, operation defaults are inherited from
+  `hardware.yaml::defaults.collective_links` only when **both** common link
+  values are omitted and every instance shares one hardware label. Supplying
+  either common value therefore describes a custom link without silently
+  adding the measured hardware's operation curves.
+
+The generated `network.yml` references same-topology sidecar files through
+`collective_networks`. The backend selects a link using the original collective:
+AllReduce retains its own settings through internal scatter/gather phases.
+Physical message sizes, rank groups, local-memory reductions, and point-to-point
+traffic are unchanged. Rebuild ASTRA-Sim when installing this feature.
+
+:::caution[Analytical Ring only]
+
+This option requires the congestion-unaware analytical backend and Ring
+implementations. It is not supported by ns-3, and it does not implement NCCL
+channel selection, grouped launches or arbitrary ragged collectives. The
+hardware profiler's [calibration contract](../profiler/adding-hardware#calibration-contract)
+and retained residuals bound how its effective curves should be interpreted.
+
+:::
 
 ## Hardware facts are inherited
 

@@ -40,6 +40,7 @@ error this module exists to prevent.
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from typing import Any
 
 import yaml
@@ -139,7 +140,7 @@ def apply_hardware_defaults(cluster_config: dict, logger=None) -> dict:
     log = logger if logger is not None else get_logger("HardwareDefaults")
 
     def say(msg, *a):
-        key = (msg, a)
+        key = (msg, tuple(repr(value) for value in a))
         if key in _said:
             return
         _said.add(key)
@@ -209,6 +210,36 @@ def apply_hardware_defaults(cluster_config: dict, logger=None) -> dict:
             mem[key], src = got
             say("npu_mem.%s = %s for %s (inherited from hardware.yaml, %s)",
                 key, mem[key], hw, src)
+
+    # Inherit the optional operation map only when the entire link is being
+    # inherited. A hypothetical explicit link must not quietly acquire this
+    # hardware's measured collective curves. An explicit map (including {})
+    # replaces the hardware map; omitted fields fall back to the common link.
+    if ("collective_links" not in cluster_config
+            and cluster_config.get("link_bw") is None
+            and cluster_config.get("link_latency") is None and len(labels) == 1):
+        hw = next(iter(labels))
+        measured = _defaults_for(hw).get("collective_links")
+        if measured is not None:
+            if not isinstance(measured, dict):
+                raise ValueError("hardware defaults.collective_links must be a mapping")
+            links = {}
+            for operation, settings in measured.items():
+                if operation not in {"all_reduce", "all_gather", "reduce_scatter"}:
+                    raise ValueError(f"Unknown hardware collective link {operation!r}")
+                if not isinstance(settings, dict) or not settings:
+                    raise ValueError(f"Invalid hardware collective link {operation!r}")
+                links[operation] = {}
+                for field in settings:
+                    entry = _entry(settings, field)
+                    if field not in {"link_bw", "link_latency"} or entry is None:
+                        raise ValueError(f"Invalid hardware collective setting {operation}.{field}")
+                    value, source = entry
+                    links[operation][field] = deepcopy(value)
+                    say("collective_links.%s.%s = %s for %s "
+                        "(inherited from hardware.yaml, %s)",
+                        operation, field, value, hw, source)
+            cluster_config["collective_links"] = links
 
     # --- cluster-level link ---------------------------------------------
     for key in ("link_bw", "link_latency"):

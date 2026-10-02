@@ -46,6 +46,14 @@ Pass a config file to `python -m serving` via `--cluster-config configs/cluster/
 | `num_nodes` | Integer | Number of nodes in the cluster |
 | `link_bw` | Float or Array<Float> | ASTRA-Sim topology link bandwidth in GiB/s (binary). A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited from `profiler/perf/<hw>/hardware.yaml` when omitted** — see below |
 | `link_latency` | Float or Array<Float> | ASTRA-Sim topology link latency in ns. A scalar is broadcast to all topology dimensions; an array must match the final `npus_count` rank. **Inherited when omitted** |
+| `collective_links` | Object | Optional per-operation `link_bw` / `link_latency` for analytical Ring AllReduce, AllGather and ReduceScatter; missing settings use the common link |
+
+Operation-specific settings preserve tensor sizes and topology. Hardware operation
+defaults are inherited only when both common link settings and the operation map
+are omitted. An explicit map replaces those defaults, and `{}` disables them.
+See the [collective-link reference](../../docs/docs/reference/cluster-config.md#collective-specific-links)
+for scalar/per-dimension values, precedence and supported backends. Rebuild
+ASTRA-Sim before using these settings.
 
 ### Per-node fields
 

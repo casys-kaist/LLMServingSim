@@ -57,6 +57,13 @@ from one list is visible against the other.
 Boolean flags use `argparse.BooleanOptionalAction`, so each has a
 `--no-` form (`--no-enable-prefix-caching`).
 
+The optional cluster-level `collective_links` map selects bandwidth and latency
+for individual analytical Ring operations. Missing operations and fields use
+the common link. Explicit common-link settings suppress automatic inheritance
+of hardware-specific operation curves; `{}` disables that inheritance too.
+See the [cluster reference](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
+for the schema and backend restrictions. Rebuild ASTRA-Sim after updating.
+
 The per-instance `cudagraph` object describes target execution, independently
 of the profiler's eager engine. Local graph padding applies with or without DP;
 DP then synchronizes the selected modes and forward sizes. Real attention
