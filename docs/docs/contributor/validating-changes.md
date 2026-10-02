@@ -5,12 +5,11 @@ title: Validating your changes
 
 # Validating your changes
 
-Focused regression tests live under `profiler/tests/` and run with
-`python3 -m unittest discover -s profiler/tests -v` in the profiler environment.
-The simulator is also **deterministic** — the same cluster config, workload and flags
+The simulator is **deterministic** — the same cluster config, workload and flags
 reproduce the same makespan exactly — so validation is equality against
-recorded results in addition to targeted tests. `serving/validate.sh`
-runs that comparison for you.
+recorded results in addition to focused local checks. `serving/validate.sh`
+runs that comparison for you. Temporary scripts and tests written to diagnose
+or verify a fix remain local under the [commit policy](./pr-workflow#commit-hygiene).
 
 ## 1. Run the validation script (every PR)
 
@@ -163,9 +162,11 @@ Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 
 Compare all fifteen statistics against
 `bench/examples/<hardware>/<model>/validation/summary.txt`; do not use only a
-mean or the figure in the abstract. The bundled examples do **not** all meet a
-5% absolute-error target. See **[Validation](/docs/validation)** for the
-current per-configuration results and remaining limitations.
+mean or the figure in the abstract. The headline Llama and Qwen examples meet
+the 5% absolute-error target on all fifteen statistics. The additional reduced
+DeepSeek diagnostic does not. See **[Validation](/docs/validation)** for the
+current per-configuration results and remaining limitations; these results
+do not establish accuracy for unmeasured deployments or workloads.
 
 A matching regression digest establishes reproducibility, not agreement with
 vLLM. Explain every intentional movement, including regressions; correcting

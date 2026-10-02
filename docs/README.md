@@ -13,7 +13,7 @@ Regenerate the site changelog from the root CHANGELOG.md and run a production
 build before handing off documentation changes.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
-current table contract, required measurement inputs, CPU-only rebuild command
+current table contract, required measurement inputs, CPU-only rebuild command,
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,
 automatic reference-cell support completion, and migration of enabled bundles.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
@@ -39,17 +39,22 @@ independent TP/EP collective numbering in the backend.
 The [expert routing guide](docs/simulator/moe-expert-routing.md) distinguishes
 global EP-rank lookup from instance-local trace markers, and documents
 round-robin top-k assignment over gathered token positions.
+The [publication workflow](docs/contributor/pr-workflow.md#publishing-submodule-changes)
+explains how to publish Chakra, ASTRA-Sim and the frontend without leaving
+unavailable submodule commits in a public checkout.
 
 ## Installation
 
+Use Node.js 20 or newer and pnpm. The deployment workflow pins Node.js 22.
+
 ```bash
-yarn
+pnpm install --frozen-lockfile
 ```
 
 ## Local Development
 
 ```bash
-yarn start
+pnpm start
 ```
 
 This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
@@ -57,23 +62,15 @@ This command starts a local development server and opens up a browser window. Mo
 ## Build
 
 ```bash
-yarn build
+pnpm build
+pnpm check-rendered
 ```
 
 This command generates static content into the `build` directory and can be served using any static contents hosting service.
 
 ## Deployment
 
-Using SSH:
-
-```bash
-USE_SSH=true yarn deploy
-```
-
-Not using SSH:
-
-```bash
-GIT_USER=<Your GitHub username> yarn deploy
-```
-
-If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+The GitHub Actions workflow in `.github/workflows/deploy-docs.yml` builds and
+deploys the site on documentation changes pushed to `main`. A feature-branch
+push does not deploy the public site. Do not publish a separate `gh-pages`
+branch with the generic Docusaurus deploy command.

@@ -36,6 +36,9 @@ cd LLMServingSim
 For installation details, container choices, configuration layout, CLI
 flags, and the full set of example workloads, see the
 [documentation](https://llmservingsim.ai/docs/getting-started/overview).
+When updating an existing clone, synchronize its recursive submodules and
+rebuild ASTRA-Sim and Chakra together; see the
+[update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
 
 For dynamic heterogeneous profiling and reusable CPU-built attention corrections, see the
 [skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).

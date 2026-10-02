@@ -97,6 +97,39 @@ Run through the checklist:
    Sanity-check with `git diff --cached --stat` and
    `git diff --cached --check`.
 
+## Publishing submodule changes
+
+The frontend, ASTRA-Sim and Chakra are separate Git repositories. A parent
+commit records a submodule commit ID; pushing the parent does not publish that
+commit to the submodule's remote.
+
+1. Check each repository's configured remote, branch and unpublished diff.
+   Keep temporary verification files and private run records out of every
+   commit being published, not only the final working tree.
+2. Publish required Chakra commits to the configured fork first, then publish
+   ASTRA-Sim with its recorded Chakra pointer. Verify both commits are reachable
+   from their intended remote branches.
+3. Publish the frontend branch with `git push --recurse-submodules=check`.
+   This refuses a parent push when referenced submodule commits are not available
+   on a remote. Do not use `--all` or `--mirror` to include local backup refs.
+
+Use normal fast-forward pushes; if a remote branch has advanced independently,
+reconcile it before publishing rather than force-pushing over other work.
+Only submodules with new required commits need a push.
+
+Consumers updating an existing clone should run:
+
+```bash
+git pull --ff-only
+git submodule sync --recursive
+git submodule update --init --recursive
+./scripts/compile.sh
+```
+
+Run the build inside the documented simulator environment. It rebuilds ASTRA-Sim
+and installs the pinned Chakra converter; source edits alone do not update an
+already-installed converter or backend binary.
+
 ## Opening the PR
 
 Push to your fork (or branch if you have direct access):

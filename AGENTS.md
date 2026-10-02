@@ -1662,7 +1662,7 @@ Cluster configs in `configs/cluster/` define hardware topology. Key instance fie
   `mem_size * mem_util - weight`. Sits inside `npu_mem` because its only job is to
   scale `mem_size`, and it follows that block's `mem_*` naming
 - `cpu_mem.mem_bw`: CPU memory bandwidth (set as remote memory in memory_expansion.json)
-- `link_bw`: inter-node bandwidth in GB/s (set in network.yml)
+- `link_bw`: network link bandwidth in GiB/s (set in network.yml)
 - `link_latency`: inter-node link latency in ns
 
 Parallelism inference: users may provide partial info (e.g., `num_npus=4, tp_size=2`)
@@ -1690,12 +1690,13 @@ resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`,
 are relative to the repo root and prefixed with `../` in code.
 
 ### Communication sizes for ASTRA-Sim
-ASTRA-Sim expects the **total** data size for collectives (not per-NPU). It divides by N
-internally (`msg_size = data_size / nodes_in_ring`).
+ASTRA-Sim's data-size convention depends on the collective: AllReduce and
+ReduceScatter take the full pre-partition tensor; AllGather takes a local chunk.
+Ring divides the former by its rank count, not the AllGather chunk.
 - ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
-- MoE: **not** one size. The EP all-to-all is emitted as two collectives with
-  different `data_size` conventions -- AllGather takes the per-rank chunk,
-  ReduceScatter the pre-scatter total. See the MoE section.
+- MoE: **not** one size. Dispatch AllGathers take per-rank chunks, while the
+  combine ReduceScatter takes a pre-scatter total. Native dispatch has three
+  tensor collectives; the legacy path combines its dispatch payload. See the MoE section.
 
 ### Multi-dimensional topology and `involved_dim`
 For DP configurations the network topology is multi-dimensional, innermost dimension
@@ -1879,164 +1880,44 @@ model the compiled path's MoE cost from an eager per-layer profile: it depends
 on the routing histogram through kernel selection, which such a profile cannot
 express by construction.
 
-### The EP all-to-all is emitted as AllGather + ReduceScatter
-An MoE dispatch/combine **is** an all-to-all, but it has several
-implementations and vLLM picks one with `--all2all-backend`. Its default is
-`allgather_reducescatter` -- "all2all based on allgather and reducescatter" in
-vLLM's own option list (`config/parallel.py:188`) -- so that is the pair the
-simulator emits, because ASTRA-Sim costs the collective it is handed. Nothing
-emits `ALLTOALL`; the converter still parses it.
+### MoE dispatch/combine and TP restoration
 
-The two halves ride on the markers, not the expert rows, and are sized by
-ASTRA-Sim's `data_size` convention for each collective:
+The modeled transport is vLLM's `allgather_reducescatter` backend.
+A matching native component table is preferred; otherwise the retained
+whole-block `moe.csv` path is used with a warning for unverified DP coverage.
+Other all-to-all backends need separate execution contracts.
 
-| Half | Marker | `comm_size` |
-|------|--------|-------------|
-| dispatch | `EXPERT 0` | `chunk * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits with the hidden state |
-| combine | `EXPERT END` | `chunk * ep_total * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
+Native modular execution keeps local gate/routing, three ordered AllGathers
+(hidden states, top-k weights, top-k IDs), gathered expert computation,
+ReduceScatter and local finalization separate. Tensor widths follow the
+recorded dtypes. Sequence-parallel wrappers dispatch over EP and restore the
+TP output with AllGather; non-SP wrappers dispatch over DP and restore it
+with AllReduce when TP is greater than one. Do not describe this path as a
+single hidden-state/router-logit payload.
 
-where `chunk = (gathered - min) / (ep_total - 1)` — see below.
+The legacy fallback approximates dispatch with one hidden-state/router-logit
+AllGather and combine with ReduceScatter. At DP=1 there is no dispatch/combine:
+replicated input reaches local experts, followed by a TP AllReduce if needed.
+Sequence-parallel legacy traces also carry their trailing TP AllGather.
+Chakra accepts multiple collective/size pairs on an expert marker and chains
+them in order, preserving the tail through skipped expert ranks. Reinstall
+the converter with the matching backend; the TP restore is not a missing feature.
 
-**Both collectives are ragged, and that is what sets their cost.**
-`AgRsAll2AllManager` passes per-rank `sizes` straight through, and
-`pynccl.all_gatherv` is one `ncclBroadcast` per rank at *that rank's own* size
-(`reduce_scatterv` one `ncclReduce` per rank as root), fused in a single group.
-So rank *r* ships its own tokens and takes in everyone else's: its ingress is
-`gathered - sizes[r]`, and the collective ends when the worst-off rank is done,
-at **`gathered - min(sizes)`**. The ring derivation gives the same answer — in
-step *k* a rank forwards what it received in step *k-1*, so it sends every
-chunk but one and the bottleneck is `gathered - min`.
+For unequal DP counts, retain the full already-padded vector. SP wrappers
+ceil-divide each member by TP before gathering; the total and minimum alone
+cannot reconstruct that geometry. The Ring envelope uses the gathered row
+count minus the smallest dispatch count. For a group of G ranks and tensor
+width W bytes, AllGather uses ceil(remote_rows * W / (G - 1)) as its local
+chunk; ReduceScatter uses the hidden-state chunk multiplied by G. Equal counts
+recover the ordinary local chunk. This is an analytical worst-rank envelope,
+not an exact model of grouped ragged NCCL execution or a measured guarantee
+for every rank count.
 
-ASTRA-Sim's Ring charges `(N-1) * chunk` for AllGather and `(N-1) * total/N`
-for ReduceScatter, so the chunk that reproduces that bound is
-`(gathered - min) / (N - 1)` and the pre-scatter total is that chunk times N.
-Two limits fall out, which is why this is the general form rather than a
-special case:
-
-| case | result |
-|---|---|
-| any `N`, uniform sizes | `(gathered - gathered/N)/(N-1) = gathered/N` — unchanged |
-| `N = 2`, ragged | `gathered - min = max` — the NCCL-measured value |
-
-Dividing the gathered total by `ep_total` instead charges the **average** rank.
-Every decode round is CUDA-graph padded, so the two agree there and TPOT is
-untouched; a prefill chunk is outside the capture range and never padded, so a
-`(2048, 1)` round was charged at 1024 where NCCL pays 2048. Measured on the
-dp+ep bench example: **0.659x** of the real collective on prefill rounds, a
-mean 9.8 ms per round over 48 MoE layers and 25.4 ms on a full chunk, and
-**exactly zero** on every decode round. That is the shape of the residual it
-was found by — q30 sat at TTFT -18.4% with TPOT -1.3%, and the fix takes the
-run to +3.4% / +2.5%, sum |err| 21.7% -> 8.4%.
-
-`dp_min_total_len` carries the value from both DP round-completion paths
-(`max_total_len` when the round is padded, the real minimum otherwise), divided
-by `tp_size` under sequence-parallel MoE, where each EP rank holds
-`total_len / tp`. The `N = 2` case is checked against real NCCL
-(time AllGather/ReduceScatter with real NCCL at the exact MoE sizes;
-ASTRA-Sim's ring model is otherwise accurate to 0.90x on decode and 0.94x on
-prefill, so the ragged assumption was the whole gap). **`N > 2` rests on the
-ring derivation, not on measurement** — it needs four GPUs, and the competing
-reading, a step-synchronous ring at `(N-1) * max`, agrees at `N = 2` and
-charges more at `N = 4`.
-
-`gathered` is the **sum** of the group's per-rank token counts, which under a
-DP group is `max_total_len * dp_group_size`. Both of vLLM's own facts say so:
-`AgRsAll2AllManager.dispatch_router_logits` all-gathers with
-`sizes[rank] == hidden_states.shape[0]`, so each rank contributes *all* of its
-tokens, and `dp_utils.coordinate_batch_across_dp` pads every rank up to the
-group max whenever cudagraphs are on. It was set to `max_total_len` — i.e.
-`ep_total` times too small — on the grounds that "ASTRA-Sim's Ring is 2x over
-real AG/RS". It is not: `Ring.cc` gives AllGather `(N-1) x chunk`,
-ReduceScatter `(N-1) x total/N` and AllReduce `2(N-1) x total/N` per rank,
-which is NCCL's ring algorithm for all three. What the halving actually
-compensated for was the MoE *compute* being over-charged by the sub-top_k
-clamp; with both fixed, the dp+ep bench example moved from -23.3% TTFT /
--3.7% TPOT to +19.9% / +3.8%, and the TP-only example (which never takes this
-path) stayed at +1.3% / +0.8%. **Two errors that cancelled are now one
-residual** -- do not "recalibrate" either half back.
-
-Real lines (Qwen3-30B-A3B, `hidden 2048`, 128 experts, bf16, 10 tokens at
-`ep_total 2`), where `5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`:
-
-```
-EXPERT 0 ALLGATHER:0,1 21760
-expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
-EXPERT END REDUCESCATTER:0,1 40960
-```
-
-The other backends (`deepep_*`, `mori_*`, `flashinfer_*`) would emit a
-different collective and are not modelled. Don't "fix" the docs back to a
-single ALLTOALL: the sizes differ between the two halves, so one collective
-cannot describe it.
-
-**Which group the pair rides on, and when it exists at all.** Verified against
-vLLM 0.28; the short version is that dispatch/combine exists because *tokens*
-are partitioned, not because experts are:
-
-| config | tokens partitioned along | dispatch/combine | expert-sum reduction |
-|---|---|---|---|
-| TP=1, DP=2, EP=2 | DP | AG/RS over the **DP group** (= the EP group here) | the RS itself |
-| TP=2, DP=2, EP=4 | DP **and** TP | AG/RS over the **whole EP group** | the RS itself |
-| TP=2, DP=1, EP=2 | nowhere -- replicated | **none** | AllReduce over the TP group |
-
-The middle row is sequence-parallel MoE: `ParallelConfig.use_sequence_parallel_moe`
-requires `enable_expert_parallel and tp > 1 and dp > 1`, and
-`AgRsAll2AllManager._get_comm_group` then returns `get_ep_group()` rather than
-`get_dp_group()`. `_maybe_reduce_final_output` skips its all-reduce in that case
-(`not moe_config.is_sequence_parallel`), because the reduce-scatter already
-completed the sum. So the simulator's `ep_dim` -- DP-only at `tp == 1`, both
-dims above it -- and its `ep_total` ring size are right for both DP rows. Do
-**not** "fix" them to DP-only.
-
-The last row is the one the simulator used to get wrong. With DP=1,
-`use_all2all_kernels = use_ep and (dp_size > 1 or pcp_size > 1 or
-is_sequence_parallel)` is False, `maybe_make_prepare_finalize` returns `None`,
-and the MoE emits **one AllReduce** over the TP group instead -- fired by
-`_maybe_reduce_final_output`'s `(tp_size > 1 or ep_size > 1)`, where `ep_size`
-is what satisfies it because EP sets `moe_parallel_config.tp_size = 1`. Note
-what that reduction *is*: not the dense hidden-dim reduction, but the sum over
-a token's `k` experts, which is split across ranks because the experts are.
-The emitter now does this: no dispatch, and `EXPERT END` carries
-`ALLREDUCE` over `tp_dim` sized `total_len * hidden * fp`.
-
-The invariant that ties all three rows together: **exactly one collective spans
-every EP rank**, because a token's `k` expert contributions live one per rank
-and all of them have to be summed. At `tp == 1` the reduce-scatter's DP group
-*is* the EP group; under sequence-parallel MoE `_get_comm_group` widens it to
-the EP group explicitly; at DP=1 the AllReduce's TP group is the EP group. That
-is also why `_maybe_reduce_final_output` can be skipped under sequence-parallel
-(`not moe_config.is_sequence_parallel`) without leaving a partial sum behind --
-and why it fires but costs nothing at `tp == 1` (a size-1 TP group).
-
-**One collective is still missing: sequence-parallel MoE's trailing AllGather.**
-`Qwen3MoeSparseMoeBlock.forward` slices its input to this TP rank's chunk
-(`sequence_parallel_chunk` -- a local narrow, no collective), runs the experts,
-then reassembles the sequence with `tensor_model_parallel_all_gather` over the
-TP group. Per-rank chunk `ceil(total_len / tp_size) * hidden * fp` (vLLM pads
-up to a multiple of `tp_size` before slicing), which is ~17% of that
-configuration's MoE collective traffic. It has no home in the trace yet:
-`EXPERT END` carries one collective, a second `EXPERT END` line makes the
-converter emit the comm twice (its `is_expert` handling fires both the "start"
-and "end" branches on one line), and emitting it as its own row after
-`EXPERT END` -- the `kv_load` pattern -- **hangs ASTRA-Sim**, 20 minutes and a
-SIGTERM on `dual_node_moe_dp_ep_intra_inter`, because the converter
-special-cases a block whose last layer is an expert marker
-(`layers[layer_end - 1].is_expert`) and the row makes it a normal layer. Fixing
-it means teaching `llm_converter.py` a marker for a post-combine collective,
-which is a converter change plus a chakra reinstall.
-
-**Every rank's MoE token count is the gathered total.** `prepare` returns the
-post-all-gather tensor and the expert kernel permutes out the local
-`(token, expert)` pairs -- a rank is not handed a subset of tokens, and with no
-all-gather at all (DP=1) the input is replicated. `_emit_moe` therefore reads
-`activated_experts` from the gate but takes the token count from the gathered
-total, and `RoutingResult.local_tokens` -- `gathered * P(a token has a local
-expert)` -- is left for the dispatching backends that would need it. Reading it
-here understated the per-rank work by `1 - p_hit`: 0.3% at ep=2, 9% at ep=4,
-33% at ep=8, 59% at ep=16 on Qwen3-30B-A3B. The profiled slice agrees with the
-gathered reading, since the profiler cuts both `E/ep` and `k/ep`, so a shot at
-`tokens = T` measures `T * k/ep` pairs -- what a rank computes over the
-gathered set.
+Expert lookup uses all gathered/replicated rows and the appropriate rank's
+active experts, not the number of unique tokens with a local expert from
+`RoutingResult.local_tokens`. Local gate/finalization and gathered expert
+work must keep separate row domains on the native path. Attention/request
+geometry and head rows remain separate from model-forward padding.
 
 ### Native DP+EP component profiles
 
@@ -2085,9 +1966,10 @@ Hardware refreshes and historical examples have different ownership. The shipped
 RTXPRO6000 operation fits retain the previously calibrated common latency and
 refit bandwidth from NCCL primitives with the backend's actual formula. Record
 that constraint and residuals; do not relabel it as an unconstrained automatic
-fit. An older multi-GPU example explicitly retains its original common link and
-disables operation-map inheritance, instead of silently acquiring a newer host's
-transport behavior. Refresh benchmark outputs, summaries and public plots together.
+fit. If retaining an older multi-GPU reference, explicitly retain its matching
+common link and disable operation-map inheritance. The current Qwen examples
+instead use refreshed NCCL references and inherit the shared operation defaults.
+Refresh benchmark outputs, summaries and public plots together.
 
 ### The legacy MoE grid is per EP degree
 
@@ -2369,6 +2251,11 @@ website (not the README).
 - Before committing, inspect the staged file list and diff for both exclusions
   and mandatory documentation coverage. Do not stage the whole dirty worktree.
 - Do not add AI-tool references or AI attribution trailers to commit messages.
+- Publish required submodule commits before their parents: Chakra, ASTRA-Sim,
+  then the frontend. Check remote reachability and use
+  `git push --recurse-submodules=check` for the parent; do not publish local backup
+  refs or force-push over independent remote work. Rebuild the backend and
+  reinstall Chakra after updating the recursive submodules.
 - Include the exact command used for validation and note any output CSV path in PRs
 - Describe which simulation mode is affected and the config/dataset used
 
@@ -2460,10 +2347,10 @@ recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
 If that metadata is absent, omit the flag so serving resolves its default;
 do not force a dense-only page size onto sparse or hybrid examples.
 
-Focused unit tests live under `profiler/tests/`. Run them in the profiler
-environment with `python3 -m unittest discover -s profiler/tests -v`.
-The simulator is deterministic, so its regression validation additionally
-checks exact equality against recorded results:
+Use focused local checks for changed contracts; temporary diagnosis and
+fix-verification scripts or tests stay outside the published tree. The simulator
+is deterministic, so its regression validation checks exact equality against
+recorded results:
 
 **Three things under `profiler/` are simulator inputs**, despite the path. The
 trace generator reads each directly, so a change to any of them can move every

@@ -124,6 +124,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Align public MoE descriptions with deployment-matched component lookup,
+  ordered tensor collectives and current graph-padding rules. Correct stale
+  validation and profile-coverage statements, document recursive submodule
+  publication, and keep fix-verification tools outside the published tree.
 - Refresh the RTXPRO6000 Qwen3-32B TP2 example with an NCCL-only reference for
   the calibrated interconnect. Remove its historical common-link override so
   dense TP and native DP+EP examples both inherit per-operation hardware

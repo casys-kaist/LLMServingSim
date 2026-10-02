@@ -317,58 +317,38 @@ collectives. Whichever rank gets the most tokens × experts dominates.
 
 ## What the EP all-to-all costs
 
-Each MoE block in the trace is sandwiched between the two halves of an
-all-to-all:
+MoE dispatch/combine is implemented with the configured
+`allgather_reducescatter` backend, not one `ALLTOALL` trace node.
+Which tensors are sent depends on the measured execution contract.
 
-```
-input_residue → dispatch → expert compute → combine → output_residue
-```
+With a matching native component table, the order is local gate/routing,
+three ordered AllGathers, gathered experts, ReduceScatter, then local
+finalization. Dispatch retains separate hidden-state, top-k-weight and
+top-k-ID tensors, using the contract's dtypes. Sequence-parallel wrappers
+restore TP output with an AllGather; non-SP wrappers use a TP AllReduce when
+needed. See [native components](../profiler/native-moe-components) and the
+[payload formulas](./parallelism-mechanics#deployment-matched-native-components).
 
-- **Dispatch**: routes input activations from each rank's TP shard to
-  the rank holding their assigned expert.
-- **Combine**: gathers expert outputs back to the originating ranks.
+Without native coverage, the retained `moe.csv` fallback approximates dispatch
+as one AllGather of hidden states plus full router logits. That legacy payload
+is not the modular path's three tensors. At DP=1 the input is replicated:
+there is no dispatch/combine pair, and local expert contributions are reduced
+over TP when necessary.
 
-**In the trace these are `ALLGATHER` and `REDUCESCATTER`, not
-`ALLTOALL`.** An MoE all-to-all is a logical operation with several
-implementations, and vLLM picks one with `--all2all-backend`; its
-default is `allgather_reducescatter`, described in vLLM's own option
-list as "all2all based on allgather and reducescatter". The simulator
-emits that pair, because ASTRA-Sim costs the collective it is handed.
+Both paths use an analytical Ring envelope for unequal rank counts.
+After local graph resolution and DP coordination, let `G` be the dispatch
+group size and `remote_rows = sum(dispatch_rows) - min(dispatch_rows)`.
+An AllGather tensor of width `W` bytes uses
+`ceil(remote_rows * W / (G - 1))` as its equivalent local chunk.
+ReduceScatter uses the hidden-state chunk multiplied by `G`.
+Uniform counts recover the ordinary local chunk; graph padding does not imply
+every prefill or mixed round has uniform counts.
 
-They are sized differently, following ASTRA-Sim's `data_size`
-convention for each collective:
-
-| Half | Marker | `comm_size` |
-| --- | --- | --- |
-| Dispatch | `EXPERT 0` | `chunk * (hidden + num_experts) * fp` — the per-rank AllGather chunk, carrying the router logits alongside the hidden state |
-| Combine | `EXPERT END` | `chunk * ep_total * hidden * fp` — the pre-scatter ReduceScatter total, hidden state only |
-
-`chunk` is `(gathered - min) / (ep_total - 1)`, where `gathered` is the sum of
-the group's per-rank token counts and `min` the smallest of them. Both
-collectives are **ragged** — vLLM passes per-rank `sizes` through, and
-`all_gatherv` is one broadcast per rank at that rank's own size — so a rank's
-ingress is `gathered - sizes[r]` and the collective ends at
-`gathered - min(sizes)`, the worst-off rank. With uniform sizes this reduces to
-`gathered / ep_total`, which is what a CUDA-graph-padded decode round has; an
-unpadded prefill round is where it differs, and charging the average there
-under-priced the collective by up to 2x. See
-**[DP+EP wave synchronization](./parallelism-mechanics#dpep-wave-synchronization)**
-for when a round is padded.
-
-Real lines from Qwen3-30B-A3B (`hidden 2048`, 128 experts, bf16) with
-10 tokens at `ep_total 2`:
-
-```
-EXPERT 0 ALLGATHER:0,1 21760
-expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
-EXPERT END REDUCESCATTER:0,1 40960
-```
-
-`5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
-
-For **DP+EP** topologies, the `comm_size` is synchronized to the max
-across the DP group, see
-**[Parallelism mechanics](./parallelism-mechanics)**.
+This envelope does not reproduce grouped NCCL launch or arbitrary ragged
+scheduling exactly. Operation-specific bandwidths change its effective time,
+not its tensor geometry or dependency order. Consult
+[DP+EP wave synchronization](./parallelism-mechanics#dpep-wave-synchronization)
+for the padded row domains and measured coverage limits.
 
 ## Gotchas
 
@@ -381,10 +361,10 @@ across the DP group, see
 2. **`activated_experts` is per-rank, not per-token.** A rank with
    100 tokens hitting 8 distinct experts reports `activated_experts
    = 8`, not 800. The latency lookup expects this convention.
-3. **MoE is profiled at TP=1.** Increasing `tp_size` doesn't change
-   the MoE CSV path. Splitting expert weights happens via `ep_size`,
-   which the simulator handles by adjusting the rank-to-expert
-   mapping, not by re-profiling.
+3. **Native and legacy coverage differ.** Native component lookup requires
+   a matching TP/DP/EP/rank contract under `tp<N>/`. Legacy `moe.csv` uses
+   EP slices from the TP1 bundle and warns when substituting an unmeasured
+   EP degree. Neither establishes native coverage for another deployment.
 4. **`num_experts_per_tok` (top-K)** is read from the model's HF
    config. Deviating from the trained value is OK at simulation time
    but won't match the real model's behavior.

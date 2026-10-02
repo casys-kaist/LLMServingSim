@@ -72,6 +72,8 @@ the legacy EP table, while corrupt or out-of-support installed data is rejected.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
 Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
+Update recursive submodules first; a parent repository commit pins backend and
+converter versions but does not replace an installed binary or Python package.
 The bundled Qwen3-30B DP2/EP2 example consumes native tables automatically.
 It and the Qwen3-32B TP2 example omit link overrides, so the measured
 per-operation hardware defaults apply without an additional CLI switch.

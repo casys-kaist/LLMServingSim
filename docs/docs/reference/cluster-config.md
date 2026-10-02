@@ -526,7 +526,8 @@ canonical layer names from the architecture YAML.
 Structural, in `config_builder.py`:
 
 - `num_nodes == len(nodes)` and per-node `num_instances == len(instances)`.
-- `link_bw` and `link_latency` must both be present at top level.
+- `link_bw` and `link_latency` must both resolve at top level after hardware
+  defaults are applied; they need not be written explicitly in the input config.
 - Every instance needs `model_name`, `hardware`, `npu_mem`, and
   `pd_type`; `npu_mem` needs `mem_size`, `mem_bw`, `mem_latency`. Same
   three keys are required in `cpu_mem` and, if present, `cxl_mem`.

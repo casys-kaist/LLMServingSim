@@ -32,6 +32,10 @@ Bare metal (vLLM side only):
 
 ## Editing notes
 
+For an existing clone, run `git submodule update --init --recursive` before
+`./scripts/compile.sh`. The compile script builds and installs the checked-out
+ASTRA-Sim and Chakra revisions; it does not fetch newer submodule commits.
+
 Resource limits are configurable; choose them for the host rather than assuming
 the defaults fit every machine. See `python3 scripts/monitor_run.py --help`.
 Logs must use a fresh path. The watchdog stops its own command and descendants,

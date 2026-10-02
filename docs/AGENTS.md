@@ -26,9 +26,9 @@ that serves the public LLMServingSim documentation. The site is split into
 two top-level navbar sections:
 
 - **For Users** — installation, simulator/profiler/bench guides, configuration
-  reference. (Currently the only populated section.)
+  reference and validation results.
 - **For Contributors** — onboarding for people developing LLMServingSim itself.
-  Placeholder only at this stage.
+  Includes codebase, conventions, validation and pull-request guides.
 
 The reference design is the [vLLM docs](https://docs.vllm.ai/en/latest/) —
 sidebar-first navigation, deep hierarchy, audience segmentation.
@@ -222,11 +222,10 @@ step is silently a no-op if the source is set to anything else.
 
 These are deferred until the site has more content and traction:
 
-- Full content for any docs page (most are stubs)
 - Algolia DocSearch integration
 - Versioned docs (latest vs. v1.x.y)
 - Internationalization
-- Versioned changelog page (footer "Changelog" still links out to GitHub)
+- Versioned changelog archives (the current changelog is generated locally)
 - Blog
 - API reference auto-generation from Python source
 

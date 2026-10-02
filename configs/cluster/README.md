@@ -168,9 +168,7 @@ concurrency and a large token budget, and the decode instance the reverse
       "max_num_batched_tokens": 8192,
       "long_prefill_token_threshold": 2048,
       "enable_chunked_prefill": true,
-      "block_size": 16,
-      "dtype": "bfloat16",
-      "kv_cache_dtype": "auto"
+      "block_size": 16
     },
     {
       "pd_type": "decode",
@@ -178,9 +176,7 @@ concurrency and a large token budget, and the decode instance the reverse
       "max_num_seqs": 256,
       "max_num_batched_tokens": 256,
       "enable_chunked_prefill": true,
-      "block_size": 16,
-      "dtype": "bfloat16",
-      "kv_cache_dtype": "auto"
+      "block_size": 16
     }
   ]
 }

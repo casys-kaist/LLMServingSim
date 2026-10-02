@@ -205,8 +205,9 @@ bench artifacts, the simulator output, and the resulting
 
 The dense RTXPRO6000 bundles include broader measured skew geometry and
 reference-aligned calibration. Check all fifteen statistics, not just these
-means: the MoE TTFT P99 reaches +5.9%. Additional stored diagnostics include
-a reduced DeepSeek model with larger errors. See the public validation page
+means: all headline examples are within 5% on every statistic, with the MoE
+example's largest displayed absolute error at 2.6%. Additional stored diagnostics
+include a reduced DeepSeek model with larger errors. See the public validation page
 for those results and the limits of these workload-specific comparisons.
 
 Diff% is `(sim - vLLM) / vLLM × 100`. All runs use `bf16` weights,

@@ -3,6 +3,9 @@
 vLLM-based layerwise profiler for LLMServingSim. Drives a real vLLM
 engine with synthetic batches and records per-layer CUDA kernel
 latency. Output CSVs feed the simulator's trace generator.
+The tracked `perf/` bundles and their metadata define available model, precision
+and parallelism coverage. Native MoE additionally requires a matching TP/DP/EP
+component contract; a legacy EP table alone does not establish that coverage.
 
 ## Directory layout
 

@@ -239,21 +239,23 @@ one trace row per layer. It also:
 ## Where DP groups change things
 
 When instances are in a `dp_group`, trace generation is **deferred**
-until all DP members have scheduled their batches for the current
-iteration. The simulator collects each member's `total_len`, takes
-the **max** across the group, and uses that for both halves of the EP
-all-to-all:
+until all DP members have scheduled their batches for the current iteration.
+It first resolves each member's local graph mode and padded forward rows, then
+coordinates the common DP mode. A non-NONE common mode shares the largest
+locally padded count; NONE retains each member's local count. The complete
+resulting vector is passed to MoE geometry, including per-member ceil division
+for sequence-parallel wrappers.
 
-```
-dispatch (ALLGATHER)    = max(total_len) / ep_total * (hidden + n_experts) * fp
-combine  (REDUCESCATTER) = max(total_len) * hidden * fp
-```
+Native MoE separates local gate/finalization rows from gathered expert rows and
+emits hidden-state, top-k-weight and top-k-ID AllGathers separately. The legacy
+whole-block fallback retains a combined hidden-state/router-logit approximation.
+Their ragged Ring payloads follow the formulas in the parallelism guide; neither
+uses `max(total_len) / ep_total` as a universal dispatch size.
 
-Each member's trace still uses its own per-instance `total_len` for
-the dense and attention kernels, only the EP collectives are
-synchronized.
-This matches what production MoE serving does (vLLM CUDA-graph
-padding to the max in the wave).
+Padded forward rows affect dense computation, but do not create requests or
+attention queries. Attention query/KV geometry and non-speculative head rows
+remain tied to actual scheduled work. Idle DP members participate in backbone
+and expert collectives without producing logits or sampled tokens.
 
 The full DP+EP wave-sync mechanics live on
 **[Parallelism mechanics](./parallelism-mechanics)**.
@@ -271,26 +273,30 @@ building each one separately is wasted work. By default
 The emitted trace is unchanged: it still has every layer's rows. This is a
 trace-*generation* optimization, saving the per-layer latency lookups and size
 computations, and there is no `block_copy` instruction in the trace or in
-Chakra. A 48-layer Qwen3-30B-A3B run emits 583 trace lines either way.
+Chakra. Row count depends on the active component and communication path.
 
 The reuse key is the layer's resolved block shape, so a heterogeneous stack
 gets one built block per shape rather than one for the whole model — Qwen3.5's
 gated-DeltaNet and full-attention layers are never shared.
 
-Exact for dense models and for MoE with `--expert-routing-policy BALANCED` (the
-default), which is deterministic, so every layer produces the same
-`(local_tokens, activated_experts)` pair. For `RR` / `RAND`, per-layer variance
-is small once the batch saturates, so block copy remains a harmless
-approximation; `CUSTOM` policies that need per-layer variance can disable it
-via `block_copy=False` in the gate router constructor.
+Exact for dense models and deterministic MoE routing at a fixed batch shape.
+RR advances token positions but resets at each layer invocation, so block copy
+is exact for it too. RAND and custom policies with layer-dependent variation
+need separate checks; do not assume suppressed variation is harmless merely
+because a batch is large.
 
 ## Per-rank latency for MoE
 
-MoE uses `EXPERT {i}` / `EXPERT END` markers in the trace, with one
-`COMP_NODE` per EP rank. Each rank's latency comes from the MoE CSV
-keyed on its **local** token count and activated experts (profiled
-at TP=1). Ranks execute in parallel and synchronize at the dispatch
-and combine collectives.
+MoE uses `EXPERT {i}` / `EXPERT END` markers. Native execution emits rank-local
+gate/routing, expert and finalization regions with collectives between them.
+It selects a TP/DP/EP/rank contract and uses local rows for gate/finalization,
+gathered rows and active experts for expert work. Legacy lookup instead reads
+the whole-block EP slice from `moe.csv`, using gathered or replicated input
+rows, not the router's unique local-token estimate.
+
+DP members index their own global expert ranks while trace markers remain
+instance-local. Ranks execute in parallel and synchronize at their collectives;
+Chakra preserves dependencies across every collective and skipped expert region.
 
 Expert-to-rank assignment uses even partitioning:
 `expert_id * ep_size // num_experts`.
@@ -309,9 +315,10 @@ Expert-to-rank assignment uses even partitioning:
 4. **Variant folder must exist.** A model config whose bundle was never
    profiled → `FileNotFoundError`. The profiler's defaults name the same
    folder the simulator asks for, so profiling the model is the fix.
-5. **Skew correction only fires when the skew sweep was profiled.**
-   Otherwise you get a single pooled alpha, which is correct on
-   average but loses heterogeneity sensitivity.
+5. **Skew requires a valid enabled calibration.** Disabled bundles bypass it.
+   An unsupported cell uses the matching kernel/query pooled fallback; missing
+   kernel/query data means zero correction. A pooled estimate has no general
+   accuracy guarantee, and stale enabled tables are rejected.
 
 ## What's next
 
