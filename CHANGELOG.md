@@ -152,6 +152,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   path; comparisons must retain their execution-mode and measurement scope.
 
 ### Changed
+- Use the common fine token grid for whole-block MoE acquisition instead of
+  power-of-two token counts. Preserve resolved feasibility limits and the
+  active-expert axis; compatible resumes add missing points without changing
+  runtime interpolation or native DP+EP component contracts.
 - Measure ordinary layerwise and skew latency from per-call CUDA activity
   unions, avoiding duplicate time from overlapping kernels without adding CPU
   duration or device gaps. Preserve call normalization and native launch

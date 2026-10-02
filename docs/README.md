@@ -23,6 +23,8 @@ latency: CPU scopes identify the launching module but contribute no time.
 The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
 defines per-call CUDA interval unions, acquisition identity columns and
 incompatible-resume protection; existing tables are not automatically converted.
+Its whole-block MoE section documents the shared fine token grid and the
+distinction between acquisition resolution and runtime interpolation.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.

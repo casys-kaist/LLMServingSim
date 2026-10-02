@@ -2051,6 +2051,15 @@ Refresh benchmark outputs, summaries and public plots together.
 
 ### The legacy MoE grid is per EP degree
 
+Whole-block MoE token coordinates use the shared `_token_grid`, not powers of
+two: long token intervals can conceal grouped-kernel cost changes. Keep the
+grid independent of benchmark requests and hardware tile constants. Resolved
+token/context/cache limits still bound it, and active-expert feasibility is
+unchanged. This improves sampling resolution, not an error guarantee between
+knots. Runtime interpolation and native DP+EP component acquisition are separate
+contracts. A compatible resume adds missing token coordinates; code changes
+alone do not densify stored tables.
+
 The following describes retained `moe.csv` acquisition and fallback, not the
 native full-top-k component contract above. A reduced-top-k checkpoint is an
 approximation and must not be presented as the native distributed kernel.

@@ -132,7 +132,7 @@ def _power_of_two_grid(max_value: int) -> list[int]:
 
 
 def _token_grid(max_tokens: int) -> list[int]:
-    """Dense grid used for both dense and per_sequence sweeps.
+    """Token grid shared by dense, per_sequence and whole-block MoE sweeps.
 
     Fine points at the low end (where decode-sized batches live),
     coarser at the high end. Matches the shape of vLLM's typical
@@ -909,7 +909,10 @@ class ExpertCategory(Category):
         top_k = limits.top_k
         ep = max(1, int(getattr(limits, "moe_ep", 1)))
 
-        for n_tokens in _power_of_two_grid(limits.max_num_batched_tokens):
+        # The token curve need not be linear between powers of two. Use the
+        # common token grid, without backend-specific tile assumptions; the
+        # expert axis and physical feasibility checks remain independent.
+        for n_tokens in _token_grid(limits.max_num_batched_tokens):
             # Cheap guards: n_tokens must fit context (with sampler
             # +1 headroom) + cache.
             if n_tokens >= limits.max_model_len:

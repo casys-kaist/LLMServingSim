@@ -229,6 +229,18 @@ ep,tokens,activated_experts,time_us
 | `activated_experts` | Distinct experts touched on that rank |
 | `time_us` | Measured whole-block latency in microseconds |
 
+The token axis uses the same fine grid as dense-layer acquisition, including
+the configured upper endpoint. It is not restricted to powers of two:
+grouped-kernel cost can change sharply inside those wide intervals. Resolved
+context and page-aligned KV limits filter infeasible points, and the existing
+active-expert axis still respects global or EP-local top-k and expert counts.
+The grid contains no model-specific tile constants or benchmark-derived knots.
+
+Compatible acquisition resumes add missing token points; stored tables do not
+gain resolution from a code update alone. More samples reduce interpolation
+distance but do not guarantee accuracy across every kernel transition. Runtime
+lookup remains unchanged, as does the native DP+EP component grid.
+
 Whole-block timing is divided by the matched MoE node's own invocation count.
 A merged decoder parent can count dense and MoE layers together; its count
 would understate the cost of one MoE block. Other categories retain their

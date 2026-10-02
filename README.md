@@ -49,6 +49,7 @@ Skew kernel ownership follows correlated CPU launches without adding CPU time;
 unresolved ownership rejects a measurement rather than silently losing kernels.
 Layerwise and skew acquisitions count overlapping CUDA activity once within each
 module call; versioned rows prevent mixing old and new timing methods on resume.
+Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engine limits.
 Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)

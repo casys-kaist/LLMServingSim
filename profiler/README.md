@@ -29,6 +29,9 @@ separate before averaging. CPU time and gaps are excluded. Ordinary CSV rows
 carry `measurement_protocol` and `measurement_sha256`; worker/host mismatches,
 incompatible resumes and mixed-method TP-stable replication are rejected.
 Native DP+EP components retain their separately versioned measurement contract.
+Whole-block MoE uses the same fine token grid as dense layers instead of only
+powers of two. Expert-count coordinates and feasibility checks are unchanged;
+new sweeps extend compatible tables without changing runtime lookup.
 
 ## Directory layout
 
