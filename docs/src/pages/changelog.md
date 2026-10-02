@@ -48,6 +48,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Delimit gate-statistics acquisition by explicit workload start/end markers
+  instead of discarding concentrated routing as presumed warmup. Reject
+  incomplete or ambiguous raw logs while retaining existing reduced-curve
+  compatibility. Mark synchronized gate-observation runs as diagnostic so
+  their latency cannot become an end-to-end validation reference. Ordinary
+  benchmarks and simulator routing defaults are unchanged.
 - Validate skew warmup geometry through the actual common-metadata builder
   when sparse-indexer metadata omits query boundaries. Retain exact output
   identity and direct ordinary-attention checks, restore hooks before timing

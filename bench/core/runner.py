@@ -248,6 +248,11 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         # inherits this environment, so it has to be set before the engine boots.
         os.environ["VLLM_MOE_ACTIVATED_LOG"] = str(gate_log)
 
+    observation_meta = {"step_audit": {
+        "kind": "gate_observation",
+        "end_to_end_control_eligible": False,
+    }} if gate_log is not None else {}
+
     compilation_config = CompilationConfig(pass_config=PassConfig(
         fuse_allreduce_rms=False, fuse_gemm_comms=False,
     ))
@@ -326,11 +331,15 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
             dataset_path=str(args.dataset), dataset_hash=_hash_file(Path(args.dataset)),
             num_requests=len(requests),
             engine_kwargs=engine_kwargs_for_meta, kv_cache=kv_cache,
-            resolved_config=resolved_config)
+            resolved_config=resolved_config, **observation_meta)
+        if gate_log is not None:
+            gate_stats_mod.mark_phase(gate_log, "workload_start")
         with log.stage(f"Submitting {len(requests)} requests"):
             records = await _submit_all(
                 engine, requests, SamplingParams, TokensPrompt
             )
+        if gate_log is not None:
+            gate_stats_mod.mark_phase(gate_log, "workload_end")
     finally:
         with log.stage("Shutting AsyncLLM down"):
             engine.shutdown()
@@ -358,6 +367,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         kv_cache=kv_cache,
         hardware=_hardware_facts(),
         resolved_config=resolved_config,
+        **observation_meta,
     )
     recorder.write_requests(output_dir, records)
     header, rows = BenchStatLogger.downsample_to_csv_rows(args.tick_seconds)

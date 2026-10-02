@@ -138,6 +138,17 @@ python -m serving \
   --gate-stats bench/results/<run_id>/gate_stats.json
 ```
 
+The recorder marks workload start and end explicitly. Calls outside that
+interval are excluded; a workload that routes many tokens to the same top-k
+experts remains valid data. Raw logs without both boundaries must be recorded
+again rather than classified by their expert counts. Existing reduced
+`gate_stats.json` files remain readable, but their recorded scope still matters.
+The observer requires eager execution and synchronization, so its latency is
+diagnostic, not an end-to-end reference. Validate against a separate
+uninstrumented run. A measured count is an explicit workload/weight input to
+CUSTOM, not a latency coefficient or proof of accuracy for other checkpoints,
+batching, precision or expert-load histograms.
+
 Against a real DP=1 vLLM run of Qwen3-30B-A3B on RTX PRO 6000, holding
 everything else fixed:
 

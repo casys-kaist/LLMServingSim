@@ -52,6 +52,13 @@ Ordinary compute compilation and CUDA graphs remain enabled by default.
 Historical artifacts retain their original
 settings; inspect their metadata before comparing them.
 
+`--record-gate-stats --enforce-eager` observes routing between explicit workload
+start/end markers. A concentrated gate is valid data, not a warmup signature.
+The resulting curve describes the recorded weights and workload; the observer's
+latencies are marked diagnostic and rejected by `bench validate`. Unmarked or
+incomplete raw logs need a new recording, while existing `gate_stats.json`
+curves remain readable. Normal runs without this flag are unchanged.
+
 Simulator examples include local CUDA graph padding before DP synchronization.
 Use per-instance `cudagraph` settings to describe the effective target worker
 mode and capture grid; the profiler's eager configuration is not that target.

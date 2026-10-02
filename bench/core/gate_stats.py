@@ -29,36 +29,34 @@ coupling.
 
 **Requires ``--enforce-eager``.** The patch calls ``.unique()`` on the router's
 output, which is a data-dependent shape and cannot be captured into a cudagraph.
-That costs nothing in fidelity here: the gate's top-k output is a function of
-the weights and the input, not of how the forward is executed, so a curve
-recorded eagerly describes the compiled run's gate exactly.
+This observes routing, not unperturbed end-to-end latency. A curve describes
+the recorded inputs and weights; different batching or numerics need controls.
+
+Startup and workload calls are separated by explicit phase markers from the
+driver. Concentrated routing is valid workload data, not evidence of warmup.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 FILENAME = "gate_stats.json"
 
 
-def _is_uniform_token_batch(tokens: int, distinct: int, top_k: int) -> bool:
-    """vLLM's dummy batches repeat one token id, so they route as one token.
-
-    A profiling or cudagraph-capture forward submits ``n`` copies of the same
-    token, and every copy selects the same ``top_k`` experts -- Qwen3-30B-A3B
-    logged ``distinct = 8`` at 128 tokens, where a real batch of that size
-    measures 120.6. Those rows describe vLLM's warmup, not a workload, and
-    averaging them in drags the curve down at exactly the capture sizes.
-
-    Real text never lands here: at ``n = top_k`` the same model measures 47.6
-    distinct against this rule's ceiling of 8.
-    """
-    return tokens > top_k and distinct <= top_k
+def mark_phase(log_path: str | Path, phase: str) -> None:
+    """Delimit workload observation outside request execution."""
+    if phase not in ("workload_start", "workload_end"):
+        raise ValueError("Unknown gate-observation phase")
+    with Path(log_path).open("a") as stream:
+        stream.write(json.dumps({"event": phase, "schema_version": SCHEMA_VERSION}) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def aggregate(log_path: str | Path) -> dict[str, Any] | None:
@@ -67,6 +65,8 @@ def aggregate(log_path: str | Path) -> dict[str, Any] | None:
     Returns ``None`` when the log is missing or holds no usable row -- the
     caller then writes nothing and the simulator falls back to its closed
     form, which is the documented behaviour when no measurement exists.
+    Unmarked, interrupted or multiply delimited logs are refused: expert
+    counts alone cannot distinguish warmup from real concentrated routing.
     """
     path = Path(log_path)
     if not path.exists():
@@ -74,24 +74,41 @@ def aggregate(log_path: str | Path) -> dict[str, Any] | None:
 
     by_tokens: dict[int, list[int]] = defaultdict(list)
     top_k = 0
-    n_dropped = 0
+    phase = "startup"
+    n_startup = n_shutdown = 0
     n_bad = 0
     with path.open() as f:
         for line in f:
             try:
                 rec = json.loads(line)
+                event = rec.get("event")
+                if event in ("workload_start", "workload_end"):
+                    expected = "startup" if event == "workload_start" else "workload"
+                    if phase != expected or rec.get("schema_version") != SCHEMA_VERSION:
+                        raise RuntimeError("Invalid or repeated gate-observation boundary")
+                    phase = "workload" if event == "workload_start" else "shutdown"
+                    continue
                 tokens = int(rec["tokens"])
                 distinct = int(rec["distinct"])
                 k = int(rec["top_k"])
+                if tokens < 1 or k < 1 or not k <= distinct <= tokens * k:
+                    raise ValueError("Invalid gate observation")
             except (ValueError, KeyError, TypeError):
                 n_bad += 1
                 continue
-            top_k = top_k or k
-            if _is_uniform_token_batch(tokens, distinct, k):
-                n_dropped += 1
+            if phase == "startup":
+                n_startup += 1
                 continue
+            if phase == "shutdown":
+                n_shutdown += 1
+                continue
+            if top_k and top_k != k:
+                raise ValueError("Mixed top-k values cannot form one routing curve")
+            top_k = k
             by_tokens[tokens].append(distinct)
 
+    if phase != "shutdown":
+        raise ValueError("Gate log lacks complete workload boundaries; re-record with --record-gate-stats")
     if not by_tokens:
         return None
 
@@ -103,7 +120,9 @@ def aggregate(log_path: str | Path) -> dict[str, Any] | None:
         "schema_version": SCHEMA_VERSION,
         "num_experts_per_tok": top_k,
         "n_calls": sum(c[2] for c in curve),
-        "n_dropped_uniform_token": n_dropped,
+        "observation_scope": "explicit_workload_boundaries",
+        "n_dropped_startup": n_startup,
+        "n_dropped_shutdown": n_shutdown,
         "n_unparsed": n_bad,
         # tokens, mean distinct experts, samples. ``tokens`` is the router's
         # own input length, i.e. the post-all-gather count under EP/DP -- the

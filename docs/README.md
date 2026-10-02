@@ -35,6 +35,8 @@ and native Qwen3-30B examples, both inheriting the same hardware operation defau
 and keeps each recorded reference matched to its transport calibration.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 NCCL baseline and recorded communicator and compilation settings.
+It also documents phase-delimited gate observations and their exclusion from
+unperturbed latency references, without discarding concentrated workload gates.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
 local CUDA graph padding from DP synchronization; target graph overrides live
 in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).

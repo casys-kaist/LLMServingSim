@@ -1863,10 +1863,20 @@ degree** -- exactly as the closed form's `E_rank * (1 - miss)` is
 `E * (1 - miss)` divided by it. The router selects from all `E` experts
 whatever the degree.
 
-**Recording needs `--enforce-eager`, and that is not a compromise.** The
+**Recording needs `--enforce-eager`.** The
 patch's `.unique()` is a data-dependent shape and cannot be captured into a
-cudagraph, but the gate's top-k output is a function of the weights and the
-input, not of how the forward runs.
+cudagraph. The curve describes the recorded weights and inputs; different
+batching or near-tie numerical changes need independent controls. Mark these
+runs as diagnostic (`step_audit.end_to_end_control_eligible: false`) and do not
+use their synchronized latency as an uninstrumented benchmark reference.
+
+Gate raw logs require explicit workload start/end markers written by the
+driver around request submission/completion. Aggregate only this interval.
+Never infer warmup from `distinct <= top_k`: concentrated real-workload
+routing can have exactly that shape. Refuse unmarked, repeated-boundary or
+incomplete raw logs instead of guessing; existing reduced curves remain
+readable. Phase markers and dropped startup/shutdown counts are recorded in
+schema 2. Recording does not silently change BALANCED or any example's policy.
 
 **Do not try to force the *truth* to be uniform instead.** That mode was
 built, measured and removed. On a non-EP configuration under cudagraphs it

@@ -57,6 +57,8 @@ The bundled Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples inherit NCCL-calibrated
 operation links from the hardware bundle; the MoE example also uses measured native components.
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
+Optional gate observation separates startup from workload calls explicitly;
+its instrumented latency is not an end-to-end validation reference.
 Model-forward shapes include local CUDA graph padding and subsequent DP synchronization.
 Non-speculative logits and sampling use real requests, not padded forward rows.
 Independent TP/EP collective numbering lets idle DP members omit the head;
