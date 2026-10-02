@@ -10,6 +10,11 @@ Whole-block MoE timings use the matched block's invocation count, not a
 decoder parent's count that can include dense layers. Refresh affected old
 hybrid-stack `moe.csv` grids with `slice --group moe --force`; a code update
 does not repair stored timings. Native DP+EP component measurements are separate.
+Whole-block forced routing executes the native routing kernels before replacing
+their selection. Warmup uses the same expert distribution as timing, and a
+backend that bypasses the routing hook is rejected. Refresh older forced-routing
+grids to include this GPU work; the grid represents balanced cyclic assignments,
+not arbitrary expert-load imbalance.
 Skew warmups verify the backend's query/history geometry. When a backend
 discards query boundaries, verification follows its common-metadata builder
 and exact returned object; no backend is exempted from the check.

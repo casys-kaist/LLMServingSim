@@ -52,7 +52,8 @@ select effective bandwidth and latency per Ring operation without changing tenso
 Deployment-matched [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
 separates local routing, gathered experts and finalization under DP+EP.
 Retained whole-block MoE profiles normalize by actual MoE calls, including
-stacks with dense layers; see the [profile table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
+stacks with dense layers, and retain native routing kernels while controlling
+expert selection; see the [profile table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
 The bundled Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples inherit NCCL-calibrated
 operation links from the hardware bundle; the MoE example also uses measured native components.
 Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the

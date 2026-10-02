@@ -29,7 +29,9 @@ single-rank acquisition, publication checks, component lookup and supported
 execution contracts. It distinguishes measured GPU work from analytical transport.
 The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)
 also explains whole-block MoE invocation normalization and when existing
-hybrid-stack tables need remeasurement.
+hybrid-stack tables need remeasurement. Forced-routing grids retain native
+top-k GPU work, warm the requested distribution, and reject bypassed hooks;
+older grids that omitted routing kernels also require a refresh.
 The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
 and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
 and keeps each recorded reference matched to its transport calibration.

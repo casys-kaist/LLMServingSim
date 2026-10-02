@@ -14,7 +14,8 @@ This module provides:
 * ``force_moe_routing``: a context manager that swaps ``_compute_routing``
   on the live router **instance** for the duration of the block, so that
   ``router.select_experts`` returns our forged tensors instead of whatever
-  the learned gate produces. The original bound method is restored on exit.
+  the learned gate produces. The native routing kernels still execute; only
+  their result is replaced. The previous instance state is restored on exit.
 
 vLLM v0.28 restructured MoE: the ``FusedMoE`` module this hook used to patch
 no longer exists. Models now call ``FusedMoEFactory(...)``, which returns a
@@ -144,8 +145,8 @@ def _cycle_expert_ids(
     """Assign expert ids deterministically so exactly ``activated_experts``
     distinct ids appear, cycled across the token dimension.
 
-    The specific assignment doesn't matter for latency — only the count
-    of distinct activations does. We use the simplest pattern:
+    This grid measures a balanced cyclic assignment, not arbitrary routing
+    imbalance. We use the simplest pattern:
     ``id = (token_idx * top_k + offset) % activated_experts``.
     """
     return [
@@ -173,7 +174,9 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
     surrounding template intact: EPLB validation and mapping, the routing
     capture hook, and the index-dtype conversion all still run, so the
     kernel sees exactly the tensor shapes and dtypes production would give
-    it — only the *choice* of experts is ours.
+    it. Native routing kernels run before their selection is replaced. A
+    successful context must consume the hook; a backend that bypasses the
+    router cannot claim to have measured the requested expert distribution.
     """
     if route is None:
         yield
@@ -181,6 +184,9 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
 
     router = route.router
     original_compute_routing = router._compute_routing
+    had_local_method = "_compute_routing" in vars(router)
+    original_local_method = vars(router).get("_compute_routing")
+    calls = 0
 
     def forced_compute_routing(
         hidden_states: torch.Tensor,
@@ -189,35 +195,43 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
         *,
         input_ids: torch.Tensor | None = None,
     ):
-        # Args are deliberately ignored — the whole point of forced routing
-        # is that we return pre-forged values regardless of the learned
-        # gate's logits. The one thing we do check is that the batch the
-        # kernel actually got matches the batch we forged for; a padded or
-        # split call would otherwise fail deep inside the kernel with a
-        # much less informative message.
+        nonlocal calls
+        # Check the actual token domain before launching any routing work.
+        # A padded or split call is not the distribution we forged.
         expected = (hidden_states.shape[0], int(router.top_k))
         if tuple(route.ids.shape) != expected:
             raise ValueError(
                 f"Forged topk_ids shape mismatch for {route.layer_name}: "
                 f"expected {expected}, got {tuple(route.ids.shape)}"
             )
+        # The table covers the whole MoE block, including native top-k /
+        # grouped-top-k kernels. Do not remove their GPU work when replacing
+        # the selected experts. No copies of the discarded outputs are needed.
+        original_compute_routing(
+            hidden_states, router_logits, indices_type, input_ids=input_ids,
+        )
         ids = route.ids
         if indices_type is not None and ids.dtype != indices_type:
             ids = ids.to(indices_type)
+        calls += 1
         return route.weights, ids
 
     # Bind on the instance so sibling MoE layers keep their own routing.
     router._compute_routing = forced_compute_routing
     try:
         yield
+        if calls == 0:
+            raise RuntimeError(
+                f"Forced MoE routing was not consumed for {route.layer_name}; "
+                "the backend may bypass the router"
+            )
     finally:
-        # Restore by deleting the instance attribute, which re-exposes the
-        # class's bound method. Assigning the captured bound method back
-        # would leave a permanent instance attribute behind.
-        try:
+        # Preserve pre-existing instance instrumentation as well as ordinary
+        # class-bound methods, including on exceptions and nested contexts.
+        if had_local_method:
+            router._compute_routing = original_local_method
+        else:
             del router._compute_routing
-        except AttributeError:
-            router._compute_routing = original_compute_routing
 
 
 # ---------------------------------------------------------------------------

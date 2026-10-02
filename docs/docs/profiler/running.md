@@ -323,6 +323,12 @@ single `layerwise_profile` context. A single sample can swing 15-25% on a large
 GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call
 figure comes from dividing by the invocation count.
 
+For whole-block MoE shots, warmup and timed calls use the same forced expert
+distribution. Native routing kernels still run; only their selected IDs and
+weights are replaced. A backend that bypasses the routing hook is rejected.
+See the [whole-block table contract](./output-bundle#moecsv-legacy-whole-block-moe-profiles)
+for refresh requirements and the distinction from native DP+EP components.
+
 It is also the biggest knob on how long a sweep takes, because **a shot's cost
 is almost entirely the profiler**. Measured on a 4-layer DeepSeek-V3.2, one
 shot at the default: 0.1 ms to assemble, 49 ms for the three forwards, 2.1 ms

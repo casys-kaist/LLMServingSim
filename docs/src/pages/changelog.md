@@ -48,6 +48,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Retain native top-k routing GPU work in whole-block MoE profiling while
+  replacing only the selected expert distribution. Warm up that same
+  distribution, reject unconsumed routing hooks, and restore prior instance
+  overrides on exit. Older forced-routing grids require remeasurement;
+  stored tables and native DP+EP component acquisition are unchanged.
 - Delimit gate-statistics acquisition by explicit workload start/end markers
   instead of discarding concentrated routing as presumed warmup. Reject
   incomplete or ambiguous raw logs while retaining existing reduced-curve

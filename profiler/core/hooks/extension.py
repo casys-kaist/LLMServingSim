@@ -110,16 +110,6 @@ class Extension:
             batch, _ = assemble_scheduler_output(shot, self.model_runner)
             return batch
 
-        # -- warm-up run, result discarded -----------------------------
-        # The first forward pays for JIT compilation, CUDA context
-        # setup, paged-attention buffer allocation. We also call
-        # sample_tokens to exercise the sampler path (if execute_model
-        # returns None it means the scheduler consumed everything and
-        # sample_tokens finalizes the step).
-        warmup_out = self.model_runner.execute_model(_fresh_batch())
-        if warmup_out is None:
-            self.model_runner.sample_tokens(None)
-
         # -- optional MoE routing forge --------------------------------
         route: ExpertRoute | None = None
         if kind == "moe":
@@ -134,6 +124,16 @@ class Extension:
                 num_tokens=num_tokens,
                 activated_experts=int(shot.experts["activated"]),
             )
+
+        # -- warm-up run, result discarded -----------------------------
+        # Warm the same expert distribution as the measured forwards. A
+        # natural gate can activate a different set and leave shape-dependent
+        # expert setup in the first timed call. Use separate contexts so both
+        # warmup and timed execution must actually consume forced routing.
+        with force_moe_routing(route):
+            warmup_out = self.model_runner.execute_model(_fresh_batch())
+            if warmup_out is None:
+                self.model_runner.sample_tokens(None)
 
         # -- measured runs (N iterations, averaged) -------------------
         # Local import so that profiler/__init__.py doesn't require

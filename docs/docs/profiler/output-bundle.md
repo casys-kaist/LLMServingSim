@@ -201,6 +201,16 @@ updating the profiler does not change stored CSV values, and the correction
 is not a universal multiplier. This normalization does not change native
 DP+EP component measurements or imply support for additional backends.
 
+To control the grid, the profiler replaces the routing result with a balanced
+cyclic assignment. It still executes native top-k/grouped-top-k GPU kernels:
+their work belongs in the whole-block timing. Warmup uses the same forced
+distribution as the timed calls. Each context must actually invoke the router;
+monolithic backends that bypass it are rejected rather than labelled with an
+unmeasured expert count. Previous instance instrumentation is restored on exit.
+Remeasure older forced-routing tables that omitted these kernels; stored values
+are not corrected automatically. The grid does not measure arbitrary per-expert
+load imbalance.
+
 The legacy consumer uses two-dimensional interpolation over tokens and active
 experts within an EP grid. An unprofiled EP degree falls back to the nearest
 with a warning. Acquire this retained path with `--moe-ep-degrees` (or
