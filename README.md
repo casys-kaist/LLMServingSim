@@ -51,6 +51,8 @@ Layerwise and skew acquisitions count overlapping CUDA activity once within each
 module call; versioned rows prevent mixing old and new timing methods on resume.
 Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engine limits.
 Ordinary sweeps checkpoint completed shots atomically so interrupted runs can resume.
+History-bearing shots initialize assigned KV pages with vLLM's dummy-weight
+initializer outside timing.
 Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)

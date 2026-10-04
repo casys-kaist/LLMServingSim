@@ -35,6 +35,13 @@ new sweeps extend compatible tables without changing runtime lookup.
 Ordinary categories save periodic atomic checkpoints between completed shots.
 Resume preserves earlier rows and their acquisition identities; publish a
 bundle only after the requested sweeps have completed.
+History-bearing shots initialize assigned attention pages with vLLM's
+`initialize_single_dummy_weight`, using its deterministic uniform defaults.
+Initialization is repeated outside warmup and timing;
+asynchronous outputs are drained before request/input buffers are reused.
+Recurrent caches use zero-start state, not synthetic historical recurrence.
+Packed data/scale caches without a supported typed layout fail explicitly.
+Dummy values do not claim to reproduce trained KV content.
 
 ## Directory layout
 
@@ -58,6 +65,8 @@ profiler/                     Python package — `python -m profiler ...`
     hooks/                    vLLM-internal-API touchpoints
       extension.py            worker extension class (fire / coverage)
       batch.py                synthetic SchedulerOutput builder
+      history.py              query request state and output completion
+      dummy_cache.py          assigned-page vLLM dummy initialization
       timings.py              layerwise_profile tree parser + coverage accounting
       moe_hook.py             MoERunner forced-routing patch
   models/                     architecture catalogs (one YAML per model family)

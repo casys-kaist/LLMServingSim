@@ -8,6 +8,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Changed
+
+- Initialize assigned KV pages for ordinary, coverage and skew profiling with
+  vLLM's deterministic dummy-weight initializer outside warmup and timing.
+  Preserve page layout and CUDA timing; bound FP8 temporary
+  conversion and reject unsupported packed cache layouts. Recurrent state starts
+  from zero. Drain asynchronous outputs before reusing buffers and reset request
+  metadata between shots. Preparation adds no simulated CPU or query cost.
+
 ### Added
 
 - Add deployment-matched native MoE component profiling with explicit target DP,

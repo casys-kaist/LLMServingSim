@@ -55,7 +55,7 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `cuda-active-union-per-call-v1`.
+New ordinary layerwise measurements use `cuda-active-union-dummy-kv-query-v4`.
 For each raw module invocation, merge overlapping CUDA intervals on the same
 device, then apply the existing per-call normalization. Distinct calls remain
 separate before averaging, even when their device execution overlaps.
@@ -79,9 +79,13 @@ measurement provenance. TP-stable replication rejects mixed timing methods
 before replacing a destination file.
 
 Skew uses the same interval accounting with its separate per-forward
-`native-skew-per-forward-v2` protocol. Native DP+EP component bundles retain
+`dummy-kv-skew-query-state-per-forward-v5` protocol. Native DP+EP component bundles retain
 their own recorded measurement contract; they are not converted by this change.
 Catalog coverage remains a kernel-work accounting check, not a latency union.
+
+Both acquisition identities include assigned-page dummy KV initialization through
+vLLM's dummy-weight helper. Initialization is outside
+timing and is repeated per context. See [preparation and limitations](./running#--measurement-iterations--averaging-out-clock-jitter).
 
 ## `dense.csv`
 

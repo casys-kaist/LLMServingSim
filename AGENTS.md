@@ -646,8 +646,9 @@ preserved unless `--force` is requested.
 `hooks/skew_measurement.py` measures the actual heterogeneous batch through
 vLLM 0.28. Three independent contexts, each containing three timed forwards
 by default, produce a median of forward medians. CPU scopes establish call
-ownership; correlated GPU annotations are not kernel work. Native history is
-initialized once, and warmups verify finite output and executed geometry.
+ownership; correlated GPU annotations are not kernel work. Each measurement
+context initializes its assigned dummy KV pages before warmup.
+Warmups verify finite output and executed geometry.
 Recurrent state groups are identified by vLLM KV-cache spec, not model names;
 the paged attention groups supply the history/query geometry in hybrid stacks.
 Backend metadata need not retain query starts: sparse indexers split and
@@ -675,9 +676,28 @@ missing or incompatible identities; use a separate output root or explicitly
 remeasure with `--force`. TP-stable replication preserves row identities and
 rejects mixed timing methods before replacing the destination. Fully skipped
 ordinary categories do not acquire a new measurement timestamp. Skew uses
-`native-skew-per-forward-v2`, with the common interval helper in its acquisition
-fingerprint; earlier raw measurements must not be retagged. Native DP+EP
+`dummy-kv-skew-query-state-per-forward-v5`, with the interval, request-state and
+dummy-cache helpers in its acquisition fingerprint. Native DP+EP
 component contracts remain separate and retain their recorded timing method.
+
+`hooks/history.py` prepares query request state and completes asynchronous output.
+`hooks/dummy_cache.py` initializes assigned attention pages
+through the installed vLLM `initialize_single_dummy_weight` with its default
+uniform range and per-tensor seed. The backend defines the logical block axis;
+kernel subdivisions map back to the request's manager block IDs. Leave
+unassigned pages untouched. Reinitialize per context, outside warmup and timing,
+so preceding queries cannot become the next shot's synthetic history.
+FP8 initialization uses bounded slabs, each with the upstream per-tensor seed,
+to limit its temporary FP16 conversion. Packed payload/scale layouts without a
+supported typed view fail explicitly. Recurrent states are zero-start, not
+generated history. None of these inputs claims trained-workload KV statistics
+or representative data-dependent sparse selection.
+
+Token IDs use a local deterministic generator bounded by the live,
+TP-overridden vocabulary. Drain each asynchronous result before reusing input
+buffers or request state; fresh IDs must not become streaming extensions of the
+previous shot. Metadata cleanup does not erase physical KV pages. Preparation
+adds no simulator cost.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains

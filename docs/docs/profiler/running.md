@@ -338,6 +338,20 @@ file is an error.
 
 ### `--measurement-iterations` — averaging out clock jitter
 
+Shots with history initialize their assigned attention pages by calling the
+installed vLLM `initialize_single_dummy_weight`.
+For vLLM 0.28 its defaults are a uniform distribution in `[-0.001, 0.001)` and
+seed `1234`, with a local generator per tensor; low-precision rounding can reach
+an endpoint. Initialization repeats before each context, outside warmup and CUDA
+timing, without modifying unassigned pages. FP8 views are initialized in bounded
+slabs, each using that same per-tensor seed, to bound the temporary conversion.
+Recurrent caches start from zero; packed payload/scale layouts without a supported
+typed view are rejected. This is synthetic state, not the trained model's KV
+distribution or a guarantee of representative sparse-indexer selection.
+
+Asynchronous outputs are completed before input buffers and request IDs are
+reused. Neither preparation nor CPU time contributes to stored query latency.
+
 Each shot runs one discarded warm-up forward, then N timed forwards inside a
 single `layerwise_profile` context. A single sample can swing 15-25% on a large
 GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call
@@ -349,8 +363,8 @@ weights are replaced. A backend that bypasses the routing hook is rejected.
 See the [whole-block table contract](./output-bundle#moecsv-legacy-whole-block-moe-profiles)
 for refresh requirements and the distinction from native DP+EP components.
 
-It is also the biggest knob on how long a sweep takes, because **a shot's cost
-is almost entirely the profiler**. Measured on a 4-layer DeepSeek-V3.2, one
+Instrumentation is also a major part of acquisition cost, separately from
+dummy KV preparation. Measured on a 4-layer DeepSeek-V3.2, one
 shot at the default: 0.1 ms to assemble, 49 ms for the three forwards, 2.1 ms
 to convert the tree — and **1,125 ms inside the `layerwise_profile` context**.
 Session setup/teardown is only 6.9 ms of that; the rest is per-op instrumentation

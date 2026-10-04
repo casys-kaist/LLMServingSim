@@ -13,10 +13,9 @@ the requests are exactly what the grid generators asked for — no
 risk of the scheduler splitting, chunking, or reordering.
 
 Key trick: setting ``num_computed_tokens = history`` tells vLLM
-"pretend the first `history` tokens are already computed and their KV
-is in the cache". Combined with ``prompt_token_ids = [1] * (new_tokens
-+ history)`` this gives the engine a request that attends to
-``history`` preloaded tokens while newly computing ``new_tokens``.
+"the first `history` tokens are already computed and their KV is in the
+cache". The measurement driver must fulfill that promise: ``history.py``
+initializes dummy KV in the exact pages before timing the query.
 Exactly the shape needed to sweep attention at arbitrary
 (prefill_chunk, kv_cache) configurations.
 """
@@ -316,7 +315,8 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         scheduled.append(
             NewRequestData(
                 req_id=req_id,
-                # Contents don't matter — we use token id 1 uniformly.
+                # A shape-only template. The preparation driver supplies
+                # reproducible valid token IDs before measurement.
                 # Length must equal `history + new_tokens` so vLLM
                 # thinks it's handling a real sequence.
                 prompt_token_ids=[1] * total_len,
@@ -332,8 +332,8 @@ def assemble_scheduler_output(shot: Shot, model_runner):
                 pooling_params=None,
                 block_ids=tuple(group_block_ids),
                 # This is the "KV cache already contains `history`
-                # tokens" marker — the crux of how we inject arbitrary
-                # kv_cache shapes without actually prefilling.
+                # tokens" marker. It declares geometry, not initialized
+                # storage; dummy KV initialization happens separately.
                 num_computed_tokens=history,
                 lora_request=None,
             )

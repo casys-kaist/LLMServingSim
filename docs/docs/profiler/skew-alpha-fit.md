@@ -34,12 +34,21 @@ This repairs misplaced kernel leaves while preserving recorded durations and
 activity coverage. CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
 
-`native-skew-per-forward-v2` uses the same per-call CUDA interval unions as
+`dummy-kv-skew-query-state-per-forward-v5` uses the same per-call CUDA interval unions as
 ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
 CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints
 must match, and older kernel-sum measurements cannot satisfy the new resume
 contract or be silently appended to a current-method sweep.
+
+Before each context, the profiler initializes assigned attention pages with
+vLLM's deterministic dummy-weight initializer.
+Initialization is outside warmup and timing, and unassigned pages remain intact.
+Recurrent caches use zero-start state. See the [preparation contract](./running#--measurement-iterations--averaging-out-clock-jitter)
+for typed-layout restrictions and bounded FP8 initialization. Synthetic values
+do not reproduce trained KV statistics or guarantee representative sparse
+selection. Outputs complete before request/input buffers are reused.
+No preparation or CPU duration is charged to simulation.
 
 The default fit instead reconstructs the requests and computes both references
 through the **same attention lookup used by serving**:

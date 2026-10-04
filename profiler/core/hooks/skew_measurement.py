@@ -215,34 +215,34 @@ def extract_forwards(results, catalog, iterations):
 
 
 def initialize(runner):
-    """Initialize history once; never time zeroing or leave undefined KV data."""
+    """Inspect storage; each context separately initializes its assigned pages."""
     import torch
+    from profiler.core.skew import PROTOCOL
     caches = getattr(runner, "kv_caches", None)
     if not caches:
         raise ValueError("No KV cache available for skew measurement")
     visited, total = set(), 0
 
-    def clear(value):
+    def inspect(value):
         nonlocal total
         if isinstance(value, torch.Tensor):
             key = (value.device, value.data_ptr())
             if key not in visited:
                 visited.add(key)
-                value.zero_()
                 total += value.numel() * value.element_size()
         elif isinstance(value, dict):
             for child in value.values():
-                clear(child)
+                inspect(child)
         elif isinstance(value, (list, tuple)):
             for child in value:
-                clear(child)
+                inspect(child)
         else:
             raise ValueError("Unsupported KV cache container")
     with torch.inference_mode():
-        clear(caches)
+        inspect(caches)
     torch.cuda.synchronize()
-    return dict(cache_bytes=total, protocol="native-skew-per-forward-v2",
-                kv_initialization="zeroed once; native query writes thereafter")
+    return dict(cache_bytes=total, protocol=PROTOCOL,
+                kv_initialization="per-context vLLM dummy random KV; zero-start recurrent state")
 
 
 def _verify_request_geometry(metadata, requests):
@@ -312,13 +312,15 @@ def measure(runner, shot_dict, catalog, iterations=3):
     from vllm.forward_context import get_forward_context
     from vllm.profiler.layerwise_profile import layerwise_profile
     from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
-    from .batch import Shot, assemble_scheduler_output
+    from .batch import Shot
+    from .history import complete_forward, prepare_history
     from .sampler_shim import wrap_sampler_for_profiling
 
     if type(iterations) is not int or iterations < 1:
         raise ValueError("Positive timed-forward count required")
     shot = Shot.hydrate(shot_dict)
     wrap_sampler_for_profiling(runner)
+    fresh_batch = prepare_history(runner, shot)
     checked, finite = [], []
     # State-space metadata has no KV history axis. Validate the paged
     # attention groups of a hybrid, not its recurrent state representation.
@@ -359,9 +361,7 @@ def measure(runner, shot_dict, catalog, iterations=3):
         check_tensor(output)
 
     def fire():
-        batch, _ = assemble_scheduler_output(shot, runner)
-        if runner.execute_model(batch) is None:
-            runner.sample_tokens(None)
+        complete_forward(runner, fresh_batch())
 
     with torch.inference_mode():
         handles = [runner.model.register_forward_pre_hook(before),

@@ -30,7 +30,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from profiler.core.hooks.batch import Shot, assemble_scheduler_output
+from profiler.core.hooks.batch import Shot
+from profiler.core.hooks.history import complete_forward, prepare_history
 from profiler.core.hooks.moe_hook import (
     ExpertRoute,
     force_moe_routing,
@@ -103,12 +104,9 @@ class Extension:
         # profile node. Give it a module scope before anything fires.
         wrap_sampler_for_profiling(self.model_runner)
 
-        def _fresh_batch():
-            # Rebuild the synthetic SchedulerOutput on every forward so
-            # prior-iteration KV writes / request state don't bleed into
-            # the next measurement.
-            batch, _ = assemble_scheduler_output(shot, self.model_runner)
-            return batch
+        # Dummy KV initialization prepares the requested operating point;
+        # it is not part of the measured query latency.
+        _fresh_batch = prepare_history(self.model_runner, shot)
 
         # -- optional MoE routing forge --------------------------------
         route: ExpertRoute | None = None
@@ -131,9 +129,7 @@ class Extension:
         # expert setup in the first timed call. Use separate contexts so both
         # warmup and timed execution must actually consume forced routing.
         with force_moe_routing(route):
-            warmup_out = self.model_runner.execute_model(_fresh_batch())
-            if warmup_out is None:
-                self.model_runner.sample_tokens(None)
+            complete_forward(self.model_runner, _fresh_batch())
 
         # -- measured runs (N iterations, averaged) -------------------
         # Local import so that profiler/__init__.py doesn't require
@@ -150,9 +146,7 @@ class Extension:
         with force_moe_routing(route):
             with layerwise_profile() as hook:
                 for _ in range(iterations):
-                    measured_out = self.model_runner.execute_model(_fresh_batch())
-                    if measured_out is None:
-                        self.model_runner.sample_tokens(None)
+                    complete_forward(self.model_runner, _fresh_batch())
 
         from .cuda_timing import from_vllm
         from profiler.core.measurement import layerwise_measurement
@@ -192,21 +186,15 @@ class Extension:
         # profile node. Give it a module scope before anything fires.
         wrap_sampler_for_profiling(self.model_runner)
 
-        def _fresh_batch():
-            batch, _ = assemble_scheduler_output(shot, self.model_runner)
-            return batch
+        _fresh_batch = prepare_history(self.model_runner, shot)
 
-        warmup_out = self.model_runner.execute_model(_fresh_batch())
-        if warmup_out is None:
-            self.model_runner.sample_tokens(None)
+        complete_forward(self.model_runner, _fresh_batch())
 
         from vllm.profiler.layerwise_profile import layerwise_profile
 
         with layerwise_profile() as hook:
             for _ in range(iterations):
-                measured_out = self.model_runner.execute_model(_fresh_batch())
-                if measured_out is None:
-                    self.model_runner.sample_tokens(None)
+                complete_forward(self.model_runner, _fresh_batch())
 
         summary = hook.results.convert_stats_to_dict()["summary_stats"]
         return attribute_tree(summary, slice_).as_dict()

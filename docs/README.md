@@ -27,6 +27,8 @@ Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete
 bundles ready for simulation.
+The acquisition guides document assigned-page dummy KV initialization outside
+timed query work, its content/layout limitations and asynchronous completion.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.

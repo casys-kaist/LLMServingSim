@@ -19,7 +19,7 @@ from .skew_calibration import atomic_yaml, measurement_shape
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
-PROTOCOL = "native-skew-per-forward-v2"
+PROTOCOL = "dummy-kv-skew-query-state-per-forward-v5"
 
 
 def measurement_fingerprint():
@@ -27,7 +27,7 @@ def measurement_fingerprint():
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
     for name in ("skew_measurement.py", "activity_ownership.py", "cuda_timing.py", "timings.py",
-                 "batch.py", "sampler_shim.py"):
+                 "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py"):
         value.update((hooks / name).read_bytes())
     return value.hexdigest()
 
