@@ -50,7 +50,8 @@ unresolved ownership rejects a measurement rather than silently losing kernels.
 Layerwise and skew acquisitions count overlapping CUDA activity once within each
 module call; versioned rows prevent mixing old and new timing methods on resume.
 Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engine limits.
-Ordinary sweeps checkpoint completed shots atomically so interrupted runs can resume.
+Ordinary sweeps checkpoint completed shots atomically and preserve fractional
+attention coordinates when matching completed work on resume.
 History-bearing shots initialize assigned KV pages with vLLM's dummy-weight
 initializer outside timing.
 Measured decode requests retain a completed prompt and separate query tokens, so

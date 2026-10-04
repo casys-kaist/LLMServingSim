@@ -26,7 +26,7 @@ incompatible-resume protection; existing tables are not automatically converted.
 Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete
-bundles ready for simulation.
+bundles ready for simulation and documents exact fractional attention-key matching.
 The acquisition guides document assigned-page dummy KV initialization outside
 timed query work, its content/layout limitations and asynchronous completion.
 They also distinguish request phase from query/history geometry: native decode

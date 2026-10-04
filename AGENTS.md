@@ -721,6 +721,12 @@ does not turn a partially acquired table into a completed simulation bundle:
 finish the requested sweep before adopting it. Checkpoint I/O is outside the
 CUDA timing context and does not add simulated CPU time.
 
+Attention resume keys use `_attn_key` unchanged, as does `extract_points`.
+The CSV writer formats latency only; coordinate floats keep their full
+precision. Do not round only the planned key: weighted prefill coordinates
+can have more than three decimal places and would miss their stored rows.
+This identity alignment changes neither measurement protocol nor saved timings.
+
 Module-tree repair alone is insufficient: CUDA leaves can remain beside the
 module that launched them. `hooks/activity_ownership.py` connects each retained
 CUDA activity's native correlation ID to its runtime/driver launch and selects

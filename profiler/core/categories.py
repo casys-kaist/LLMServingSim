@@ -721,10 +721,9 @@ class AttentionCategory(Category):
         return _entry_dict(arch.catalog.attention, arch)
 
     def shot_key(self, shot):
-        total, key, n_dec, kv_dec, q = _attn_key(shot)
-        # Rounded to match how the sink writes the column, so a resumed run
-        # recognises its own rows.
-        return (total, round(key, 3), n_dec, kv_dec, q)
+        # Use the same full-precision coordinate as extract_points and the
+        # CSV sink. Rounding only the resume key loses fractional-key matches.
+        return _attn_key(shot)
 
 
 # ---------------------------------------------------------------------------

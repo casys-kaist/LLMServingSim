@@ -224,8 +224,8 @@ class DedupSink:
           * Rows sorted lexicographically by key fields (deterministic
             diffs; shape-friendly for human skim).
           * ``microseconds`` column renamed to ``time_us`` on write.
-          * Floats emitted with 6 sig figs (``%.6g``) to keep files
-            readable while preserving resolution.
+          * Latencies emitted with 6 sig figs (``%.6g``); coordinate
+            floats retain their full precision for exact resume matching.
         """
         if not self._bucket:
             log.warning("nothing to write to %s", self.out_path)

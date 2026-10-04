@@ -238,6 +238,11 @@ the latest samples. Use a separate output root for a new bundle and finish the
 requested sweep before using its table in simulation: a partial checkpoint is
 progress, not a completed profile.
 
+Attention resume uses the full-precision query-weighted `prefill_key` saved
+in the CSV, not a rounded display coordinate. Multi-prefill shots can produce
+fractional keys; compatible rows at those coordinates are skipped just like
+integer-key rows. This does not alter stored timings or their acquisition identity.
+
 Skew resume additionally requires a matching measurement implementation
 fingerprint, resolved block size, complete kernel set and sufficient per-forward
 repetitions. A change to timing attribution requires remeasurement even when

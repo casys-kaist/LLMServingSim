@@ -35,6 +35,8 @@ new sweeps extend compatible tables without changing runtime lookup.
 Ordinary categories save periodic atomic checkpoints between completed shots.
 Resume preserves earlier rows and their acquisition identities; publish a
 bundle only after the requested sweeps have completed.
+Attention resume keys retain the CSV's full-precision query-weighted prefill
+coordinate; fractional coordinates do not trigger redundant acquisition.
 History-bearing shots initialize assigned attention pages with vLLM's
 `initialize_single_dummy_weight`, using its deterministic uniform defaults.
 Initialization is repeated outside warmup and timing;

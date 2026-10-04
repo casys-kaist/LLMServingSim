@@ -57,6 +57,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Match resumed attention shots using the full-precision prefill coordinate
+  written to CSV, avoiding redundant measurements of fractional weighted keys.
+  Keep acquisition protocols, stored timings and simulator lookup unchanged.
 - Preserve the prompt/output boundary of profiled decode requests in vLLM's
   V1 and V2 runners. Keep token content, computed positions and KV pages intact
   while allowing native batch ordering and backend-specific phase selection.
