@@ -53,6 +53,8 @@ Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engin
 Ordinary sweeps checkpoint completed shots atomically so interrupted runs can resume.
 History-bearing shots initialize assigned KV pages with vLLM's dummy-weight
 initializer outside timing.
+Measured decode requests retain a completed prompt and separate query tokens, so
+native batch ordering does not mistake them for unfinished prompt extensions.
 Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
 [hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
 Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)

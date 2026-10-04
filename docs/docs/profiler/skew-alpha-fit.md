@@ -50,6 +50,11 @@ do not reproduce trained KV statistics or guarantee representative sparse
 selection. Outputs complete before request/input buffers are reused.
 No preparation or CPU duration is charged to simulation.
 
+The measured query preserves the shot's explicit request phases as well as its
+geometry. Decode query tokens are outside the completed prompt; vLLM then orders
+requests and selects its own backend paths. Treating decodes as unfinished
+prompt extensions can incorrectly make a mixed sparse-indexer batch all-prefill.
+
 The default fit instead reconstructs the requests and computes both references
 through the **same attention lookup used by serving**:
 

@@ -29,6 +29,8 @@ The resume guide also distinguishes atomic progress checkpoints from complete
 bundles ready for simulation.
 The acquisition guides document assigned-page dummy KV initialization outside
 timed query work, its content/layout limitations and asynchronous completion.
+They also distinguish request phase from query/history geometry: native decode
+requests need a completed prompt and separate output tokens for correct ordering.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.

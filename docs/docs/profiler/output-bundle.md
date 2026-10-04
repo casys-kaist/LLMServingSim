@@ -87,6 +87,10 @@ Both acquisition identities include assigned-page dummy KV initialization throug
 vLLM's dummy-weight helper. Initialization is outside
 timing and is repeated per context. See [preparation and limitations](./running#--measurement-iterations--averaging-out-clock-jitter).
 
+Both protocols preserve the prompt/output boundary of history-bearing decode
+requests, not just their query lengths and KV positions. This allows vLLM to
+select the intended prefill/decode kernels for each mixed batch.
+
 ## `dense.csv`
 
 ```

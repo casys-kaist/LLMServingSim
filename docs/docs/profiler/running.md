@@ -352,6 +352,13 @@ distribution or a guarantee of representative sparse-indexer selection.
 Asynchronous outputs are completed before input buffers and request IDs are
 reused. Neither preparation nor CPU time contributes to stored query latency.
 
+For the measured query, decode requests have a completed prompt and separate
+query/output tokens; prefill requests retain their unfinished prompt. This
+preserves vLLM's native ordering and each backend's own phase selection. Query
+length alone is insufficient: representing every request as a fresh prompt can
+send a mixed sparse-indexer batch down the all-prefill path. V1 and V2 request
+registration are handled separately without changing token values or KV pages.
+
 Each shot runs one discarded warm-up forward, then N timed forwards inside a
 single `layerwise_profile` context. A single sample can swing 15-25% on a large
 GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call

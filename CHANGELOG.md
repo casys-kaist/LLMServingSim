@@ -54,6 +54,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Preserve the prompt/output boundary of profiled decode requests in vLLM's
+  V1 and V2 runners. Keep token content, computed positions and KV pages intact
+  while allowing native batch ordering and backend-specific phase selection.
+  Prevent mixed sparse-indexer shots from becoming all-prefill merely because
+  synthetic decode queries were included in their prompts.
 - Exclude already-counted normalization and sparse-scoring subtrees from
   DeepSeek/GLM indexer glue profiling. Keep those kernels in their owning
   entries instead of charging them again through wildcard kernel bindings;

@@ -42,6 +42,10 @@ asynchronous outputs are drained before request/input buffers are reused.
 Recurrent caches use zero-start state, not synthetic historical recurrence.
 Packed data/scale caches without a supported typed layout fail explicitly.
 Dummy values do not claim to reproduce trained KV content.
+Measured decode requests also preserve their prompt/output boundary. V1 registers
+query tokens as output state; V2 receives a separate prompt length and full token
+list. vLLM still chooses request order and attention kernels. A shape-correct
+batch alone does not prove the intended prefill/decode execution path.
 
 ## Directory layout
 

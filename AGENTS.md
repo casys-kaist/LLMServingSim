@@ -699,6 +699,19 @@ buffers or request state; fresh IDs must not become streaming extensions of the
 previous shot. Metadata cleanup does not erase physical KV pages. Preparation
 adds no simulator cost.
 
+Query geometry and request phase are separate contracts. `PreparedQuery` carries
+the shot's explicit prefill/decode boundary through dummy KV preparation.
+For a history-bearing decode, the prompt ends before the query: V1's fresh
+`CachedRequestState` is split before `InputBatch.add_request`, while V2 receives
+the prompt separately from all token IDs. Preserve token values, computed
+positions and physical pages, and leave sorting/backend thresholds to vLLM.
+Restore instance hooks even on failure. Making the whole sequence a prompt
+leaves decodes as short extends; a sparse indexer with a lower decode threshold
+than the main attention backend can then classify an entire mixed batch as
+prefill. Geometry-only checks cannot catch that. Zero-history category shots
+remain fresh prompts. The ordinary acquisition protocol is
+`cuda-active-union-dummy-kv-query-v4`.
+
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains
 all rows, acquisition identities and duplicate counts; writing only the most
