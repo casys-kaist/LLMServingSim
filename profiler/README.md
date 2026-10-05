@@ -100,8 +100,11 @@ scripts/                      shared environment / build entry points (top-level
 ## Everything you can set
 
 Use `python -m profiler --help` for the full subcommand list. The model
-profiling flags below have a `profile.sh` variable of the same name in caps
-unless noted. Hardware characterization runs separately as
+profiling flags below are available through `profile.sh`: unset optional
+variables inherit CLI defaults rather than maintaining a second default set.
+Most names are the flag in capitals with underscores; TP/DP use `TP_DEGREES` /
+`DP_DEGREES`, repeated overrides use `HF_OVERRIDES`, and logging uses
+`LOG_LEVEL` or `VERBOSITY`. Hardware characterization runs separately as
 `python -m profiler hardware --hardware <hw> --npus 2`; it defaults to INFO
 logging and accepts an explicit `--log-level` override.
 Hardware characterization saves a shared Ring fit and optional per-collective
@@ -127,20 +130,22 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
 | **MoE parallelism** | `--moe-ep-degrees` for legacy whole-block grids; explicit `--dp` selects native DP+EP components with EP=TP*DP; `--moe-rounds` controls native repetitions |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
-| **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-decode-q-lens` |
+| **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-n-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
 | **measurement** | `--measurement-iterations` |
 | **skew** | `--skip-skew`, `--only-skew`, `--skew-n-factor`, `--skew-pc-factor`, `--skew-kp-factor`, `--skew-kvs-factor`, `--skew-samples-per-cell`, `--skew-rounds`, `--skew-seed` |
 | **resume** | `--force` (default is resume) |
-| **paths** | `--out-root`, `--model-config-root` (no `profile.sh` variable) |
-| **verbosity** | `--log-level`, `--silent`, `--verbose` (`VERBOSITY`) |
+| **paths** | `--out-root`, `--model-config-root` (`OUT_ROOT`, `MODEL_CONFIG_ROOT`) |
+| **verbosity** | `--log-level` (`LOG_LEVEL`), `--silent`, `--verbose` (`VERBOSITY`; choose one logging setting) |
 | **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
 
 Native MoE components use one physical GPU to emulate each deployment rank,
 preserving global expert IDs and top-k. Explicit DP acquisition has immutable,
 resumable contracts rather than `--force` replacement; expert forward counts may
-exceed `--measurement-iterations` to cover matched weight cycles. These CLI-only
-options have no `profile.sh` variable. See the
+exceed `--measurement-iterations` to cover matched weight cycles. Set
+`DP_DEGREES` and optionally `MOE_ROUNDS` in `profile.sh`; leave
+`MOE_EP_DEGREES` unset because native EP is TP*DP. Supported native targets
+require DP>=2; omitting DP retains the whole-block EP path. See the
 [native MoE guide](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported backends, CUDA attribution, quality checks and runtime fallback.
 The shipped RTXPRO6000 Qwen3-30B component index covers TP1/DP2/EP2. Its
@@ -149,12 +154,14 @@ Only the runtime subset is bundled, so use a separate output root for acquisitio
 
 The five that decide how long a run takes, in rough order of effect:
 
-1. `--measurement-iterations` (default 3) — a straight multiplier, and the
-   biggest single knob: the profiler costs **372 us per forward against 16 us
-   outside it** on a 4-layer DeepSeek-V3.2, and that is linear in the forwards
+1. `--measurement-iterations` — controls timed forwards, not all acquisition
+   work: the profiler costs **372 ms per forward against 16 ms
+   outside it** in a 4-layer DeepSeek-V3.2 measurement, linear in the forwards
    (0/1/3/6 inside one session → 6.9/372/1,125/2,310 ms). Session
-   setup/teardown is only 6.9 ms, so 1 is ~3x faster and 15-25% noisier per
-   shot. It is also the **top level's** invocation count: every profile node
+   setup/teardown is only 6.9 ms in that measurement. One forward reduces
+   this timed-context cost, but total acquisition also includes preparation,
+   warmup and processing, and an error bound does not follow from the repeat
+   count. It is also the **top level's** invocation count: every profile node
    divides by its parent's, and the top level has no parent node, so
    `extract_samples` is handed this value. `embedding`, `lm_head`, `sampler`
    and Qwen3.5's whole drafter bind there. Repeated top-level summaries are
@@ -227,6 +234,9 @@ The script is a template — open it, change `MODEL` and `HARDWARE`, and
 optionally tweak the rest. Every knob below maps to a CLI flag on
 `python -m profiler profile`; shell variables left unset stay at the
 profiler's built-in defaults.
+The assignments below are opt-in examples, not active template defaults.
+Nonempty boolean variables enable their flags, including the string `0`;
+leave them unset or empty to disable them.
 
 #### Required
 
@@ -255,16 +265,20 @@ MAX_NUM_SEQS=256                    # vLLM's --max-num-seqs. Profile with MSQ > 
 ATTENTION_MAX_KV=""                 # key-history bound; empty = the model's own context
 ATTENTION_CHUNK_FACTOR=2.0          # geometric factor for prefill_chunk axis (doubling)
 ATTENTION_KV_FACTOR=2.0             # geometric factor for kv axes (doubling)
+ATTENTION_N_FACTOR=1.4142135623730951  # geometric factor for decode request count
 ```
 
-Smaller factors densify that axis; larger factors coarsen it.
+These are opt-in overrides; the unedited template leaves them unset and
+inherits `python -m profiler profile` defaults. Check its `--help` before a run.
+Smaller factors densify axes, and their costs multiply across the attention
+grid; the KV factor controls both prefill-key and decode-KV axes. See the
+[cost-planning guide](../docs/docs/profiler/running.md#expected-runtime).
 
 **If the run dies with CUDA OOM, this is the first knob.** Left empty,
 `ATTENTION_MAX_KV` is the model's own context window, so a long-context
 checkpoint sweeps out to 131k or beyond and the largest decode shots ask the
 engine for `n_decode * kv_decode` tokens of KV in one go. Setting it bounds the
-biggest allocation the sweep ever makes, and cuts runtime with it -- 8,643
-shots at 16,384 against 14,653 at DeepSeek-V3.2's full 163,834. The cost is
+biggest allocation the sweep ever makes, and can reduce its shot count. The cost is
 long-context coverage: the simulator extrapolates past the last profiled kv,
 which is safe on a dense kernel and not on a sparse one (see *Skew profiling*
 and the `--attention-max-kv` section of the docs site).
@@ -325,9 +339,8 @@ MODEL_CONFIG_ROOT=                  # empty = configs/model. A different tree of
 #### Measurement averaging
 
 ```bash
-MEASUREMENT_ITERATIONS=3            # timed forwards per shot, averaged. A single sample
-                                    # swings 15–25% on large GEMMs due to DVFS / clock
-                                    # jitter; N=3 cuts that to ~5% at ~3× profile time.
+MEASUREMENT_ITERATIONS=3            # timed forwards per shot, averaged per invocation;
+                                    # more repeats do not guarantee an error bound.
 ```
 
 #### Skew sweep
@@ -490,33 +503,28 @@ the CLI selects a matching model.
 ### Sweeping several models: `profiler/profile-all.sh`
 
 Helper template that wraps `python -m profiler profile` in a loop over
-a few canned models. Current list: `Qwen/Qwen3-32B`,
-`Qwen/Qwen3-30B-A3B-Instruct-2507`, `meta-llama/Llama-3.1-8B` — each
-profiled at TP=1 and TP=2 on the same hardware. Useful for bringing
-up a fresh GPU target in one shot.
+the `JOBS` array. Each entry specifies a model and explicit per-job flags.
+Inspect that array and the global overrides before bringing up a fresh GPU.
 
 ```bash
 ./profiler/profile-all.sh
 ```
 
-All knobs are environment variables (no argparse). Defaults match
-`profiler/profile.sh`; override inline when you need something else:
+Global knobs accept environment variables (no argparse). Unlike `profile.sh`,
+this is an explicitly configured multi-model campaign, with its own attention
+bounds/factors and per-job TP settings; it does not promise CLI-default parity.
+Per-job flags override globals. For example:
 
 ```bash
 HARDWARE=H100 \
-TP_DEGREES=1,2,4 \
 ATTENTION_CHUNK_FACTOR=1.5 \
 ./profiler/profile-all.sh
 ```
 
-Recognised variables:
-`HARDWARE`, `TP_DEGREES`, `MAX_NUM_BATCHED_TOKENS`, `MAX_NUM_SEQS`,
-`ATTENTION_MAX_KV`, `ATTENTION_CHUNK_FACTOR`, `ATTENTION_KV_FACTOR`,
-`SKEW_N_FACTOR`, `SKEW_PC_FACTOR`, `SKEW_KP_FACTOR`, `SKEW_KVS_FACTOR`,
-`SKIP_SKEW`, `ONLY_SKEW`, `MEASUREMENT_ITERATIONS`, `DTYPE`,
-`KV_CACHE_DTYPE`, `VARIANT`, `VERBOSITY`.
+For accepted globals, inspect the command construction in `profile-all.sh`;
+arbitrary per-job CLI options go in the entry's extra flags.
 
-To change the model list, edit the `MODELS=( ... )` array at the top
+To change the model list or deployment degrees, edit the `JOBS=( ... )` array at the top
 of the script. This file is meant to be copied or tweaked in-place,
 not treated as a stable CLI.
 
@@ -833,8 +841,8 @@ to exist for the shape you want to measure.
 --log-level {DEBUG,INFO,…}   explicit override.
 ```
 
-Set via `VERBOSITY="--silent"` / `"--verbose"` in `profiler/profile.sh`,
-or pass `--log-level X` to `python -m profiler profile` directly.
+Set `LOG_LEVEL="ERROR"` or `VERBOSITY="--silent"` / `"--verbose"` in
+`profiler/profile.sh`, not both, or pass the corresponding CLI option directly.
 
 ## Slice-refresh (partial re-profile)
 

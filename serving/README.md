@@ -84,6 +84,9 @@ The per-instance `cudagraph` object describes target execution, independently
 of the profiler's eager engine. Local graph padding applies with or without DP;
 DP then synchronizes the selected modes and forward sizes. Real attention
 queries, KV history and head rows are not expanded into dummy requests.
+In vLLM FULL graphs, attention buffers/metadata are padded with empty request
+slots; PIECEWISE attention uses real dimensions. The simulator keeps real
+attention geometry and does not separately charge FULL empty-slot overhead.
 See the [graph contract](https://llmservingsim.ai/docs/reference/cluster-config#cuda-graph-contract)
 for overrides and scope; it adds no fitted per-step timing adjustment.
 

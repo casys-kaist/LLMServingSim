@@ -54,6 +54,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Align `profile.sh` with CLI defaults by forwarding only explicitly set options;
+  expose native DP, MoE repetitions, skew-only mode and explicit log levels.
+  Keep the multi-model campaign's explicit overrides separate. Correct
+  attention-grid cost and default descriptions in CLI help and profiling
+  guides, explain that axis
+  density costs multiply, and separate stage estimates from complete-bundle
+  runtime. Clarify four-axis interpolation, separate query-length table selection,
+  skew buckets and CUDA graph padding, including FULL attention metadata versus
+  PIECEWISE and selected head rows. CLI defaults, stored profiles and simulator
+  behavior are unchanged; unedited single-model script invocations now use
+  those CLI defaults instead of a separate TP sweep and attention grid.
 - Match resumed attention shots using the full-precision prefill coordinate
   written to CSV, avoiding redundant measurements of fractional weighted keys.
   Keep acquisition protocols, stored timings and simulator lookup unchanged.

@@ -1085,32 +1085,40 @@ gap is noise -- and wrong for a saturating kernel, where the gap is negative
 for essentially every case, so a sparse skew sweep would have had almost every
 row dropped as `nan`.
 
-### Every swept axis is geometric at sqrt(2), and 1.5 is a dead end
+### Attention-grid density and acquisition cost
+
 `SQRT2 = 2.0 ** 0.5` in `profiler/core/config.py` is the default factor for
-all three attention axes. What picks it over 1.5 -- which is *coarser*, not
+the three attention factor settings, covering four shape axes: the KV factor
+controls both prefill-key and decode-KV. The editable `profile.sh` leaves
+optional settings unset and forwards only explicit nonempty values, so the
+CLI owns its defaults. Keep every `profile` option reachable from the template,
+including `DP_DEGREES` (`--dp`), `MOE_ROUNDS` and explicit logging; do not
+silently enable a TP sweep or native DP acquisition. The separate multi-model
+`profile-all.sh` remains an explicitly configured campaign, not a default-parity
+wrapper. What picks sqrt(2)
+over 1.5 -- which is *coarser*, not
 finer, since 1.5 > sqrt(2) -- is that `_geometric_grid` accumulates in float
 and rounds only for output, so the even powers land exactly:
 
 ```
 sqrt(2)  0, 1, 2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256
 x2       0, 1, 2,    4,    8,     16,     32,     64,      128,      256   <- a strict subset
-1.5      0, 1, 2, 3, 5, 8, 11, 17, 26, 38, 58, 86, 130, 195, 256          <- shares {0,1,2,8}
+1.5      0, 1, 2, 3, 5, 8, 11, 17, 26, 38, 58, 86, 130, 195, 256          <- not nested
 ```
 
-A doubling grid is therefore a **subset** of the sqrt(2) grid, and that is
-what makes density a decision you can defer: sweep a new bundle at 2.0, and
-the missing points can be added later by firing only them. 1.5 has no such
-relation in either direction -- on the chunk axis it shares exactly
-`{0, 16, 2048}` with both 2.0 and sqrt(2) -- so **a 1.5 bundle is a dead end
-on that axis**: any later change to it is a full re-measure. Llama-3.1-8B's
-attention refresh reuses **99.9%** of its 37,962 rows at sqrt(2) against
-**37.9%** at 1.5, which would orphan 23,579 of them outside the grid its own
-`meta.yaml` declares.
+A doubling axis is therefore a **subset** of the sqrt(2) axis. Reuse still
+requires compatible acquisition identities and matching complete shot keys;
+changing another axis or the request composition can change those matches.
+A factor of 1.5 is not nested in either grid. Compare actual coordinates
+rather than promising that a density change reuses every previous row.
 
-Per doubling sqrt(2) gives 2 points and 1.5 gives 1.71, so sqrt(2) is denser
-on every axis (chunk 16 values against 14, prefill_key 23 against 20, kv 22
-against 20, n_decode 17 against 15) and costs 1.64x a 1.5 grid's shots across
-the four.
+For a fixed range, interval count scales as `1 / log(factor)`. Changing a
+factor from 2 to sqrt(2) roughly doubles intervals per axis, not 1.4x.
+Attention combines four shape axes, so their costs multiply before rounding,
+deduplication and feasibility filters. Enumerate `AttentionCategory.compose_shots`
+with the requested settings and resolved limits for the actual shot count.
+Do not infer whole-bundle duration from one axis factor or an old run's ETA;
+skew, other TP degrees and native MoE acquisition are separate work.
 
 **The accuracy case is specific to `n_decode`, and it does not extend to
 chunk or kv.** That axis is smooth on a *pure decode* batch -- per-sequence
@@ -1180,12 +1188,12 @@ grid through the feasibility filters. Pass the bundle's own
 `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-max-kv` and
 `--max-num-seqs`, all of which `meta.yaml` records.
 
-**A long sweep prints a heartbeat.** The rich progress bar needs a TTY and the
-sink writes its CSV only after the last shot, so a run redirected to a file
-used to show nothing at all between "firing N" and "done" -- which reads
-exactly like a hang, and was misdiagnosed as one twice (the GPU also sits at
-0-4% throughout, because the cost is the profiler's event tree, not the
-forward). `_fire_one_category` logs count, rate and ETA every 1% of shots, and
+**A long sweep prints a heartbeat.** The rich progress bar needs a TTY.
+Ordinary categories also write periodic atomic CSV checkpoints between
+completed shots, independent of progress rendering. Low GPU utilization
+alone does not establish a stall: CPU event processing contributes to
+acquisition time but not simulated latency.
+`_fire_one_category` logs count, rate and ETA every 1% of shots, and
 `skew.sample_skew` logs at every 20-case atomic checkpoint. It reports the
 actual acquisition rate, excluding reused cases, and retains completed cases
 if a later measurement fails.
@@ -2243,6 +2251,13 @@ outside this GPU graph contract and uses NONE.
 Padding changes model-forward rows, not requests, query/KV lists, decode counts
 or head rows. Keep those domains separate in trace lookup and completion
 accounting. This is a shape rule, never a benchmark-fitted graph-time correction.
+This does not mean vLLM always executes attention without padding. MRV1 sets
+`pad_attn` for FULL graphs and passes padded token/request dimensions into
+attention metadata; PIECEWISE keeps real dimensions there. Padded request
+query boundaries repeat, sequence lengths are zero, and KV slots are invalid.
+QKV/norm/RoPE, output projections and MLP/MoE still see padded forward tensors;
+selected logits rows do not. Serving retains real attention geometry and does
+not separately model FULL-graph empty-slot/backend scheduling overhead.
 
 For non-speculative execution, `_build_batch_ctx` uses the number of actual
 requests for per-sequence head lookup, tensor sizes and TP logits gathering.

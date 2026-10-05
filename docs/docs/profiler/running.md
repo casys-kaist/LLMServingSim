@@ -7,7 +7,12 @@ title: Running
 
 The profiler is invoked through `profiler/profile.sh`: an editable
 template. You change the variables at the top to whatever you want
-to profile, then run it.
+to profile, then run it. Optional variables are unset by default, so an
+unedited script inherits `python -m profiler profile` defaults. Inspect that
+command's `--help` for current values; commented assignments are examples.
+Nonempty boolean settings enable their flags (even `0`); unset or empty
+disables them. The separate `profile-all.sh` is an explicit multi-model
+campaign with its own overrides, not a CLI-default wrapper.
 
 > Looking for adding a brand-new hardware target (GPU or non-GPU)?
 > See **[Adding new hardware](./adding-hardware)**. This page covers
@@ -60,7 +65,7 @@ See **[Cluster config → Hardware facts are inherited](../reference/cluster-con
 3. Writes the model config to a tmpdir; spins vLLM up against that.
 4. Sweeps **dense / per_sequence / attention / moe** shot grids,
    writing CSVs under `profiler/perf/<HW>/<MODEL>/<variant>/tp<N>/`.
-5. (If `SKIP_SKEW=0`, the default) Runs the heterogeneous-decode
+5. (Unless `SKIP_SKEW` is set) Runs the heterogeneous-decode
    skew sweep and fits per-bucket alphas to `skew_fit.csv`.
 6. Writes `meta.yaml` summarizing the run.
 
@@ -77,9 +82,12 @@ on a single GPU by dividing the model's per-rank shapes via
 
 ## Sweep shape
 
-| Variable | Default | Meaning |
+The following assignments illustrate optional sweep overrides. Leave them
+unset to inherit the CLI defaults.
+
+| Variable | Template example | Meaning |
 | --- | --- | --- |
-| `TP_DEGREES` | `1,2` in `profile.sh` (`--tp` defaults to `1`) | Positive TP degrees. Ordinary category profiling **must include `1`** for TP-stable replication; `plan-skew` and `profile --only-skew` can select a degree independently |
+| `TP_DEGREES` | `1,2` | Positive TP degrees. Ordinary category profiling **must include `1`** for TP-stable replication; `plan-skew` and `profile --only-skew` can select a degree independently |
 | `MAX_NUM_BATCHED_TOKENS` | `2048` | Profiler internally bumps this by `+MSQ` for shot-bypass headroom; subtracted back when recording meta |
 | `MAX_NUM_SEQS` | `256` | Profile with `MSQ > runtime MSQ` so mixed-regime cases at `n = runtime_MSQ` stay feasible |
 
@@ -89,10 +97,13 @@ For supported unquantized DP+EP models, explicit CLI `--dp` selects
 [native component profiling](./native-moe-components), with EP=TP*DP and
 preserved global expert IDs/top-k. It accepts `profile` or `slice --group moe`;
 `--moe-rounds` controls repeated contexts. Target ranks are emulated on one
-physical GPU, and communication is measured separately. These options are
-CLI-only; the editable `profile.sh` retains its legacy MoE sweep.
+physical GPU, and communication is measured separately. In `profile.sh`, set
+`DP_DEGREES` and optionally `MOE_ROUNDS`. Supported native targets require
+DP>=2; omit `MOE_EP_DEGREES` because EP is derived from TP and DP. Do not
+combine native acquisition with `ONLY_SKEW`, `PROFILE_MTP` or `FORCE`; use a
+fresh `OUT_ROOT` to remeasure an immutable native contract.
 
-Without `--dp`, `--moe-ep-degrees` selects retained whole-block `moe.csv`
+Without `--dp`, `--moe-ep-degrees` (`MOE_EP_DEGREES`) selects retained whole-block `moe.csv`
 profiles. That path shrinks the expert/top-k checkpoint shape and approximates
 rank-local work; it is not the native DP+EP execution contract. Do not combine
 the two acquisition modes or infer DP/backend coverage from the legacy EP axis.
@@ -145,14 +156,16 @@ kv_decode, decode_q_len)`. `prefill_key` is the query-weighted causal key
 coordinate described in [the output schema](./output-bundle#attentioncsv).
 The ordinary decode slice has `decode_q_len = 1`.
 
-| Variable | Default | Meaning |
+| Variable | Template example | Meaning |
 | --- | --- | --- |
 | `ATTENTION_MAX_KV` | model-derived | Bounds the histories used to construct prefill and decode shots |
 | `ATTENTION_CHUNK_FACTOR` | `2.0` | Geometric factor for `prefill_chunk` axis (doubling) |
 | `ATTENTION_KV_FACTOR` | `2.0` | Geometric factor for `kv` axes (doubling) |
+| `ATTENTION_N_FACTOR` | `1.4142135623730951` | Geometric factor for decode request count |
 
 Smaller factors densify the axis (more shots, slower); larger factors
-coarsen it (fewer shots, faster).
+coarsen it (fewer shots, faster). The KV factor controls both prefill-key and
+decode-KV. Costs multiply across the axes; see [runtime planning](#expected-runtime).
 
 ## Measurement averaging
 
@@ -160,9 +173,9 @@ coarsen it (fewer shots, faster).
 MEASUREMENT_ITERATIONS=3
 ```
 
-Number of timed forwards per shot, averaged. A single sample swings
-15–25% on large GEMMs due to DVFS / clock jitter. `N=3` cuts that to
-~5% at ~3× profile time. Bump to 5 if you need very tight numbers.
+Timed forwards per ordinary shot, averaged per invocation. More repetitions
+increase acquisition cost and can reduce variability, but do not guarantee
+an error bound. Fixed preparation and analysis costs also affect runtime.
 
 ## Skew sweep
 
@@ -275,7 +288,10 @@ named experimental runs (quantization schemes, ablations).
 
 ## Verbosity
 
+Use `LOG_LEVEL` or one `VERBOSITY` shortcut, not both:
+
 ```bash
+LOG_LEVEL="ERROR"          # explicit level; alternatively choose one shortcut below
 VERBOSITY="--silent"        # warnings only
 VERBOSITY="--verbose"       # DEBUG + vLLM stdout
 VERBOSITY=""                # default (INFO)
@@ -291,7 +307,7 @@ at all.
 ```bash
 python -m profiler profile  <model> --hardware <hw> [options]
 python -m profiler slice    <model> --hardware <hw> --tp-refresh N --group G [options]
-#   G in {dense, per_sequence, attention, linear_attention, moe, mtp, step}
+#   G in {dense, per_sequence, attention, linear_attention, moe, mtp}
 python -m profiler coverage <model> --hardware <hw> [options]
 ```
 
@@ -315,15 +331,18 @@ file is an error.
 | `--block-size` | `16` | `BLOCK_SIZE` |
 | `--gpu-memory-utilization` | `0.9` | `GPU_MEMORY_UTILIZATION` |
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
-| `--num-hidden-layers` | `1` | `NUM_HIDDEN_LAYERS` |
+| `--num-hidden-layers` | category/checkpoint-derived minimal stack | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
 | `--moe-ep-degrees` | `1` | `MOE_EP_DEGREES` |
+| `--dp` | unset (native acquisition opt-in) | `DP_DEGREES` |
+| `--moe-rounds` | see `profile --help` | `MOE_ROUNDS` |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | the model's own context | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
-| `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
-| `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |
+| `--attention-chunk-factor` | see `profile --help` | `ATTENTION_CHUNK_FACTOR` |
+| `--attention-kv-factor` | see `profile --help` | `ATTENTION_KV_FACTOR` |
+| `--attention-n-factor` | see `profile --help` | `ATTENTION_N_FACTOR` |
 | `--measurement-iterations` | `3` | `MEASUREMENT_ITERATIONS` |
 | `--skip-skew` | off | `SKIP_SKEW=1` |
 | `--only-skew` | off | `ONLY_SKEW=1` |
@@ -337,7 +356,7 @@ file is an error.
 | `--force` | off (resume) | `FORCE=1` |
 | `--out-root` | `profiler/perf` | `OUT_ROOT` |
 | `--model-config-root` | `configs/model` | `MODEL_CONFIG_ROOT` |
-| `--log-level` | `INFO` | `VERBOSITY` |
+| `--log-level` | `INFO` | `LOG_LEVEL` |
 | `--silent` | — | `VERBOSITY="--silent"` |
 | `--verbose` | — | `VERBOSITY="--verbose"` |
 
@@ -389,8 +408,10 @@ at **372 ms per forward against 16 ms outside**, linear in the forwards:
 | 3 | 1,125 |
 | 6 | 2,310 |
 
-So `--measurement-iterations 1` really is ~3x faster, at 15-25% more noise per
-shot. Turning off the profiler's `with_stack` does **not** help, despite being
+In this measurement, one forward takes about a third of the three-forward
+profile context; that does not imply a threefold full-sweep speedup or an error
+bound, since preparation, warmup and processing also contribute. Turning off
+the profiler's `with_stack` does **not** help in this case, despite being
 14x in a raw `key_averages()` path: `layerwise_profile` builds its tree from
 `experimental_event_tree()`, which does not pay for it.
 
@@ -561,7 +582,7 @@ adding them to the repo.
 
 `--log-level`, `--silent`, and `--verbose` are mutually exclusive.
 `--silent` is `WARNING`, `--verbose` is `DEBUG` **plus** vLLM's own
-stdout, and `--log-level` overrides either explicitly.
+stdout; use `--log-level` instead for an explicit level.
 
 Ordinary category profiling requires `--tp` to include `1`: TP-stable layers
 (layernorms, sampler) are measured once at TP1 and replicated into other
@@ -642,74 +663,59 @@ shot:
 ./profiler/profile-all.sh
 ```
 
-This wraps `python -m profiler profile` in a loop over a canned
-list of models (currently `Qwen/Qwen3-32B`,
-`Qwen/Qwen3-30B-A3B-Instruct-2507`, `meta-llama/Llama-3.1-8B`) at
-TP=1 and TP=2. All knobs from `profile.sh` are recognized as
-environment variables:
+This wraps `python -m profiler profile` in a loop over the `JOBS` array.
+Unlike the single-model template, it has explicit global and per-job overrides;
+inspect its command construction for accepted environment variables. Per-job
+flags take precedence over global settings. For example:
 
 ```bash
 HARDWARE=H100 \
-TP_DEGREES=1,2,4 \
 ATTENTION_CHUNK_FACTOR=1.5 \
 ./profiler/profile-all.sh
 ```
 
-To change the model list, edit the `MODELS=( ... )` array at the top
+To change models or their TP/DP settings, edit the `JOBS=( ... )` array at the top
 of the script. This file is meant to be copied or tweaked in-place,
 not treated as a stable CLI.
 
 ## Expected runtime
 
-**Measured**, one TP degree per row, on an RTX PRO 6000 Blackwell with
-`MAX_NUM_BATCHED_TOKENS=2048`, `MAX_NUM_SEQS=256`,
-`MEASUREMENT_ITERATIONS=3` and default grid factors:
+Estimate acquisition time from the requested plan and its observed rate, not
+from the model name or an older run's defaults. Attention combines prefill-token,
+prefill-key, decode-request and decode-KV axes, with optional decode query lengths.
+The number of geometric intervals over a fixed range scales as
+`log(max / start) / log(factor)`. For example, changing an axis factor from 2
+to the square root of 2 roughly doubles its intervals. Refining multiple axes
+multiplies their counts; it is not a single 1.4x increase for the whole sweep.
+Rounding, degenerate-axis deduplication and live feasibility limits determine
+the final count emitted by `AttentionCategory.compose_shots`.
 
-| Model | dense | per_seq | attention | linear_attn / moe | total |
-| --- | --- | --- | --- | --- | --- |
-| Qwen3.8-27B (hybrid) | 3:05 | 0:39 | **3:55:15** | 3:14 | ~4 h |
-| DeepSeek-V3.2-Exp (MLA + DSA) | 3:08 | 0:59 | **2:59:27** | 1:02 | ~3 h |
-| GLM-5 (MLA + DSA) | 2:38 | 0:51 | **2:51:39** | 0:58 | ~3 h |
-| MiniMax-M3 (block-sparse) | 2:01 | 0:45 | **2:06:37** | 0:37 | ~2 h |
+Acquisition also includes request/KV preparation, warmup, timed forwards,
+CPU profile-tree processing and checkpoint writes. Reducing timed repetitions
+does not proportionally remove those fixed costs and changes the measurement
+protocol. Low GPU utilization can coexist with active CPU profile processing;
+check the worker and saved progress before diagnosing a stall. None of that
+CPU preparation or processing time is added to simulated GPU latency.
 
-:::caution[`attention` dominates, and it is hours, not minutes]
-Every other category finishes in minutes. The attention sweep is
-8,643 shots at these limits — measured, not estimated — and at
-`MEASUREMENT_ITERATIONS=3` that is ~26,000 timed forwards.
+The per-shot cost depends on the instantiated category stack and batch shape.
+A partial stage's rate can change as it reaches longer histories or more
+requests. Its ETA excludes later categories, skew rounds, native MoE acquisition
+and additional TP configurations. Report those stages separately when estimating
+complete-bundle time. Existing CSVs or checkpoints are not evidence that a
+requested full sweep has finished.
 
-The bottleneck is **not the GPU**. `VLLM::EngineCore` sits at ~100% of
-one core for the whole sweep while GPU utilisation samples in the
-low tens of percent: the cost is `layerwise_profile`'s single-threaded
-attribution of every CUDA kernel to a node in the profile tree.
-
-That is why a hybrid or sparse model costs more than a dense one even
-at the same shot count. Two multipliers stack:
-
-- **Layers instantiated.** A uniform stack shrinks to 1; a hybrid needs
-  the smallest prefix reaching every block type — 4 for Qwen3.8-27B,
-  and 4 for the three MoE families (3 dense MLP + 1 MoE).
-- **Nodes attributed per forward.** Catalog entries: Llama 12, Qwen3
-  14, MiniMax-M3 18, DeepSeek/GLM 22, Qwen3.5/3.8 **24**.
-:::
-
-To cut it, in order of effect: `MEASUREMENT_ITERATIONS=1` (a straight
-3x, at 15–25% per-shot noise), then
-`ATTENTION_CHUNK_FACTOR` / `ATTENTION_KV_FACTOR` above 2.0 to coarsen
-the two biggest axes. `SKIP_SKEW=1` removes the skew sweep entirely —
-every number above was measured with it off.
-
-Adding TP degrees multiplies by roughly one more pass each: Qwen3.8-27B
-at `--tp 1,2` spent a further **207 minutes** on the TP=2 pass, with
-TP=1 resumed from its existing CSVs in seconds.
+Choose bounds, factors and repetitions before acquisition, record them with
+the bundle, and preserve compatible acquisition identities when resuming.
+Coarser grids reduce sampling resolution and may change interpolation error;
+denser grids also need end-to-end validation and do not guarantee better accuracy. Do not
+silently narrow an agreed measurement plan to meet an earlier runtime estimate.
 
 The Rich-based logger renders per-step progress bars; redirect
 stdout with `--silent` for a quieter run.
 
-Those bars need a TTY, so a run redirected to a file shows nothing while a
-sweep is in flight — and since the sink only writes its CSV at the end, that
-looks exactly like a hang. It usually is not: the cost is the torch profiler's
-event tree rather than the forward, so the GPU sits at 0–4% throughout. Every
-long sweep therefore also logs a plain heartbeat every 1% of its shots,
+Those bars need a TTY. Ordinary categories also checkpoint accumulated CSV
+rows atomically between completed shots, independently of the display. Long
+sweeps log a plain heartbeat,
 carrying the count, the rate and an ETA:
 
 ```

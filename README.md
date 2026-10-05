@@ -50,6 +50,9 @@ unresolved ownership rejects a measurement rather than silently losing kernels.
 Layerwise and skew acquisitions count overlapping CUDA activity once within each
 module call; versioned rows prevent mixing old and new timing methods on resume.
 Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engine limits.
+The single-model profiler template inherits CLI defaults, including parallelism,
+and exposes explicit native-DP settings. For sweep density and acquisition costs,
+see the [profiling guide](https://llmservingsim.ai/docs/profiler/running#expected-runtime).
 Ordinary sweeps checkpoint completed shots atomically and preserve fractional
 attention coordinates when matching completed work on resume.
 History-bearing shots initialize assigned KV pages with vLLM's dummy-weight

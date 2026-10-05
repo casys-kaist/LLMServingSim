@@ -302,6 +302,40 @@ all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
 
+#### Which layers see graph padding?
+
+For the ordinary vLLM 0.28 MRV1 Llama/Qwen target path, graph dispatch rounds
+the backbone input to a captured token count. This is not a lookup-table
+rounding rule, and it is not restricted to DP deployments. FULL captures
+attention as well; PIECEWISE runs attention outside the captured pieces.
+
+| Operation | PIECEWISE | FULL |
+| --- | --- | --- |
+| Token embedding, residual/RMSNorm, QKV projection, Q/K norms and RoPE | Padded forward rows | Padded forward rows |
+| Attention QK/softmax/V | Real query/request dimensions in attention metadata | Padded token/request dimensions; extra request slots have zero query/KV length |
+| KV cache insertion | Backend may receive padded slots; invalid slots do not write KV | Padded slots; invalid slots do not write KV |
+| Attention output projection, dense MLP and final backbone norm | Padded forward rows | Padded forward rows |
+| Qwen MoE gate/routing, expert dispatch and expert work | Padded forward input, then native TP/SP/EP mapping | Same row-domain rule |
+| Logits projection, vocabulary gather and sampling | Selected real hidden-state rows | Selected real hidden-state rows |
+
+In `vllm/v1/worker/gpu_model_runner.py`, `execute_model` sets
+`pad_attn = cudagraph_mode == CUDAGraphMode.FULL` and supplies padded dimensions
+to `_build_attention_metadata` only in that case. `_prepare_inputs` repeats
+the last query boundary for extra requests and zeros their sequence lengths;
+`_get_slot_mappings` marks padded KV slots invalid. FlashAttention slices by
+the metadata's `num_actual_tokens`; despite its name, that field receives the
+padded count for FULL graphs. Backend scheduling and empty-slot processing can
+therefore differ even though no extra real KV history is introduced.
+
+The simulator models padded backbone/MoE rows and communication, but retains
+real query/KV geometry for attention lookup. This preserves useful attention
+work; it is **not** an exact model of FULL-graph empty-slot or backend scheduling
+cost. The eager attention table has no graph-mode/padded-capacity axis. Do not
+replace empty slots with artificial decodes at the batch's mean KV length, or
+claim that all FULL-graph effects are measured. No timing correction is inferred
+from this distinction. Sparse, recurrent, speculative and alternative-backend
+paths require their own execution contracts.
+
 #### Head rows are not graph-padding rows
 
 Without speculative decoding, logits and sampling operate on one selected

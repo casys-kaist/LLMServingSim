@@ -27,6 +27,10 @@ Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete
 bundles ready for simulation and documents exact fractional attention-key matching.
+The [runtime guide](docs/profiler/running.md#expected-runtime) distinguishes CLI
+default inheritance in the single-model template, explicit TP/DP options and
+multiplicative attention-grid costs; a stage ETA is not a complete-bundle
+completion estimate. The multi-model script remains an explicit campaign.
 The acquisition guides document assigned-page dummy KV initialization outside
 timed query work, its content/layout limitations and asynchronous completion.
 They also distinguish request phase from query/history geometry: native decode
@@ -57,6 +61,8 @@ unperturbed latency references, without discarding concentrated workload gates.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
 local CUDA graph padding from DP synchronization; target graph overrides live
 in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
+Its layer table distinguishes FULL attention metadata padding from PIECEWISE,
+invalid KV slots and the simulator's real-geometry attention approximation.
 It also separates non-speculative head rows from forward padding and explains
 why idle DP forwards run the backbone without logits or sampling, with
 independent TP/EP collective numbering in the backend.

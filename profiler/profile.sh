@@ -33,10 +33,15 @@ HARDWARE="RTXPRO6000"
 # =============================================================================
 # EDIT THESE (OPTIONAL — uncomment and adjust as needed)
 # =============================================================================
+# Unset or empty options are omitted, so the CLI owns every default.
+# Commented assignments are examples, not active overrides. See:
+#     python3 -m profiler profile --help
+# Options can also be supplied through the environment. Boolean flags below
+# are enabled by any non-empty value (including "0"); unset them to disable.
 
 # --- TP sweep ---------------------------------------------------------------
-# Comma-separated list; must include 1.
-TP_DEGREES="1,2"
+# Comma-separated list; must include 1 except with ONLY_SKEW.
+# TP_DEGREES="1"                  # use "1,2" to sweep both degrees
 
 # --- Engine kwargs ----------------------------------------------------------
 # DTYPE is normally inferred from the model config's ``torch_dtype``
@@ -45,8 +50,8 @@ TP_DEGREES="1,2"
 # KV_CACHE_DTYPE defaults to "auto" which inherits DTYPE.
 # DTYPE="bfloat16"                 # bfloat16 / float16 / float32 / fp8
 # KV_CACHE_DTYPE="fp8"             # auto / fp8 / fp16 / bf16
-MAX_NUM_BATCHED_TOKENS=2048      # vLLM's --max-num-batched-tokens
-MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
+# MAX_NUM_BATCHED_TOKENS=2048     # vLLM's --max-num-batched-tokens
+# MAX_NUM_SEQS=256                # vLLM's --max-num-seqs
 # BLOCK_SIZE and GPU_MEMORY_UTILIZATION mirror the simulator's --block-size
 # and --npu-memory-utilization; keep them in step with whatever you simulate
 # at, since a profile measured under one paging regime doesn't describe
@@ -82,22 +87,17 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # count, so the grid samples boundaries and the points just past them.
 # LINEAR_ATTN_CHUNK=64
 
-# --- MoE expert parallelism -------------------------------------------------
-# EP degrees to profile the MoE block at. An EP rank does not run the model's
-# MoE block, it runs a slice: E/ep local experts, and k/ep of a token's k
-# expert assignments. Profiling only at ep=1 and charging that per rank
-# overstates the permute width, the GEMM rows and the distinct experts
-# activated -- and the last one is clamped rather than extrapolated, because
-# the activated_experts axis floors at top_k while a real rank routinely goes
-# under it. Measured at one token on the rank, that reads 1.7x to 4.8x over:
-# DeepSeek-V3.2 84.7us at ep=1 against 28.1 at ep=8, GLM-5 162.6 against 33.7.
-#
-# So set this to the EP degrees you intend to simulate whenever the deployment
-# runs EP > 1. Each degree past 1 costs one engine boot and the same ~57 shots
-# -- about 10 minutes for a full sweep. Leaving it unset profiles ep=1 only,
-# which is correct for a single-rank deployment and is what bundles written
-# before the axis existed hold.
-# MOE_EP_DEGREES="1,2,4,8"
+# --- MoE target parallelism -------------------------------------------------
+# DP_DEGREES selects native DP+EP component acquisition on one physical GPU.
+# Supported targets require DP >= 2; EP is derived as TP * DP, retaining the
+# global expert IDs and top-k. Leave MOE_EP_DEGREES unset in this mode; native
+# acquisition cannot be combined with ONLY_SKEW, PROFILE_MTP or FORCE. Use a
+# new OUT_ROOT to remeasure an immutable native contract.
+# DP_DEGREES="2"                  # --dp; comma-separated target DP degrees
+# MOE_ROUNDS=3                    # independent native measurement contexts
+# Without DP_DEGREES, the retained whole-block path profiles the requested EP
+# degrees with a reduced checkpoint shape. This is not native DP+EP coverage.
+# MOE_EP_DEGREES="1"              # legacy --moe-ep-degrees; e.g. "1,2,4,8"
 
 # --- Drafter (MTP) ----------------------------------------------------------
 # Boot with speculative decoding so vLLM also builds the model's own MTP
@@ -113,31 +113,17 @@ MAX_NUM_SEQS=256                 # vLLM's --max-num-seqs
 # PROFILE_MTP=1
 
 # --- Attention grid ---------------------------------------------------------
-# Upper bound for kv_prefill / kv_decode axes. The grid grows geometrically
-# from 512 up to min(this, max_model_len). Leave it EMPTY to cover the model's
-# own context, which is the default and what a long-context run needs -- the
-# simulator extrapolates past the top profiled kv, and on a sparse model the
-# indexer keeps growing there while the attention kernel has already flattened
-# at index_topk. Setting it (16384 is the old default) roughly halves the
-# sweep: 8,643 shots against 14,653 at DeepSeek-V3.2's full 163,834.
-ATTENTION_MAX_KV=
-# Geometric factor for the prefill_chunk axis (grows from 16 up to
-# MAX_NUM_BATCHED_TOKENS). 2.0 is doubling; lower for denser sampling
-# on the quadratic-cost regime at the cost of longer profile time.
-ATTENTION_CHUNK_FACTOR=2.0
-# Geometric factor for kv_prefill / kv_decode axes. 2.0 is doubling;
-# lower for denser long-context coverage.
-ATTENTION_KV_FACTOR=2.0
-# Geometric factor for the n_decode axis. sqrt(2) (the default) rather than
-# doubling, because the axis is smooth only on a *pure decode* batch: on
-# Llama-3.1-8B the per-sequence cost is flat there (6.60/6.33/5.94/5.81 us at
-# n=16/32/64/128) while a **mixed** batch rises 37% across the same doubling
-# (8.99 -> 12.31 us/seq) with a knee near n=88 -- so a doubling grid's blend
-# over-charges the middle by up to 12.7%, and a real run's prefill steps sit
-# there. sqrt(2) rather than any other value below 2 because it makes the
-# doubling grid a strict subset, so a refresh reuses every prior row instead
-# of orphaning it. Raise it to 2.0 if the sweep is too slow.
-ATTENTION_N_FACTOR=1.4142135623730951
+# Bounds the histories used to construct attention shots. Unset/empty uses
+# the engine's resolved context bound with room for the decode queries.
+# A smaller cap reduces coverage; extrapolation beyond it is not validated.
+# ATTENTION_MAX_KV=16384
+# Geometric factors: smaller values (>1) make denser, more expensive grids.
+# The KV factor controls both prefill-key and decode-KV; costs multiply across
+# all four shape axes. All three factors inherit the CLI's sqrt(2) default.
+# Existing rows are reusable only with compatible identities and exact keys.
+# ATTENTION_CHUNK_FACTOR=1.4142135623730951
+# ATTENTION_KV_FACTOR=1.4142135623730951
+# ATTENTION_N_FACTOR=1.4142135623730951
 # Query tokens per decode sequence. "1" is ordinary decoding. A
 # speculative-decoding verification step submits 1 + num_speculative_tokens
 # queries per sequence against that sequence's own KV, which is a different
@@ -148,30 +134,30 @@ ATTENTION_N_FACTOR=1.4142135623730951
 # ATTENTION_DECODE_Q_LENS="1,5"
 
 # --- Measurement averaging --------------------------------------------------
-# Timed forwards per shot (averaged by vLLM's layerwise_profile via
-# its invocations count). A single sample can swing 15-25% on large
-# GEMMs due to DVFS / boost-clock jitter; N=3 (default) cuts that to
-# ~5% at ~3x profile time.
-MEASUREMENT_ITERATIONS=3
+# Timed forwards per ordinary shot, averaged per invocation. More repeats
+# increase acquisition cost but do not guarantee a particular error bound.
+# MEASUREMENT_ITERATIONS=3
 
 # --- Skew profiling ---------------------------------------------------------
-# After the uniform attention grid, also profile heterogeneous
-# decode-kv batches (1-2 hours per TP). Required for the alpha
-# formula fit that the simulator uses to predict skewed batches.
+# After the uniform attention grid, profile heterogeneous decode-KV batches
+# and compile the alpha lookup. Duration depends on coverage and shot cost.
 # Set SKIP_SKEW=1 to disable.
 # SKIP_SKEW=1
+# Set ONLY_SKEW=1 to refresh skew without the ordinary categories; requires
+# compatible existing attention references. Do not combine with SKIP_SKEW.
+# ONLY_SKEW=1
 #
 # Per-axis geometric factors for the skew sweep. 2.0 (default) is
 # doubling. Crank higher (e.g. 4.0 on kvs / kp) to coarsen axes
 # you don't care about and cut profile time. Lower for denser
 # sampling where more accuracy is needed.
-SKEW_N_FACTOR=2.0
-SKEW_PC_FACTOR=2.0
-SKEW_KP_FACTOR=2.0
-SKEW_KVS_FACTOR=2.0
-SKEW_SAMPLES_PER_CELL=32
-SKEW_ROUNDS=3
-SKEW_SEED=0
+# SKEW_N_FACTOR=2.0
+# SKEW_PC_FACTOR=2.0
+# SKEW_KP_FACTOR=2.0
+# SKEW_KVS_FACTOR=2.0
+# SKEW_SAMPLES_PER_CELL=32
+# SKEW_ROUNDS=3
+# SKEW_SEED=0
 
 # --- Resume vs force -------------------------------------------------------
 # Default: resume. Existing CSVs are preloaded and only shots whose
@@ -199,7 +185,8 @@ SKEW_SEED=0
 # MODEL_CONFIG_ROOT="configs/model"
 
 # --- Verbosity --------------------------------------------------------------
-# Default is INFO (progress + TP limits). Uncomment one to change:
+# Default is INFO (progress + TP limits). Use LOG_LEVEL or VERBOSITY, not both.
+# LOG_LEVEL="INFO"                 # DEBUG / INFO / WARNING / ERROR
 # VERBOSITY="--silent"             # warnings only
 # VERBOSITY="--verbose"            # DEBUG + vLLM stdout
 
@@ -223,6 +210,8 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
 [[ -n "${MOE_EP_DEGREES:-}" ]]         && cmd+=(--moe-ep-degrees "$MOE_EP_DEGREES")
+[[ -n "${DP_DEGREES:-}" ]]             && cmd+=(--dp "$DP_DEGREES")
+[[ -n "${MOE_ROUNDS:-}" ]]             && cmd+=(--moe-rounds "$MOE_ROUNDS")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.
@@ -240,14 +229,19 @@ done
 [[ -n "${SKEW_PC_FACTOR:-}" ]]         && cmd+=(--skew-pc-factor "$SKEW_PC_FACTOR")
 [[ -n "${SKEW_KP_FACTOR:-}" ]]         && cmd+=(--skew-kp-factor "$SKEW_KP_FACTOR")
 [[ -n "${SKEW_KVS_FACTOR:-}" ]]        && cmd+=(--skew-kvs-factor "$SKEW_KVS_FACTOR")
-    [[ -n "${SKEW_SAMPLES_PER_CELL:-}" ]] && cmd+=(--skew-samples-per-cell "$SKEW_SAMPLES_PER_CELL")
-    [[ -n "${SKEW_ROUNDS:-}" ]] && cmd+=(--skew-rounds "$SKEW_ROUNDS")
-    [[ -n "${SKEW_SEED:-}" ]] && cmd+=(--skew-seed "$SKEW_SEED")
+[[ -n "${SKEW_SAMPLES_PER_CELL:-}" ]] && cmd+=(--skew-samples-per-cell "$SKEW_SAMPLES_PER_CELL")
+[[ -n "${SKEW_ROUNDS:-}" ]]            && cmd+=(--skew-rounds "$SKEW_ROUNDS")
+[[ -n "${SKEW_SEED:-}" ]]              && cmd+=(--skew-seed "$SKEW_SEED")
 [[ -n "${ONLY_SKEW:-}" ]]              && cmd+=(--only-skew)
 [[ -n "${FORCE:-}" ]]                  && cmd+=(--force)
 [[ -n "${VARIANT:-}" ]]                && cmd+=(--variant "$VARIANT")
 [[ -n "${OUT_ROOT:-}" ]]               && cmd+=(--out-root "$OUT_ROOT")
 [[ -n "${MODEL_CONFIG_ROOT:-}" ]]      && cmd+=(--model-config-root "$MODEL_CONFIG_ROOT")
-[[ -n "${VERBOSITY:-}" ]]              && cmd+=($VERBOSITY)
+[[ -n "${LOG_LEVEL:-}" ]]              && cmd+=(--log-level "$LOG_LEVEL")
+if [[ -n "${VERBOSITY:-}" ]]; then
+    # Preserve the existing shortcut (or --log-level VALUE) without globbing.
+    read -r -a verbosity_args <<< "$VERBOSITY"
+    cmd+=("${verbosity_args[@]}")
+fi
 
 "${cmd[@]}"

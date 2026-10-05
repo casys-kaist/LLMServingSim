@@ -172,13 +172,33 @@ chunks and single-request shots keep their previous values. Legacy
 `kv_prefill` tables held one prefill per shot and are relabelled on load as
 `kv_prefill + prefill_chunk / 2`; this does not create missing grid coverage.
 
-Simulator does **5D linear interpolation**: each populated axis is
-bracketed by its two neighbouring profiled values and blended
-linearly, extrapolating from the top two samples above the grid.
+The simulator selects the table for the requested `decode_q_len`, then uses
+**4D linear interpolation** over the remaining shape axes. An unprofiled query
+length selects the nearest available query-length table with a warning; it is
+not interpolated. Profile the query lengths needed by the intended deployment.
+Within that table, coordinates are bracketed and blended on a linear scale,
+even when measurement points are geometrically spaced. Queries below an axis
+minimum are clamped, and those above its maximum extrapolate from the top two
+samples. Missing prefill-token/decode-count corners use the nearest available
+corner before the blend.
 
-The grid is geometric (doubling by default, controlled by
-`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR`). Smaller values
-densify; larger values speed up profiling at some accuracy cost.
+This lookup does not round batches up to a profiled size. CUDA graph padding
+is a separate [execution-shape contract](../simulator/parallelism-mechanics),
+and the simulator's attention lookup retains the real query/KV lists. It does
+not separately represent FULL-graph padded attention metadata/empty-slot cost;
+see the [per-layer graph contract](../simulator/parallelism-mechanics#which-layers-see-graph-padding).
+When enabled,
+[skew calibration](./skew-alpha-fit) selects a compiled alpha bucket to correct
+the mean-KV estimate toward the maximum-KV estimate; alpha itself is not
+interpolated between neighboring buckets.
+
+The grid is geometric, controlled by `--attention-chunk-factor`,
+`--attention-kv-factor` and `--attention-n-factor`. Read the CLI's `--help`
+for current defaults; the editable `profile.sh` supplies explicit overrides.
+The KV factor controls two axes. Smaller factors increase the Cartesian
+product of measurements, not just one additive set of points. Finer sampling
+does not guarantee better end-to-end accuracy; compare completed bundles using
+the same benchmark reference. See [cost planning](./running#expected-runtime).
 
 ## `linear_attention.csv` (mamba / gated-DeltaNet models only)
 

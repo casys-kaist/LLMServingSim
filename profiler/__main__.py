@@ -150,12 +150,10 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "profile time on a long-context model.")
     p.add_argument("--num-hidden-layers", type=int, default=None,
                    dest="num_hidden_layers",
-                   help="Layers to instantiate. Default: 1, which is right "
-                        "for a uniform stack where every block is identical. "
-                        "A hybrid stack needs the smallest count that reaches "
-                        "every distinct block type (4 for Qwen3.8-27B, whose "
-                        "layer_types runs gated-DeltaNet x3 then full "
-                        "attention) or the catalog only ever sees one.")
+                   help="Override the number of layers to instantiate. By "
+                        "default the profiler resolves the smallest stack "
+                        "covering the category's required block types from "
+                        "the checkpoint, typically 1 for a uniform model.")
     p.add_argument("--profile-mtp", action="store_true",
                    dest="profile_mtp",
                    help="Boot with speculative decoding so vLLM also builds "
@@ -176,19 +174,17 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "until a catalog binds them.")
     p.add_argument("--moe-ep-degrees", type=str, default="1",
                    dest="moe_ep_degrees",
-                   help="Comma-separated EP degrees to profile the MoE block "
-                        "at, e.g. '1,2,4,8'. A rank does not run the model's "
-                        "MoE block but a slice of it -- E/ep experts, k/ep "
-                        "assignments per token -- so profiling only at ep=1 "
-                        "and charging that per rank overstates the MoE term "
-                        "(1.4x-3.7x measured, worst at small per-rank token "
-                        "counts). Each degree past 1 costs one extra engine "
-                        "boot and the same ~57 shots. Default '1', which "
-                        "reproduces bundles written before the axis existed.")
+                   help="Comma-separated legacy whole-block EP degrees, e.g. "
+                        "'1,2,4,8'. Default '1'. This path reduces the "
+                        "checkpoint's expert/top-k shape to approximate rank "
+                        "work; it does not establish native DP+EP coverage. "
+                        "Omit this option when selecting native components "
+                        "with --dp, where EP is TP*DP.")
     p.add_argument("--dp", default=None, dest="moe_dp_degrees",
                    help="Target DP degrees for native MoE component profiling, "
                         "comma separated. Experts retain global top-k and IDs; "
-                        "EP is TP*DP. The profiler still uses one physical GPU. "
+                        "EP is TP*DP. Supported native targets require DP>=2. "
+                        "The profiler still uses one physical GPU. "
                         "Only profile or slice --group moe accept this option.")
     p.add_argument("--moe-rounds", type=int, default=3,
                    help="Independent measurement contexts per native MoE point.")
@@ -213,19 +209,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
 
     # Attention grid.
     p.add_argument("--attention-max-kv", type=int, default=None,
-                   help="Cap for the kv_prefill / kv_decode axes. The grid "
-                        "grows geometrically from 512 up to "
-                        "min(this, max_model_len). Default: the model's own "
+                   help="History cap used to construct prefill/decode shots. "
+                        "Default: the model's own "
                         "context, max_model_len - max(decode_q_len) - 1 -- a "
                         "decode occupies kv + q positions and needs one more "
                         "to be a decode at all, so passing max_model_len "
                         "verbatim gets the top point filtered and the sweep "
                         "stops a doubling short. Lower it (e.g. 16384) to "
-                        "trade coverage for time; the simulator extrapolates "
-                        "past the top profiled kv, which is safe for a dense "
-                        "kernel and not for a sparse one, whose attention "
-                        "flattens at index_topk while its indexer keeps "
-                        "growing.")
+                        "trade coverage for time; extrapolation past measured "
+                        "coverage is not an accuracy guarantee, especially "
+                        "when sparse attention and its indexer scale differently.")
     p.add_argument("--attention-decode-q-lens", type=str, default="1",
                    dest="attention_decode_q_lens",
                    help="Comma-separated query-token counts per decode sequence "
@@ -239,34 +232,25 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--attention-chunk-factor", type=float, default=SQRT2,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
-                        "2.0 (default) is doubling; lower for a denser grid.")
+                        "sqrt(2) (default); 2.0 is doubling. Lower values "
+                        "produce a denser grid.")
     p.add_argument("--attention-kv-factor", type=float, default=SQRT2,
                    dest="attention_kv_factor",
                    help="Geometric factor for the prefill-key and kv_decode "
                         "axes. sqrt(2) (default); 2.0 is doubling and is a "
-                        "strict subset of it, so a coarse sweep can be "
-                        "densified later without re-measuring.")
+                        "nested grid. Resume still requires compatible "
+                        "measurement identities and exact shot keys.")
     p.add_argument("--attention-n-factor", type=float, default=SQRT2,
                    dest="attention_n_factor",
                    help="Geometric factor for the n_decode axis. sqrt(2) "
-                        "(default): the axis is smooth on a *pure decode* "
-                        "batch -- Llama-3.1-8B's per-sequence cost is flat at "
-                        "6.60/6.33/5.94/5.81 us for n=16/32/64/128 -- but a "
-                        "**mixed** batch rises 37%% across the same doubling "
-                        "(8.99 -> 12.31 us/seq), with a knee near n=88 that "
-                        "sqrt(2) samples at 91, so a doubling grid's blend "
-                        "over-charges the middle by up to 12.7%%. Lower still "
-                        "on a sparse model: DeepSeek-V3.2's per-sequence cost "
-                        "drops ~3x between n=64 and n=128 at every kv. Raise "
-                        "it to 2.0 if the sweep is too slow -- that grid is a "
-                        "subset, so the missing points can be added later "
-                        "without re-measuring what is already there.")
+                        "(default); 2.0 is doubling. Lower values add samples "
+                        "between decode request counts, including mixed "
+                        "batches. Validate accuracy with the intended workload.")
     p.add_argument("--measurement-iterations", type=int, default=3,
                    dest="measurement_iterations",
-                   help="Timed forwards per shot (averaged). A single sample "
-                        "can swing 15-25%% on large GEMMs due to DVFS / clock "
-                        "jitter; N=3 (default) cuts that to ~5%% at ~3x "
-                        "profile time.")
+                   help="Timed forwards per ordinary shot, averaged per "
+                        "invocation (default: 3). More repeats increase "
+                        "acquisition cost without guaranteeing an error bound.")
     p.add_argument("--skip-skew", action="store_true", default=False,
                    dest="skip_skew",
                    help="Skip the per-TP skew profiling step (skew.csv). "

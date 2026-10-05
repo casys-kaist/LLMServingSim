@@ -707,25 +707,20 @@ def resolve_architecture_by_model_type(
 # Profile session args (CLI, no yaml)
 # ---------------------------------------------------------------------------
 
-#: Default geometric factor for every swept axis.
+#: Default geometric factor for attention axes.
 #:
-#: Every sweep axis is geometric, and the factor is the one knob that trades
-#: shots for resolution. sqrt(2) rather than 2.0 or some other value below it,
-#: for three reasons that hold on all of them:
+#: Smaller geometric factors trade more shots for finer resolution. A doubling
+#: axis is nested in the sqrt(2) axis: even powers retain its coordinates.
+#: Reuse still requires compatible acquisition identities and matching complete
+#: shot keys; changing another axis can remove those matches.
 #:
-#: 1. **A doubling grid is a strict subset of it.** ``_geometric_grid``
-#:    accumulates in float and rounds only for output, so the even powers land
-#:    exactly: 0, 1, 2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256.
-#:    A refresh from x2 therefore *reuses every prior row* and fires only the
-#:    odd steps -- 99.9% of Llama-3.1-8B's 37,962 attention rows survive,
-#:    against 37.9% at 1.5, which orphans 23,579 of them outside the grid its
-#:    own ``meta.yaml`` declares.
-#: 2. **The resolution is needed.** A doubling grid's blend over-charges the
-#:    middle of an interval wherever the kernel is not linear across it: up to
-#:    12.7% on ``n_decode`` between 64 and 128 on a mixed batch (see
-#:    ``attention_n_factor``), and ~3x on a sparse model's decode.
-#: 3. **It costs about 1.4x the shots**, not 2x -- one extra value per
-#:    doubling.
+#: For a fixed range, the number of intervals scales as 1/log(factor).
+#: Changing 2.0 to sqrt(2) roughly doubles intervals on EACH axis, not 1.4x.
+#: Attention combines four shape axes, with one KV factor controlling two of
+#: them. Their costs multiply before rounding, degenerate-axis deduplication
+#: and feasibility filters. Count the composed plan rather than assuming a
+#: fixed multiplier or wall time. Denser sampling alone does not establish
+#: better end-to-end accuracy on every axis or workload.
 #:
 #: A bundle records the factor it was swept at, per axis, in
 #: ``meta.yaml::attention_grid``. **Refreshing one axis of an existing bundle
