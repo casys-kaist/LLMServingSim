@@ -8,9 +8,9 @@ live with their module.
 
 | File | Purpose |
 | --- | --- |
-| `docker-vllm.sh`  | Launch the vLLM Docker container (profiler + bench + workloads.generators). Mounts repo root as `/workspace`, uses official `vllm/vllm-openai:v0.28.0` image, and pre-installs `datasets` + `matplotlib` on first start. |
+| `docker-vllm.sh`  | Launch the vLLM Docker container (profiler + bench + workloads.generators). Mounts the repo as `/workspace`, pins vLLM 0.28.0, installs `datasets`, `matplotlib`, `pandas` and the pinned NCCL dependency, and applies `scripts/patches/`. |
 | `docker-sim.sh`   | Launch the simulator Docker container (ASTRA-Sim + sim Python deps). |
-| `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.28.0 plus `datasets` and `matplotlib`. |
+| `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.28.0 plus `datasets`, `matplotlib` and `pandas`; source patches must be applied separately in the activated environment. |
 | `compile.sh`      | Build ASTRA-Sim's analytical backend and install the Chakra trace converter. Rerun it after any change under `astra-sim/`, including `llm_converter.py`, which is installed into site-packages rather than imported from the tree. |
 | `monitor_run.py` | Run one command with process-tree RSS, host-memory, swap-growth and timeout guards; write CSV telemetry and a JSON completion summary. Optional GPU telemetry targets one explicit physical UUID. |
 
@@ -44,8 +44,9 @@ GPU telemetry does not reserve devices or check whether another user owns them.
 Before a long skew sweep, preview coverage with `profiler plan-skew`, verify
 exclusive GPU availability, and run the acquisition under explicit memory limits.
 
-* `docker-vllm.sh` ships with a placeholder `HF_TOKEN="<your_token>"`.
-  Set it to a real HuggingFace token before running so gated configs
-  (Llama, etc.) auto-download on first use.
-* `--gpus all` is the default; constrain via `--gpus '"device=0,1"'`
-  if you want to share the host with other workloads.
+* Export `HF_TOKEN` in your shell when gated/private resources require it;
+  `docker-vllm.sh` forwards the variable. Do not put credentials in the script.
+* All GPUs are exposed by default. Select only allocated devices with, for
+  example, `VLLM_GPUS='"device=0,1"' ./scripts/docker-vllm.sh`.
+* `bench validate` is CPU-only and works in the simulator environment.
+  Only recording new vLLM runs requires the GPU environment.

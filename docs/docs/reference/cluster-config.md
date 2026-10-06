@@ -332,6 +332,10 @@ other instance keeps the CLI value.
 | `enable_prefix_caching` | bool | `--enable-prefix-caching` | Enable this instance's local prefix cache |
 | `npu_mem.mem_util` | float | `--npu-memory-utilization` | Fraction of `npu_mem.mem_size` usable for weights plus KV cache. KV capacity is `mem_size * mem_util - model weight`, divided into `block_size` blocks |
 | `reserve_full_isl` | bool | `--reserve-full-isl` | Admit only if the request's whole sequence fits, not just its first chunk |
+| `async_scheduling` | bool | `--async-scheduling` | Compose the next batch while the current one executes |
+| `num_speculative_tokens` | int | `--num-speculative-tokens` | Draft count, with matching query-length and drafter profile coverage |
+| `spec_acceptance_rate` | float/null | `--spec-acceptance-rate` | Explicit rate or the model's entry in `configs/spec_decode.json`; no generic rate is invented |
+| `spec_acceptance_policy` | choice | `--spec-acceptance-policy` | `FIXED`, `DECAY` or `CUSTOM` acceptance policy |
 | `enable_local_offloading` | bool | `--enable-local-offloading` | Emit graph conversion with local offloading for this instance |
 | `enable_attn_offloading` | bool | `--enable-attn-offloading` | Emit PIM attention offload for this instance |
 | `enable_sub_batch_interleaving` | bool | `--enable-sub-batch-interleaving` | Enable sub-batch interleaving for this instance |

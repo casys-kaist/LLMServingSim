@@ -19,7 +19,7 @@ and compare against the bundled architectures:
 
 | `model_type` | YAML | Covers |
 | --- | --- | --- |
-| `llama` | `llama.yaml` | Llama 3.x dense (8B / 70B / 405B / custom shapes), Mistral 7B, derivatives with the same block structure |
+| `llama` | `llama.yaml` | Llama dense shapes using the catalog's vLLM classes; a different `model_type` needs an explicit verified alias or its own catalog |
 | `qwen3`, `qwen3_moe` | `qwen3.yaml` | Qwen3, dense **and** MoE (0.6B … 32B, 30B-A3B, 235B-A22B), with per-head `qk_norm` |
 | `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
 | `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); both run vLLM's `deepseek_v2` module, so one catalog serves both |
@@ -32,12 +32,13 @@ dense and MoE variants in separate modules whose classes differ only by a
 `Moe` infix (`Qwen3DecoderLayer` vs `Qwen3MoeDecoderLayer`), so the catalog
 lists both under `within:` and matching takes whichever the loaded checkpoint
 has. Which MLP runs is decided by the model config, not the yaml. Likewise
-Qwen3.5, 3.6 and 3.8 are one architecture — same layer counts, same hidden
-size, same `model_type` — so the generation number is a checkpoint refresh
-rather than a new structure.
+checkpoints declaring the Qwen3.5-family model types can share a catalog while
+their dimensions, layer patterns and quantization differ. Resolve those from
+each checkpoint; a family name alone does not establish identical shapes.
 
-If your `model_type` is one of these, you don't need to do anything
-- the existing YAML handles it.
+If your `model_type` is one of these, start with the existing YAML, then check
+live profile coverage, cache layout and execution contracts. Catalog availability
+does not establish end-to-end accuracy for every checkpoint or configuration.
 
 If it's a *new* `model_type` (e.g., `gemma2`, `deepseek_v3`,
 `gpt_oss`), you need a new YAML. Read on.
@@ -53,12 +54,11 @@ shared.prologue
   → shared.head
 ```
 
-If the new model has a genuinely novel block structure, sliding
-window attention, multi-latent attention (MLA, like DeepSeek V3),
-dual MLP decoders, you'll also need to extend
-`serving/core/trace_generator.py` to walk the new sequence and
-attach the right collectives. We'll cover that at the end of this
-page.
+If a model needs an execution or cache contract not represented by the existing
+paths, such as an unsupported sliding-window policy or dual-MLP structure,
+extend the relevant stack resolver, memory model and trace generator as well.
+MLA and sparse/hybrid paths already exist, but a related family must still be
+checked against their supported contracts.
 
 ## File naming
 
@@ -131,7 +131,7 @@ every value one file serves:
 
 ```yaml
 model_types:
-  - qwen3_5_text      # the filename, the text tower's own name
+  - qwen3_5_text      # flattened text tower
   - qwen3_5           # the VL wrapper
   - qwen3_5_moe_text  # MoE sibling: same implementation, different MLP
   - qwen3_5_moe

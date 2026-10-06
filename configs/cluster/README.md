@@ -90,6 +90,10 @@ defaults directly. No per-model bandwidth or extra enable flag is required.
 | `enable_prefix_caching` | Boolean | No | Per-instance override for `--enable-prefix-caching` |
 | `npu_mem.mem_util` | Float | No | Fraction of `npu_mem.mem_size` an instance may use for weights plus KV cache. Per-instance override for `--npu-memory-utilization` (default `0.9`) |
 | `reserve_full_isl` | Boolean | No | Admit only if the request's whole sequence fits, not just its first chunk. Per-instance override for `--reserve-full-isl` (default on) |
+| `async_scheduling` | Boolean | No | Compose the next batch while the current one runs. Per-instance override for `--async-scheduling` (default on) |
+| `num_speculative_tokens` | Integer | No | Per-instance draft count; requires matching query-length and drafter coverage |
+| `spec_acceptance_rate` | Float/null | No | Per-instance acceptance-rate override; null uses a matching entry in `configs/spec_decode.json`, or raises if speculation is requested without one |
+| `spec_acceptance_policy` | String | No | Per-instance `FIXED`, `DECAY` or `CUSTOM` acceptance policy |
 | `enable_local_offloading` | Boolean | No | Per-instance override for `--enable-local-offloading` |
 | `enable_attn_offloading` | Boolean | No | Per-instance override for `--enable-attn-offloading` |
 | `enable_sub_batch_interleaving` | Boolean | No | Per-instance override for `--enable-sub-batch-interleaving` |
@@ -138,7 +142,7 @@ model*. Serving two precisions of one model is two **model configs**.
 > block count. On the bundled RTX 4090 example that is `0.833919`, and it is
 > the difference between -20.7% and +0.6% on TTFT mean.
 
-**`npu_mem.mem_util` is the one nested override.** The other 13 are plain instance keys;
+**`npu_mem.mem_util` is the nested CLI override.** The other runtime overrides are plain instance keys;
 `mem_util` lives inside `npu_mem` because its only job is to scale `mem_size`. It must be a
 number in `(0, 1]` — a fraction, so `0.9`, never `90`.
 

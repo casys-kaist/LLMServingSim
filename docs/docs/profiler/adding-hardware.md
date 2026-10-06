@@ -7,14 +7,15 @@ title: Adding new hardware
 
 This page is the workflow for bringing up a brand-new hardware target
 that doesn't have a profile bundle in `profiler/perf/<HARDWARE>/`
-yet. There are two distinct paths depending on whether vLLM supports
-the hardware:
+yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.28 internals.
+vLLM support alone does not establish that the profiler's CUDA attribution,
+cache preparation and hardware probes support another accelerator:
 
 ```mermaid
 flowchart TD
-    START([New hardware target]) --> Q{vLLM supports it?}
-    Q -->|Yes, NVIDIA / AMD GPU| GPU[Use profile.sh as-is<br/>set HARDWARE label,<br/>run.]
-    Q -->|No, TPU / custom NPU| SYNTH[Synthesize CSV bundle<br/>from your own measurement source]
+    START([New hardware target]) --> Q{Supported CUDA acquisition path?}
+    Q -->|Yes| GPU[Check backend and coverage<br/>set HARDWARE label,<br/>profile.]
+    Q -->|No| SYNTH[Port acquisition or synthesize a bundle<br/>from your own measurement source]
     GPU --> CONSUME[Simulator reads CSVs]
     SYNTH --> CONSUME
 ```
@@ -25,8 +26,8 @@ way regardless of how the data was collected.
 
 ## Adding a new GPU
 
-This is the easy case. The profiler's vLLM-based workflow already
-handles it. Three steps:
+For a compatible NVIDIA target, start with the workflow below. Check live
+kernel coverage and backend support before committing to a full sweep.
 
 ### 0. Measure the machine
 

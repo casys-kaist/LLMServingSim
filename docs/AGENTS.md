@@ -60,10 +60,10 @@ docs/
 │   ├── getting-started/
 │   ├── simulator/
 │   ├── profiler/
-│   ├── bench/
-│   ├── validation/
+│   ├── validation.md
+│   ├── examples/
 │   ├── workloads/
-│   ├── reference/
+│   ├── reference/             includes the bench CLI reference
 │   └── contributor/
 ├── src/
 │   ├── pages/index.tsx         landing page (Hero + feature cards)

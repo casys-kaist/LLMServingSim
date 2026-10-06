@@ -19,7 +19,7 @@ under `load_format=dummy`:
 | Field | Purpose |
 | --- | --- |
 | `architectures` | vLLM picks the ForCausalLM class from this list |
-| `model_type` | Profiler picks the matching `profiler/models/<model_type>.yaml` |
+| `model_type` | Shared catalog resolver tries `profiler/models/<model_type>.yaml`, then declared `model_types:` aliases |
 | `hidden_size`, `intermediate_size` | Linear dims |
 | `num_attention_heads`, `num_key_value_heads` | Attention shapes (GQA) |
 | `num_hidden_layers` | Layer count (simulator multiplies per-layer time by this) |
@@ -38,7 +38,7 @@ under `load_format=dummy`:
 | `sparse_attention_config`, `index_topk`, `index_topk_pattern`, `index_topk_freq` | Which layers run a sparse-attention selection branch |
 | `linear_num_key_heads`, `linear_num_value_heads`, `linear_key_head_dim`, `linear_value_head_dim`, `linear_conv_kernel_dim` | Gated-DeltaNet state shape. It is per **sequence**, not per token, so it bounds concurrency |
 | `mamba_cache_dtype`, `mamba_ssm_dtype` | Conv and recurrent state dtypes. `auto` on the conv means the weight dtype; `auto` on the recurrent one means the **conv** dtype, not the weight dtype |
-| `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` | Declares an fp8 KV cache. This is the only way to get one — there is no `--kv-cache-dtype` |
+| `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` | Declares an fp8 KV cache for simulation. The simulator has no `--kv-cache-dtype` override; the profiler and bench have their own acquisition options |
 | `kv_lora_rank`, `qk_rope_head_dim`, `index_head_dim` | MLA latent and sparse-indexer cache shapes (DeepSeek, GLM) |
 | `num_nextn_predict_layers` / `num_mtp_modules` / `mtp_num_hidden_layers` | MTP module count — the model's own drafter, for speculative decoding |
 
@@ -95,8 +95,11 @@ and caches it here.
 ```bash
 python3 -c "
 from huggingface_hub import hf_hub_download; import shutil
+from pathlib import Path
 src = hf_hub_download(repo_id='google/gemma-2-9b', filename='config.json')
-shutil.copyfile(src, '/workspace/configs/model/google/gemma-2-9b.json')
+dst = Path('/workspace/configs/model/google/gemma-2-9b.json')
+dst.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(src, dst)
 "
 ```
 
@@ -130,15 +133,15 @@ run. The profiler will feed this config to vLLM directly.
 
 ## Architecture support
 
-The profiler only runs when a matching architecture yaml exists at
-`profiler/models/<model_type>.yaml`. Currently supported
-`model_type` values:
+Both profiler and simulator use `profiler/core/catalog_path.py` to resolve
+the catalogs in `profiler/models/`. The resolver tries the filename first,
+then scans declared `model_types:` aliases. For example, `qwen3_moe` uses
+`qwen3.yaml`, and `glm_moe_dsa` uses `deepseek_v32.yaml`. Ambiguous alias
+matches are rejected; an unknown type reports available catalogs.
 
-* `llama` — Llama 3.x family (uses `Llama3RotaryEmbedding`)
-* `qwen3` — Qwen3 dense family
-* `qwen3_moe` — Qwen3 MoE family
-* `mixtral` — Mixtral family
-* `phimoe` — Phi MoE family
-
-Any other `model_type` (e.g. `gemma2`, `deepseek_v3`) produces a clear
-error at profile time with instructions for adding support.
+The files and their declarations are the authoritative support inventory.
+Downloading a config alone does not add support: the live vLLM profile tree,
+cache layout and simulator execution path must match the catalog. Catalog
+availability does not establish end-to-end accuracy for every checkpoint.
+See the [architecture guide](../../docs/docs/profiler/adding-model-architecture.md)
+and [validated configurations](../../docs/docs/validation.md).

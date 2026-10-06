@@ -35,7 +35,8 @@ Setup is genuinely quick, clone, launch a container, compile, run.
   {
     Icon: BadgeCheck,
     title: 'Validated against vLLM',
-    description: 'Sub-3% error end-to-end on TTFT, TPOT, and throughput. The numbers really do reflect what production serving delivers.',
+    description: 'Sub-3% error across TTFT, TPOT, and latency statistics on the bundled Llama and Qwen references. These fixed-workload results do not establish accuracy for every model or deployment.',
+    to: '/docs/validation',
   },
   {
     Icon: Sparkles,
@@ -73,7 +74,7 @@ A Linux host with Docker is all you need to get started.
 
 | Required | Optional but recommended |
 | --- | --- |
-| Linux (Ubuntu 22.04+ tested) | NVIDIA GPU + Container Toolkit (only for profiling new HW) |
+| Linux (Ubuntu 22.04+ tested) | NVIDIA GPU + Container Toolkit (profiling and new vLLM recordings) |
 | Docker | Hugging Face token (for gated model configs) |
 | Git with submodule support | 32 GB RAM (for the vLLM benchmark side) |
 | ~12 GB free disk |  |

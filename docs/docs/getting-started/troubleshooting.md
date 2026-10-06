@@ -324,8 +324,9 @@ ATTENTION_MAX_KV=16384    # top of the kv_decode / prefill_key axes
 Unset, that bound is the model's **own context window**, so a long-context
 checkpoint sweeps to 131k or beyond and the largest decode shots ask the
 engine for `n_decode × kv_decode` tokens of KV at once. Capping it bounds the
-biggest allocation the sweep ever makes, and cuts runtime with it: 8,643 shots
-at 16,384 against 14,653 at DeepSeek-V3.2's full 163,834.
+biggest requested history and can reduce runtime. The shot count depends on
+all grid factors, query lengths and live KV capacity; see
+[profiling cost planning](../profiler/running#expected-runtime).
 
 If that is not enough, work down this list — each one trades away something
 different:

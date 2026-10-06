@@ -178,25 +178,22 @@ The five that decide how long a run takes, in rough order of effect:
    they gain nothing. Fewer layers also means a larger `num_cache_tokens`, so
    more shots clear the feasibility filters -- wider coverage, and a grid not
    row-for-row comparable with a deeper run's.
-2. `--attention-chunk-factor` / `--attention-kv-factor` (2.0) — coarsen the
-   two biggest axes geometrically.
+2. `--attention-chunk-factor` / `--attention-kv-factor` — coarsen the
+   axes geometrically. The CLI defaults to the square root of 2; setting
+   either to 2.0 is an explicit coarser-grid override.
 2b. `--attention-max-kv` — defaults to the model's own context
    (`max_model_len - max(decode_q_len) - 1`, not `max_model_len` itself: a
    decode occupies `kv + q` positions and needs one more to be a decode, so
-   the context length verbatim gets the top point filtered). Capping it at
-   16384 nearly halves the sweep. Do that only for a **dense** model: the
-   simulator extrapolates past the top profiled kv, and decode attention is a
-   pure KV read that is linear in it. On a sparse model the two kernels
-   diverge there -- DeepSeek-V3.2's `attention` is flat from `index_topk`
-   (2048) onward while its `indexer` keeps growing with the whole KV, so the
-   unprofiled region is exactly where the cost lives.
-3. `--attention-decode-q-lens` (`1`) — each extra value **doubles** the
-   attention sweep. Only needed for speculative decoding. The halves are
-   disjoint (`q > 1` never yields a pure-prefill shot, and `decode_q_len` is
-   part of the row key), so one model's sweep can run `q=1` on one GPU and
-   `q=N` on another and the CSVs concatenate — pin `--attention-max-kv` on
-   both, or each half derives its own cap from its own `max(q)` and they
-   sweep different kv sets.
+   the context length verbatim gets the top point filtered). A lower cap reduces
+   coverage and acquisition cost, with the reduction depending on the other
+   axes and live KV capacity. Dense kernels may scale approximately linearly
+   over a measured regime, but extrapolation beyond it is not guaranteed.
+   Sparse attention and its indexer also have different KV scaling.
+3. `--attention-decode-q-lens` (`1`) — each extra value adds a separate
+   decode-containing grid, not another doubling of the accumulated sweep.
+   `q > 1` omits pure-prefill shots and can change feasibility. Prefer one
+   invocation with all required values so row identity and metadata remain
+   consistent; use separate output roots for independent acquisitions.
 4. `--skip-skew` — drops the whole second sweep.
 5. `--num-hidden-layers` — normally auto-resolved and best left alone, but it
    is why a hybrid costs ~4x a uniform stack: every shot's forward runs all
@@ -280,8 +277,9 @@ checkpoint sweeps out to 131k or beyond and the largest decode shots ask the
 engine for `n_decode * kv_decode` tokens of KV in one go. Setting it bounds the
 biggest allocation the sweep ever makes, and can reduce its shot count. The cost is
 long-context coverage: the simulator extrapolates past the last profiled kv,
-which is safe on a dense kernel and not on a sparse one (see *Skew profiling*
-and the `--attention-max-kv` section of the docs site).
+whose accuracy must be checked even for a dense kernel. Sparse indexers may
+continue scaling after the selected-attention cost saturates; see the
+`--attention-max-kv` section of the profiling guide.
 
 The next knobs down, in order, are `MAX_MODEL_LEN` (caps the engine's context
 and hence the KV cache it reserves -- it also caps this one, since the grid
@@ -480,7 +478,7 @@ The profiler:
    file is absent and `MODEL` is an HF-style id, the config is
    downloaded from the hub and cached at that path automatically.
 2. Picks the matching architecture yaml under `models/` by
-   `model_type` (the config's field must equal the yaml filename).
+   `model_type` (filename first, then declared `model_types:` aliases).
    Fails with a clear error and an "available architectures" list if
    nothing matches.
 3. Writes the model config to a temp directory and spins vLLM up
@@ -772,12 +770,13 @@ Nothing in a CSV reveals a constant-factor error. What does is physics:
 vocab * hidden * dtype_bytes / mem_bw
 ```
 
-is a hard floor. Llama-3.1-8B on an RTX PRO 6000: 128256 × 4096 × 2 B ÷
-1.8 TB/s = 583 µs, against which a measured 714 µs is 82% efficiency — and
-every bundle in `profiler/perf/` lands at 80-83%, so an outlier is a bug.
-Decode attention is a pure KV read and admits the same check. Also compare
-against an existing bundle for the same model on other hardware, scaled by
-memory bandwidth.
+estimates a memory-time lower bound when the head weights must be read from
+device memory. Llama-3.1-8B on an RTX PRO 6000: 128256 × 4096 × 2 B ÷
+1.8 TB/s = 583 µs, against which 714 µs is about 82% bandwidth efficiency.
+Use TP-local sizes and account for cache residency; a slower outlier alone
+does not prove a bug. Check attribution and invocation counts with controlled
+measurements. Attention also requires its own traffic estimate rather than
+assuming every kernel, query length and backend is purely bandwidth-bound.
 
 ## Adding a new model
 

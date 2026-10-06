@@ -80,12 +80,11 @@ profiler/
 └── profile.sh               Editable user template
 ```
 
-Two of those `core/` modules are **imported by the simulator** and are
-deliberately free of third-party imports for it (the sim container has no
-pydantic). `catalog_path.py` resolves a `model_type` to its yaml;
-`stack.py` resolves which block each decoder layer runs, from the checkpoint's
-config. Both were single implementations that got duplicated once and drifted,
-so treat them as shared contracts: a change there moves simulator results.
+Several `core/` modules are **shared with the simulator**, including catalog
+resolution, stack composition, attention geometry, skew calibration and MoE
+deployment contracts. Keep these importable in the CPU simulator environment
+without vLLM or GPU acquisition dependencies. Changes can alter simulation
+results; audit imports and run regression validation.
 
 **Where to touch by intent:**
 
@@ -104,7 +103,7 @@ so treat them as shared contracts: a change there moves simulator results.
 bench/
 ├── __main__.py              CLI (run / validate)
 ├── core/                    AsyncLLM driver, recorder, validator
-├── examples/<model>/        Committed end-to-end runs
+├── examples/<hw>/<model>/   Committed end-to-end runs
 └── results/<run_id>/        Output for ad-hoc runs
 ```
 

@@ -12,6 +12,12 @@ temporary diagnostic and verification scripts or tests remain uncommitted.
 Regenerate the site changelog from the root CHANGELOG.md and run a production
 build before handing off documentation changes.
 
+Accuracy claims refer to the recorded bundles and workloads on the
+[validation page](docs/validation.md), not every architecture catalog or newly
+acquired profile. Keep GPU recording separate from CPU-only comparison in setup
+instructions. The root README is a short entry point; detailed contracts live
+in the guides below.
+
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,

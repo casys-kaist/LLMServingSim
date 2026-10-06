@@ -218,7 +218,7 @@ moves it 1.1% — and **no skew correction applies**, unlike `attention.csv`.
 Two axes rather than one because *which kernel runs* depends on the mix. A
 pure-decode batch runs a recurrent kernel; add a prefill chunk and vLLM
 switches to a fused-gating one, and the conv switches too. That is why this
-file has a `layer` column where `attention.csv` does not: one block runs
+file, like `attention.csv`, includes a `layer` column: one block can run
 several non-interchangeable kernels on the same axes, so each gets its own
 rows, and a cell is empty when the batch shape never reaches that kernel.
 

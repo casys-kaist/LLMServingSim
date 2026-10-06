@@ -107,11 +107,10 @@ rather than interpolating. Profile the values you intend to simulate:
 ATTENTION_DECODE_Q_LENS="1,5" ./profiler/profile.sh   # for N=4
 ```
 
-Each extra value **doubles** the attention sweep, which is why the
-default is just `1`. The two halves are disjoint, so one model's sweep
-can run `q=1` on one GPU and `q=1+N` on another and the CSVs
-concatenate — see [Profiler → Running](/docs/profiler/running) for the
-one flag that has to be pinned when you do.
+Each extra value adds a separate decode-containing grid; it does not double
+the accumulated sweep. The default is `1`. Prefer one acquisition with all
+required query lengths so row identities and coverage metadata stay consistent;
+see [Profiler → Running](/docs/profiler/running).
 
 ## Caveats
 

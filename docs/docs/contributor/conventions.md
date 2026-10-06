@@ -130,9 +130,11 @@ These two trip up new contributors most often:
 - **Profiler CSVs store microseconds (`time_us` column).** The
   simulator multiplies by 1000 and rounds to nanoseconds at load
   time. Don't divide twice.
-- **Communication sizes for ASTRA-Sim are *total* (not per-NPU)
-  bytes.** ASTRA-Sim divides by ring size internally. If you pass
-  per-NPU sizes, every collective will be N times too small.
+- **Communication sizes describe the collective's full logical tensor, not
+  a Ring chunk.** AllReduce uses the input bytes on one rank, AllGather the
+  gathered output bytes, and ReduceScatter the full input bytes. Ring derives
+  its per-rank chunks internally; do not divide twice or sum replicated
+  AllReduce inputs. See [parallelism mechanics](/docs/simulator/parallelism-mechanics).
 
 ## Scheduler invariants
 
@@ -194,9 +196,10 @@ If you touch `trace_generator.py` or `graph_generator.py`:
 - **Don't "restore" log-space interpolation** in `_axis_bracket`
   because the profiler's sweep grid is geometric. Grid spacing decides
   where the kernel is sampled; the blend decides how two samples
-  combine; the kernel is linear in each axis. Log blending biased
-  estimates 11.6-14.4% high against 2.3-3.7% for linear, measured
-  leave-one-out across every bundle in `profiler/perf/`.
+  combine. The current lookup blends the geometry axes linearly; geometric
+  spacing alone does not justify log blending or prove a kernel globally
+  linear. Validate an interpolation change on fixed measured data and all
+  official benchmark statistics.
 
 ## Commit and PR style
 

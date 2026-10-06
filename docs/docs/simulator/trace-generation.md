@@ -88,18 +88,21 @@ On first load, the simulator also:
 ## Per-category lookup
 
 Each layer in the model's architecture YAML is tagged with a
-**category**: dense, per_sequence, attention, or moe. Each category
+**category**, including dense, per_sequence, attention, linear_attention and moe. Each category
 has its own lookup function:
 
 | Category | Lookup function | Key | Interpolation |
 | --- | --- | --- | --- |
 | `dense` | `_lookup_dense` | `total_len` (sum of tokens in batch) | 1D linear |
 | `per_sequence` | `_lookup_per_sequence` | `num_requests` | 1D linear |
-| `attention` | `_lookup_attention` | `(prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len)` | Linear bracket + blend on each axis |
-| `moe` | `_lookup_moe` | `(local_tokens, activated_experts)` (per rank, profiled at TP=1) | 2D linear |
+| `attention` | `_lookup_attention` | Kernel and query-length slice, then `(prefill_chunk, prefill_key, n_decode, kv_decode)` | Linear bracket + blend on the four geometry axes; missing query length selects the nearest measured slice with a warning |
+| `linear_attention` | `_lookup_linear_attention` | Kernel, `(prefill_tokens, n_decode)` | Profiled grid lookup; no KV-history axis or skew correction |
+| Legacy whole-block `moe` | `_lookup_moe` | EP slice, then `(local_tokens, activated_experts)` | 2D linear; a missing EP degree uses the nearest measured degree with a warning |
+| Native DP+EP MoE | `MoeComponentTable.local_ns` / `expert_ns` | Deployment contract, mode and local/gathered work coordinates | Interpolation within measured feasible support; out-of-support data is rejected |
 
-Every axis is bracketed by its two neighbouring profiled values and
-blended on a linear scale.
+Dense and per-sequence rows use the target's effective row count after the
+applicable graph/head rules, not necessarily the raw scheduled token count.
+See [parallelism mechanics](./parallelism-mechanics).
 
 `prefill_key = sum(c * (history + c / 2)) / sum(c)` weights each prefill
 by its query count `c`, not by one vote per sequence. Empty prefills give zero.
@@ -108,10 +111,12 @@ This preserves the continuous causal convention and does not claim that one
 coordinate fully determines heterogeneous attention latency. For saturating
 kernels, each effective key is capped before the weighted mean.
 
-All lookups **extrapolate** outside the profiled grid (via linear
-extension), so a runtime value larger than the largest profiled
-sample doesn't fail, it produces a (less reliable) extrapolated
-latency. The startup warning above tells you when this is happening.
+Ordinary dense, per-sequence and attention grids can **extrapolate** beyond
+measured support, reducing confidence; missing attention corners also have
+nearest-cell fallbacks. Do not generalize that behavior to every category:
+query lengths and legacy EP degrees select discrete slices, skew uses buckets,
+and installed native MoE components reject out-of-support work. A startup
+range warning is not proof that every subsequent lookup is supported.
 
 The `time_us` value at each grid point is converted to ns at load
 time, so lookups directly yield ns.

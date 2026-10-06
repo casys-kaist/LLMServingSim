@@ -80,8 +80,8 @@ every scenario reports "did not finish". Pass `LOG_DIR=<a mounted path>` too,
 or the per-scenario logs die with the container.
 
 :::caution[Parts of `profiler/` are simulator inputs]
-The trace generator reads three things under `profiler/` directly, so editing
-any of them can move every clock here:
+The simulator shares data and CPU-only helpers with `profiler/`; changes there
+can move simulation clocks without changing `serving/`. Important inputs include:
 
 - **`profiler/models/*.yaml`** — the layer order. Merging two catalogs into one
   broke all 16 MoE scenarios exactly this way.
@@ -89,10 +89,13 @@ any of them can move every clock here:
   from the checkpoint's config. Shared with the profiler on purpose.
 - **`profiler/core/catalog_path.py`** — `model_type` → yaml resolution. Also
   shared; adding aliasing to only one side is what broke those 16 scenarios.
+- **Attention shape, skew calibration and MoE contract helpers** — geometry,
+  correction-table loading and deployment compatibility affect lookup.
+- **`profiler/perf/`** — measured data and hardware defaults.
 
-So the paths that can affect this check are `serving/`, `configs/`, `bench/`,
-**`profiler/models/`**, **`profiler/core/{stack,catalog_path}.py`** and
-`profiler/perf/` — not just `serving/`.
+Audit actual imports when deciding the regression scope rather than treating
+this list as exhaustive. Shared helpers must remain usable without importing
+vLLM or the GPU acquisition environment.
 :::
 
 ## 2. If something changed, report it

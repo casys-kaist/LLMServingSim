@@ -12,13 +12,13 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Production fidelity',
+    title: 'Measured execution costs',
     Icon: Gauge,
     description: (
       <>
-        Powered by a vLLM-based layerwise profiler. End-to-end TTFT,
-        TPOT, and throughput stay close to what production serving
-        actually delivers.
+        Powered by a vLLM-based layerwise profiler, with reproducible
+        TTFT, TPOT, and latency comparisons against recorded Llama
+        and Qwen workloads.
       </>
     ),
   },
@@ -38,7 +38,8 @@ const FeatureList: FeatureItem[] = [
     description: (
       <>
         First-class TP / PP / EP / DP+EP support across multiple instances,
-        with wave-synchronized ALLTOALL on 2D ASTRA-Sim topologies.
+        with wave-synchronized expert collectives on multidimensional
+        ASTRA-Sim topologies.
       </>
     ),
   },

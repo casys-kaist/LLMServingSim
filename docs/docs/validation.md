@@ -10,9 +10,16 @@ LLMServingSim is validated end-to-end against real vLLM on the
 **bundled `(hardware, model)` combos**. The numbers below come from
 running a 300-request ShareGPT replay through both real vLLM and the
 simulator, then comparing the per-request and per-tick metrics with
-`python -m bench validate`. Every figure on this page is read out of the
-committed `bench/examples/<hardware>/<model>/validation/summary.txt`, so it is
-reproducible rather than quoted.
+`python -m bench validate`. The tables reproduce values from the committed
+`bench/examples/<hardware>/<model>/validation/summary.txt`; the example wrappers
+regenerate the comparisons on CPU without starting vLLM.
+
+:::caution[Recorded-bundle validation is not fresh-profiler validation]
+These results use the checked-in profiles. Updating the profiler does not
+remeasure those files: acquisition protocols and coverage must be checked in
+each bundle's metadata. Reproducing these examples does not establish accuracy
+using only new-protocol measurements, or validate every supported architecture.
+:::
 
 **The largest displayed absolute error across the three dense configurations is 1.5%.
 The bundled DP+EP MoE example is within 2.6% across all fifteen statistics.**
@@ -30,9 +37,9 @@ separately below; it is not included in the four headline configurations.
 | --- | --- |
 | **Workload** | 300 ShareGPT-derived requests, ~10 sps Poisson arrivals |
 | **Hardware** | RTXPRO6000 and RTX 4090, single node (profile bundles in `profiler/perf/<hardware>/`) |
-| **vLLM version** | `v0.28.0` for the three RTXPRO6000 headline truths, which the bench container pins. The RTX 4090 truth stays on `v0.19.0`: that card is no longer in the machine, so it cannot be re-recorded — see the note under its section |
+| **vLLM version** | `v0.28.0` for the three RTXPRO6000 headline truths, matching the bench container pin. The retained RTX 4090 reference uses `v0.19.0` |
 | **Block size** | 16 for the headline examples; 64 for the additional DeepSeek diagnostic |
-| **Engine flags** | Defaults except where the cluster config dictates otherwise |
+| **Engine flags** | Recorded in each example's `vllm/meta.json`; match its effective settings rather than assuming current CLI defaults |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |
 | **Interconnect** | Qwen3-32B and Qwen3-30B use matched NCCL-only references and inherit per-operation BW and common latency from `profiler/perf/RTXPRO6000/hardware.yaml` |
 | **KV capacity** | `mem_util` `0.9`, except the RTX 4090 example which is calibrated to the measured block count (see below) |
@@ -139,11 +146,12 @@ setting matches the recorded KV block count, so memory-pressure behavior
 can be compared at the same capacity. Compute latencies are supplied by
 the profile bundle rather than fitted to the end-to-end results.
 
-It is also the one truth still recorded on vLLM `v0.19.0`, because the card has
-since left the machine. Its profile bundle is the matching 0.19 one and its
+This is a retained vLLM `v0.19.0` reference, not a v0.28 validation. Its
+profile bundle is the matching 0.19 one and its
 cluster config carries `link_bw` / `link_latency` explicitly, since there is no
-interconnect measurement to inherit — a reader can see those two numbers are
-the author's choice rather than measured.
+interconnect measurement to inherit. Those explicit link values are configuration
+assumptions, not measured interconnect parameters; this TP=1 example does not
+validate collective transport.
 
 ### RTXPRO6000 — Llama-3.1-8B (TP=1 dense)
 

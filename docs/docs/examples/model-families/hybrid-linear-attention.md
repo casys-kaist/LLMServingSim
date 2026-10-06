@@ -85,15 +85,14 @@ Three things happen automatically and are worth knowing about:
   entry for the instance's `tp_size`.
 - **`linear_attention.csv` appears**, keyed `(prefill_tokens, n_decode)`.
 
-:::caution[A hybrid costs roughly 4x a uniform stack to profile]
-Not because the grid is bigger — measured, the attention sweep is 8,643
-shots either way. Because every shot's forward runs all four layers,
-and the catalog binds 24 entries against a dense Qwen3's 14, so the
-layerwise profiler attributes proportionally more nodes per forward.
-The bottleneck is that single-threaded attribution, not the GPU. Reach
-for `--attention-chunk-factor` / `--attention-kv-factor` to coarsen the
-grid, or `--measurement-iterations 1` to drop the 3x averaging at the
-cost of 15-25% per-shot noise.
+:::caution[Hybrid stack depth increases acquisition cost]
+Every attention shot must execute the layer prefix that exposes both block
+types, so a hybrid can require substantially more attribution work than a
+uniform one-layer stack. Grid counts also depend on resolved cache capacity
+and feasibility; neither a fixed shot count nor a universal 4x runtime follows.
+Use `--attention-chunk-factor` / `--attention-kv-factor` to coarsen the grid,
+or reduce `--measurement-iterations` with an explicit repeatability check.
+Neither runtime nor uncertainty is determined by that flag alone.
 :::
 
 Check the catalog binds every kernel before committing to a long run —

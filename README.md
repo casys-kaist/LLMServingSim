@@ -17,7 +17,7 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 
 - [2026/08] Simulation is **~11x faster** with byte-identical results — the four `bench/examples` runs go 16m 40s → 1m 26s. ([#67](https://github.com/casys-kaist/LLMServingSim/pull/67))
 - [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
-- [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
+- [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on mean TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
 
 ## About
 
@@ -40,48 +40,16 @@ When updating an existing clone, synchronize its recursive submodules and
 rebuild ASTRA-Sim and Chakra together; see the
 [update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
 
-For dynamic heterogeneous profiling and reusable CPU-built attention corrections, see the
-[skew calibration guide](https://llmservingsim.ai/docs/profiler/skew-alpha-fit).
-Skew-only refreshes can target a TP degree independently and automatically
-supplement undersampled lookup cells from the attention references, with
-warmup geometry checks for ordinary attention and sparse-indexer backends.
-Skew kernel ownership follows correlated CPU launches without adding CPU time;
-unresolved ownership rejects a measurement rather than silently losing kernels.
-Layerwise and skew acquisitions count overlapping CUDA activity once within each
-module call; versioned rows prevent mixing old and new timing methods on resume.
-Whole-block MoE sweeps use the shared fine token grid, bounded by resolved engine limits.
-The single-model profiler template inherits CLI defaults, including parallelism,
-and exposes explicit native-DP settings. For sweep density and acquisition costs,
-see the [profiling guide](https://llmservingsim.ai/docs/profiler/running#expected-runtime).
-Ordinary sweeps checkpoint completed shots atomically and preserve fractional
-attention coordinates when matching completed work on resume.
-History-bearing shots initialize assigned KV pages with vLLM's dummy-weight
-initializer outside timing.
-Measured decode requests retain a completed prompt and separate query tokens, so
-native batch ordering does not mistake them for unfinished prompt extensions.
-Hardware characterization, including backend-aligned Ring calibration and its limits, is covered in the
-[hardware profiling guide](https://llmservingsim.ai/docs/profiler/adding-hardware).
-Optional [collective links](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
-select effective bandwidth and latency per Ring operation without changing tensor sizes.
-Deployment-matched [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
-separates local routing, gathered experts and finalization under DP+EP.
-Retained whole-block MoE profiles normalize by actual MoE calls, including
-stacks with dense layers, and retain native routing kernels while controlling
-expert selection; see the [profile table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
-Sparse-indexer glue excludes kernels already counted by its norm and scoring modules.
-The bundled Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples inherit NCCL-calibrated
-operation links from the hardware bundle; the MoE example also uses measured native components.
-Benchmark runs disable non-NCCL collective paths and fusions for the NCCL baseline; see the
-[bench reference](https://llmservingsim.ai/docs/reference/bench-cli#parallelism).
-Optional gate observation separates startup from workload calls explicitly;
-its instrumented latency is not an end-to-end validation reference.
-Model-forward shapes include local CUDA graph padding and subsequent DP synchronization.
-Non-speculative logits and sampling use real requests, not padded forward rows.
-Independent TP/EP collective numbering lets idle DP members omit the head;
-see [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
-DP members select their own global expert ranks for MoE latency lookup, and
-round-robin routing advances across gathered token positions; see
-[expert routing](https://llmservingsim.ai/docs/simulator/moe-expert-routing).
+GPU profiling and new benchmarks target **vLLM 0.28.0**; simulation and comparison
+against recorded benchmarks are CPU-only. See the
+[profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
+skew calibration and native MoE components, and the
+[bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for NCCL-only recording.
+
+The [validation results](https://llmservingsim.ai/docs/validation) describe the
+committed profile bundles and recorded workloads, not a complete remeasurement
+with every current profiler change. Architecture support and fresh-profile
+accuracy are separate checks; the retained RTX 4090 reference uses vLLM 0.19.0.
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

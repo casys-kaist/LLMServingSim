@@ -149,11 +149,12 @@ serves, spelled **verbatim** — including where vendors disagree: DeepSeek
 writes V3.2 as `deepseek_v32`, Qwen writes 3.5 as `qwen3_5`, so the files are
 `deepseek_v32.yaml` and `qwen3_5.yaml`. Copying upstream's spelling is what
 keeps the rule mechanical; normalising it would mean the filename matches no
-`model_type` and every lookup falls through to the directory scan. `model_type` is read from the top level of the config handed to the
-profiler, so for a wrapped (VL) checkpoint the convention is to store the
-**text tower flattened to top level** with `architectures` set to the text-only
-class — that makes `qwen3_5_text`, not the wrapper's `qwen3_5`, the recorded
-name. When several `model_type` values are the same implementation (GLM-5's
+`model_type` and every lookup falls through to the directory scan. `model_type`
+is read from the top level of the config handed to the profiler. Preserve the
+shape that the checkpoint's config class consumes: Qwen's text tower is
+flattened to `qwen3_5_text`, while MiniMax-M3 must retain its nested
+`text_config`. Do not apply one family's flattening rule to another.
+When several `model_type` values are the same implementation (GLM-5's
 `glm_moe_dsa` and DeepSeek-V3.2's `deepseek_v32` both run vLLM's `deepseek_v2`
 path), one file lists them all under `model_types:` rather than the catalog
 being duplicated or symlinked. Two files claiming one `model_type` is an error,
@@ -572,12 +573,14 @@ usable as the reference: the fix was verified against them before anything was
 rewritten. They are gone now — every RTXPRO6000 bundle has been re-profiled on
 0.28 so the whole tree carries one vLLM version, and only
 `RTX4090/meta-llama/Llama-3.1-8B` stays 0.19, because that card is no longer in
-the machine. **That re-profile moves the recorded clocks.** Every
-`serving/validate.sh` scenario and every `bench/examples/` accuracy figure runs
-Llama-3.1-8B, Qwen3-30B-A3B or Qwen3-32B — the three that were 0.19 — so a
-refreshed baseline is part of the same change, not a regression to explain.
-After the fix every bundle's `lm_head` lands at 80-83% of its bandwidth floor,
-so an outlier there is a bug.
+the machine. **A re-profile can move recorded clocks.** Refresh affected
+regression baselines and example validation together when adopting new data;
+the suite also includes other architecture families and a DeepSeek diagnostic.
+Bandwidth efficiency is the estimated memory-time bound divided by measured
+time, not a claim that measured time is below the bound. An outlier requires a
+controlled attribution check, not an automatic conclusion that it is a bug.
+These normalization checks do not certify all stored rows against later
+acquisition-protocol changes.
 
 `num_mtp_modules` is capped to 1 in the config **file**, not via
 `hf_overrides`: the drafter reads `speculative_config.draft_model_config.hf_config`,
@@ -2341,7 +2344,7 @@ only its own command and descendants. Keep container memory limits as the hard
 backstop. Optional GPU monitoring identifies one physical UUID but neither
 reserves it nor establishes permission or exclusive access.
 
-- **vLLM container** (used by `python -m profiler`, `python -m bench`, and
+- **vLLM container** (used by GPU acquisition, `python -m bench run`, and
   `python -m workloads.generators`): `vllm/vllm-openai:v0.28.0` (or
   `v0.28.0-cu129` on a CUDA 12.9 host)
   - Launched via `scripts/docker-vllm.sh`. Set `VLLM_GPUS` to a docker
@@ -2351,13 +2354,16 @@ reserves it nor establishes permission or exclusive access.
     is every GPU on the host
   - Mounts the **LLMServingSim repo root** as `/workspace`; container cwd
     is `/workspace`, so `python -m profiler …` etc. work directly
-  - Pre-installs `datasets` and `matplotlib` on first start (extra deps
-    used by the workload generator and bench plots; vLLM brings the rest)
-  - Set `HF_TOKEN` in `scripts/docker-vllm.sh` for gated-config auto-download
+  - Installs `datasets`, `matplotlib`, `pandas` and the pinned NCCL dependency,
+    and applies the repository's vLLM patches
+  - Export `HF_TOKEN` in the shell for gated-config auto-download; the launcher
+    forwards it without embedding credentials in the script
 - **Simulator container**: `astrasim/tutorial-micro2024` + Python deps
   - Launched via `scripts/docker-sim.sh`
   - Mounts the repo root at `/app/LLMServingSim`; ASTRA-Sim + Chakra are
     built inside via `scripts/compile.sh` on first use
+  - `python -m bench validate` compares recorded files here on CPU, without
+    booting vLLM or using a GPU
 
 ## README and docs split
 
@@ -2491,6 +2497,13 @@ simulator-side examples, and explain intentional changes in either direction.
 
 ## Testing & Validation
 
+Published accuracy belongs to a fixed profile bundle, recorded benchmark and
+execution contract. Reproducing the committed examples does not certify a
+fresh-only acquisition from the latest profiler or every catalogued model.
+Keep availability, acquisition provenance, deterministic regression and
+end-to-end accuracy distinct in all public documentation. Historical coarse-grid
+shot counts are examples, not current-default runtime estimates.
+
 The example wrappers discover `bench/examples/*/*/config.json`, including
 stored diagnostics beyond the headline benchmarks. Reproduction uses the
 recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
@@ -2502,22 +2515,21 @@ fix-verification scripts or tests stay outside the published tree. The simulator
 is deterministic, so its regression validation checks exact equality against
 recorded results:
 
-**Three things under `profiler/` are simulator inputs**, despite the path. The
-trace generator reads each directly, so a change to any of them can move every
-clock in `validate.sh`:
+**Several parts of `profiler/` are simulator inputs**, despite the path.
+Shared data and CPU-only helpers can change simulation clocks:
 
 - **`profiler/models/*.yaml`** — the layer order. Merging two catalogs into one
   broke all 16 MoE scenarios exactly this way.
 - **`profiler/core/stack.py`** — which block each decoder layer runs, resolved
   from the checkpoint's config.
 - **`profiler/core/catalog_path.py`** — `model_type` → yaml resolution.
+- **Attention shape, skew calibration and MoE contract helpers** — geometry,
+  correction-table loading and deployment compatibility affect lookup.
+- **`profiler/perf/`** — latency tables and hardware defaults.
 
-Both `.py` files are deliberately free of third-party imports so the simulator
-container (no pydantic) can import them, and both exist as *one*
-implementation because the two sides already drifted once. When deciding
-whether a change can affect the simulator, the paths to check are
-`serving/`, `configs/`, `bench/`, **`profiler/models/`**,
-**`profiler/core/{stack,catalog_path}.py`** and `profiler/perf/`.
+These helpers must remain usable in the CPU simulator environment without
+importing vLLM or GPU acquisition dependencies. Audit actual imports rather
+than assuming only the stack and catalog resolvers can affect simulation.
 
 1. **`./serving/validate.sh`** — the whole check, ~8 min. Stage 1 compares every
    scenario against the `Total clocks (ns)` recorded in

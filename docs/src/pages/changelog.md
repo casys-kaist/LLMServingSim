@@ -57,6 +57,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   explicit-GPU telemetry, and per-run CSV/JSON records. It does not reserve GPUs.
 
 ### Fixed
+- Align documentation with the vLLM 0.28 acquisition and runtime contracts:
+  distinguish CPU-only benchmark comparison from GPU recording, retained example
+  accuracy from current-protocol remeasurement, and catalog availability from
+  validated model coverage. Correct catalog aliases, sweep-cost descriptions,
+  environment setup and archived-profiler guidance; keep recorded profiles and
+  benchmark results unchanged.
 - Align `profile.sh` with CLI defaults by forwarding only explicitly set options;
   expose native DP, MoE repetitions, skew-only mode and explicit log levels.
   Keep the multi-model campaign's explicit overrides separate. Correct

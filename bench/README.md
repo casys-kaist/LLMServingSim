@@ -32,14 +32,20 @@ bench/                          Python package — `python -m bench ...`
 
 ## Usage
 
+`bench run` needs the vLLM GPU environment. `bench validate` only reads recorded
+files and runs on CPU in the simulator environment; it does not boot vLLM.
+The committed examples validate their stored profile bundles, not automatically
+a new acquisition made with the latest profiler. Check both profile acquisition
+metadata and benchmark engine settings before claiming equivalent coverage.
+
 `bench run` — strict replay of an existing dataset
 
 The runner reads a LLMServingSim-format JSONL (the same format
 `python -m workloads.generators` produces and `python -m serving --dataset`
 consumes). Each request's `input_tok_ids` and `output_toks` are pinned via
 `SamplingParams(min_tokens=N, max_tokens=N, ignore_eos=True)`, so the
-vLLM run is bit-for-bit comparable to the simulator's view of the same
-workload.
+vLLM run uses the same prompt token IDs and requested output lengths as the
+simulator. Generated token content and execution timing are not bit-identical.
 
 The communication baseline is NCCL: the runner explicitly sets
 `disable_custom_all_reduce=True` and records it in `engine_kwargs`, alongside

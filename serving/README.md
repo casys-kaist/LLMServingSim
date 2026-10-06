@@ -42,20 +42,21 @@ from one list is visible against the other.
 
 | Group | Flags |
 |-------|-------|
-| **required** *(run-wide)* | `--cluster-config` |
+| **cluster** *(run-wide)* | `--cluster-config` (has a default example path) |
 | **workload** *(run-wide)* | `--dataset`, `--num-reqs`, `--skip-prefill` |
-| **batching** | `--max-num-batched-tokens`, `--max-num-seqs`, `--enable-chunked-prefill`, `--long-prefill-token-threshold`, `--reserve-full-isl` |
+| **batching** | `--max-num-batched-tokens`, `--max-num-seqs`, `--enable-chunked-prefill`, `--long-prefill-token-threshold`, `--reserve-full-isl`, `--async-scheduling` |
 | **memory** | `--block-size`, `--npu-memory-utilization` |
-| **prefix caching** | `--enable-prefix-caching`, `--enable-prefix-sharing`, `--prefix-storage` |
-| **routing** *(run-wide)* | `--request-routing-policy`, `--expert-routing-policy` |
+| **prefix caching** | `--enable-prefix-caching`; run-wide: `--enable-prefix-sharing`, `--prefix-storage` |
+| **routing** *(run-wide)* | `--request-routing-policy`, `--expert-routing-policy`, `--gate-stats` |
 | **speculative decoding** | `--num-speculative-tokens`, `--spec-acceptance-rate`, `--spec-acceptance-policy` |
 | **offloading** | `--enable-attn-offloading`, `--enable-sub-batch-interleaving`, `--enable-local-offloading` |
-| **trace / graph** *(run-wide)* | `--enable-block-copy`, `--save-trace-text`, `--keep-inputs` |
+| **trace / graph** | `--enable-block-copy`; run-wide: `--save-trace-text`, `--keep-inputs` |
 | **backend** *(run-wide)* | `--network-backend` |
 | **output** *(run-wide)* | `--output`, `--run-id`, `--inputs-root`, `--log-interval`, `--log-level` |
 
-Boolean flags use `argparse.BooleanOptionalAction`, so each has a
-`--no-` form (`--no-enable-prefix-caching`).
+Flags registered with `argparse.BooleanOptionalAction` have a `--no-` form
+(for example, `--no-enable-prefix-caching`). Other switches such as offloading
+use `store_true` and have no automatic negative form; consult `--help`.
 
 The optional cluster-level `collective_links` map selects bandwidth and latency
 for individual analytical Ring operations. Missing operations and fields use
@@ -108,8 +109,12 @@ the flag reads that back. Qwen3.8-27B resolves to **784** from a requested
 
 ## Validating a change
 
-There is no unit-test suite. The simulator is deterministic, so validation is
-exact equality against recorded results:
+There is no unit-test suite. The simulator is deterministic, so validation
+checks exact equality against recorded results.
+
+This regression check preserves the behavior of the committed profile bundles.
+It does not certify newly acquired tables or every supported architecture's
+end-to-end accuracy; see the [validation scope](https://llmservingsim.ai/docs/validation).
 
 ```bash
 ./serving/validate.sh            # both stages, ~8 min

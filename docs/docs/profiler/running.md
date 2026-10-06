@@ -29,8 +29,8 @@ From inside the vLLM Docker container at `/workspace`:
 
 The script auto-resolves the model architecture from the HF
 `config.json`'s `model_type` field, you don't specify it on the
-command line. The matching architecture YAML must exist under
-`profiler/models/<model_type>.yaml`. See
+command line. Resolution tries `profiler/models/<model_type>.yaml`, then
+the catalogs' declared `model_types:` aliases. See
 **[Adding a model architecture](./adding-model-architecture)** if it
 doesn't.
 
@@ -69,7 +69,7 @@ See **[Cluster config → Hardware facts are inherited](../reference/cluster-con
    skew sweep and fits per-bucket alphas to `skew_fit.csv`.
 6. Writes `meta.yaml` summarizing the run.
 
-For each TP degree in `TP_DEGREES`, the simulator emulates that TP
+For each TP degree in `TP_DEGREES`, the profiler emulates that TP
 on a single GPU by dividing the model's per-rank shapes via
 `hf_overrides`. **You only need one GPU** to profile any TP degree.
 
@@ -127,27 +127,23 @@ interpolating, because query length changes the kernel's tile shape rather than
 just its size.
 :::
 
-:::tip[One model's sweep can run on two GPUs]
-`q > 1` never yields a pure-prefill shot, and `decode_q_len` is part of the row
-key the CSV is written under. So a `q=1` sweep and a `q=N` sweep are disjoint,
-and together they are exactly the combined grid — 14,653 + 14,083 = 28,736 for
-DeepSeek-V3.2 at its full context. Run one half per GPU and concatenate:
+:::tip[Keep query-length coverage and metadata together]
+`q > 1` omits pure-prefill shots, and `decode_q_len` is part of the row key.
+Each additional value adds a decode-containing grid; it does not double all
+previous grids. Prefer a combined acquisition:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m profiler slice <model> --hardware <hw> \
-    --tp-refresh 1 --group attention --force \
-    --attention-max-kv 163834 --attention-decode-q-lens 1
-
-CUDA_VISIBLE_DEVICES=1 python -m profiler slice <model> --hardware <hw> \
-    --tp-refresh 1 --group attention --force \
-    --attention-max-kv 163834 --attention-decode-q-lens 5 \
-    --out-root /tmp/half_q5
+python -m profiler slice <model> --hardware <hw> \
+    --tp-refresh 1 --group attention \
+    --attention-max-kv 16384 --attention-decode-q-lens 1,5 \
+    --out-root outputs/profile_q1_q5
 ```
 
-**Pin `--attention-max-kv` on both halves.** Left to derive, the resolver reads
-each run's own `max(decode_q_lens)`, so the `q=1` half would take 163,838 and
-the `q=5` half 163,834 — different kv sets, and the halves stop lining up. Use
-the value a combined run would resolve to: `max_model_len - max(q) - 1`.
+Independent GPU acquisitions need separate output roots and the same explicit
+KV bound, since the implicit bound depends on each run's maximum query length.
+Disjoint row keys alone do not make arbitrary CSV concatenation a complete
+bundle: acquisition identity, engine contracts and recorded query-length
+coverage must also agree. Do not have two writers update one bundle.
 :::
 
 
@@ -436,7 +432,7 @@ hard to tell apart, but because **at one layer some of them do not exist**. A
 simulator charges those layers zero. The axes are also a conservative proxy for
 what a category needs — DeepSeek's `dense` would in truth serve at one layer,
 since `moe` is its own category — and the slack is left in on purpose:
-`attention` is 8,643 shots against `dense`'s 152.
+the multidimensional attention sweep is much larger than the dense sweep.
 :::
 
 The division is **per parent**: every node divides by its parent node's
@@ -459,11 +455,14 @@ the whole output embedding, so
 vocab * hidden * dtype_bytes / mem_bw
 ```
 
-is a hard floor: 128256 × 4096 × 2 B ÷ 1.8 TB/s = 583 µs for Llama-3.1-8B on
-an RTX PRO 6000, against which a measured 714 µs is 82% efficiency and 6417 µs
-is impossible. Spot-check `lm_head`, `embedding` and one decode-attention row
-this way, and against an existing bundle for the same model on other hardware
-scaled by memory bandwidth.
+estimates a lower bound for a bandwidth-limited head when its weights must be
+read from device memory. For a full Llama-3.1-8B head, 128256 × 4096 × 2 B ÷
+1.8 TB/s is 583 µs; 714 µs corresponds to about 82% bandwidth efficiency.
+A 6417 µs measurement is suspicious, not mathematically impossible: a lower
+bound cannot prove a slow measurement wrong. Check invocation normalization,
+TP-local tensor sizes, cache residency and a controlled measurement before
+concluding that attribution is faulty. Embedding reads selected rows, not the
+whole vocabulary matrix, so it needs a different traffic estimate.
 :::
 
 ### `--attention-max-kv` — how far out the KV axes reach
@@ -475,35 +474,19 @@ decode rather than the whole window, so passing the context length verbatim
 gets the top point filtered and the sweep stops one doubling short — on
 DeepSeek-V3.2 that is 131,072 where you asked for 163,840.
 
-Lowering it trades coverage for time. Cost is close to linear in the number of
-kv values, because the KV-budget filter prunes the large-kv × large-n_decode
-corner:
+Lowering it trades coverage for time. The KV-budget filter prunes the
+large-KV × large-decode-count corner, so counts depend on all axis factors,
+query lengths, stack depth and the engine's resolved capacity. Estimate runtime
+from the actual acquisition plan and measured stage progress, not a fixed
+hours-per-model table; see [Expected runtime](#expected-runtime).
 
-| `--attention-max-kv` | shots (q=1) | with a second `decode_q_len` |
-| --- | --- | --- |
-| 16,384 | 8,643 (≈4 h) | 16,926 (≈8 h) |
-| 131,072 | 13,685 (≈6.3 h) | 26,830 (≈12.4 h) |
-| 163,834 (DeepSeek's full context) | 14,653 (≈6.8 h) | 28,736 (≈13.3 h) |
-
-:::caution[On a sparse model the top of the range is not optional]
-The simulator extrapolates linearly past the highest profiled kv. That is safe
-for a dense kernel, which is linear in kv — decode attention is a pure KV read
-and fits `a + b·(n_decode·kv_decode)` at R²=1.0000. It is **not** safe for a
-sparse one, where two kernels diverge. Measured on DeepSeek-V3.2 at
-`n_decode = 8`:
-
-| `kv_decode` | `attention` (MLA) | `indexer` |
-| --- | --- | --- |
-| 1,024 | 838 µs | 27 µs |
-| 2,048 | 342 µs | 52 µs |
-| 8,192 | 350 µs | 72 µs |
-| 16,384 | 350 µs | 101 µs |
-
-`attention` flattens at `index_topk: 2048` — past that it only reads the
-selected tokens. `indexer` keeps growing, because it scores the whole KV to
-make the selection. Extrapolating a flat curve is harmless; extrapolating the
-indexer ten-fold past its last measured point is the term that decides a
-long-context run.
+:::caution[Cover the context range you intend to simulate]
+Dense attention can be approximately linear in KV traffic over a measured
+regime, but extrapolation is not guaranteed across kernel or occupancy changes.
+For sparse models, selected attention can saturate at the selection cap while
+the indexer still scores the full history. The lookup's per-kernel saturation
+rules do not establish the indexer's cost outside its measured support.
+Profile the intended range and validate any extrapolation separately.
 :::
 
 ### `--profile-mtp` — profiling the drafter

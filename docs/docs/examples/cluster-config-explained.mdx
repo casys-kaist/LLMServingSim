@@ -171,13 +171,13 @@ gets inferred. So:
 | Field | Used for |
 | --- | --- |
 | `placement` | Per-layer / per-block weight + KV-cache placement (see [CXL memory](./memory-tiers/cxl-memory)) |
-| any of the 14 runtime overrides | Per-instance scheduler / memory / dtype settings (see below) |
+| runtime overrides | Per-instance scheduler, memory and speculative-decoding settings (see below); dtypes come from the model config |
 
 ## Per-instance runtime overrides
 
 Everything so far describes *hardware*. An instance can also carry
 **runtime settings**, and that is what makes heterogeneous clusters
-possible: 14 of the `python -m serving` flags can be re-specified per
+possible: supported `python -m serving` runtime flags can be re-specified per
 instance, so a prefill instance and a decode instance in the same run
 can be scheduled completely differently.
 
@@ -191,7 +191,7 @@ A field written in the instance wins for that instance. Every other
 instance keeps whatever the CLI said. There is no merging and no
 inheritance between instances.
 
-### The 14 overridable fields
+### Runtime override fields
 
 | Field | Overrides | Typical reason to set it per instance |
 | --- | --- | --- |
@@ -203,6 +203,10 @@ inheritance between instances.
 | `enable_prefix_caching` | `--enable-prefix-caching` | Cache where prefixes repeat, skip where they don't |
 | `npu_mem.mem_util` | `--npu-memory-utilization` | Leave headroom on one instance only |
 | `reserve_full_isl` | `--reserve-full-isl` | Loosen admission on a decode-only instance |
+| `async_scheduling` | `--async-scheduling` | Match the target scheduler's overlap behavior |
+| `num_speculative_tokens` | `--num-speculative-tokens` | Set the draft count for this instance |
+| `spec_acceptance_rate` | `--spec-acceptance-rate` | Supply a deployment-specific acceptance assumption |
+| `spec_acceptance_policy` | `--spec-acceptance-policy` | Select the acceptance policy |
 | `enable_local_offloading` | `--enable-local-offloading` | Weight offload on one instance |
 | `enable_attn_offloading` | `--enable-attn-offloading` | PIM attention on one instance |
 | `enable_sub_batch_interleaving` | `--enable-sub-batch-interleaving` | Overlap NPU and PIM on the offloading instance |
@@ -274,7 +278,7 @@ unbounded. See **[Model config](/docs/reference/model-config)**.
 
 ### What you cannot set per instance
 
-The other 15 flags are cluster-wide. Writing one inside an instance
+Run-wide flags are not per-instance overrides. Writing one inside an instance
 object does nothing at all: no key reads it, and no error is raised.
 
 | Scope | Flags |
