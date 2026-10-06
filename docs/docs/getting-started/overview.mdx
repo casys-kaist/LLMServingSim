@@ -24,13 +24,13 @@ Setup is genuinely quick, clone, launch a container, compile, run.
 <IconCardGrid columns={2} cards={[
   {
     Icon: Network,
-    title: 'Any topology, instantly',
-    description: 'TP / PP / EP / DP+EP across multiple instances. Chunked prefill, prefix caching, MoE expert routing, speculative decoding, KV-cache offloading, mix and match in a config file. No code changes.',
+    title: 'Configurable serving topologies',
+    description: 'Configure TP / PP / EP / DP+EP across multiple instances, with chunked prefill, prefix caching, MoE routing, speculative decoding and memory offloading. Guides describe supported combinations and their limits.',
   },
   {
     Icon: Cpu,
-    title: 'Any hardware, profiled',
-    description: 'Plug in a new GPU, CXL tier, or PIM device. The vLLM-based layerwise profiler captures real CUDA timings and feeds them straight into the simulator.',
+    title: 'Profiled compute, configurable memory',
+    description: 'Measure NVIDIA GPU kernels with the vLLM-based profiler, reuse compatible latency bundles, and configure CPU, CXL and PIM memory tiers. Other accelerator backends require a compatible acquisition adapter.',
   },
   {
     Icon: BadgeCheck,

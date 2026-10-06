@@ -130,8 +130,8 @@ deliver, so the simulator's behaviour splits:
   token layout; the rest are pure decode at one query per sequence.
   This needs `mtp.prologue` and `mtp.decoder_block` in the catalog and
   an `mtp.csv` in the bundle, and **raises** without them. Profile it
-  with `--profile-mtp`, which is cheap — one axis, 40 shots in well
-  under a minute. The flag takes no draft count: the engine boots at
+  with `--profile-mtp`, a one-dimensional token sweep whose acquisition time
+  depends on model, hardware and measurement settings. The flag takes no draft count: the engine boots at
   `num_speculative_tokens=1` so the CSV holds one pass, which is the
   unit the simulator multiplies by your N.
 - **A model with no MTP modules** drafts with a separate model or with

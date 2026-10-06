@@ -63,7 +63,8 @@ See **[Cluster config → Hardware facts are inherited](../reference/cluster-con
    there.
 2. Picks the matching architecture YAML by `model_type`.
 3. Writes the model config to a tmpdir; spins vLLM up against that.
-4. Sweeps **dense / per_sequence / attention / moe** shot grids,
+4. Sweeps the catalog's **dense / per_sequence / attention / linear_attention /
+   moe** shot grids (and the separate MTP pass when requested),
    writing CSVs under `profiler/perf/<HW>/<MODEL>/<variant>/tp<N>/`.
 5. (Unless `SKIP_SKEW` is set) Runs the heterogeneous-decode
    skew sweep and fits per-bucket alphas to `skew_fit.csv`.
@@ -120,8 +121,9 @@ axes can express — *n* sequences each submitting *k+1* queries against their o
 KV is neither one prefill chunk of `n*(k+1)` tokens nor that many single-token
 decodes, because the k+1 queries of one sequence share that sequence's KV read.
 
-It multiplies the whole grid, so pass only the `1 + N` values you intend to
-simulate; the published N for the four modern families are 3, 4 and 5. The
+Each extra query length adds decode-containing shots, so pass only the `1 + N`
+values you intend to simulate; the published N for the four modern families
+are 3, 4 and 5. The
 simulator falls back to the nearest profiled value with a warning rather than
 interpolating, because query length changes the kernel's tile shape rather than
 just its size.
@@ -279,8 +281,8 @@ named experimental runs (quantization schemes, ablations).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DTYPE` | `bfloat16` | Model weight dtype: `bfloat16` / `float16` / `float32` / `fp8`. Inferred from `torch_dtype` when unset |
-| `KV_CACHE_DTYPE` | `auto` | KV cache dtype: `auto` (inherits `DTYPE`) / `fp8` / etc. `fp8` halves KV memory in the simulator |
+| `DTYPE` | unset | Omit the engine dtype override and let vLLM resolve the checkpoint configuration. Quantization comes from the checkpoint; the profile variant uses its quantization method or `torch_dtype` / `dtype` |
+| `KV_CACHE_DTYPE` | unset (`auto` in vLLM) | Optional KV dtype override, such as `fp8`. Match the effective cache dtype to the simulator's model config; this flag does not edit that config |
 
 ## Verbosity
 
@@ -297,14 +299,16 @@ VERBOSITY=""                # default (INFO)
 
 `profile.sh` is a convenience wrapper; every variable in it maps to a
 flag. Call the module yourself when you want to script a sweep, or for
-the `slice` and `coverage` subcommands, which `profile.sh` does not expose
-at all.
+other subcommands, which `profile.sh` does not expose.
 
 ```bash
 python -m profiler profile  <model> --hardware <hw> [options]
 python -m profiler slice    <model> --hardware <hw> --tp-refresh N --group G [options]
 #   G in {dense, per_sequence, attention, linear_attention, moe, mtp}
 python -m profiler coverage <model> --hardware <hw> [options]
+python -m profiler plan-skew <model> --hardware <hw> [options]
+python -m profiler refit-skew <model> --hardware <hw> [options]
+python -m profiler hardware --hardware <hw> [options]
 ```
 
 `<model>` is an HF-style `<org>/<name>` resolving to
@@ -313,32 +317,48 @@ python -m profiler coverage <model> --hardware <hw> [options]
 (honouring `HF_TOKEN`); explicit paths are never fetched, so a missing
 file is an error.
 
-### Flags shared by both subcommands
+### Common model-command flags
+
+`profile`, `slice`, `coverage` and `plan-skew` register the flags below.
+Registration does not mean every command runs every sweep: `coverage` only
+checks catalog coverage, and `plan-skew` uses saved `meta.yaml` engine limits
+and existing attention references without starting vLLM. Engine-limit flags
+do not replace those saved limits in a plan preview.
+
+`slice` additionally requires `--tp-refresh N` and `--group G`; include `N`
+in `--tp`. `--dp` is supported only for `profile` or `slice --group moe`.
+`--profile-mtp` with `slice` requires `--group mtp`. `--only-skew` selects
+the skew-only path of `profile`; it is not a slice category.
+
+Defaults below are effective acquisition defaults where the parser leaves
+an override unset. `profile.sh` omits unset or empty optional values, so the
+CLI remains their source of truth. Boolean wrapper variables enable their
+flags for any non-empty value, including `0`; unset them to disable.
 
 | Flag | Default | `profile.sh` variable |
 | --- | --- | --- |
 | `--hardware` | **required** | `HARDWARE` |
 | `--tp` | `1` | `TP_DEGREES` |
 | `--variant` | auto-derived from dtypes | `VARIANT` |
-| `--dtype` | vLLM default (model's `torch_dtype`) | `DTYPE` |
+| `--dtype` | unset; vLLM resolves the checkpoint dtype | `DTYPE` |
 | `--kv-cache-dtype` | `auto` | `KV_CACHE_DTYPE` |
 | `--max-num-batched-tokens` | `2048` | `MAX_NUM_BATCHED_TOKENS` |
 | `--max-num-seqs` | `256` | `MAX_NUM_SEQS` |
-| `--block-size` | `16` | `BLOCK_SIZE` |
+| `--block-size` | unset; vLLM resolves the backend's block size | `BLOCK_SIZE` |
 | `--gpu-memory-utilization` | `0.9` | `GPU_MEMORY_UTILIZATION` |
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
 | `--num-hidden-layers` | category/checkpoint-derived minimal stack | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
 | `--moe-ep-degrees` | `1` | `MOE_EP_DEGREES` |
 | `--dp` | unset (native acquisition opt-in) | `DP_DEGREES` |
-| `--moe-rounds` | see `profile --help` | `MOE_ROUNDS` |
+| `--moe-rounds` | `3` | `MOE_ROUNDS` |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
-| `--attention-max-kv` | the model's own context | `ATTENTION_MAX_KV` |
+| `--attention-max-kv` | resolved context minus `max(decode_q_len) + 1` | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
-| `--attention-chunk-factor` | see `profile --help` | `ATTENTION_CHUNK_FACTOR` |
-| `--attention-kv-factor` | see `profile --help` | `ATTENTION_KV_FACTOR` |
-| `--attention-n-factor` | see `profile --help` | `ATTENTION_N_FACTOR` |
+| `--attention-chunk-factor` | square root of 2 | `ATTENTION_CHUNK_FACTOR` |
+| `--attention-kv-factor` | square root of 2 | `ATTENTION_KV_FACTOR` |
+| `--attention-n-factor` | square root of 2 | `ATTENTION_N_FACTOR` |
 | `--measurement-iterations` | `3` | `MEASUREMENT_ITERATIONS` |
 | `--skip-skew` | off | `SKIP_SKEW=1` |
 | `--only-skew` | off | `ONLY_SKEW=1` |
@@ -355,6 +375,25 @@ file is an error.
 | `--log-level` | `INFO` | `LOG_LEVEL` |
 | `--silent` | — | `VERBOSITY="--silent"` |
 | `--verbose` | — | `VERBOSITY="--verbose"` |
+
+The default `--out-root` and `--model-config-root` paths are resolved from
+the repository location; explicit relative paths use the working directory.
+`--block-size` is a request to vLLM, not a guarantee of its resolved value;
+use the recorded per-TP `engine_resolved` metadata when configuring simulation.
+
+### Separate offline and hardware commands
+
+These commands do **not** accept the common model-command flags:
+
+| Command | Accepted options | Defaults and scope |
+| --- | --- | --- |
+| `refit-skew <model>` | `--hardware`, `--variant`, `--tp`, `--out`, `--log-level` | Hardware is required; variant comes from the local checkpoint config; TP defaults to all measured degrees. Rebuilds calibration from stored CSVs, without a GPU |
+| `hardware` | `--hardware`, `--npus`, `--out`, `--log-level` | Hardware is required; `--npus` defaults to `2`. Acquires device/interconnect facts, without a model argument |
+
+Both use `--out` (not `--out-root`), defaulting to `profiler/perf` relative
+to the working directory, and `--log-level INFO`. Log levels are `DEBUG`,
+`INFO`, `WARNING`, `ERROR`. See [skew calibration](./skew-alpha-fit) and
+[adding hardware](./adding-hardware) for their input contracts.
 
 ### `--measurement-iterations` — averaging out clock jitter
 
@@ -662,6 +701,35 @@ ATTENTION_CHUNK_FACTOR=1.5 \
 To change models or their TP/DP settings, edit the `JOBS=( ... )` array at the top
 of the script. This file is meant to be copied or tweaked in-place,
 not treated as a stable CLI.
+
+## Resource safety
+
+Run a long acquisition through `scripts/monitor_run.py` when you need explicit
+process-tree memory and time limits. It monitors only its child command and
+descendants; it does not reserve GPUs or enforce a container memory limit.
+Select limits appropriate to the host and obtain exclusive device access first.
+
+```bash
+python3 scripts/monitor_run.py --output outputs/profile-resources.csv \
+  --max-rss-gib 48 --min-available-gib 128 --timeout 86400 \
+  -- python3 -m profiler profile meta-llama/Llama-3.1-8B --hardware <hw>
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--output` | required | Fresh resource-log CSV path; a JSON completion summary is written alongside it |
+| `--max-rss-gib` | `48` | Stop when summed child-process RSS exceeds this limit; shared pages may be counted more than once |
+| `--min-available-gib` | `128` | Stop when host-wide available memory falls below this floor |
+| `--interval` | `2` | Sampling interval in seconds |
+| `--timeout` | `1800` | Command wall-time limit in seconds; increase explicitly for long sweeps |
+| `--max-swap-growth-gib` | unset | Optional limit on host swap growth since startup |
+| `--gpu-uuid` | unset | Optional telemetry for exactly one physical GPU UUID, not a device-index list |
+| `--max-gpu-temp-c` | unset | Temperature stop threshold; required when `--gpu-uuid` is supplied |
+
+Place the child command after `--`. Supply the GPU UUID and temperature limit
+together; CPU-only commands need neither.
+Telemetry detects a breached limit after sampling, so keep container limits
+as the hard backstop. See `python3 scripts/monitor_run.py --help` for syntax.
 
 ## Expected runtime
 

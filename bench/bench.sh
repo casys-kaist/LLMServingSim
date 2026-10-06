@@ -45,21 +45,20 @@ DTYPE="${DTYPE:-bfloat16}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
 SEED="${SEED:-42}"
 # vLLM load_format. "dummy" initializes weights randomly instead of reading a
-# checkpoint, which is valid ground truth for a *performance* comparison and
-# needs no weights on disk: the replay feeds token ids directly and pins the
-# output length, so nothing recorded reads a generated token. Shapes, memory
-# footprint, kernel selection and scheduling are unchanged. Recorded in
-# meta.json, so a dummy run can never be mistaken for a real-weights one.
+# checkpoint. Use it for controlled diagnostics, not automatically equivalent
+# ground truth: routing, backend choice and resolved cache capacity still need
+# verification. Replay fixes input IDs and output lengths, not activations.
+# The load format is recorded in meta.json.
 LOAD_FORMAT="${LOAD_FORMAT:-auto}"
 # Boot, write meta.json, exit -- no replay. Set to 1 to read back the one
 # number a latency comparison depends on, kv_cache.num_gpu_blocks, which vLLM
-# only settles at boot. A minute with LOAD_FORMAT=dummy.
+# only settles at boot; duration depends on the model and hardware.
 RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
 # Boot without a tokenizer. The replay never needs one, so what this buys is
 # the ability to bench a checkpoint whose tokenizer is not on disk: point MODEL
-# at the repo's own configs/model/<org>/<name>.json directory -- the way the
-# profiler boots one -- and a gated or synthetic config runs with no Hub
-# access. Not a speed knob; detokenisation measured 0.18% of run span.
+# at a separate directory containing config.json and set LOAD_FORMAT=dummy
+# for a config-only diagnostic. Unlike the profiler, bench does not create
+# that directory from the repository's named JSON configs.
 SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
 # Run vLLM eager. Not the production configuration -- what it buys is a truth
 # in the same execution mode the profiler is forced into, which separates a

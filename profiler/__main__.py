@@ -8,7 +8,7 @@ Profiling subcommands:
     slice <model> --hardware <hw> --tp-refresh N --group G [options]
         Refresh one (tp, category) pair.
 
-    coverage <model> [options]
+    coverage <model> --hardware <hw> [options]
         Boot once and report how much of the model's CUDA time the
         architecture catalog binds. Writes nothing. Run this first when
         adding a model family: a catalog entry can name a real class and
@@ -18,21 +18,29 @@ Profiling subcommands:
 
 Offline calibration:
 
+    plan-skew <model> --hardware <hw> [options]
+        Preview heterogeneous coverage using saved engine limits and references.
+
     refit-skew <model> --hardware <hw> [--tp N]
         Compile existing skew measurements against local attention references
         without starting vLLM or using a GPU.
 
+Hardware acquisition:
+
+    hardware --hardware <hw> [--npus N] [--out ROOT]
+        Record device specifications and measure NCCL interconnect parameters.
+
 Model resolution
 ----------------
-``<model>`` is a path (HF-style ``<org>/<name>``) under the project's
-``configs/model/`` directory. The profiler:
+For model acquisition commands, ``<model>`` is an HF-style ``<org>/<name>``
+or an explicit ``.json`` config path. The profiler:
 
-1. Reads ``configs/model/<model>.json`` (a raw HuggingFace config.json).
+1. Resolves the local config, downloading a missing named config from the Hub.
 2. Extracts ``model_type``.
 3. Looks up ``profiler/models/<model_type>.yaml`` as the
    architecture. Errors out if none is found.
-4. Uses ``<model>`` verbatim as the ``vllm.LLM(model=...)`` argument
-   (HF id; vLLM downloads tokenizer + auxiliary files from the hub).
+4. Materializes the config in a temporary model directory for vLLM, using
+   dummy weights and no tokenizer initialization for layer acquisition.
 
 To profile a model not in ``configs/model/`` yet:
 * Download its ``config.json`` from HuggingFace.
@@ -91,7 +99,7 @@ MODEL_CONFIG_DIR = _REPO_ROOT / "configs" / "model" # LLMServingSim's shared con
 # ---------------------------------------------------------------------------
 
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
-    """Flags shared between profile and slice subcommands."""
+    """Flags registered by profile, slice, coverage and plan-skew."""
     p.add_argument(
         "--hardware",
         required=True,
@@ -109,15 +117,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
         "--variant",
         default=None,
         help="Output folder label. Default: auto-derived from dtype "
-             "and kv_cache_dtype (e.g. 'bfloat16' or 'bfloat16-kvfp8').",
+             "and kv_cache_dtype (e.g. 'bf16' or 'bf16-kvfp8').",
     )
 
     # Engine kwargs.
     p.add_argument("--dtype", default=None,
-                   help="Model weight dtype (bfloat16/float16/float32/fp8). "
-                        "Default: vLLM default.")
+                   help="Override the vLLM engine dtype. Default: resolved "
+                        "from the checkpoint; this flag does not quantize weights.")
     p.add_argument("--kv-cache-dtype", default=None,
-                   help="KV cache dtype (auto/fp8/fp16/bf16). Default: auto.")
+                   help="Override the KV cache dtype with a vLLM-supported "
+                        "value. Default: auto.")
     p.add_argument("--max-num-batched-tokens", type=int, default=None,
                    dest="max_num_batched_tokens",
                    help="Per-step token budget. Matches vLLM's own "
@@ -129,8 +138,9 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--block-size", type=int, default=None,
                    dest="block_size",
                    help="KV block size in tokens, vLLM's own "
-                        "``--block-size``. Default: 16, matching the "
-                        "simulator's own --block-size; the two should agree, "
+                        "``--block-size``. Default: unset, so vLLM chooses "
+                        "a backend-compatible value. Match the simulator "
+                        "to that resolved value, "
                         "since a profile measured under one paging regime "
                         "does not describe another. On a hybrid stack vLLM "
                         "overrides this to unify attention and mamba page "
@@ -227,8 +237,8 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "submits 1 + num_speculative_tokens queries per "
                         "sequence against that sequence's own KV, which is "
                         "neither a prefill chunk of the same size nor that many "
-                        "single-token decodes. Opt-in because it multiplies the "
-                        "attention grid.")
+                        "single-token decodes. Each extra value adds a separate "
+                        "decode-containing grid; q > 1 omits pure prefill.")
     p.add_argument("--attention-chunk-factor", type=float, default=SQRT2,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
@@ -597,10 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["dense", "per_sequence", "attention", "linear_attention",
                  "moe", "mtp"],
         required=True,
-        help="Which profile category to refresh. `step` is the cudagraph "
-             "term rather than a per-layer category, and needs an engine "
-             "with graphs on -- it is here so that refreshing it does not "
-             "mean a full re-profile.",
+        help="Which profile category to refresh; mtp requires --profile-mtp.",
     )
     _add_common_flags(p_slice)
 

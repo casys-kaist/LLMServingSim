@@ -104,7 +104,8 @@ add CXL placement rules, or pick a smaller model.
 ### 2. Active KV cache
 
 Per-request KV cache, tracked at block granularity. The block size
-is `--block-size` tokens (default 16):
+is `--block-size` tokens (the profiled per-TP value when omitted, else a
+fallback of 16 for bundles without that metadata):
 
 ```
 bytes_per_block = (

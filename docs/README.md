@@ -28,6 +28,17 @@ temporary diagnostic and verification scripts or tests remain uncommitted.
 Regenerate the site changelog from the root CHANGELOG.md and run a production
 build before handing off documentation changes.
 
+For release checks, compare every public parser's options with its README
+index and full CLI reference, including wrapper-only defaults, boolean
+negations and subcommand restrictions. The profiler running guide also
+lists all resource-watchdog options and distinguishes unset from resolved
+engine settings.
+
+The changelog is a release summary, not a commit log. Use one heading per change
+category within each release, consolidate related pending entries, and keep
+upgrade requirements explicit. See the
+[changelog entry guidelines](docs/contributor/pr-workflow.md#changelog-entries).
+
 Accuracy claims refer to the recorded bundles and workloads on the
 [validation page](docs/validation.md), not every architecture catalog or newly
 acquired profile. Keep GPU recording separate from CPU-only comparison in setup
@@ -63,6 +74,8 @@ requests need a completed prompt and separate output tokens for correct ordering
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
 hardware characterization, backend-aligned Ring calibration, bandwidth units,
 recorded residuals and the distinction from grouped MoE communication.
+It separates the bundled NVIDIA CUDA path from other accelerators that require
+an acquisition port; vLLM device support alone does not establish compatibility.
 The [collective-link schema](docs/reference/cluster-config.md#collective-specific-links)
 documents optional per-operation analytical Ring links and configuration
 precedence, without changing collective payloads or the common fallback.

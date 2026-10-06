@@ -19,8 +19,8 @@ set -euo pipefail
 # EDIT THESE (REQUIRED)
 # =============================================================================
 
-# HF-style model id. A raw HuggingFace config.json must exist at
-# ``configs/model/<MODEL>.json`` relative to the LLMServingSim root.
+# HF-style model id. A missing ``configs/model/<MODEL>.json`` is downloaded
+# from the Hub; an explicit .json path must already exist locally.
 # The profiler reads model_type from that config to pick an
 # architecture yaml under profiler/models/.
 # MODEL="meta-llama/Llama-3.1-8B"
@@ -44,12 +44,11 @@ HARDWARE="RTXPRO6000"
 # TP_DEGREES="1"                  # use "1,2" to sweep both degrees
 
 # --- Engine kwargs ----------------------------------------------------------
-# DTYPE is normally inferred from the model config's ``torch_dtype``
-# field (bfloat16 for every model currently in configs/model/). Only
-# set it explicitly to force a different weight dtype.
-# KV_CACHE_DTYPE defaults to "auto" which inherits DTYPE.
-# DTYPE="bfloat16"                 # bfloat16 / float16 / float32 / fp8
-# KV_CACHE_DTYPE="fp8"             # auto / fp8 / fp16 / bf16
+# DTYPE is left unset so vLLM resolves the checkpoint dtype. Quantization
+# is a checkpoint setting; this flag alone does not quantize its weights.
+# KV_CACHE_DTYPE defaults to vLLM's "auto" and may be promoted by the config.
+# DTYPE="bfloat16"                 # explicit vLLM engine dtype override
+# KV_CACHE_DTYPE="fp8"             # explicit vLLM KV cache dtype override
 # MAX_NUM_BATCHED_TOKENS=2048     # vLLM's --max-num-batched-tokens
 # MAX_NUM_SEQS=256                # vLLM's --max-num-seqs
 # BLOCK_SIZE and GPU_MEMORY_UTILIZATION mirror the simulator's --block-size
@@ -106,8 +105,9 @@ HARDWARE="RTXPRO6000"
 # mtp.csv is ONE drafter pass, which is the unit the simulator multiplies by
 # its own --num-speculative-tokens. Only models declaring MTP modules support
 # this (num_nextn_predict_layers / num_mtp_modules / mtp_num_hidden_layers).
-# The sweep is cheap -- one axis, ~40 shots -- but run
-# `python -m profiler coverage <model> --profile-mtp` first if the catalog has
+# The sweep has one token-count axis; its cost depends on the model and grid.
+# Run `python -m profiler coverage <model> --hardware <hw> --profile-mtp`
+# first if the catalog has
 # no `mtp:` section yet. MiniMax-M3 additionally needs MAX_MODEL_LEN lowered and
 # a smaller GPU_MEMORY_UTILIZATION.
 # PROFILE_MTP=1
@@ -130,7 +130,7 @@ HARDWARE="RTXPRO6000"
 # kernel tile shape rather than a bigger one -- so the simulator falls back to
 # the nearest profiled value with a warning instead of interpolating. Profile
 # the values you intend to simulate: "1,5" for N=4, "1,4" for N=3. Each extra
-# value multiplies the attention grid.
+# value adds a decode-containing grid; q > 1 omits pure-prefill shots.
 # ATTENTION_DECODE_Q_LENS="1,5"
 
 # --- Measurement averaging --------------------------------------------------
@@ -171,9 +171,9 @@ HARDWARE="RTXPRO6000"
 
 # --- Output naming ----------------------------------------------------------
 # When omitted, the variant folder is auto-named from the effective
-# DTYPE + KV_CACHE_DTYPE — e.g. "bf16" (default), "bf16-kvfp8" (FP8 KV),
-# "fp8-kvfp8" (both FP8). DTYPE is pulled from the model's
-# ``torch_dtype`` when unset, so you get a meaningful name without
+# DTYPE + KV_CACHE_DTYPE — e.g. "bf16", "bf16-kvfp8" (FP8 KV),
+# "fp8-kvfp8" (both FP8). Without DTYPE the variant uses the checkpoint's
+# quantization method, then ``torch_dtype`` / ``dtype``, so it is named without
 # setting anything. Override VARIANT only for named runs (awq, gptq, ...).
 # VARIANT="my_experiment"
 

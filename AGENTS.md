@@ -782,92 +782,24 @@ rule do not guarantee improvements on every model. Generalization needs
 unseen models, hardware and workloads; endpoint summaries are not sufficient
 statistics of arbitrary distributions.
 
-### Why the old cudagraph correction is gone (not proof that graphs are irrelevant)
-For four months the simulator subtracted a per-step "cudagraph saving" it read
-from a `step.csv` the profiler swept, on the premise that **the sum of profiled
-layers predicts eager execution** and production runs the compiled + cudagraph
-path. The first equality is false: kernel sums are not eager wall time.
-The isolated-wall-time correction also compensated a second error rather
-than identifying a production term. This does not establish execution-mode
-invariance: exact-step controls are needed to measure any remaining difference.
+### CUDA graph timing and calibration boundaries
 
-**What the historical profiled sum is.** The measurements below predate
-per-call interval-union acquisition; they describe retained kernel-sum bundles,
-not a claim that the two measurement definitions always agree.
-Upstream `layerwise_profile` builds its tree from
-per-module CUDA events and `_cumulative_cuda_time` sums **leaf kernel
-durations**, so a bundle's per-layer latencies are kernel time -- not the wall
-time of an eager engine. Summed for a shape and compared against that shape's
-measured kernel total on the live engine, the simulator's trace lands within
-half a percent (Llama-3.1-8B at one sequence: trace 11,360 us against 11,311
-measured).
+Ordinary profiles measure per-call CUDA activity unions, not eager engine
+wall time. CUDA graph dispatch changes execution shapes and may change kernel
+selection or overlap; graph padding alone is not a wall-time correction.
+Do not subtract an isolated eager-versus-graph wall-time difference from
+profiled GPU work or add CPU launch/preparation time to simulated GPU latency.
 
-**What the historical production comparison measured.** A saturated captured
-graph can overlap host overhead, but its event interval is not guaranteed to
-equal the sum of eager-profiled kernels. The old comparison used the truth's
-own `running / gen_throughput` on pure-decode ticks against the same quantity
-from the simulator's log:
+Use matched query/KV shapes, execution modes and measurement boundaries when
+checking a residual. Tick-level throughput aggregates and end-to-end agreement
+cannot identify a per-layer error or establish a universal per-step adjustment.
+Native MoE components have separate eager/graph acquisition contracts.
 
-| model | sim / truth decode step |
-|---|---|
-| Llama-3.1-8B, TP=1 | **0.993** |
-| Qwen3-32B, TP=2 | **1.000** |
-| Qwen3-30B-A3B, DP2+EP2 | 0.944 |
-
-That is with **no** step correction and the measured link below. These
-historical one-second-tick aggregates are close, but do not establish exact
-same-shape agreement: running counts and KV distributions change inside a
-tick. A pipelined replay microbenchmark's 2-5% residual also does not establish
-which costs overlap in every production regime. Neither a universal zero
-residual nor a flat subtraction follows from these aggregates.
-
-**What `step.csv` measured instead.** `saved_us` was
-`isolated_no_graph_wall - isolated_graph_wall`, both timed with a
-`cuda.synchronize()` around every forward. That charges a per-call launch and
-drain neither production nor the profiled sum pays: on Llama-3.1-8B at one
-sequence, the same step reads 13,031 us isolated, 11,685 pipelined and 11,311
-as kernel time. Subtracting the difference between two isolated numbers from a
-total that is already kernel time takes the simulator *below* production.
-
-**Why it looked like it worked.** It was cancelling an over-charged
-interconnect. `hardware.yaml`'s `link_latency` was fitted on an all-reduce
-sweep timed the same isolated way, which put it at 16,100 ns where the graphed
-measurement says **6,600** -- so every collective was charged 1.24-1.51x at the
-sizes the simulator emits. Removing both:
-
-| | step.csv + old link | measured link, no step.csv |
-|---|---|---|
-| Llama-3.1-8B (no collectives) | TPOT +0.0%, span -1.1% | TPOT +1.6%, span +0.7% |
-| Qwen3-32B (TP=2) | TPOT +0.3%, span +0.6% | TPOT **-1.2%**, span **-1.1%** |
-| Qwen3-30B-A3B (DP2+EP2) | TPOT -2.0%, span -4.2% | TPOT **+0.5%**, span **-2.3%** |
-
-The two collective-carrying models are better without either correction, and
-Llama -- which has no collectives to over-charge -- is the one that wanted the
-subtraction. Its remaining +1.6% should **not** be assigned a uniform per-step
-term. The historical 0.993 decode-tick ratio suggested a prefill contribution,
-but cannot localise the entire residual. A flat subtraction still lacks a
-causal basis without exact-shape controls across execution regimes.
-
-**Do not restore the isolated-wall subtraction.** Three specific things to know if the idea comes back:
-
-- **The premise has to be re-derived, not assumed.** "Profiled sum = eager
-  wall" was written down once and never checked against a measured kernel
-  total. It is checkable in one rpc.
-- **Isolated timing is not production timing**, for a collective or a step.
-  The gap is 1.4-2.2x at the small end and vanishes above ~5 MB, so a fit that
-  spans both regimes will absorb it into whichever parameter is
-  size-independent -- the latency one.
-- **An end-to-end agreement is not a measurement.** Sweeping `link_latency`
-  against the Qwen3-32B example puts its error minimum at 14,000-16,100 ns and
-  its TTFT mean at exactly 0.0% at 16,100, which is how the fitted value came
-  to look confirmed. The NCCL measurement says 6,600. Two different wrong
-  methods agreed, and that is why nothing caught it for four months.
-
-There is also a practical reason the sweep was never going to hold: it needs a
-full-depth boot with graph capture, which DeepSeek-V3.2 (654 GB of experts at
-fp8) and GLM-5 cannot do on one card at all, and sharding to fit does not work
--- it removes GPU work while leaving the host cost alone, so the same shapes
-read a 4.5% saving share at ep=1, 32% at ep=2 and 59% at ep=8.
+Calibrate communication from primitive measurements using the backend's
+actual cost model, not by fitting model benchmark errors. Keep raw samples,
+rank count, units and calibration assumptions with the hardware bundle.
+Full-depth graph timing and sharded layer profiling are different contracts:
+sharding GPU work does not scale host costs or reproduce full-model cache state.
 
 
 ### hardware.yaml: the machine's own facts, measured
@@ -1714,6 +1646,13 @@ CLI flags follow vLLM naming where applicable:
 - Boolean flags use `argparse.BooleanOptionalAction` (e.g., `--enable-prefix-caching` /
   `--no-enable-prefix-caching`)
 
+Before release, compare each public entry point's registered arguments with
+its directory README index and complete website reference, including negative
+boolean forms, defaults, choices and subcommand restrictions. Check wrapper
+forwarding without starting engines. Distinguish parser defaults from resolved
+engine values; an unset profiler block size is chosen by vLLM, while serving
+loads the profiled per-TP value and uses 16 only as a metadata fallback.
+
 ### Head dimension
 Some models (e.g., Qwen3) have `head_dim != hidden_size // num_attention_heads`. Always use:
 ```python
@@ -1884,138 +1823,45 @@ read ~1% low even with no grouping. Don't "simplify" it back — the difference
 is measurable, and the grouped and ungrouped cases must not have two different
 answers to one question.
 
-### `activated_experts` is a distinct count, not a pair count
+### Distinct expert counts and measured routing
 
-A token takes `k` of the `E` experts, so two tokens can pick the same one and
-the number of *distinct* experts a batch activates is not `n * k`. Per EP rank:
+Whole-block MoE lookup distinguishes gathered tokens, expert-token assignments
+and distinct activated experts. With independent tokens choosing uniform top-k
+experts, the expected distinct count per EP rank is:
 
-    activated_per_rank = (E / ep) * (1 - ((E - k) / E) ** n)
+```text
+activated_per_rank = (E / ep) * (1 - ((E - k) / E) ** n)
+```
 
-which is exact for a balanced gate: an expert is missed by one token with
-probability `(E - k) / E` and by all `n` of them with that raised to the `n`.
-It reduces correctly at both ends — `n = 1` gives exactly `k`, and large `n`
-approaches `E / ep`.
+At one token the global count is k and the expected per-rank count is k/ep;
+the latter is not an integer placement for a particular token. Runtime counts
+are rounded and bounded for lookup. BALANCED is an expectation, not a measured
+routing histogram. Do not replace distinct counts with n*k/ep: repeated expert
+selections collide, so assignments and distinct weights have different scaling.
 
-`_balanced_route_ep` used to count expert-token **pairs**,
-`min(round(n * k / ep), E / ep)`, which is the collision-free reading and
-saturates far too early. On Qwen3-30B-A3B at ep=1 (`E` 128, `k` 8) it hit the
-cap at **n = 16**, where the true expectation is 82 of 128:
+`bench run --record-gate-stats --enforce-eager` records a trained gate's counts.
+`bench/core/gate_stats.py` reduces them into `gate_stats.json`, consumed through
+`--expert-routing-policy CUSTOM --gate-stats`. The curve describes the recorded
+weights, inputs and batching, not a universal correction for that architecture.
 
-| n | pairs (old) | distinct (new) |
-|---|---|---|
-| 1 | 8 | 8 |
-| 4 | 32 | 29 |
-| 8 | 64 | 52 |
-| **16** | **128** | **82** |
-| 32 | 128 | 112 |
-| 64 | 128 | 126 |
-| 128 | 128 | 128 |
-
-So every decode step from 16 sequences up was charged the whole MoE weight
-matrix. Measured against a real DP=1 run with real weights — no EP collective,
-no DP round pairing, so the step cost is the only thing under test:
-
-| sequences | sim step | truth step | error |
-|---|---|---|---|
-| 16 | 43.72 ms | 27.99 ms | **+56%** |
-| 24 | 44.98 | 31.06 | +45% |
-| 32 | 46.27 | 37.94 | +22% |
-| 48 | 47.85 | 42.29 | +13% |
-| 119 | 52.61 | 54.33 | -3% |
-
-Which is why it was invisible in a saturated run's TPOT and surfaced as a TTFT
-tail: a saturated run sits at 128 sequences, where the two readings agree, and
-the mid-size batches are what the ramp and the queue drain run at. Fixing it
-moves the DP=1 run's span from +6.0% to +3.7%.
-
-This is the same distinction `_hit_probs` already makes for how many *ranks* a
-token reaches, where modelling independent draws read ~1% low. Here the
-collision-free reading was worth 56%.
-
-### The uniform gate is an assumption, and it is measurable
-`_balanced_route_ep` asks how many **distinct** experts a batch reaches, and
-answers with the coupon-collector expectation for a *uniform* gate,
-`E * (1 - ((E-k)/E)**n)`. That is the right shape -- it reduces to `k` at one
-token and approaches `E` at many -- but a trained gate concentrates on popular
-experts, so the real count is lower and the concentration lives in the
-weights. No closed form can reach it.
-
-`bench run --record-gate-stats` measures it: the `VLLM_MOE_ACTIVATED_LOG`
-patch logs `(tokens, distinct, top_k)` per `select_experts` call and
-`bench/core/gate_stats.py` reduces the log to one curve in `gate_stats.json`,
-which the simulator reads under `--expert-routing-policy CUSTOM --gate-stats`.
-Measured on Qwen3-30B-A3B over 110,640 calls: **0.87x** of the uniform model
-through the middle of the range, **0.94x** at a saturated decode, exactly
-**1.000** at one token. Against a real DP=1 run, holding everything else
-fixed:
-
-| | TTFT mean | TTFT p50 | TPOT mean | span |
-|---|---|---|---|---|
-| BALANCED (uniform closed form) | +8.3% | +6.5% | +6.0% | +4.8% |
-| **CUSTOM (measured curve)** | **+2.8%** | **+2.1%** | **+1.9%** | **+0.3%** |
-
-Four things to know.
-
-**The curve is the measurement, not a fit.** Linear between the batch sizes
-the recording run visited, **clamped** at both ends rather than extrapolated:
-below the first point there is nothing under one token, and above the last the
-count is bounded by `E` and the curve is already flat (0.90-0.97 of `E` across
-every prefill-sized batch measured).
-
-**A mismatched curve is refused, not rescaled.** `num_experts` and
-`num_experts_per_tok` are recorded and checked, because a distinct count means
-nothing without them. The model name is compared on its **basename** -- bench
-is routinely pointed at a local directory while the simulator names the HF
-repo -- so that check is a typo guard and `E` / `top_k` are the real ones. A
-missing, unreadable or mismatched file falls back to the closed form with one
-warning, which is deliberate: a guessed concentration is worse than a closed
-form that at least knows the right `E`.
-
-**The measured count is global, so the per-rank figure is it divided by the EP
-degree** -- exactly as the closed form's `E_rank * (1 - miss)` is
-`E * (1 - miss)` divided by it. The router selects from all `E` experts
-whatever the degree.
-
-**Recording needs `--enforce-eager`.** The
-patch's `.unique()` is a data-dependent shape and cannot be captured into a
-cudagraph. The curve describes the recorded weights and inputs; different
-batching or near-tie numerical changes need independent controls. Mark these
-runs as diagnostic (`step_audit.end_to_end_control_eligible: false`) and do not
-use their synchronized latency as an uninstrumented benchmark reference.
-
-Gate raw logs require explicit workload start/end markers written by the
-driver around request submission/completion. Aggregate only this interval.
-Never infer warmup from `distinct <= top_k`: concentrated real-workload
-routing can have exactly that shape. Refuse unmarked, repeated-boundary or
-incomplete raw logs instead of guessing; existing reduced curves remain
-readable. Phase markers and dropped startup/shutdown counts are recorded in
-schema 2. Recording does not silently change BALANCED or any example's policy.
-
-**Do not try to force the *truth* to be uniform instead.** That mode was
-built, measured and removed. On a non-EP configuration under cudagraphs it
-reads **0.700x** of the real gate's TPOT, and the reason is not the count:
-Python interception alone costs 0.0% (a wrapper returning the gate's own ids
-measures 1.001), caching is irrelevant (a freshly randomised assignment reads
-0.674 against a cached tensor's 0.670), and raising the count to the uniform
-model's carries only 3.6 of the 33 points -- in the *cheaper* direction, which
-is backwards. An in-situ profile of 8 real decode steps at matched batch shape
-says why: attention is unchanged (`flash_fwd_splitkv` 1.039/1.022, 192 calls
-each, the control) and every mover is a MoE GEMM with the **kernel variant
-substituted** -- a `MoeFCGemm` instantiation appears with 144 calls, another
-drops to zero, and `Fused_Moe_Kernel` launches go 288 -> 336 and 96 -> 48. The
-per-expert histogram feeds `moe_align_block_size` and the grouped-GEMM
-launcher's config choice, so flattening it picks a different kernel. The mode
-cannot hold "everything but the count" fixed. The same experiment on a DP2+EP2
-configuration reads **1.0016**, so this is a property of the path, not of the
-question.
-
-**`moe.csv` is not affected.** It is profiled under `enforce_eager=True`,
-where the same forcing reads 1.05 and no kernel swap happens. And the
-end-to-end +1.9% TPOT with MoE at ~72% of a step bounds any `moe.csv` error to
-about ±2.4%. What this does add is a reason to be wary of *any* attempt to
-model the compiled path's MoE cost from an eager per-layer profile: it depends
-on the routing histogram through kernel selection, which such a profile cannot
-express by construction.
+- Interpolate between recorded batch sizes and clamp at the endpoints. The
+  measured count is global; the balanced per-rank estimate divides it by EP.
+- Check expert count, top-k and model basename before consuming a curve. The
+  basename check is a typo guard, not full checkpoint identity verification.
+  Missing, unreadable or mismatched curves warn and fall back to BALANCED.
+- Aggregate only between explicit workload start/end markers. Concentrated
+  routing with `distinct <= top_k` is valid and must not be classified as
+  warmup. Reject unmarked, repeated-boundary and incomplete raw logs.
+- The observer requires eager execution and synchronization. Mark its latency
+  diagnostic and compare serving latency against a separate uninstrumented run.
+  Recording does not change the default routing policy.
+- Forced routing can change expert-load histograms and grouped-GEMM kernel
+  selection. It is not a control that holds everything except the distinct
+  count fixed, and end-to-end agreement cannot bound an individual MoE table's
+  error without separating other costs.
+- Legacy whole-block acquisition and native DP+EP components have different
+  contracts. Neither a measured count curve nor matching CSV columns establish
+  arbitrary-histogram or deployment coverage.
 
 ### MoE dispatch/combine and TP restoration
 
@@ -2166,44 +2012,23 @@ the same reason `decode_q_len` is not: `E/ep` has to be a whole number of
 experts and the permute width is a staircase in it. A bundle with no `ep`
 column reads as ep=1 and prices exactly as it did before the axis existed.
 
-### A shrunk checkpoint can reuse most of a bundle, but not `moe`
+### Reduced checkpoints and profile reuse
 
-A performance simulator does not need real weights to be validated -- it needs
-real shapes, the real scheduler and the real kernels. So a checkpoint can be
-shrunk to fit one card by cutting only *counts*
-(`num_hidden_layers`, `n_routed_experts`) while keeping every shape a kernel's
-cost depends on. `configs/model/deepseek-ai/DeepSeek-V3.2-Exp-16L64E.json` is
-that: 61 -> 16 layers and 256 -> 64 experts, 671.9B -> 43.5B, 625.7 GB -> 40.5 GB
-at fp8, and it still resolves to 3 dense + 13 MoE layers with sparse attention
-throughout, so MLA, the DSA indexer, group-limited routing (`n_group` 8 still
-divides 64) and the MTP module are all still exercised. Only vLLM needs the
-shrink: `--load-format dummy` still allocates the weight tensors.
+A reduced checkpoint is a diagnostic configuration, not validation of the
+full-size trained model. The stored DeepSeek-V3.2-Exp-16L64E config reduces
+layer and expert counts while retaining MLA, sparse indexing, grouped routing,
+dense/MoE layer composition and MTP. Dummy loading still allocates its weights.
 
-**`dense`, `per_sequence`, `attention` and `mtp` transfer.** Per-layer latency
-does not depend on how many layers the model has -- the same assumption the
-profiler already rests on, since it measures 1-4 layers per category and the
-simulator multiplies. Copy them and record a `derived_from` block in
-`meta.yaml` so nobody reads them as measured on the shrunk checkpoint.
+Reusing `dense`, `per_sequence`, `attention` or `mtp` rows requires matching
+kernel shapes, dtypes, backend and acquisition geometry. Record inherited data
+with `derived_from` metadata rather than representing it as fresh acquisition.
+Reduced-stack profiling is an approximation of full-model execution and cache
+state; model depth alone is not evidence that every execution property matches.
 
-**`moe` does not.** Measured at matched `(ep, tokens, activated_experts)`, the
-64-expert block costs **0.77x to 1.10x** the 256-expert one, p50 0.925:
-
-| tokens | activated | E=256 | E=64 | ratio |
-|---|---|---|---|---|
-| 8 | 8 | 92.1 us | 91.5 us | 0.993 |
-| 8 | 64 | 587.3 | 588.7 | 1.002 |
-| 2048 | 8 | 822.4 | 663.1 | **0.806** |
-| 2048 | 64 | 884.4 | 817.7 | 0.925 |
-
-The axes do capture the GEMM: work is `tokens * k` and weight traffic is
-`activated * expert_weight`, and `k`, `moe_intermediate_size` and `hidden_size`
-are unchanged by the shrink. What they do not capture is the permute's
-histogram over `E` bins, which is why the gap appears at **many tokens and few
-activated experts** -- where sorting dominates the GEMM -- and closes at small
-token counts. Copying the table would have overcharged prefill-sized MoE steps
-by ~20%. It is also the measured case for the `ep` column existing at all:
-`E_local` is a cost driver, not just a constraint on which `activated` values
-are reachable.
+Expert count changes require a new `moe` table. Even at the same token,
+top-k and active-expert coordinates, routing and permutation operate over a
+different expert domain and can select different kernels. Native component
+contracts also retain model/deployment identity and must not be relabelled.
 
 ### MoE expert blocks
 Routing vectors use global EP ranks. Each DP member's trace uses
@@ -2412,6 +2237,14 @@ in-progress entries are roadmap statements, not supported behavior or accuracy c
   changes and limitations only. Never publish session diaries, investigation
   checkpoints or intermediate experiment notes, including on contributor pages
   or in this file.
+- Keep one changelog section per release and one heading per change category.
+  Consolidate related Unreleased entries into short, user-facing summaries;
+  retain migration requirements, limitations and contributor credit. Link to
+  guides for implementation details instead of accumulating per-commit stories.
+  Preserve published release records when tidying pending changes.
+- When consolidating release notes, compare commits and the net code diff since
+  the previous release, including changed submodules. The old changelog is not
+  an exhaustive inventory; do not advertise reverted experiments as features.
 - Before committing, inspect the staged file list and diff for both exclusions
   and mandatory documentation coverage. Do not stage the whole dirty worktree.
 - Do not add AI-tool references or AI attribution trailers to commit messages.
@@ -2451,50 +2284,28 @@ diagnostic inputs while retaining legacy request/timeseries compatibility.
 still verify resolved block counts. Dummy weights do not establish equivalent
 backend selection, routing or scheduling for a real checkpoint.
 
-**Never compute TTFT from a `requests.jsonl` by hand.** Use
-`bench/core/validate.py::_bench_latencies`, which is what `bench validate` and
-every committed `summary.txt` use. Computing it ad hoc is how several hours got
-spent chasing a +27% median TTFT error that did not exist.
+Use `bench/core/validate.py::_bench_latencies`, the implementation shared by
+`bench validate` and committed summaries, rather than ad hoc metric formulas.
 
-`requests.jsonl` carries a **mixed clock domain**:
+`requests.jsonl` mixes wall-clock `arrival_time` with monotonic lifecycle
+timestamps. Align arrival to the engine clock before computing milliseconds:
 
-| field | clock | set where |
-|---|---|---|
-| `arrival_time` | wall-clock **epoch** seconds | frontend entry |
-| `queued_ts`, `scheduled_ts`, `first_token_ts`, `last_token_ts` | process **monotonic** | engine lifecycle |
+```text
+offset  = min over requests of (queued_ts - arrival_time)
+arrival = arrival_time + offset
+TTFT    = (first_token_ts - arrival) * 1000
+TPOT    = (last_token_ts - first_token_ts) / (output_toks - 1) * 1000
+latency = (last_token_ts - arrival) * 1000
+```
 
-So the three metrics are
+The offset is an estimate: if pickup delay is nonnegative, its residual bias
+is the minimum pickup delay in that run, not a guaranteed fixed tolerance.
+When conversion is unavailable, the validator uses its documented queued-time
+fallback. TPOT is defined only for outputs with more than one token.
 
-    TTFT    = (first_token_ts - arrival) * 1000
-    TPOT    = (last_token_ts - first_token_ts) / (output_toks - 1) * 1000
-    latency = (last_token_ts  - arrival) * 1000
-
-and **`arrival` is `arrival_time` shifted into the monotonic domain**, not
-`queued_ts`:
-
-    offset  = min over requests of (queued_ts - arrival_time)
-    arrival = arrival_time + offset
-
-`bench_epoch_to_monotonic_offset` derives the offset that way because
-`queued_ts = arrival_time + offset + pickup` with `pickup >= 0`, so the minimum
-over a few hundred requests bounds it from above by `min(pickup)` and lands
-within a couple of milliseconds.
-
-**Why `queued_ts` is wrong.** `QUEUED` is stamped inside
-`Scheduler.add_request`, which runs at a loop boundary, so a request arriving
-mid-step is registered only when the in-flight step ends. Measured on
-RTXPRO6000/Qwen3-30B-A3B, `queued_ts - arrival_time` is p50 **21.7 ms** / p90
-61.6 ms -- the same distribution as the simulator's own
-wait-for-the-in-flight-batch term (p50 22.5, p90 62.4), because it is the same
-physical wait. The simulator starts from the workload's arrival time and keeps
-that wait, so anchoring the truth at `queued_ts` drops it from vLLM's TTFT only
-and charges the simulator for a term it modelled correctly.
-
-**It is worth 18% of a 124 ms TTFT and 0.07% of a 32 s latency**, which is why
-it shows up as a large TTFT error beside a TPOT and latency that look fine. On
-the DP+EP example, computing TTFT against `queued_ts` reads a **+22 to +30%**
-median error where the correct anchor reads **+3.5%** -- and TPOT and span are
-unaffected either way, since neither uses an arrival timestamp.
+Using queued time instead of arrival omits frontend-to-engine waiting from
+TTFT and end-to-end latency. It does not affect token-to-token intervals.
+Neither request latency nor `Total clocks (ns)` is simulator host wall time.
 
 Report all fifteen TTFT, TPOT and latency statistics, including every fixed
 repeat when repeated references are available. The simulator's deterministic
@@ -2572,18 +2383,12 @@ than assuming only the stack and catalog resolvers can affect simulation.
    the module tree cannot tell you which those are. Every one of the four
    modern families had at least one such entry.
 
-**Two scenarios' clocks are chaotic with respect to cost, and
-`moe_dp_tp_pp_uneven` is the worst.** Its config is DP + TP + PP with uneven
-members and **10 requests**, so the total is a handful of DP rounds and which
-side of a round-pairing discontinuity the run lands on. Scaling one layer that
-is 1.4% of a step -- `qk_norm` -- by factors of 1.00 / 0.95 / 0.90 / 0.75 /
-0.52 moves the total clock by 0 / -0.08% / **+8.8%** / +3.5% / **+11.2%**:
-non-monotone, and a 0.07%-of-step perturbation moving it 8.8%. The requests all
-complete with identical token counts and TTFT moves the *expected* way
-(0.94-0.99x for a cheaper step) while latency jumps 12%, so it is the schedule
-that flips, not the cost. Keep the scenario -- it is a behaviour check, and it
-found two real DP hangs -- but do not read its baseline as a cost regression:
-any change to a profiled latency will flip it arbitrarily.
+DP/TP/PP scenarios with uneven request streams can change round pairing when
+a component cost changes. Total clocks may then move non-monotonically even
+when that component gets faster. Preserve these scenarios as behavior checks;
+inspect the resulting batches, request completion and token counts before
+attributing a changed digest to a kernel-cost regression. An aggregate clock
+alone does not identify its cause.
 
 A scenario whose clock equals an existing one exercises flag parsing and
 nothing else. Several knobs only bite once the KV cache is saturated, which is

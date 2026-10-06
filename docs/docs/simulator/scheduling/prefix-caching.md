@@ -50,7 +50,7 @@ Up to three `BlockPool`s per instance, looked up in order:
 
 | Tier | Object | Lives in | Block size | Required? |
 | --- | --- | --- | --- | --- |
-| **NPU pool** | `MemoryModel.npu_pool` | NPU memory | `--block-size` (default 16) | Always, and indexed when `--enable-prefix-caching` (default) |
+| **NPU pool** | `MemoryModel.npu_pool` | NPU memory | `--block-size` (profiled per-TP value; fallback 16) | Always, and indexed when `--enable-prefix-caching` (default) |
 | **Storage pool** | `MemoryModel.storage_pool` | CPU or CXL | 256 tokens (LMCache's chunk) | Optional, `--prefix-storage` |
 
 All tiers share **one key space**. A tier whose blocks are N times
@@ -174,7 +174,9 @@ remainder is recomputed:
 The NPU pool and the storage pool use **different block sizes**, and
 that is deliberate rather than a rounding artefact:
 
-- NPU pool: `--block-size` (default 16), matching vLLM's GPU block size.
+- NPU pool: `--block-size`, using the profiled per-TP value when omitted and
+  falling back to 16 for bundles without that metadata. Match the target
+  vLLM engine's resolved GPU block size.
 - Storage pool: 256 tokens, matching LMCache's default `chunk_size`.
   A host tier wants fewer, larger transfers.
 

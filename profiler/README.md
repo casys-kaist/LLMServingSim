@@ -3,6 +3,9 @@
 vLLM-based layerwise profiler for LLMServingSim. Drives a real vLLM
 engine with synthetic batches and records per-layer CUDA kernel
 latency. Output CSVs feed the simulator's trace generator.
+The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
+an audited acquisition adapter, not just a different image or hardware label;
+see [adding hardware](../docs/docs/profiler/adding-hardware.md).
 The tracked `perf/` bundles and their metadata define available model, precision
 and parallelism coverage. Native MoE additionally requires a matching TP/DP/EP
 component contract; a legacy EP table alone does not establish that coverage.
@@ -128,6 +131,9 @@ visible against the other.
 python -m profiler profile   <model> --hardware <hw> [flags]   full sweep
 python -m profiler slice     <model> --hardware <hw> --tp-refresh N --group G
 python -m profiler coverage  <model> --hardware <hw>            catalog check
+python -m profiler plan-skew <model> --hardware <hw> [flags]    saved-limit preview
+python -m profiler refit-skew <model> --hardware <hw> [flags]    offline calibration
+python -m profiler hardware  --hardware <hw> [flags]            device/link measurement
 ```
 
 | Group | Flags |
@@ -147,6 +153,18 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 | **paths** | `--out-root`, `--model-config-root` (`OUT_ROOT`, `MODEL_CONFIG_ROOT`) |
 | **verbosity** | `--log-level` (`LOG_LEVEL`), `--silent`, `--verbose` (`VERBOSITY`; choose one logging setting) |
 | **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
+
+The table covers `profile`, `slice`, `coverage` and `plan-skew`; not every
+accepted option affects every command. `plan-skew` reads saved engine limits
+and does not boot an engine. `--dp` is valid only for `profile` or
+`slice --group moe`; `--profile-mtp` with `slice` requires `--group mtp`.
+
+`refit-skew` instead accepts `--hardware`, `--variant`, `--tp`, `--out` and
+`--log-level`; omitting `--tp` refits every measured degree. `hardware` accepts
+`--hardware`, `--npus` (default `2`), `--out` and `--log-level`.
+Both use `--out` (default `profiler/perf`, relative to the working directory),
+not `--out-root`. Common-command path defaults are rooted at the repository.
+Use `--help` on any subcommand for its accepted options.
 
 Native MoE components use one physical GPU to emulate each deployment rank,
 preserving global expert IDs and top-k. Explicit DP acquisition has immutable,
@@ -467,13 +485,15 @@ runs (quantization schemes, experiments).
 #### Dtype
 
 ```bash
-DTYPE="bfloat16"                    # bfloat16 / float16 / float32 / fp8. Inferred
-                                    # from the model's torch_dtype when unset.
-KV_CACHE_DTYPE="fp8"                # auto / fp8 / fp16 / bf16 — defaults to "auto"
-                                    # (inherits DTYPE). `fp8` produces a `-kvfp8`
-                                    # suffix on the variant folder and halves KV
-                                    # cache memory in the simulator.
+DTYPE="bfloat16"                    # explicit engine dtype override; normally unset
+KV_CACHE_DTYPE="fp8"                # explicit KV override; normally vLLM's "auto"
 ```
+
+Without `DTYPE`, vLLM resolves the checkpoint dtype. The auto-derived variant
+uses its quantization method or `torch_dtype` / `dtype`; setting an engine dtype
+alone does not quantize a checkpoint. An explicit FP8 KV override adds a
+`-kvfp8` suffix. Match it to the simulator's model config: profiler flags do
+not edit that config or the simulator's cache dtype.
 
 #### Verbosity
 

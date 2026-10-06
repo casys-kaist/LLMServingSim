@@ -796,7 +796,7 @@ class ProfileArgs:
     max_num_seqs: int | None = None
     block_size: int | None = None
     """KV block size in tokens, vLLM's own ``--block-size``. None uses
-    HOST_ENGINE_DEFAULTS (16). Exposed because the simulator has the same knob
+    vLLM's backend-dependent resolution. Exposed because the simulator has the same knob
     and the two have to agree: a profile measured at one block size describes a
     different paging regime than a simulation run at another. It also stops
     mattering only for uniform models — on a hybrid stack vLLM *overrides*

@@ -58,9 +58,11 @@ from one list is visible against the other.
 | **backend** *(run-wide)* | `--network-backend` |
 | **output** *(run-wide)* | `--output`, `--run-id`, `--inputs-root`, `--log-interval`, `--log-level` |
 
-Flags registered with `argparse.BooleanOptionalAction` have a `--no-` form
-(for example, `--no-enable-prefix-caching`). Other switches such as offloading
-use `store_true` and have no automatic negative form; consult `--help`.
+The reversible switches also accept `--no-enable-block-copy`,
+`--no-enable-prefix-caching`, `--no-enable-chunked-prefill`,
+`--no-reserve-full-isl`, `--no-async-scheduling`, `--no-save-trace-text` and
+`--no-keep-inputs`. Other switches such as offloading use `store_true` and
+have no automatic negative form; consult `--help`.
 
 The optional cluster-level `collective_links` map selects bandwidth and latency
 for individual analytical Ring operations. Missing operations and fields use
@@ -280,6 +282,11 @@ reproduces all nine published (rate, length) pairs to within 0.01 tokens.
 `DECAY`, `CUSTOM`). A model with no published figure gets no default — the four
 modern families range from 0.39 to 0.78, so there is nothing defensible to
 guess.
+
+Model-owned MTP drafter passes are charged from catalog bindings and profile
+tables; missing required data is an error. Separate-model or n-gram drafting
+has no modeled drafter time and warns that speedup is an upper bound. See the
+[speculative-decoding contract](../docs/docs/examples/advanced/speculative-decoding.md).
 
 ### `memory_model.py`
 

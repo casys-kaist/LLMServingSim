@@ -157,16 +157,17 @@ Both mechanisms select at read time. The KV cache still holds every
 token, and the indexer's side cache is an *addition* to it, not a
 replacement — M3 stores a GQA cache **and** an index cache. Proposals
 that offload the unselected majority to a lower tier are research and
-framework work (vLLM RFC #33980 is open and unimplemented), not
-something these checkpoints do.
+framework work, not behavior modeled by this acquisition and simulation path.
 :::
 
-:::note[No real-system validation yet, and no bundles shipped]
-The repo ships no profiled bundle for any of these three. The shapes
-have been checked against published parameter counts where one exists
-(DeepSeek-V3.2 comes to 671.9B against a published 671B), and every
-catalog binds 100% of measured CUDA time in all three batch regimes —
-but an end-to-end comparison against a real vLLM run has not happened.
+:::note[Profile coverage is not full-model accuracy validation]
+The repository includes RTXPRO6000 profile bundles for DeepSeek-V3.2, GLM-5
+and MiniMax-M3. Inspect each bundle's metadata for measured precision,
+parallelism, coverage and acquisition protocol; catalog coverage alone does
+not establish end-to-end accuracy. A reduced, dummy-weight DeepSeek diagnostic
+is reported on the [validation page](/docs/validation#additional-diagnostic-deepseek-v32-exp-16l64e)
+and retains significant error. It does not validate full-size DeepSeek,
+GLM-5 or MiniMax-M3 deployments.
 :::
 
 ## Where to learn more

@@ -140,7 +140,21 @@ fill `output_tok_ids` with the model's natural responses (free
 generation). Without it, `output_tok_ids` come straight from the
 ShareGPT assistant turn.
 
-Eight flags gate that mode:
+The source, length and arrival options are:
+
+| Group | Flags |
+| --- | --- |
+| Required | `--model`, `--num-reqs`, `--sps`, `--output` |
+| Source and sampling | `--source`, `--seed`, `--max-sessions` |
+| Length filters | `--min-input-toks`, `--max-input-toks`, `--min-output-toks`, `--max-output-toks`, `--max-kv-toks` |
+| Fixed random lengths | `--fix-len`, `--fix-input-length`, `--fix-output-length` |
+| Arrival patterns | `--first-arrival-sec`, `--pulse`, `--pulse-n`, `--pulse-delay-sec`, `--pulse-poisson` |
+
+`--fix-len` generates random token IDs at the requested lengths; it does not
+read or pad ShareGPT conversations and skips `--use-vllm`. The full reference
+linked below describes defaults and interactions.
+
+Free-generation options:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |

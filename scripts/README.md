@@ -41,6 +41,17 @@ the defaults fit every machine. See `python3 scripts/monitor_run.py --help`.
 Logs must use a fresh path. The watchdog stops its own command and descendants,
 not unrelated workloads; container memory limits remain the hard backstop.
 GPU telemetry does not reserve devices or check whether another user owns them.
+All watchdog options and their defaults are listed in the
+[resource-safety reference](../docs/docs/profiler/running.md#resource-safety).
+
+| Group | Watchdog options |
+| --- | --- |
+| Output | `--output` (required; fresh CSV path) |
+| Memory guards | `--max-rss-gib`, `--min-available-gib`, `--max-swap-growth-gib` |
+| Timing | `--interval`, `--timeout` |
+| GPU telemetry | `--gpu-uuid` and `--max-gpu-temp-c` (supply together) |
+
+Place the child command after `--`.
 Before a long skew sweep, preview coverage with `profiler plan-skew`, verify
 exclusive GPU availability, and run the acquisition under explicit memory limits.
 

@@ -42,6 +42,10 @@ git checkout -b add-deepseek-v3
   and relevant public pages under docs/. Review repository READMEs, including
   per-directory files, for affected or stale descriptions. Keep README changes
   concise and regenerate the site's changelog from CHANGELOG.md.
+- **Audit CLI documentation before release.** Compare registered flags,
+  negative forms, defaults and subcommand restrictions with each README index
+  and full reference. Check wrapper forwarding without launching engines;
+  distinguish parser defaults from values resolved by the target engine.
 - **Document supported behavior, not development sessions.** Keep investigation
   diaries, intermediate experiment notes and session checkpoints out of tracked
   documentation, including contributor pages. Describe final supported behavior,
@@ -75,6 +79,27 @@ A bad one:
 ```
 fixes
 ```
+
+## Changelog entries
+
+Edit the root `CHANGELOG.md`; the website page is generated from it.
+
+- Add pending changes under `Unreleased`. Use each applicable heading once:
+  `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, or `Security`.
+- Write one or two sentences per user-visible change. Merge related entries
+  into the final behavior rather than appending a new account of every commit.
+- Cross-check commits and the net code diff since the previous release, including
+  changed submodules. Existing notes may omit changes; reverted experiments must
+  not be presented as current features.
+- Preserve removed options, their replacements, required data refreshes and
+  validation limits. Keep issue/PR links and contributor credit with the change.
+- Link to the relevant guide for algorithms, examples and implementation details.
+  Do not publish investigation timelines or intermediate benchmark results.
+- Leave published release records intact when consolidating pending changes.
+  Do not turn `Unreleased` into a numbered release until that release is approved.
+
+Run `pnpm sync-changelog` from `docs/` to update the tracked page, then
+`pnpm build` to check links and rendered content before publishing.
 
 ## Before you push
 
@@ -156,7 +181,7 @@ research question it lets you ask.
 The exact command(s) you ran and the key result. For example:
 
   ./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B
-  -> TTFT MAPE 2.1% (was 2.3%), TPOT 1.7% (unchanged)
+  -> report all 15 signed Diff% values from summary.txt and their changes
 
 ## Notes
 

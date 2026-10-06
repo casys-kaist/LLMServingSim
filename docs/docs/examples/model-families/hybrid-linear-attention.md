@@ -149,13 +149,12 @@ caching off instead and the mode becomes `none`, which checkpoints
 nothing.
 :::
 
-:::note[No real-system validation yet]
-The rules above are transcriptions of vLLM's, verified against its
-source and unit-tested — the chunk-alignment split against vLLM's over
-14,310 input combinations, the page arithmetic against
-`MambaSpec.max_memory_usage_bytes`. What has *not* happened is an
-end-to-end comparison against a real vLLM run of this model, which is
-what `python -m bench` is for.
+:::note[Profile coverage is not end-to-end validation]
+The model's profile bundle and deterministic simulator scenarios exercise the
+hybrid stack, state sizing and chunk alignment. They do not establish real-system
+accuracy: no end-to-end Qwen3.8 reference is included on the
+[validation page](/docs/validation). Match the actual deployment's resolved
+block size, state dtypes and graph configuration before recording a comparison.
 :::
 
 ## Where to learn more

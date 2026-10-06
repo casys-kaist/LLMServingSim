@@ -195,17 +195,19 @@ decode instance.
 
 ### Hardware facts are inherited from the measured bundle
 
-A cluster config mixes two kinds of statement, and only one of them is yours:
+A cluster config separates deployment choices from hardware parameters.
+Both remain explicit user inputs when describing a hypothetical system:
 
 | Fields | Meaning |
 | --- | --- |
 | `tp_size`, `num_npus`, `mem_util`, `dp_group`, `pd_type` | what you want to simulate |
 | `link_bw`, `link_latency`, `npu_mem.mem_size/mem_bw/mem_latency` | what the hardware actually is |
 
-The second kind is measured by `python -m profiler hardware --hardware <hw>`
-into `profiler/perf/<hw>/hardware.yaml`, and a config that **omits** those keys
-inherits the measured values. Every inherited value is logged with its
-provenance:
+`python -m profiler hardware --hardware <hw>` writes device specifications,
+measured NCCL links and explicitly identified assumptions to
+`profiler/perf/<hw>/hardware.yaml`. A config that **omits** these keys inherits
+the available defaults; not every default is a measured quantity. Every
+inherited value is logged with its provenance:
 
 ```text
 [HardwareDefaults] INFO  link_bw = 16.37 for RTXPRO6000 (inherited from hardware.yaml, measured)

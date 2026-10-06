@@ -38,7 +38,7 @@ matching runtime knobs per `instances[i]`; see
 | `--enable-chunked-prefill` **(per-instance)** | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
 | `--npu-memory-utilization` **(per-instance,** as `npu_mem.mem_util`**)** | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
 | `--reserve-full-isl` / `--no-reserve-full-isl` **(per-instance)** | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
-| `--async-scheduling` / `--no-async-scheduling` **(per-instance)** | flag | on | Compose the next batch while the current one is still running, as vLLM's `scheduler_config.async_scheduling` does (on there too). It makes vLLM's `max_concurrent_batches` 2 at `pp_size` 1, so a request that arrives after the next batch was composed waits one more step. Worth ~0.6 step of TTFT: invisible on a saturated run, about a fifth of the median TTFT on a light one |
+| `--async-scheduling` / `--no-async-scheduling` **(per-instance)** | flag | on | Model next-batch admission lookahead while the current batch runs. V1 pipeline parallelism already supplies the modeled in-flight window; V2 can add async lookahead. Idle instances admit current arrivals. The TTFT effect depends on workload and batching, not a fixed per-request delay |
 | `--block-size` **(per-instance)** | int | the profiled value, else `16` | KV cache block size in tokens. vLLM treats this as a **floor and an alignment unit**, not the answer: it takes `max(backend minimum, your value)` as the alignment, derives the smallest multiple of that whose attention page covers one mamba page, and raises the block size to it — never lowering it. On Qwen3.8-27B, asking for 16 gives **784** and asking for 64 gives **832**. The profiler records what the engine settled on in `meta.yaml::engine_resolved.per_tp[tp]` — **per TP degree**, since both the mamba page and the attention page scale with the rank's shard — and the simulator reads back the entry for the instance's `tp_size`, so lookups match the block size the latencies were measured at. An explicit value that disagrees is allowed but warned about. Bundles profiled before the field existed do not carry it and fall back to `16`; ones written before it was split by TP carry a flat value, which is read as a fallback |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 
@@ -48,8 +48,8 @@ matching runtime knobs per `instances[i]`; see
 | --- | --- | --- | --- |
 | `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing |
 | `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing. `CUSTOM` reads the **measured** distinct-expert count from `--gate-stats` instead of deriving it from a uniform gate |
-| `--gate-stats` | path | `None` | A `gate_stats.json` (or the `bench run` directory holding one) recorded by [`bench run --record-gate-stats`](/docs/reference/bench-cli). Read only under `--expert-routing-policy CUSTOM`. A trained gate concentrates on popular experts, so the uniform closed form over-counts — on Qwen3-30B-A3B by 13% through the middle of the range and 6% at a saturated decode, which is worth 6.0 points of TPOT error. Relative paths resolve against the repo root, not `astra-sim/`. A missing, unreadable or mismatched file falls back to `BALANCED` with a warning. See **[MoE expert routing](/docs/simulator/moe-expert-routing)** |
-| `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers (set False for per-layer EP variance) |
+| `--gate-stats` | path | `None` | A `gate_stats.json` (or its benchmark directory) recorded by [`bench run --record-gate-stats`](/docs/reference/bench-cli), used only with `--expert-routing-policy CUSTOM`. It supplies observed distinct-expert counts, not a latency coefficient or arbitrary load histogram. Relative paths resolve against the repo root. Missing, unreadable or mismatched files warn and fall back to `BALANCED`; see [MoE expert routing](/docs/simulator/moe-expert-routing) |
+| `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers; use `--no-enable-block-copy` for per-layer EP variance |
 
 ## Precision
 
@@ -71,14 +71,16 @@ profiler's `--dtype` / `--kv-cache-dtype` / `--variant` write a separate
 `perf/.../<variant>/` bundle, and the simulator reads the one the checkpoint
 names.
 
+## Speculative decoding
+
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--num-speculative-tokens` **(per-instance)** | int | `0` (off) | Draft length N, vLLM's own flag name. Omit `--spec-acceptance-rate` to take the model's published N and acceptance from `configs/spec_decode.json` |
+| `--num-speculative-tokens` **(per-instance)** | int | `0` (off when no acceptance rate is supplied) | Positive values choose draft length N; `-1` requests the published N from `configs/spec_decode.json`. Omitting both flags leaves speculation off. Supplying a rate with N=`0` also requests the published N; without a published N that case remains off |
 | `--spec-acceptance-rate` **(per-instance)** | float | the model's published value | Fraction of drafted tokens the target accepts, so the mean accept length is `1 + rate * N`. **Marginal**, which is what every published source reports — not Leviathan's conditional per-position alpha. A model with no published figure must be given one |
 | `--spec-acceptance-policy` **(per-instance)** | `FIXED` / `DECAY` / `CUSTOM` | `FIXED` | How the accepted count is drawn. `DECAY` uses per-position rates, which fall with draft position — same mean, different spread |
 
-**The drafter's time is not charged yet, and a model that drafts with
-itself refuses to run.** vLLM runs the drafter **N times per step** —
+**Model-owned MTP drafter time is charged from its profiles; missing required
+catalog entries or measurements are errors.** vLLM runs the drafter **N times per step** —
 once, then `num_speculative_tokens - 1` more. Each pass is a norm pair,
 an `eh_proj`, **a full decoder layer**, and (DeepSeek/GLM) a norm plus
 `lm_head` — the decoder layer dominating by roughly 4:1 over the

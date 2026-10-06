@@ -246,11 +246,18 @@ MAX_NUM_SEQS=128 MAX_NUM_BATCHED_TOKENS=2048 \
 | `DTYPE` | `--dtype` | `bfloat16` |
 | `KV_CACHE_DTYPE` | `--kv-cache-dtype` | `auto` |
 | `SEED` | `--seed` | `42` |
+| `LOAD_FORMAT` | `--load-format` | `auto` |
+| `RESOLVE_ONLY` | `--resolve-only` when `1` | `0` |
+| `SKIP_TOKENIZER_INIT` | `--skip-tokenizer-init` when `1` | `0` |
+| `ENFORCE_EAGER` | `--enforce-eager` when `1` | `0` |
 | `TICK_SECONDS` | `--tick-seconds` | `1.0` |
 | `NUM_REQS` | `--num-reqs` | `0` |
 | `LOG_LEVEL` | `--log-level` | `INFO` |
 
 Note `TP=2` — the wrapper's default is not vLLM's `1`.
+`--kv-cache-memory-bytes` and `--record-gate-stats` are module-only options:
+invoke `python -m bench run` directly to use them. This wrapper does not
+forward arbitrary extra positional arguments.
 
 ### `bench/validate.sh`
 

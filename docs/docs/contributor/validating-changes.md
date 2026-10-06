@@ -234,11 +234,11 @@ In your PR description, include the exact command you ran and the
 key number from the output. Examples:
 
 > Validation: `./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B` →
-> TTFT MAPE 2.1% (was 2.3%), TPOT MAPE 1.7% (unchanged), throughput
-> 1.2% (was 1.4%).
+> Report the signed Diff% for all fifteen TTFT / TPOT / latency statistics
+> from `summary.txt`, together with changes from the prior fixed reference.
 
-> Validation: `./serving/validate.sh` → all 58 scenarios match their
-> baselines, all 4 `sim.csv` byte-identical.
+> Validation: `./serving/validate.sh` → all recorded scenarios match their
+> baselines; all discovered `sim.csv` and `summary.txt` digests match.
 
 This gives the reviewer something to rerun, and gives you (and
 future readers of the git log) a record of what was checked.

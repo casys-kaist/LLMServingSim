@@ -117,13 +117,10 @@ same seed repeat their draws.
 
 ### CUSTOM, the measured curve
 
-BALANCED's closed form asks how many distinct experts a *uniform* gate
-would reach. A trained gate concentrates on popular experts, so it
-reaches fewer, and the concentration lives in the weights where no
-closed form can get at it. Measured on Qwen3-30B-A3B over 110,640 real
-gate calls: **0.87x** of the uniform model through the middle of the
-range, **0.94x** at a saturated decode, and exactly **1.000** at one
-token, where both readings are just `k`.
+BALANCED's closed form estimates how many distinct experts a *uniform* gate
+would reach. A trained gate can concentrate on particular experts and depart
+from that assumption. CUSTOM uses an observed count curve for the recorded
+weights and workload; it does not infer the full expert-load histogram.
 
 CUSTOM reads that measurement instead of deriving it. Record it with
 [`bench run --record-gate-stats`](/docs/reference/bench-cli), which logs
@@ -149,19 +146,10 @@ uninstrumented run. A measured count is an explicit workload/weight input to
 CUSTOM, not a latency coefficient or proof of accuracy for other checkpoints,
 batching, precision or expert-load histograms.
 
-Against a real DP=1 vLLM run of Qwen3-30B-A3B on RTX PRO 6000, holding
-everything else fixed:
-
-| | TTFT mean | TTFT p50 | TPOT mean | span |
-| --- | --- | --- | --- | --- |
-| BALANCED (uniform closed form) | +8.3% | +6.5% | +6.0% | +4.8% |
-| **CUSTOM (measured curve)** | **+2.8%** | **+2.1%** | **+1.9%** | **+0.3%** |
-
 Nothing is fitted and nothing is interpolated across models. The curve
-is linear between the batch sizes the recording run visited and clamped
-at both ends: below the first point there is nothing under one token,
-and above the last the count is bounded by `E` and the curve is already
-flat there. `num_experts` and `num_experts_per_tok` are recorded in the
+is linear between recorded batch sizes and clamped to its measured endpoints
+outside that range; it does not extrapolate new routing behavior.
+`num_experts` and `num_experts_per_tok` are recorded in the
 file and checked on load, because a distinct count means nothing without
 them -- a curve from another checkpoint is refused rather than rescaled,
 and the closed form takes over.
@@ -174,17 +162,12 @@ Per-token call sites (`GateRouter.route`, used at EP=1 by nothing in the
 simulator today) still go through `_custom_gate_function`, which is the
 plug-in hook for driving routing from something else entirely.
 
-:::note[Why not force the *truth* to be uniform instead]
-A bench mode that replaced the real gate's assignment was tried, and it
-does not answer this question. On a non-EP configuration under
-cudagraphs it reads **0.700x** of the real gate's TPOT -- flattening the
-per-expert histogram lands the grouped GEMM on a *different kernel
-variant*. An in-situ profile of 8 real decode steps at matched batch
-shape shows a `MoeFCGemm` template instantiation appearing with 144
-calls and another dropping to zero, with attention unchanged as the
-control. It cannot hold "everything but the count" fixed, so it measures
-the schedule rather than the count. Measuring the count directly has no
-such coupling.
+:::note[Expert count does not determine the complete execution cost]
+Changing expert assignments can alter the per-expert histogram, padding and
+grouped-GEMM kernel selection. Forced uniform routing therefore does not hold
+everything except the distinct count fixed. Observe counts on the target
+workload, retain their scope and validate latency on an uninstrumented run;
+a count curve alone does not establish the accuracy of an MoE latency table.
 :::
 
 ## Group-limited routing

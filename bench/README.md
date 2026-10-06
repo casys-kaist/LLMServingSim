@@ -90,7 +90,7 @@ python -m bench run \
     --dtype bfloat16 --kv-cache-dtype auto
 ```
 
-Common flags (see `python -m bench run --help` for the complete set):
+Run options (also available through `python -m bench run --help`):
 
 | Flag | Default | Notes |
 | --- | --- | --- |
@@ -107,6 +107,11 @@ Common flags (see `python -m bench run --help` for the complete set):
 | `--kv-cache-dtype` | `auto` | vLLM `kv_cache_dtype` |
 | `--kv-cache-memory-bytes` | unset | Positive per-GPU KV cache budget; otherwise vLLM profiles available memory automatically |
 | `--seed` | `42` | sampling seed |
+| `--load-format` | `auto` | vLLM weight loader; `dummy` is for controlled diagnostics, not automatically equivalent ground truth |
+| `--skip-tokenizer-init` | off | Replay token IDs without loading a tokenizer |
+| `--enforce-eager` | off | Disable compilation and CUDA graphs; match this mode to the simulation |
+| `--record-gate-stats` | off | Diagnostic routing observation; requires `--enforce-eager`, and its timings are rejected by validation |
+| `--resolve-only` | off | Boot and save resolved settings, then exit without replay or request/timeseries files |
 | `--tick-seconds` | `1.0` | `timeseries.csv` row spacing; the simulator's `--log-interval` |
 | `--num-reqs` | `0` | cap on requests from the dataset, `0` = all |
 | `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -114,6 +119,11 @@ Common flags (see `python -m bench run --help` for the complete set):
 There is no `--block-size`: vLLM picks the KV block size itself and records
 what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
 the simulator as `--block-size` to line the two up.
+
+`bench.sh` is an editable run template, not a passthrough for every CLI flag.
+Use the module directly for `--kv-cache-memory-bytes` or `--record-gate-stats`.
+Its default TP is `2`, while the module defaults to `1`; see the
+[wrapper variable reference](../docs/docs/reference/bench-cli.md#shell-wrappers).
 
 ### Compare recorded results: `bench validate`
 

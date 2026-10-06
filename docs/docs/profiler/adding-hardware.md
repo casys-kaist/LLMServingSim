@@ -141,25 +141,23 @@ then validate before adopting new defaults.
 
 :::
 
-### 1. Confirm vLLM support
+### 1. Confirm the acquisition backend
 
 The profiler runs vLLM `0.28.0` by default
-(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Check
-that vLLM's release notes mention your GPU.
+(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Its launcher,
+hardware probes, cache initialization and timing attribution target NVIDIA
+CUDA. A device being supported by vLLM alone does not validate this profiler.
 
-| GPU family | Image/backend notes |
+| Target | Bundled acquisition path |
 | --- | --- |
-| NVIDIA A100, H100, H200 | Yes |
-| NVIDIA RTX PRO 6000, RTX 6000 Ada, L40S | Yes |
-| NVIDIA Blackwell (B100, B200) | Yes (with the CUDA 12.9 image: `v0.28.0-cu129`) |
-| NVIDIA Hopper SXM | Yes |
-| AMD MI300X | Yes (ROCm path; needs `vllm/vllm-rocm`) |
-| AMD MI200 / older | Limited; check vLLM matrix |
-| Intel Gaudi 3 | Limited (HPU plugin); not supported by this profile path |
+| NVIDIA CUDA | Intended target; verify the selected model/backend, live coverage and measurement contract on the device |
+| AMD ROCm | Requires an acquisition port; changing the Docker image is insufficient |
+| Intel HPU and other accelerators | Requires an acquisition adapter or an independently produced compatible bundle |
 
-If vLLM doesn't support it yet, you have two options: wait for vLLM
-to add support, or contribute the backend to vLLM upstream. Neither
-is fast.
+Choose the CUDA image for the host driver and installed dependencies, not
+the GPU family name alone. The launcher defaults to the CUDA 13 image;
+the CUDA 12.9 image is `vllm/vllm-openai:v0.28.0-cu129`. See
+[vLLM installation](../getting-started/installation/vllm) for environment setup.
 
 ### 2. Edit `profile.sh`
 
@@ -195,21 +193,20 @@ Once it's done, the simulator is ready to use, no further changes.
 Update your `cluster_config.json` to set `"hardware": "<HARDWARE>"`
 and run.
 
-### AMD ROCm notes
+### Other accelerator backends
 
-The official `vllm/vllm-rocm` Docker image is the AMD equivalent.
-Edit `scripts/docker-vllm.sh` to pull that image instead of
-`vllm/vllm-openai`. Beyond the image swap, the profile workflow is
-identical.
-
-`HARDWARE="MI300X"` (for example): pick whatever makes sense.
+ROCm and HPU are not drop-in replacements for this CUDA acquisition path.
+Audit and port device discovery, cache layouts, kernel attribution and
+communication measurement before publishing a bundle from another backend.
+The free-form `HARDWARE` label selects an output folder; it does not select
+or implement an accelerator adapter.
 
 ## Adding non-GPU hardware
 
-This is the more involved case. The vLLM-based profiler doesn't
-work for hardware vLLM doesn't run on (TPU, Intel Gaudi without HPU
-support, custom NPUs / accelerators). But the simulator only cares
-about the **CSV bundle format**, not how the data was produced.
+For a target outside the bundled acquisition path, use an appropriate
+measurement adapter or analytical model. The simulator consumes the
+**profile bundle contract**, independently of the acquisition environment;
+versioned skew and native MoE data also require their matching metadata.
 
 The strategy: synthesize CSVs in the
 [Output bundle](./output-bundle) format from your own measurement
