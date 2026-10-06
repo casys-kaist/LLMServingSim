@@ -44,6 +44,27 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"   # blank => use the model default
 DTYPE="${DTYPE:-bfloat16}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
 SEED="${SEED:-42}"
+# vLLM load_format. "dummy" initializes weights randomly instead of reading a
+# checkpoint, which is valid ground truth for a *performance* comparison and
+# needs no weights on disk: the replay feeds token ids directly and pins the
+# output length, so nothing recorded reads a generated token. Shapes, memory
+# footprint, kernel selection and scheduling are unchanged. Recorded in
+# meta.json, so a dummy run can never be mistaken for a real-weights one.
+LOAD_FORMAT="${LOAD_FORMAT:-auto}"
+# Boot, write meta.json, exit -- no replay. Set to 1 to read back the one
+# number a latency comparison depends on, kv_cache.num_gpu_blocks, which vLLM
+# only settles at boot. A minute with LOAD_FORMAT=dummy.
+RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
+# Boot without a tokenizer. The replay never needs one, so what this buys is
+# the ability to bench a checkpoint whose tokenizer is not on disk: point MODEL
+# at the repo's own configs/model/<org>/<name>.json directory -- the way the
+# profiler boots one -- and a gated or synthetic config runs with no Hub
+# access. Not a speed knob; detokenisation measured 0.18% of run span.
+SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
+# Run vLLM eager. Not the production configuration -- what it buys is a truth
+# in the same execution mode the profiler is forced into, which separates a
+# cost-model error from the cudagraph speedup the simulator cannot see.
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -66,6 +87,7 @@ cmd=(python3 -m bench run
     --dtype "$DTYPE"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --seed "$SEED"
+    --load-format "$LOAD_FORMAT"
     --tick-seconds "$TICK_SECONDS"
     --num-reqs "$NUM_REQS"
     --log-level "$LOG_LEVEL"
@@ -73,6 +95,9 @@ cmd=(python3 -m bench run
 
 [[ -n "$MAX_MODEL_LEN" ]] && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
+[[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
+[[ "$SKIP_TOKENIZER_INIT" == "1" ]] && cmd+=(--skip-tokenizer-init)
+[[ "$ENFORCE_EAGER" == "1" ]] && cmd+=(--enforce-eager)
 
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"

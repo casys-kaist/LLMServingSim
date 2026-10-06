@@ -24,8 +24,13 @@ class _Sample:
     t: float                    # seconds since logger creation
     num_running: int
     num_waiting: int
-    num_prompt_tokens: int      # tokens prefilled this iteration
+    num_prompt_tokens: int      # whole prompt length of prefills that
+                                # finished this iteration -- cache hits and
+                                # all. NOT the tokens computed; see below
+    num_computed_prompt_tokens: int  # prompt tokens actually computed
+    num_cached_prompt_tokens: int    # prompt tokens served from the prefix cache
     num_generation_tokens: int  # tokens decoded this iteration
+    num_preempted_reqs: int     # requests preempted this iteration
     kv_cache_pct: float
     engine_idx: int
 
@@ -65,17 +70,48 @@ class BenchStatLogger(StatLoggerBase):
         cache_pct = scheduler_stats.kv_cache_usage * 100.0
 
         prompt_toks = 0
+        computed_toks = 0
+        cached_toks = 0
         gen_toks = 0
+        preempted = 0
         if iteration_stats is not None:
+            # ``num_prompt_tokens`` is a back-compat property over
+            # ``prompt_token_stats.total``, which accumulates each request's
+            # **whole** prompt length once its prefill finishes -- prefix-cache
+            # hits included. So it is neither per-iteration compute nor
+            # bounded by max_num_batched_tokens: on the DeepSeek workload it
+            # sums to exactly the dataset's 258,691 input tokens and peaks at
+            # 4,570 in one step against a 2,048 budget. Comparing it against
+            # the simulator's per-step token counts is meaningless, and it
+            # cannot show a cache hit.
+            #
+            # ``prompt_token_stats`` carries the two numbers that can:
+            # ``computed`` is the real compute work and ``local_cache_hit``
+            # the tokens the prefix cache served. Recording them is what makes
+            # vLLM's own hit rate comparable with the simulator's.
             prompt_toks = getattr(iteration_stats, "num_prompt_tokens", 0)
+            pts = getattr(iteration_stats, "prompt_token_stats", None)
+            computed_toks = getattr(pts, "computed", 0) or 0
+            cached_toks = getattr(pts, "local_cache_hit", 0) or 0
             gen_toks = getattr(iteration_stats, "num_generation_tokens", 0)
+            # Preemptions are the one thing that separates two readings of a
+            # long ``prefill_time``. vLLM stamps ``scheduled_ts`` on the FIRST
+            # admission and explicitly ignores later ones ("# ignore
+            # preemptions" in metrics/stats.py), so a request that is admitted,
+            # preempted and re-admitted reports every second of that as
+            # prefill. Without this counter there is no way to tell that apart
+            # from the scheduler genuinely trickling a prefill across steps.
+            preempted = iteration_stats.num_preempted_reqs
 
         BenchStatLogger.samples.append(_Sample(
             t=time.monotonic() - (BenchStatLogger._t0 or time.monotonic()),
             num_running=running,
             num_waiting=waiting,
             num_prompt_tokens=prompt_toks,
+            num_computed_prompt_tokens=computed_toks,
+            num_cached_prompt_tokens=cached_toks,
             num_generation_tokens=gen_toks,
+            num_preempted_reqs=preempted,
             kv_cache_pct=cache_pct,
             engine_idx=engine_idx if engine_idx else self.engine_index,
         ))
@@ -99,9 +135,18 @@ class BenchStatLogger(StatLoggerBase):
         header = [
             "t",
             "prompt_throughput",      # tokens / sec (over the tick)
+            # The split behind that number. ``prompt_throughput`` mirrors
+            # vLLM's own reported figure, which credits a request's whole
+            # prompt once its prefill finishes -- cache hits included. These
+            # two say how much of it was computed and how much the prefix
+            # cache served, which is the only way vLLM's hit rate becomes
+            # comparable with the simulator's.
+            "prompt_compute_throughput",
+            "prompt_cached_throughput",
             "gen_throughput",
             "running",
             "waiting",
+            "preempted",              # summed over the tick, across engines
             "kv_cache_pct",
         ]
         if not cls.samples:
@@ -123,7 +168,12 @@ class BenchStatLogger(StatLoggerBase):
             # Sum prompt/gen tokens across engines within the bucket window,
             # divide by tick to convert to throughput.
             prompt_sum = sum(s.num_prompt_tokens for s in in_bucket)
+            computed_sum = sum(s.num_computed_prompt_tokens for s in in_bucket)
+            cached_sum = sum(s.num_cached_prompt_tokens for s in in_bucket)
             gen_sum = sum(s.num_generation_tokens for s in in_bucket)
+            # Summed, not snapshotted: it is a per-iteration event count, so
+            # the tick's total is what a reader wants.
+            preempted_sum = sum(s.num_preempted_reqs for s in in_bucket)
             # For running/waiting/cache, average across engines at the *latest*
             # iteration of each engine within the bucket.
             latest_per_engine: dict[int, _Sample] = {}
@@ -143,9 +193,12 @@ class BenchStatLogger(StatLoggerBase):
             rows.append([
                 round(t_hi, 3),
                 round(prompt_sum / tick_seconds, 1),
+                round(computed_sum / tick_seconds, 1),
+                round(cached_sum / tick_seconds, 1),
                 round(gen_sum / tick_seconds, 1),
                 running,
                 waiting,
+                preempted_sum,
                 round(cache_pct, 2),
             ])
             bucket_idx += 1

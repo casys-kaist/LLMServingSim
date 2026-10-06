@@ -1,14 +1,32 @@
 profiler_version: 1.0.0
-vllm_version: 0.19.0
+vllm_version: 0.28.0
 cuda_version: '13.0'
 gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
 hardware: RTXPRO6000
-profiled_at: '2026-04-24T12:44:27+00:00'
+profiled_at: '2026-09-04T19:37:52+00:00'
 architecture: llama
-architecture_sha256: 19d708000ec8a89edf1ca12dd388235b2cfe59007aaec6ea48702fb856ff2cfb
+architecture_sha256: 551e5a0a71cc78f4e842f74edf0c1de5bb79e88f4001afd7f1ef146807ad53e4
 model: meta-llama/Llama-3.1-8B
 variant: bf16
-tp_degrees: [1, 2]
+tp_degrees:
+- 1
+- 2
+category_provenance:
+  dense:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:15:54+00:00'
+  per_sequence:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:16:39+00:00'
+  attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T14:06:24+00:00'
+  skew:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-04T19:37:52+00:00'
+  step:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-07T07:33:00+00:00'
 engine_effective:
   load_format: dummy
   enforce_eager: true
@@ -16,7 +34,6 @@ engine_effective:
   enable_prefix_caching: false
   generation_config: vllm
   tensor_parallel_size: 1
-  block_size: 16
   gpu_memory_utilization: 0.9
   max_num_batched_tokens: 2048
   max_num_seqs: 256
@@ -26,58 +43,180 @@ engine_effective:
     num_attention_heads: 16
     num_key_value_heads: 4
     vocab_size: 64128
-  worker_extension_cls: profiler.hooks.extension.Extension
-  model: /tmp/profiler_model_owp9ccgm
+  block_size: 16
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_bk0psend
+engine_resolved:
+  per_tp:
+    '1':
+      block_size: 16
+      max_model_len: 131072
+      num_cache_tokens: 21625616
+    '2':
+      block_size: 16
+      max_model_len: 131072
+      num_cache_tokens: 43945504
 attention_grid:
   max_kv: 16384
-  chunk_factor: 2.0
-  kv_factor: 2.0
-  chunks: 0, 16-2048 x2
+  chunk_factor: 1.5
+  kv_factor: 1.5
+  n_factor: 2.0
+  axes: prefill_tokens,prefill_key,n_decode,kv_decode
+  chunks: 0, 16-2048 x1.5
   n_decode: 0, 1-256 x2
-  kv: 0, 16-16384 x2
+  kv: 0, 16-16384 x1.5
+  prefill_key: 0, 16-17408 x1.5
+  decode_q_lens:
+  - 1
 measurement_iterations: 3
 skew_profile:
   enabled: true
-  factors:
-    n: 2.0
-    pc: 2.0
-    kp: 2.0
-    kvs: 2.0
-  grid:
-    n: 2-256 x2
-    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
-    pc: 0, 16-2048 x2
-    kp: 0, 512-8192 x2
-    kvs: 128-16384 x2
-    skew_rep: 4.0
+  historical_grid:
+    factors:
+      n: 2.0
+      pc: 2.0
+      kp: 2.0
+      kvs: 2.0
+    grid:
+      n: 2-256 x2
+      ratio:
+      - 0.0625
+      - 0.125
+      - 0.25
+      - 0.5
+      - 0.75
+      - 0.9
+      pc: 0, 16-2048 x2
+      kp: 0, 512-8192 x2
+      kvs: 128-16384 x2
+      skew_rep: 4.0
+  retained_measurements:
+    1:
+      rows: 35945
+      origins:
+        committed_actual: 13496
+        compatible_added_actual: 162
+        native_tp1_actual: 22287
+      complete_request_geometry: true
+      raw_sha256: 4deaf397b8755cdcf7fe922bf937fa9b4abf76f11478f8de182d3ff6e63a79a6
+      new_acquisition_protocol_complete: false
+      native_measurement:
+        vllm: 0.28.0
+        torch: 2.13.0+cu130
+        block_size: 16
+        max_model_len: 131072
+        num_cache_tokens: 6687664
+        kv_initialization: zeroed once before warmups; native query writes thereafter
 skew_fit:
   enabled: true
-  bucket_axes:
-    pc: raw pc value (profiled grid point)
-    n_bins: [0, 2, 4, 8, 16, 32, 64, 128, 256, 1000000]
-    n_labels: [n<=2, n<=4, n<=8, n<=16, n<=32, n<=64, n<=128, n<=256, n>256]
-    skew_rate_bins: [-0.01, 0.05, 0.15, 0.4, 0.7, 1.01]
-    skew_rate_labels: [sr<=5%, sr<=15%, sr<=40%, sr<=70%, sr>70%]
-    kv_big_bins: [0, 1024, 4096, 16384, 1000000000]
-    kv_big_labels: [kvB<=1k, kvB<=4k, kvB<=16k, kvB>16k]
-    kp_bins: [-1, 0, 512, 1024, 2048, 4096, 8192, 1000000000]
-    kp_labels: [kp=0, kp<=512, kp<=1k, kp<=2k, kp<=4k, kp<=8k, kp>8k]
   per_tp:
     1:
-      method: per_bucket_wls_5axis
-      n_samples: 12984
-      alpha_default: 0.0543
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: meta-llama/Llama-3.1-8B
+        variant: bf16
+        tp: 1
+      reference:
+        attention_sha256: 815583562ce5361ab63cc0b3faf10a3318be70d0fe9e3562e4d8d15ccc9d2193
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
+        skew_sha256: 4deaf397b8755cdcf7fe922bf937fa9b4abf76f11478f8de182d3ff6e63a79a6
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 32945
+      dropped_rows:
+        unusable_reference_gap: 3000
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.1276
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp1/skew_fit.csv
-      rel_err_p50: 0.0118
-      rel_err_p90: 0.0644
-      rel_err_p99: 0.2887
-      signed_mean: 0.005
+      bucket_table_sha256: ee45638785cac22a54614a208e1127e96cf7e41b13f9d98a58e289119c320285
     2:
-      method: per_bucket_wls_5axis
-      n_samples: 12814
-      alpha_default: 0.0654
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: meta-llama/Llama-3.1-8B
+        variant: bf16
+        tp: 2
+      reference:
+        attention_sha256: 6f6a3d862c4d3ce2c82d427bc47113e8e4a207086eb633f363db928470bf4d4f
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
+        skew_sha256: 8b04ec1de6f7e25dbb482335ade5dad50037395ac7ad95c00eec6e80b0dfa835
+        key_saturation: null
+        saturation_by_layer:
+          attention: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 13446
+      dropped_rows:
+        unusable_reference_gap: 50
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.0653
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
       bucket_table: tp2/skew_fit.csv
-      rel_err_p50: 0.0113
-      rel_err_p90: 0.0652
-      rel_err_p99: 0.2639
-      signed_mean: 0.0064
+      bucket_table_sha256: a815ed9c58d5afa49c6eacc867a399dcaa4fc01b62a369ff568fdcf884db41e6

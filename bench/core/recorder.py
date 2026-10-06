@@ -1,7 +1,8 @@
 """Bench output writer.
 
-Writes the three artifacts of a bench run::
+Writes a startup snapshot and the completed artifacts of a bench run::
 
+    bench/results/<run_id>/engine_start.json
     bench/results/<run_id>/meta.json
     bench/results/<run_id>/requests.jsonl
     bench/results/<run_id>/timeseries.csv
@@ -18,6 +19,13 @@ from typing import Any
 
 
 META_SCHEMA_VERSION = 1
+
+
+def write_engine_start(output_dir: Path, **fields: Any) -> None:
+    """Preserve resolved capacity early; this is not a completed benchmark."""
+    payload = {"schema_version": META_SCHEMA_VERSION, "status": "engine_initialized", **fields}
+    with (output_dir / "engine_start.json").open('x') as stream:
+        stream.write(json.dumps(payload, indent=2) + '\n')
 
 
 def write_meta(output_dir: Path, **fields: Any) -> None:
@@ -75,8 +83,16 @@ def write_requests(output_dir: Path, records: list[dict]) -> None:
 def write_timeseries(output_dir: Path, header: list[str], rows: list[list]) -> None:
     """Write timeseries.csv. Default header::
 
-        ["t", "prompt_throughput", "gen_throughput",
-         "running", "waiting", "kv_cache_pct"]
+        ["t", "prompt_throughput", "prompt_compute_throughput",
+         "prompt_cached_throughput", "gen_throughput",
+         "running", "waiting", "preempted", "kv_cache_pct"]
+
+    ``preempted`` is the number of preemption events in the tick, summed over
+    DP engines. It is what tells a long ``prefill_time`` in requests.jsonl
+    apart from a genuinely trickled prefill: vLLM stamps ``scheduled_ts`` on
+    the first admission only and ignores re-admissions, so a preempted request
+    reports its whole round trip as prefill. Absent from runs recorded before
+    this column existed -- read the header rather than assuming a position.
     """
     import csv
     with (output_dir / "timeseries.csv").open("w") as f:

@@ -17,7 +17,9 @@ output IS the simulator's input.
 ## When you need to run it
 
 You **don't** need to run the profiler if your hardware × model
-combination is already in the bundled profile data. Otherwise:
+combination and required execution geometry are already covered by the bundled
+profile data. For native MoE, that includes target TP/DP/EP, backend and rank
+ownership, not just a matching model name. Otherwise:
 
 | Scenario | Profile? |
 | --- | --- |
@@ -38,8 +40,9 @@ perf/<hardware>/<model>/<variant>/
 └── tp<N>/
     ├── dense.csv                   # token-count → latency
     ├── per_sequence.csv            # seq-count → latency
-    ├── attention.csv               # 4D: (pc, kv_pre, n_dec, kv_dec) → latency
-    ├── moe.csv                     # MoE only: (tokens, experts) → latency
+    ├── attention.csv               # per-layer, per-q: (pc, kv_pre, n_dec, kv_dec)
+    ├── linear_attention.csv        # hybrid only: per-layer (prefill_tokens, n_dec)
+    ├── moe.csv                     # whole-block MoE: (ep, tokens, experts)
     ├── skew.csv                    # raw heterogeneous-decode shots
     └── skew_fit.csv                # fitted per-bucket alpha table
 ```
@@ -48,6 +51,11 @@ Times are stored in **microseconds** (`time_us` column); the
 simulator multiplies by 1000 and rounds to ns at load time.
 
 Schema details on **[Output bundle](./output-bundle)**.
+
+Explicit-DP [native MoE profiling](./native-moe-components) adds a versioned
+component index and deployment-specific tables alongside this bundle. It
+preserves global top-k and separates local routing, gathered expert work and
+local finalization, with independently measured eager/graph GPU timings.
 
 ## How it fits the bigger picture
 
@@ -65,6 +73,8 @@ container** (`astrasim/tutorial-micro2024`). They share the
 
 ## Bundled profile data
 
+The following bundles drive the headline Llama and Qwen validation examples:
+
 | Hardware | Model | Variant | TP degrees |
 | --- | --- | --- | --- |
 | `RTXPRO6000` | `meta-llama/Llama-3.1-8B` | `bf16` | 1, 2 |
@@ -72,20 +82,27 @@ container** (`astrasim/tutorial-micro2024`). They share the
 | `RTXPRO6000` | `Qwen/Qwen3-30B-A3B-Instruct-2507` | `bf16` | 1, 2 |
 | `RTX4090` | `meta-llama/Llama-3.1-8B` | `bf16` | 1 |
 
-That is the whole set: two hardware targets, three models, **`bf16`
-only**, and only the RTXPRO6000 bundles carry TP=2. If your
-`(hardware, model, variant, tp)` combo is in this table you can skip the
-profiler entirely; anything else needs a profile run. The RTX 4090
-bundle was contributed in
-[#59](https://github.com/casys-kaist/LLMServingSim/pull/59) and is the
-one validated end-to-end inside 1% on every metric — see
-**[Validation](/docs/validation)**.
+Additional sparse-attention and hybrid-model bundles live under `profiler/perf/`.
+The tracked folders and metadata are the authoritative model/variant/TP inventory;
+the table above is not exhaustive. Existing data avoids a new acquisition only
+when its shapes, backend and coverage match the target. Native MoE also requires
+a matching deployment contract, not merely an existing TP folder.
+
+Updating profiler code does not rewrite these measurements. Their metadata and
+row identities determine acquisition provenance; reproducing a stored example
+does not validate a complete fresh-only bundle from the current protocol.
+
+The RTX 4090 bundle was contributed in
+[#59](https://github.com/casys-kaist/LLMServingSim/pull/59); it retains vLLM 0.19
+measurements. See **[Validation](/docs/validation)** for current per-statistic
+results and the distinction between profile availability and measured accuracy.
 
 Two consequences that catch people out:
 
-- **No `-kvfp8` bundle ships.** `--kv-cache-dtype fp8` resolves to a
-  `bf16-kvfp8` variant folder that does not exist, so it fails at
-  startup until you profile it with `KV_CACHE_DTYPE=fp8`. See
+- **KV precision must match the bundle.** The simulator derives it from the
+  model config, not a `--kv-cache-dtype` flag, and rejects a missing variant.
+  The profiler's `KV_CACHE_DTYPE=fp8` option can acquire that variant; it does
+  not change the simulator's model config. See
   **[Examples → FP8 KV cache](/docs/examples/memory-tiers/fp8-kv-cache)**.
 - **TP=4 and above need a profile run**, even on RTXPRO6000 with a
   bundled model, and so does **TP=2 on RTX4090** — that bundle is TP=1
@@ -98,9 +115,12 @@ Two consequences that catch people out:
   root). See **[Installation → vLLM setup](/docs/getting-started/installation/vllm)**.
 - **NVIDIA GPU** (only for the profiler, the simulator runs on CPU).
 - **`HF_TOKEN`** environment variable for gated model configs (Llama
-  3.x, etc.). Set this in `scripts/docker-vllm.sh` before launching.
-- **A few GB of GPU memory** for the model variant you're profiling
-  (TP=1 needs the full model; TP=N needs `model_size / N`).
+  3.x, etc.). Export it in your shell before launching.
+- **Enough GPU memory** for the category's shrunken per-rank stack, KV cache,
+  activations and backend workspaces. Profiling normally uses dummy weights
+  and the minimum layer prefix needed to expose the category, not the full
+  checkpoint. Native MoE has its own deployment contract. Real `bench run`
+  recordings normally load the full model.
 
 ## Where to go next
 

@@ -144,7 +144,9 @@ this layer:
 | --- | --- | --- |
 | `NONE` | No collective | Most layers |
 | `ALLREDUCE` | All-reduce across the involved dim | After `o_proj` and `down_proj` (TP > 1) |
-| `ALLTOALL` | All-to-all dispatch / combine | Around the MoE block (EP-aware) |
+| `ALLGATHER` | MoE all-to-all **dispatch** | On the `EXPERT 0` marker (EP > 1) |
+| `REDUCESCATTER` | MoE all-to-all **combine** | On the `EXPERT END` marker (EP > 1) |
+| `ALLTOALL` | All-to-all | Parsed by the converter, but **never emitted**: vLLM's default `all2all_backend` is `allgather_reducescatter`, so the MoE all-to-all comes out as the pair above |
 
 ### Dimension scoping
 
@@ -155,7 +157,7 @@ For multi-dimensional ASTRA-Sim topologies (DP+EP layouts), the
 | --- | --- |
 | `ALLREDUCE` | Default, all dims involved |
 | `ALLREDUCE:1,0` | Dim 0 = involved (`True`), dim 1 = not (`False`). i.e., TP-only ALLREDUCE in a 2D `[tp, dp]` topology |
-| `ALLTOALL:0,1` | Dim 0 = not involved, dim 1 = involved. i.e., EP-only ALLTOALL across the DP group |
+| `ALLGATHER:0,1` | Dim 0 = not involved, dim 1 = involved. i.e., the EP dispatch across the DP group only |
 
 The Chakra converter parses these via `_parse_comm_type` and writes
 the `involved_dim` BoolList into the `.et` file. ASTRA-Sim's
@@ -224,19 +226,48 @@ written verbatim with no suffix.
 
 ### `EXPERT {i}` / `EXPERT END` (MoE)
 
-Wrap the per-rank expert compute:
+One `EXPERT {i}` marker per EP rank, then a single `EXPERT END` for the
+whole block. The **collectives ride on the markers**, not on the expert
+rows — real lines from a Qwen3-30B-A3B run at `ep_total 2`:
 
 ```
-EXPERT 0
-moe_expert_local_3_rank0    1842    LOCAL    524288    LOCAL    9437184    LOCAL    524288    ALLTOALL    524288    NONE
-EXPERT END
-EXPERT 1
-moe_expert_local_3_rank1    1804    LOCAL    524288    LOCAL    9437184    LOCAL    524288    ALLTOALL    524288    NONE
-EXPERT END
+EXPERT 0 ALLGATHER:0,1 21760
+expert            275789   LOCAL  40960  LOCAL  604504064  LOCAL  40960  NONE  0  NONE
+EXPERT END REDUCESCATTER:0,1 40960
 ```
+
+With more ranks, each additional marker carries `NONE 0` — only the
+first opens the dispatch:
+
+```
+EXPERT 0 ALLGATHER:0,1 21760
+expert            ...
+EXPERT 1 NONE 0
+expert            ...
+EXPERT END REDUCESCATTER:0,1 40960
+```
+
+A rank with no tokens emits its marker and no `expert` row.
+
+The layer name is literally `expert` (the writer appends the running
+line index, so it reads `expert_9` in the file). The `comm_type` column
+on an `expert` row is always `NONE`.
 
 ASTRA-Sim runs each `EXPERT {i}` block on rank `i` in parallel,
-synchronizing at the surrounding ALLTOALLs.
+synchronizing at the dispatch and combine collectives.
+
+**Why AllGather and ReduceScatter rather than ALLTOALL.** The MoE
+dispatch/combine *is* an all-to-all, but it has several
+implementations and vLLM selects one with `--all2all-backend`. Its
+default, `allgather_reducescatter`, is described in vLLM's own option
+list as "all2all based on allgather and reducescatter" — so that is the
+pair the simulator emits, because ASTRA-Sim costs the collective it is
+given. The two are sized by ASTRA-Sim's convention for each: AllGather
+`data_size` is the per-rank chunk
+(`total_len / ep_total * (hidden + num_experts) * fp`, carrying the
+router logits alongside the hidden state), ReduceScatter's is the
+pre-scatter total (`total_len * hidden * fp`). In the example:
+`5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
 
 ### `PIM {channel}` / `PIM END` (PIM offload)
 

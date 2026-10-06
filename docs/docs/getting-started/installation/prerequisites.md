@@ -6,7 +6,8 @@ title: Prerequisites
 # Prerequisites
 
 LLMServingSim runs on Linux with Docker. The simulator side runs on
-CPU, but the profiler and the vLLM benchmark need an NVIDIA GPU.
+CPU, including comparison against recorded benchmarks. GPU acquisition and
+new vLLM benchmark recordings need an NVIDIA GPU.
 
 ## System
 
@@ -16,8 +17,8 @@ CPU, but the profiler and the vLLM benchmark need an NVIDIA GPU.
 | **Docker** | ✓ | ✓ (or bare-metal install) |
 | **NVIDIA GPU** |  | ✓ |
 | **NVIDIA Container Toolkit** |  | ✓ (for GPU passthrough into Docker) |
-| **CUDA driver** |  | 12.x for the default `vllm/vllm-openai:v0.19.0` image; 13.x needs the `v0.19.0-cu130` tag instead |
-| **Disk** | ~3 GB | ~10 GB additional (vLLM image + HF model cache) |
+| **CUDA driver** |  | 13.x for the default `vllm/vllm-openai:v0.28.0` image; 12.9 hosts need the `v0.28.0-cu129` tag instead |
+| **Disk** | Space for the container, backend build and run outputs | Space for the vLLM image, model-dependent weight/compile caches and profile outputs; full benchmark weights can occupy tens or hundreds of GB |
 | **RAM** | 16 GB | 32 GB+ recommended |
 
 If you only plan to run pre-profiled simulations (e.g., the bundled
@@ -75,8 +76,9 @@ HF authentication. The profiler can auto-fetch these if you set:
 export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-Running pre-profiled simulations never needs a token. You do need one
-for anything that touches the Hub:
+Running pre-profiled simulations never needs a token. Hub access needs
+authentication for gated/private resources; public resources may be fetched
+without a token. Check access for:
 
 - **Profiling** a gated model, where the profiler auto-fetches its
   `config.json` on first run.

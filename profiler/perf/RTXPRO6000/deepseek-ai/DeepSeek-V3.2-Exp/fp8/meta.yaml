@@ -1,0 +1,156 @@
+profiler_version: 1.0.0
+vllm_version: 0.28.0
+cuda_version: '13.0'
+gpu: NVIDIA RTX PRO 6000 Blackwell Server Edition
+hardware: RTXPRO6000
+profiled_at: '2026-09-06T21:13:31+00:00'
+architecture: deepseek_v32
+architecture_sha256: 6ba3e00e947a45ff799f08393aaa3e36366eb021db4b2e3ac5aada3a49bc8078
+model: deepseek-ai/DeepSeek-V3.2-Exp
+variant: fp8
+tp_degrees:
+- 1
+category_provenance:
+  dense:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T20:59:01+00:00'
+  per_sequence:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T20:59:01+00:00'
+  attention:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T20:59:01+00:00'
+  moe:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T21:13:31+00:00'
+  mtp:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T20:59:01+00:00'
+  skew:
+    vllm_version: 0.28.0
+    profiled_at: '2026-09-06T20:59:01+00:00'
+engine_effective:
+  load_format: dummy
+  enforce_eager: true
+  skip_tokenizer_init: true
+  enable_prefix_caching: false
+  generation_config: vllm
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  hf_overrides:
+    num_hidden_layers: 4
+    intermediate_size: 18432
+    num_attention_heads: 128
+    num_key_value_heads: 128
+    vocab_size: 129280
+  block_size: 64
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /tmp/profiler_model_d3dfh_xd
+engine_resolved:
+  per_tp:
+    '1':
+      block_size: 64
+      max_model_len: 163840
+      num_cache_tokens: 25131328
+attention_grid:
+  max_kv: 163830
+  chunk_factor: 2.0
+  kv_factor: 2.0
+  n_factor: 2.0
+  axes: prefill_tokens,prefill_key,n_decode,kv_decode
+  chunks: 0, 16-2048 x2
+  n_decode: 0, 1-256 x2
+  kv: 0, 16-163830 x2
+  prefill_key: 0, 16-164854 x2
+  decode_q_lens:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 9
+measurement_iterations: 3
+skew_profile:
+  enabled: true
+  factors:
+    n: 2.0
+    pc: 2.0
+    kp: 2.0
+    kvs: 2.0
+  grid:
+    n: 2-256 x2
+    ratio:
+    - 0.0625
+    - 0.125
+    - 0.25
+    - 0.5
+    - 0.75
+    - 0.9
+    pc: 0, 16-2048 x2
+    kp: 0, 512-81915 x2
+    kvs: 128-163830 x2
+    skew_rep: 4.0
+skew_fit:
+  enabled: true
+  per_tp:
+    1:
+      schema: runtime-skew-calibration-v1
+      identity:
+        hardware: RTXPRO6000
+        model: deepseek-ai/DeepSeek-V3.2-Exp
+        variant: fp8
+        tp: 1
+      reference:
+        attention_sha256: 1b4d542b16c67ae808d3636c96d193121b46fa46d5de074655a54b23adf4da0d
+        lookup_sha256: 7b09bef57ed90f62c01f969c88c3054132229fbe953a472a58a00a130b33cbf6
+        skew_sha256: 4c779c5e978e1fc8edce26519a4719728029045270eebe83563003f24f760f98
+        key_saturation: 2048
+        saturation_by_layer:
+          attention: true
+          indexer: false
+      estimator: supported_n_relative_latency_l1
+      min_rows: 20
+      n_samples: 64616
+      dropped_rows:
+        unusable_reference_gap: 1106
+      axes:
+        pc_bins:
+        - -1
+        - 1
+        - 256
+        - 1024
+        - 1000000000
+        pc_labels:
+        - pc0
+        - pc1
+        - pc2
+        - pc3
+        lev_bins:
+        - 0.0
+        - 0.25
+        - 0.75
+        - 1.5
+        - 3.0
+        - 1000000000.0
+        lev_labels:
+        - lev0
+        - lev1
+        - lev2
+        - lev3
+        - lev4
+      alpha_clip:
+      - -0.2
+      - 1.0
+      alpha_default_by_kernel:
+        attention|q=1: 0.3888
+        indexer|q=1: 0.225
+      n_range_by_kernel:
+        attention|q=1:
+        - 2
+        - 256
+        indexer|q=1:
+        - 2
+        - 256
+      bucket_table: tp1/skew_fit.csv
+      bucket_table_sha256: 43e16ad66c78e9185fa6008749381b2449d0546252020018f7ded1cf22724436

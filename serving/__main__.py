@@ -17,6 +17,11 @@ from collections import defaultdict, deque
 from serving.core.scheduler import *
 from serving.core.request import *
 from serving.core.utils import *
+from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
+                                num_mtp_layers, get_architecture)
+from serving.core.hardware_defaults import apply_hardware_defaults, load_hardware_yaml
+from serving.core.cudagraph import resolve_graph_config, resolve_dp_shapes
+from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
 from serving.core.graph_generator import *
@@ -32,34 +37,30 @@ import sys as flush
 from pyinstrument import Profiler
 
 
+
+
 def _pad_batch_to_max(batch, max_len):
-    """Pad a batch up to ``max_len`` for DP-sync.
+    """Pad model-forward rows without inventing requests or KV history.
 
-    Mirrors vLLM's CUDA-graph DP padding: every DP rank's forward runs at
-    ``max(num_tokens_across_dp)``. We bump the high-level counters so
-    dense layers, lm_head, and the MoE compute path all reflect the
-    padded shape — but we deliberately leave ``decode_k_list`` /
-    prefill lists untouched so attention continues to see only the real
-    decodes. FlashAttention's varlen kernel gives padded ``seq_len=0``
-    entries zero compute in real vLLM, and extending ``decode_k_list``
-    with ``kv=1`` dummies would instead collapse ``kv_decode_mean``
-    toward 1 and push the attention lookup far outside the profiled
-    sweep.
-
-    MoE AG/RS comm size is anchored separately to ``max_total_len`` (no
-    ``× group_size``) in the iteration loop — that calibrates the
-    bandwidth model against the same ``link_bw`` AllReduce already uses.
-
-    Request-completion accounting (`scheduler.add_done`) reads
-    ``batch.requests`` and ``batch.end``, not these mutated token-list
-    fields, so it is unaffected.
+    Dense/MoE work and forward collectives use total_len. Attention lookup
+    retains real query/KV lists; logits run outside the padded forward.
+    Request-completion accounting uses requests/end/scheduled_tokens, not
+    total_len. Padding is not a new decode sequence, even under speculation.
     """
-    pad = max_len - batch.total_len
-    if pad <= 0:
-        return
-    batch.total_len = max_len
-    batch.kv_len += pad                  # each dummy contributes kv=1
-    batch.num_decode += pad              # counted for lm_head / dense shape
+    batch.total_len = max(batch.total_len, max_len)
+
+
+def _pad_dp_round(round_batches, runtime_configs):
+    """Apply local dispatch and DP sync (one member for an independent instance)."""
+    configs = [runtime_configs[i]["cudagraph"] for i in round_batches]
+    batches = [batch for batch, _ in round_batches.values()]
+    uniform = [bool(batch.q_list) and all(q == config.query_length for q in batch.q_list)
+               for batch, config in zip(batches, configs)]
+    mode, sizes = resolve_dp_shapes([b.total_len for b in batches], uniform, configs)
+    for batch, size in zip(batches, sizes):
+        _pad_batch_to_max(batch, size)
+        batch.cudagraph_mode = mode
+    return max(sizes), sum(sizes), min(sizes)
 
 
 def _pass_response(router, current, state_changed=False):
@@ -101,7 +102,11 @@ def _cluster_config_path(path):
 
 def _load_cluster_config_for_overrides(path):
     with open(_cluster_config_path(path), "r") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    # Fill hardware facts the config omits from profiler/perf/<hw>/hardware.yaml
+    # before anything reads them. Both readers of this file do it, so the two
+    # see the same config; the pass is idempotent.
+    return apply_hardware_defaults(cfg)
 
 
 def _resolve_output_file(path, run_id):
@@ -164,18 +169,74 @@ def _iter_raw_instances(cluster_config):
             yield instance
 
 
-def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
-    dtype = instance.get("dtype", cli_dtype)
-    if dtype is None:
-        config = get_config(instance["model_name"])
-        torch_dtype = config.get("torch_dtype")
-        if isinstance(torch_dtype, str) and torch_dtype in dtype_to_bits:
-            dtype = torch_dtype
-        else:
-            dtype = "bfloat16"
-    if dtype not in dtype_to_bits:
-        raise ValueError(f"Unsupported dtype '{dtype}' for instance {instance.get('instance_id')}")
-    return dtype
+def _resolve_instance_dtypes(instance, dtype_to_bits):
+    """This instance's ``(weight_dtype, kv_cache_dtype)``, both from the model
+    config.
+
+    Neither is an input any more. A dtype is a property of the checkpoint, and
+    once a model carries five of them -- weights, KV cache, mamba conv state,
+    mamba recurrent state, sparse-indexer side cache -- a flag per dtype is
+    both unusable and unfaithful: the checkpoint already says what it is, and
+    saying otherwise describes a model nobody can serve. The three cache dtypes
+    were never flags; these two used to be, and are now read the same way. See
+    ``memory_model.cache_dtype_bytes`` for the whole table.
+
+    Both rules are the profiler's and vLLM's, not ours. ``config_weight_dtype``
+    is what decides which ``perf/.../<variant>/`` folder the profiler *wrote*,
+    so the simulator has to derive it identically or it reads a folder that
+    does not exist -- and it prefers ``quantization_config`` over the dtype
+    fields, which on a quantized checkpoint describe the activations rather
+    than the weights (DeepSeek-V3.2-Exp is FP8 with ``torch_dtype: bfloat16``).
+    ``config_kv_cache_dtype`` follows vLLM's own promotion at
+    ``attention.py:281``.
+    """
+    config = get_config(instance["model_name"])
+    declared = config_weight_dtype(config)
+    dtype = declared if declared in dtype_to_bits else "bfloat16"
+    return dtype, config_kv_cache_dtype(config)
+
+
+_DEFAULT_BLOCK_SIZE = 16
+
+
+def _resolve_block_size(instance, args):
+    """This instance's KV block size: explicit, else the profiled one, else 16.
+
+    vLLM takes a block size as a **floor and an alignment unit**, not as the
+    answer. ``platforms/interface.py`` computes
+    ``alignment = max(min(backend.get_supported_kernel_block_sizes()),
+    cache_config.block_size)``, derives the smallest multiple of it whose
+    attention page covers one mamba page, and raises ``block_size`` to that if
+    it is larger -- never lowering it. So the resolved value is a function of
+    what you asked for, and on Qwen3.8-27B asking for 16 gives 784 while asking
+    for 64 gives 832.
+
+    That is why this reads the number back out of the profile bundle rather
+    than recomputing it: the bundle records what the engine settled on for the
+    block size the *profiler* was run with, which is the configuration the
+    latencies were measured under. An explicit value that disagrees is not
+    wrong to allow -- studying a hypothetical block size is a legitimate thing
+    to simulate -- but it no longer matches the measurement, so it is said out
+    loud.
+    """
+    explicit = instance.get("block_size", args.block_size)
+    variant = resolve_variant(get_config(instance["model_name"]))
+    # The bundle records one resolved block size per TP degree, because both
+    # the mamba page and the attention page scale with the rank's shard.
+    tp = int(instance.get("tp_size") or 1)
+    profiled = profiled_block_size(
+        instance["hardware"], instance["model_name"], variant, tp)
+    if explicit is None:
+        return profiled or _DEFAULT_BLOCK_SIZE
+    if profiled is not None and explicit != profiled:
+        get_logger("main").warning(
+            "--block-size %d for %s, but the profile bundle was measured at %d -- "
+            "the value vLLM raised it to, so that one attention page covers one "
+            "mamba page. Latency lookups will use measurements taken at a "
+            "different block size.",
+            explicit, instance["model_name"], profiled,
+        )
+    return explicit
 
 
 def _resolve_mem_util(instance, cli_default):
@@ -204,10 +265,7 @@ def _resolve_mem_util(instance, cli_default):
 def _build_instance_runtime_configs(instances, args, dtype_to_bits):
     runtime_configs = []
     for instance_id, instance in enumerate(instances):
-        dtype = _resolve_instance_dtype(instance, args.dtype, dtype_to_bits)
-        kv_cache_dtype = instance.get("kv_cache_dtype", args.kv_cache_dtype)
-        if kv_cache_dtype not in ("auto", "fp8"):
-            raise ValueError(f"Unsupported kv_cache_dtype '{kv_cache_dtype}' for instance {instance_id}")
+        dtype, kv_cache_dtype = _resolve_instance_dtypes(instance, dtype_to_bits)
 
         enable_attn_offloading = instance.get("enable_attn_offloading", args.enable_attn_offloading)
         enable_sub_batch_interleaving = instance.get(
@@ -228,7 +286,7 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
                 instance.get("max_num_batched_tokens", args.max_num_batched_tokens)),
             "long_prefill_token_threshold": instance.get(
                 "long_prefill_token_threshold", args.long_prefill_token_threshold),
-            "block_size": instance.get("block_size", args.block_size),
+            "block_size": _resolve_block_size(instance, args),
             "dtype": dtype,
             "fp": dtype_to_bits[dtype],
             "kv_cache_dtype": kv_cache_dtype,
@@ -239,13 +297,153 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
             "npu_memory_utilization": _resolve_mem_util(
                 instance, args.npu_memory_utilization),
             "reserve_full_isl": instance.get("reserve_full_isl", args.reserve_full_isl),
+            "async_scheduling": instance.get("async_scheduling", args.async_scheduling),
             "enable_local_offloading": instance.get(
                 "enable_local_offloading", args.enable_local_offloading),
             "enable_attn_offloading": enable_attn_offloading,
             "enable_sub_batch_interleaving": enable_sub_batch_interleaving,
             "enable_block_copy": instance.get("enable_block_copy", args.enable_block_copy),
+            "num_speculative_tokens": instance.get(
+                "num_speculative_tokens", args.num_speculative_tokens),
+            "spec_acceptance_rate": instance.get(
+                "spec_acceptance_rate", args.spec_acceptance_rate),
+            "spec_acceptance_policy": instance.get(
+                "spec_acceptance_policy", args.spec_acceptance_policy),
         })
+        cfg = runtime_configs[-1]
+        hardware = load_hardware_yaml(instance["hardware"]) or {}
+        capability = hardware.get("spec", {}).get("compute_capability")
+        options = instance.get("cudagraph")
+        if options is not None and not isinstance(options, dict):
+            raise ValueError("cudagraph must be an object")
+        # Attention offloading/sub-batch interleaving is a simulator extension,
+        # not the vLLM GPU forward whose graph keys this resolver describes.
+        if enable_attn_offloading:
+            if options is not None and options.get("mode", "NONE") != "NONE":
+                raise ValueError("CUDA graph replay is not modeled with attention offloading")
+            options = {"mode": "NONE"}
+        cfg["cudagraph"] = resolve_graph_config(
+            options, cfg["max_num_seqs"], cfg["max_num_batched_tokens"],
+            cfg["num_speculative_tokens"], instance.get("tp_size", 1), capability)
+        graph = cfg["cudagraph"]
+        log = get_logger("CUDAGraph")
+        log.info("Instance %s graph contract: mode=%s, capture_sizes=%s, "
+                 "query_length=%s, compiler_sp_multiple=%s", instance_id,
+                 graph.mode, graph.capture_sizes, graph.query_length, graph.sp_multiple)
+        if capability is None and graph.mode != "NONE" and not any(
+                key in (options or {}) for key in ("capture_sizes", "max_capture_size")):
+            log.warning("No compute capability for %s; assuming the non-SM10x "
+                        "CUDA graph cap of 512. Set cudagraph.capture_sizes or "
+                        "max_capture_size to describe a different target.", instance["hardware"])
+    graph_groups = {}
+    for instance, cfg in zip(instances, runtime_configs):
+        group = instance.get("dp_group")
+        if group is not None and graph_groups.setdefault(group, cfg["cudagraph"]) != cfg["cudagraph"]:
+            raise ValueError(f"DP group {group!r} members must share one target CUDA graph contract")
     return runtime_configs
+
+
+def _require_drafter_cost(model_name, n, node_id, instance_id):
+    """Refuse a speculative run whose drafter time cannot be charged.
+
+    Acceptance is only half of speculative decoding. The other half is what the
+    drafts cost to produce, and vLLM runs the drafter **N times per step** --
+    once before the loop and ``num_speculative_tokens - 1`` inside it
+    (``llm_base_proposer.py``). The first pass reuses the target's own token
+    layout; the loop pins ``max_query_len = 1``, so the rest are pure decode.
+    A model that drafts with itself runs an MTP module for each: two norms, an
+    ``eh_proj``, **one full decoder layer of its own family**, then (DeepSeek
+    and GLM) a norm and ``lm_head``. The decoder layer is the dominant term by
+    two orders of magnitude over the wrapper, and charging zero for any of it
+    would report a speedup no engine can deliver.
+
+    So a model with MTP modules needs an ``mtp:`` section in its architecture
+    catalog naming both halves -- the wrapper layers and which block the
+    drafter's decoder layer is -- and the wrapper has to be written from a live
+    profile dump like every other block, since the module tree and the profile
+    tree differ both ways and writing one from vLLM's source binds names that
+    measure nothing. Until that profiling happens the honest answer is to
+    refuse, exactly as ``calculate_sizes`` refuses a layer name it has no
+    formula for.
+
+    A model with **no** MTP modules drafts with a separate model or with
+    n-gram. That is a serving choice rather than a property of the checkpoint,
+    so it is warned about rather than refused: the simulator has no second
+    model to charge.
+    """
+    logger = get_logger("main", node_id=node_id, instance_id=instance_id)
+    mtp = num_mtp_layers(get_config(model_name))
+    if not mtp:
+        logger.warning(
+            "Speculative decoding with N=%d on %s, which declares no MTP "
+            "modules -- it drafts with a separate model or with n-gram, and "
+            "the simulator has no second model to charge. Draft *time* is not "
+            "counted; acceptance still is, so the reported speedup is an upper "
+            "bound.",
+            n, model_name,
+        )
+        return
+    section = (get_architecture(model_name) or {}).get("mtp") or {}
+    missing = [
+        key for key in ("prologue", "decoder_block") if not section.get(key)
+    ]
+    if missing:
+        raise NotImplementedError(
+            f"speculative decoding on {model_name!r} needs the cost of its "
+            f"{mtp} MTP module(s), which run {n} time(s) per step, and "
+            f"profiler/models/<model_type>.yaml's 'mtp:' section is missing "
+            f"{', '.join(missing)}. Charging zero would report a speedup no "
+            f"engine can deliver -- and 'decoder_block' is the dominant term, "
+            f"since one drafter pass wraps a whole decoder layer. Add them "
+            f"from a live profile dump (python -m profiler coverage "
+            f"--profile-mtp) and profile the model with --profile-mtp, or "
+            f"drop --num-speculative-tokens."
+        )
+
+
+def _build_acceptance_model(model_name, inst_cfg, node_id, instance_id):
+    """The instance's speculative-decoding acceptance model, or None.
+
+    Defaults come from the model's own published measurement
+    (``configs/spec_decode.json``), which is why a model with no published
+    figure has to be given a rate rather than being handed a plausible one:
+    acceptance varies from 0.39 to 0.78 across the four modern families, so
+    there is no defensible generic default.
+    """
+    n = inst_cfg["num_speculative_tokens"]
+    rate = inst_cfg["spec_acceptance_rate"]
+    if not n and rate is None:
+        return None
+
+    published = published_defaults(model_name) or {}
+    if n in (None, 0, -1):
+        n = published.get("num_speculative_tokens", 0)
+    if rate is None:
+        rate = published.get("acceptance_rate")
+    if not n:
+        return None
+    _require_drafter_cost(model_name, n, node_id, instance_id)
+    if rate is None:
+        raise ValueError(
+            f"speculative decoding requested for {model_name!r}, which has no "
+            f"published acceptance rate in configs/spec_decode.json. Pass "
+            f"--spec-acceptance-rate (accepted/drafted) rather than letting the "
+            f"simulator invent one."
+        )
+    model = AcceptanceModel(
+        num_speculative_tokens=n,
+        acceptance_rate=rate,
+        position_acceptance=published.get("position_acceptance"),
+        policy=inst_cfg["spec_acceptance_policy"],
+        node_id=node_id,
+        instance_id=instance_id,
+    )
+    model.logger.info(
+        "Speculative decoding: N=%d, acceptance %.3f (%s), mean accept length %.2f%s",
+        model.N, model.rate, model.policy, model.mean_accept_length(),
+        "" if inst_cfg["spec_acceptance_rate"] is not None else " [published]",
+    )
+    return model
 
 
 def main():
@@ -273,10 +471,25 @@ def main():
                         'Limits how many tokens a single prefill request consumes per iteration, '
                         'preventing long prompts from monopolizing the token budget. '
                         'When 0, a single prefill can consume the entire budget')
-    parser.add_argument('--dtype', type=str, choices=['float16', 'bfloat16', 'float32', 'fp8', 'int8'], default=None,
-                        help='model weight data type (vLLM-style). When omitted, defaults to the model config\'s '
-                        '``torch_dtype`` (falling back to bfloat16). Overrides only take effect if the profiler '
-                        'produced matching data under perf/<hw>/<model>/<variant>/tp<N>/')
+    parser.add_argument('--num-speculative-tokens', type=int, default=0,
+                        dest='num_speculative_tokens',
+                        help='speculative decoding draft length N (vLLM\'s num_speculative_tokens). '
+                        '0 (default) disables it. Omit --spec-acceptance-rate to take the model\'s '
+                        'own published N and acceptance from configs/spec_decode.json; pass -1 to '
+                        'use that N explicitly. Override per instance with "num_speculative_tokens"')
+    parser.add_argument('--spec-acceptance-rate', type=float, default=None,
+                        dest='spec_acceptance_rate',
+                        help='fraction of drafted tokens the target model accepts, so the mean '
+                        'accepted length is 1 + rate * N. This is the marginal rate every '
+                        'published source reports, not Leviathan\'s conditional alpha -- see '
+                        'serving/core/spec_decode.py. Defaults to the model\'s published value; '
+                        'a model with no published value must be given one')
+    parser.add_argument('--spec-acceptance-policy', type=str,
+                        choices=['FIXED', 'DECAY', 'CUSTOM'], default='FIXED',
+                        dest='spec_acceptance_policy',
+                        help='how the accepted count is drawn: FIXED (default, every draft '
+                        'position at the pooled rate), DECAY (per-position rates, which fall with '
+                        'draft position -- same mean, different spread), CUSTOM (user-defined)')
     parser.add_argument('--request-routing-policy', type=str, choices=['LOAD', 'RR', 'RAND', 'CUSTOM'], default='LOAD',
                         help='request routing policy across instances: LOAD (vLLM-style weighted least-loaded, default), '
                         'RR (round-robin), RAND (random), CUSTOM (user-defined)')
@@ -287,7 +500,21 @@ def main():
                         'BALANCED (default; analytical pigeonhole approximation of '
                         'a trained load-balanced learned gate), '
                         'RR (round-robin), RAND (uniform random per token), '
-                        'CUSTOM (user-defined)')
+                        'CUSTOM (the measured distinct-expert count from '
+                        '--gate-stats, falling back to BALANCED when none is '
+                        'given)')
+    parser.add_argument('--gate-stats', type=str, default=None,
+                        help='path to a gate_stats.json (or the bench run '
+                        'directory holding one) recorded by '
+                        '`bench run --record-gate-stats`. Read only under '
+                        '--expert-routing-policy CUSTOM, where it replaces the '
+                        'uniform-gate closed form with the real gate\'s '
+                        'measured distinct-expert count. A trained gate '
+                        'concentrates on popular experts, so the closed form '
+                        'over-counts -- on Qwen3-30B-A3B by 13%% through the '
+                        'middle of the range and 6%% at a saturated decode. A '
+                        'missing, unreadable or mismatched file falls back to '
+                        'the closed form with a warning.')
     parser.add_argument('--enable-block-copy', action=argparse.BooleanOptionalAction,
                         default=True,
                         help='Replay one transformer block\'s trace across every '
@@ -320,6 +547,14 @@ def main():
                         'not merely its first chunk. Mirrors vLLM\'s scheduler_reserve_full_isl '
                         '(True there too); without it chunked prefill over-admits and thrashes '
                         'the KV cache. Override per instance with "reserve_full_isl"')
+    parser.add_argument('--async-scheduling', action=argparse.BooleanOptionalAction, default=True,
+                        help="compose the next batch while the current one is still running, "
+                        "as vLLM's scheduler_config.async_scheduling does (True there too). "
+                        "It makes max_concurrent_batches 2 at pp_size 1, so a request that "
+                        "arrives after the next batch was composed waits one more step -- "
+                        "worth ~0.6 step of TTFT, which is invisible on a saturated run and "
+                        "a fifth of the median TTFT on a light one. Override per instance "
+                        'with "async_scheduling"')
     parser.add_argument('--npu-memory-utilization', type=float, default=0.9,
                         help='fraction of NPU memory an instance may use for weights plus '
                         "KV cache. Corresponds to vLLM's --gpu-memory-utilization, renamed "
@@ -328,8 +563,14 @@ def main():
                         '(npu_mem * this - model weight); the activation peak and CUDA '
                         'context that vLLM also subtracts are not modelled, so the '
                         'resulting capacity is an upper bound on vLLM\'s at the same value')
-    parser.add_argument('--block-size', type=int, default=16,
-                        help='KV cache block size in tokens (number of tokens per block)')
+    parser.add_argument('--block-size', type=int, default=None,
+                        help='KV cache block size in tokens. When omitted, taken from the '
+                        'profile bundle\'s recorded engine_resolved.block_size -- vLLM derives '
+                        'this from the backend rather than accepting what it is given, so a '
+                        'MiniMax-M3 run is 128 and a Qwen3.8 hybrid is 784 whatever you ask for. '
+                        'An explicit value that disagrees is simulating a configuration vLLM '
+                        'cannot serve, and says so. Falls back to 16 when the bundle predates '
+                        'the field. Override per instance with "block_size"')
     parser.add_argument('--dataset', type=str, default=None,
                         help='path to .jsonl dataset file with request traces. '
                         'If None, requests must be added manually in serving/__main__.py')
@@ -365,15 +606,18 @@ def main():
                         help='interval in seconds between throughput/memory usage log messages')
     parser.add_argument('--log-level', type=str, choices=['WARNING', 'INFO', 'DEBUG'], default='WARNING',
                         help='logging verbosity: WARNING (minimal), INFO (per-iteration details), DEBUG (per-layer memory)')
-    parser.add_argument('--kv-cache-dtype', type=str, choices=['auto', 'fp8'], default='auto',
-                        help='KV cache data type: auto (inherit --dtype) or fp8. Selects the profile '
-                        'variant folder -- fp8 resolves to <dtype>-kvfp8, e.g. bf16-kvfp8 -- and '
-                        'halves KV cache memory. Override per instance with "kv_cache_dtype"')
     parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3'], default='analytical',
                         help='network simulation backend: analytical (fast, default) or ns3 (detailed, WIP)')
 
     args = parser.parse_args()
     
+    # Resolved against the repo root, not ``astra-sim/``. Every other path the
+    # simulator reads is a repo-relative literal in code and carries its own
+    # ``../``; this one comes from the user, who typed it against the directory
+    # they are standing in -- which is ``cwd``, captured before the chdir above.
+    if args.gate_stats and not os.path.isabs(args.gate_stats):
+        args.gate_stats = os.path.join(cwd, args.gate_stats)
+
     args.run_id = resolve_run_id(args.run_id)
     run_paths = build_run_paths(astra_sim, args.run_id, args.inputs_root)
     args.inputs_root = run_paths.inputs_root
@@ -406,6 +650,8 @@ def main():
     cluster = build_cluster_config(
         astra_sim, args.cluster_config, build_enable_local_offloading, build_enable_attn_offloading,
         inputs_root=run_paths.inputs_root)
+    if cluster.get("collective_links") and network_backend != 'analytical':
+        raise ValueError("collective_links requires the congestion-unaware analytical backend")
     num_nodes = cluster["num_nodes"]
     num_instances = cluster["num_instances"]
     instances = cluster["instances"]
@@ -540,6 +786,9 @@ def main():
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
             npu_memory_utilization=inst_cfg["npu_memory_utilization"],
             reserve_full_isl=inst_cfg["reserve_full_isl"],
+            async_scheduling=inst_cfg["async_scheduling"],
+            acceptance_model=_build_acceptance_model(
+                instance["model_name"], inst_cfg, instance["node_id"], instance_id),
         ))
 
     # The derived KV capacity, not the utilization fraction, is what decides
@@ -756,8 +1005,10 @@ def main():
                 # brings it (and any undersized real peers) up to the
                 # group's max_total_len, matching vLLM's CUDA-graph DP padding.
                 logger.debug(f"Instance {instance_id} is idle but DP group {dg} has pending batches. Creating dummy batch for synchronization.")
+                dummy_query = instance_runtime_configs[instance_id]["cudagraph"].query_length
                 dummy = Batch(schedulers[instance_id].get_batch_id(), instances[instance_id]["model_name"],
-                              1, 1, [1], [], 0, 1, [], [], [1], current, 0)
+                              dummy_query, 1, [dummy_query], [], 0, 1, [], [], [1], current, 0,
+                              decode_q_len=dummy_query)
                 dummy.fired.append(sys)
                 # Register it the way scheduler._build_batch registers a real
                 # batch. Without this the instance's other NPUs get nothing:
@@ -776,26 +1027,15 @@ def main():
                     round_batches = {i: dp_pending[dg][i].popleft() for i in dp_groups[dg]}
                     own_workload = None
                     config = get_config(instances[instance_id]["model_name"])
-                    max_total_len = max(b.total_len for b, _ in round_batches.values())
-                    for b, _ in round_batches.values():
-                        _pad_batch_to_max(b, max_total_len)
-                    # MoE AG/RS comm size is anchored to ``max_total_len``
-                    # (not ``max × group_size``). The trace generator divides
-                    # this by ep_total internally for the per-rank AG chunk
-                    # and uses the same value for the RS pre-scatter buffer.
-                    # Empirically this matches real NCCL AG/RS bandwidth on
-                    # PCIe 5.0 at the same ``link_bw`` that already calibrates
-                    # AllReduce — i.e. ASTRA-Sim's Ring half-duplex model
-                    # ends up correct for AR but 2× over real AG/RS, and the
-                    # "× group_size" we used previously stacked the two errors.
-                    sum_total_len = max_total_len
+                    max_total_len, sum_total_len, min_total_len = _pad_dp_round(
+                        round_batches, instance_runtime_configs)
 
                     # Shared workload folder for all DP members
                     first_inst_id = dp_groups[dg][0]
                     first_batch = round_batches[first_inst_id][0]
                     dp_workload_name = f'{instances[first_inst_id]["hardware"]}/{instances[first_inst_id]["model_name"]}/dp_{dg}_batch{first_batch.batch_id}'
 
-                    for inst_id in dp_groups[dg]:
+                    for dp_rank, inst_id in enumerate(dp_groups[dg]):
                         batch, nid = round_batches[inst_id]
                         batch.workload_name = dp_workload_name
                         inst = instances[inst_id]
@@ -812,8 +1052,15 @@ def main():
                                        dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                        tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                        dp_sum_total_len=sum_total_len,
+                                       dp_min_total_len=min_total_len,
+                                       dp_token_counts=tuple(round_batches[m][0].total_len for m in dp_groups[dg]),
+                                       dp_rank=dp_rank,
                                        enable_block_copy=inst_cfg["enable_block_copy"],
-                                       inputs_root=run_paths.inputs_root)
+                                       inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                         generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                        inst_id, inst2npu_mapping[inst_id],
                                        inst_cfg["enable_local_offloading"],
@@ -871,19 +1118,15 @@ def main():
                         round_batches = {i: dp_pending[dg][i].popleft() for i in dp_groups[dg]}
                         own_workload = None
                         config = get_config(instance["model_name"])
-                        max_total_len = max(b.total_len for b, _ in round_batches.values())
-                        for b, _ in round_batches.values():
-                            _pad_batch_to_max(b, max_total_len)
-                        # See twin block above: anchor MoE comm to max_total_len
-                        # (no group-size multiplier).
-                        sum_total_len = max_total_len
+                        max_total_len, sum_total_len, min_total_len = _pad_dp_round(
+                            round_batches, instance_runtime_configs)
 
                         # Shared workload folder for all DP members
                         first_inst_id = dp_groups[dg][0]
                         first_batch = round_batches[first_inst_id][0]
                         dp_workload_name = f'{instances[first_inst_id]["hardware"]}/{instances[first_inst_id]["model_name"]}/dp_{dg}_batch{first_batch.batch_id}'
 
-                        for inst_id in dp_groups[dg]:
+                        for dp_rank, inst_id in enumerate(dp_groups[dg]):
                             batch, nid = round_batches[inst_id]
                             batch.workload_name = dp_workload_name
                             inst = instances[inst_id]
@@ -900,8 +1143,15 @@ def main():
                                            dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                            tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
                                            dp_sum_total_len=sum_total_len,
+                                           dp_min_total_len=min_total_len,
+                                           dp_token_counts=tuple(round_batches[m][0].total_len for m in dp_groups[dg]),
+                                           dp_rank=dp_rank,
                                            enable_block_copy=inst_cfg["enable_block_copy"],
-                                           inputs_root=run_paths.inputs_root)
+                                           inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                             generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
                                            inst_id, inst2npu_mapping[inst_id],
                                            inst_cfg["enable_local_offloading"],
@@ -932,6 +1182,7 @@ def main():
                 else:
                     # Independent instance: generate trace immediately
                     inst_cfg = instance_runtime_configs[instance_id]
+                    _pad_dp_round({instance_id: (new_req, node_id)}, instance_runtime_configs)
                     trace_data = generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
                                    instance["local_ep"], instance["ep_total"],
                                    instance["pd_type"],
@@ -944,7 +1195,11 @@ def main():
                                    dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                    tp_dim=instance["tp_dim"], ep_dim=instance["ep_dim"],
                                    enable_block_copy=inst_cfg["enable_block_copy"],
-                                   inputs_root=run_paths.inputs_root)
+                                   inputs_root=run_paths.inputs_root,
+                                   num_speculative_tokens=(
+                                       schedulers[instance_id].spec.N
+                                       if schedulers[instance_id].spec else 0),
+                                   gate_stats_path=args.gate_stats)
                     generate_graph(new_req, instance["hardware"], instance["num_npus"], node_id,
                                    instance_id, inst2npu_mapping[instance_id],
                                    inst_cfg["enable_local_offloading"],

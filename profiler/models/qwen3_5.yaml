@@ -1,0 +1,313 @@
+# Qwen3.5-generation family — class catalog (hybrid gated-DeltaNet + full
+# attention).
+#
+# Covers **Qwen3.5, Qwen3.6 and Qwen3.8**, dense and MoE. They are one
+# architecture: Qwen3.6-27B has the same 64 layers at hidden 5120 as
+# Qwen3.5-27B, Qwen3.6-35B-A3B matches Qwen3.5-35B-A3B, and every one of them
+# reports ``model_type: qwen3_5`` / ``qwen3_5_moe`` and runs vLLM's
+# ``qwen3_5.py``. The generation number is a checkpoint refresh, not a new
+# structure. Pick the model at the CLI.
+#
+# Plain **Qwen3** (Qwen3-32B, Qwen3-30B-A3B) is a *different* architecture
+# despite the name — no gated DeltaNet, ``RMSNorm`` rather than
+# ``GemmaRMSNorm`` — and lives in qwen3.yaml.
+#
+# This is the first **heterogeneous** architecture in the repo, so it uses
+# ``blocks:`` + ``shared:`` rather than the flat ``sequence:`` the uniform
+# families use. Which block each layer runs comes from the checkpoint's own
+# ``layer_types`` list (``linear_attention`` / ``full_attention``, 3:1 on every
+# released checkpoint), not from this file — the keys under ``blocks.attn``
+# are exactly those values so the resolver can index them directly.
+#
+# Profiling note: ``--num-hidden-layers 4`` is the minimum that instantiates
+# both block types, since ``layer_types`` starts with three linear-attention
+# layers. At the default 1 the catalog can only ever see the GDN block.
+#
+# ---------------------------------------------------------------------------
+# Every binding below was read off a live profile tree, not off vLLM's source.
+# That distinction matters here more than anywhere else in the repo:
+#
+#  * ``rotary_emb``, ``q_norm`` and ``k_norm`` are real modules inside
+#    ``Qwen3NextAttention`` and **none of them becomes a node** in the profile
+#    tree — their kernels run as bare children of the parent. Binding them
+#    would silently measure nothing. They are deliberately absent, and the
+#    ~12 us they cost per full-attention layer (177.1 of the parent's 189.2 is
+#    attributed) is the known gap.
+#  * ``RMSNormGated`` is likewise not a node; the GDN norm is the bare
+#    ``layer_norm_fwd_kernel``.
+#  * ``in_proj_qkvz`` and ``in_proj_ba`` are both ``MergedColumnParallelLinear``
+#    children of the same parent, so vLLM reports them as **one merged node**.
+#    They cannot be separated, which is why ``gdn_in_proj`` is a single entry
+#    covering the pair; ``hooks/timings.py`` divides by parent invocations
+#    times sequence occurrences so the value is their sum, not their mean.
+#  * The conv and the state scan use **different kernels per regime** — pure
+#    prefill, pure decode, and mixed each pick their own. All of them are
+#    bound; whichever the batch reaches is the one that reports a time.
+#
+# Re-derive by dumping the profile tree once per shot if a vLLM upgrade moves
+# any of these names.
+
+
+# Every HF ``model_type`` this catalog serves: the VL wrapper's name and the
+# text tower's, for both the dense and the MoE line. Which MLP runs is decided
+# by ``blocks.mlp``, not by the name.
+#
+# ``qwen3_next`` is deliberately NOT listed. It has the same gated-DeltaNet
+# structure but different classes (``Qwen3NextDecoderLayer``, plain ``RMSNorm``
+# instead of ``GemmaRMSNorm``), so it needs its own catalog.
+model_types:
+  - qwen3_5
+  - qwen3_5_text
+  - qwen3_5_moe
+  - qwen3_5_moe_text
+
+
+blocks:
+  attn:
+    # Gated DeltaNet. No KV cache: a fixed-size conv state plus a fixed-size
+    # recurrent state per sequence, so cost does not depend on sequence
+    # length at all (measured: a 64x spread in kv moves it 1.1%) and there is
+    # no skew correction to apply.
+    linear_attention:
+      pre_attn:  [layernorm, gdn_in_proj, gdn_conv_prefill, gdn_post_conv,
+                  gdn_conv_decode, gdn_prefill, gdn_decode, gdn_decode_mixed,
+                  gdn_glue]
+      post_attn: [gdn_norm, gdn_out_proj, layernorm]
+    full_attention:
+      pre_attn:  [layernorm, qkv_proj, qk_norm_rope, attention, attn_glue]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
+  prologue: [embedding]
+  head:     [final_layernorm, lm_head, sampler]
+
+
+# The model's own drafter, built only when the engine boots with
+# speculative_config (``--profile-mtp``). vLLM runs it **N times per step**.
+#
+# Qwen's MTP does NOT reuse DeepSeek's names. Read off
+# ``profiler coverage --profile-mtp``, which reported four unbound nodes:
+# one ``ColumnParallelLinear`` (the ``fc``, 2h -> h) and three
+# ``GemmaRMSNorm`` at identical cost (``norm``, ``pre_fc_norm_hidden``,
+# ``pre_fc_norm_embedding``). Measured at 4 target layers,
+# prefill / decode / mixed: fc 79.9 / 76.4 / 81.5 us, each norm
+# 79.0 / 57.4 / 80.1.
+#
+# The MTP nodes arrive with an **empty ancestor chain** here, unlike
+# DeepSeek's, whose parent modules are tree nodes. So the norms are separated
+# from the target's by ``not_within`` rather than ``within``: the target's two
+# norm entries are pinned to ``Qwen3_5DecoderLayer`` and
+# ``Qwen3_5ForCausalLM``, and the drafter's have neither among their
+# ancestors. ``fc`` needs no guard -- ``ColumnParallelLinear`` is bound
+# nowhere else in this catalog.
+mtp:
+  prologue: [mtp_embed, mtp_fc]
+  # ``mtp_norms`` is one merged profile node covering norms on **both** sides
+  # of the block -- pre_fc_norm_embedding and pre_fc_norm_hidden before ``fc``,
+  # ``norm`` after the decoder layer -- and the three are same-class siblings
+  # under a parent that launches nothing, so the profiler cannot separate them.
+  # Charging the merged node once after the block is therefore as accurate as
+  # once before, and it leaves the trace ending on a real layer row rather
+  # than on a block's trailing marker, which is what the Chakra converter
+  # reads its MEM_STORE node from.
+  # The decoder layer gets no names of its own: it is a Qwen3_5DecoderLayer,
+  # so the simulator replays the target's own block sequence for it.
+  # ``qwen3_5_mtp.py`` passes ``layer_type="full_attention"`` explicitly, so a
+  # drafter pass runs attention and never the gated-DeltaNet path -- which is
+  # the opposite of what the checkpoint's own layer_types[0] says.
+  # The MLP axis is not per-layer on this family: qwen3_5.py picks it off
+  # ``model_type`` (``qwen3_5_moe_text`` -> MoE, ``qwen3_5_text`` -> dense), so
+  # the drafter's is whatever the checkpoint's is and ``mlp`` is left out.
+  decoder_block: {attn: full_attention}
+  head: [mtp_norms]
+  # No head: Qwen3_5MTP keeps lm_head outside the predictor, already bound as
+  # the target's.
+
+
+catalog:
+  mtp:
+    # This family's wrapper (``Qwen3_5MultiTokenPredictor``) launches no kernel
+    # of its own, so it never becomes a profile node and there is no ancestor
+    # to pin ``within`` to -- the drafter's nodes arrive at the **top level**,
+    # siblings of the target's ``Qwen3_5ForCausalLM``. So the guards here are
+    # exclusions: ``not_within`` on the two classes that do appear. Verified
+    # against a live tree dumped from a 4-layer ``--profile-mtp`` boot, which
+    # reports the drafter as VocabParallelEmbedding, GemmaRMSNorm x3,
+    # ColumnParallelLinear, Qwen3_5DecoderLayer, GemmaRMSNorm at the root.
+    mtp_fc:
+      # 2h -> h, and ColumnParallelLinear rather than DeepSeek's plain
+      # nn.Linear, so this one IS sharded by TP. Needs no exclusion: the
+      # target's projections are Merged/Row/QKVParallelLinear, all distinct
+      # class names, so the bare class matches only the drafter's.
+      vllm: ColumnParallelLinear
+    mtp_embed:
+      # The drafter's own embed_tokens. Same class as the target's, and its
+      # nodes arrive at the top level, so the two are told apart by pinning the
+      # target's ``within`` and excluding the target here.
+      vllm: VocabParallelEmbedding
+      not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]
+    mtp_norms:
+      # norm + pre_fc_norm_hidden + pre_fc_norm_embedding, reported as one
+      # merged node (their sum) -- all three are the same class at the same
+      # width under a parent that launches nothing. Excluded from the target's
+      # two norm entries by their pinned ancestors.
+      vllm: GemmaRMSNorm
+      not_within: [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]
+      tp_stable: true
+
+  dense:
+    embedding:
+      # ``within`` is not optional here. The drafter carries its **own**
+      # embed_tokens, of the same class, and with --profile-mtp it lands at the
+      # top level while the target's sits inside the model -- so an unguarded
+      # entry sums the two and reads ~2.1x (3.8 + 4.3 us on Qwen3.8-27B).
+      # `profiler coverage` cannot see that: over-matching leaves nothing
+      # unbound. The drafter's copy is bound as ``mtp_embed`` instead.
+      vllm: VocabParallelEmbedding
+      within: Qwen3_5ForCausalLM
+    layernorm:
+      vllm: GemmaRMSNorm
+      within: Qwen3_5DecoderLayer
+      tp_stable: true
+    final_layernorm:
+      # The profile tree flattens ``Qwen3_5Model`` away (it launches no
+      # kernels of its own), so ``model.norm``'s parent node is the
+      # ForCausalLM. The decoder-layer norms also have that class among their
+      # ancestors, but the deepest-``within`` rule keeps them on ``layernorm``.
+      vllm: GemmaRMSNorm
+      within: Qwen3_5ForCausalLM
+      tp_stable: true
+
+    # --- gated DeltaNet block, token-linear parts --------------------------
+    gdn_in_proj:
+      # in_proj_qkvz + in_proj_ba, reported as one merged node. Weight-
+      # bandwidth bound rather than token bound: ~105 MB of weights per layer,
+      # so 8 decode tokens cost 390 us and 128 prefill tokens cost 440.
+      vllm: MergedColumnParallelLinear
+      within: QwenGatedDeltaNetAttention
+    gdn_norm:
+      # RMSNormGated never materialises as a module node.
+      vllm: layer_norm_fwd_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_out_proj:
+      vllm: RowParallelLinear
+      within: QwenGatedDeltaNetAttention
+    gdn_glue:
+      # Everything else the gated-DeltaNet block launches: the eager PyTorch
+      # reshapes, copies and index_put that move its conv and recurrent state
+      # around. Measured at 12.6% of the block's other kernels put together
+      # (~108 us against 747 on a mixed shot, 3 GDN layers), so leaving it
+      # unbound would make GDN look cheaper than it is -- which is the one
+      # comparison this architecture exists to inform.
+      #
+      # There is no single name to bind: each is a distinct
+      # ``at::native::...<functor>`` instantiation. The ``*`` prefix takes them
+      # as a group, ``within`` keeps the group scoped to this block, and the
+      # matches are summed, so this stays one trace node.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: QwenGatedDeltaNetAttention
+
+    # --- full-attention block ---------------------------------------------
+    qkv_proj:
+      vllm: QKVParallelLinear
+    qk_norm_rope:
+      # q-norm, k-norm, rope and the output gate, fused into one Triton kernel.
+      # The catalog had no entry for any of them: the RMSNorm and rotary
+      # modules are still in the module tree, but they launch nothing of their
+      # own, so binding them by class would have measured zero. Only the
+      # profile tree shows this.
+      vllm: _fused_qk_rmsnorm_rope_gate_kernel
+      within: Qwen3NextAttention
+    o_proj:
+      vllm: RowParallelLinear
+      within: Qwen3NextAttention
+    attn_glue:
+      # The same eager-glue bucket as gdn_glue, for the full-attention block.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: Qwen3NextAttention
+
+    # --- MLP (Qwen3.8-27B is dense; the class is shared with Qwen2 MoE) ----
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: Qwen2MoeMLP
+    act_fn:
+      vllm: SiluAndMul
+    down_proj:
+      vllm: RowParallelLinear
+      within: Qwen2MoeMLP
+
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+
+  # Everything in this group is **regime-dependent**: which kernels a
+  # gated-DeltaNet block runs depends on whether the batch is pure prefill,
+  # pure decode or mixed, not just on how big it is. Measured, per regime:
+  #
+  #                      prefill  decode  mixed
+  #   gdn_conv_prefill      x               x
+  #   gdn_post_conv         x               x
+  #   gdn_prefill           x               x
+  #   gdn_conv_decode                x
+  #   gdn_decode                     x
+  #   gdn_decode_mixed                      x
+  #
+  # ``linear_attention`` is keyed on ``(prefill_tokens, n_decode)``, so the
+  # profile's own absence of rows for a regime is what tells the simulator the
+  # kernel does not fire there. ``dense`` and ``per_sequence`` have no such
+  # notion -- a layer filed there is emitted on every batch, which charged a
+  # decode conv on a pure prefill and a prefill conv on a pure decode.
+  #
+  # The block's other layers (in_proj, out_proj, norm, glue) fire in all three
+  # regimes and stay in ``dense``, which is the whole reason the split is per
+  # layer rather than per block.
+  linear_attention:
+    gdn_conv_prefill:
+      vllm: _causal_conv1d_fwd_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_post_conv:
+      vllm: _fused_post_conv_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_conv_decode:
+      # The decode-regime conv, a separate kernel from the prefill one.
+      #
+      # This belongs here rather than in ``per_sequence`` even though its cost
+      # scales with the sequence count, because ``per_sequence`` has no notion
+      # of batch regime: it charged one decode-conv per *request* on a pure
+      # prefill batch, where the kernel does not run at all. The
+      # ``linear_attention`` key is ``(prefill_tokens, n_decode)``, so the
+      # profile's own absence of pure-prefill rows is what drops it.
+      vllm: _causal_conv1d_update_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_prefill:
+      # Chunked scan. Cost tracks the CHUNK COUNT, not the token count: one
+      # token past a 64-boundary costs 13.5% more than the boundary itself and
+      # the interval between boundaries is nearly flat, so the grid samples
+      # boundaries and the points just past them.
+      vllm: ChunkGatedDeltaRule
+      within: QwenGatedDeltaNetAttention
+    gdn_decode:
+      # Pure-decode regime.
+      vllm: fused_recurrent_gated_delta_rule_packed_decode_kernel
+      within: QwenGatedDeltaNetAttention
+    gdn_decode_mixed:
+      # Mixed regime: when the batch also carries a prefill chunk, vLLM runs
+      # this kernel instead of the one above. 4.5% apart at the same decode
+      # count, and a kernel-identity switch a pair of 1-D tables could not
+      # represent — which is why the linear-attention table is 2-D.
+      vllm: fused_sigmoid_gating_delta_rule_update_kernel
+      within: QwenGatedDeltaNetAttention
+
+  attention:
+    attention:
+      vllm: Attention
+
+  moe:
+    moe:
+      vllm: Qwen3NextSparseMoeBlock

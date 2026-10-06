@@ -161,7 +161,7 @@ gets inferred. So:
 - `num_npus == tp_size * pp_size` (always)
 - `pp_size <= num_hidden_layers`: stages are cut on transformer-block
   boundaries, so a stage cannot be empty
-- TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do EP-ALLTOALL
+- TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do the EP all-to-all
 - Without `dp_group`: `ep_size <= tp_size`
 - With `dp_group`: EP can scale beyond a single instance's GPUs (see DP+EP example)
 - For MoE models: `ep_size` must divide `num_local_experts`
@@ -171,13 +171,13 @@ gets inferred. So:
 | Field | Used for |
 | --- | --- |
 | `placement` | Per-layer / per-block weight + KV-cache placement (see [CXL memory](./memory-tiers/cxl-memory)) |
-| any of the 14 runtime overrides | Per-instance scheduler / memory / dtype settings (see below) |
+| runtime overrides | Per-instance scheduler, memory and speculative-decoding settings (see below); dtypes come from the model config |
 
 ## Per-instance runtime overrides
 
 Everything so far describes *hardware*. An instance can also carry
 **runtime settings**, and that is what makes heterogeneous clusters
-possible: 14 of the `python -m serving` flags can be re-specified per
+possible: supported `python -m serving` runtime flags can be re-specified per
 instance, so a prefill instance and a decode instance in the same run
 can be scheduled completely differently.
 
@@ -191,7 +191,7 @@ A field written in the instance wins for that instance. Every other
 instance keeps whatever the CLI said. There is no merging and no
 inheritance between instances.
 
-### The 14 overridable fields
+### Runtime override fields
 
 | Field | Overrides | Typical reason to set it per instance |
 | --- | --- | --- |
@@ -199,12 +199,14 @@ inheritance between instances.
 | `max_num_batched_tokens` | `--max-num-batched-tokens` | Big prefill chunks, small decode steps |
 | `long_prefill_token_threshold` | `--long-prefill-token-threshold` | Stop one long prompt monopolising a prefill instance |
 | `block_size` | `--block-size` | Coarser blocks where fragmentation matters less |
-| `dtype` | `--dtype` | Serve the same model at two precisions |
-| `kv_cache_dtype` | `--kv-cache-dtype` | FP8 KV on the decode instance only |
 | `enable_chunked_prefill` | `--enable-chunked-prefill` | Chunk on prefill, never on decode |
 | `enable_prefix_caching` | `--enable-prefix-caching` | Cache where prefixes repeat, skip where they don't |
 | `npu_mem.mem_util` | `--npu-memory-utilization` | Leave headroom on one instance only |
 | `reserve_full_isl` | `--reserve-full-isl` | Loosen admission on a decode-only instance |
+| `async_scheduling` | `--async-scheduling` | Match the target scheduler's overlap behavior |
+| `num_speculative_tokens` | `--num-speculative-tokens` | Set the draft count for this instance |
+| `spec_acceptance_rate` | `--spec-acceptance-rate` | Supply a deployment-specific acceptance assumption |
+| `spec_acceptance_policy` | `--spec-acceptance-policy` | Select the acceptance policy |
 | `enable_local_offloading` | `--enable-local-offloading` | Weight offload on one instance |
 | `enable_attn_offloading` | `--enable-attn-offloading` | PIM attention on one instance |
 | `enable_sub_batch_interleaving` | `--enable-sub-batch-interleaving` | Overlap NPU and PIM on the offloading instance |
@@ -260,8 +262,12 @@ step contributes one token per sequence.
 
 `configs/cluster/single_node_pd_per_instance_config.json` is the
 Llama-3.1-8B version of the same idea, and additionally overrides
-`long_prefill_token_threshold`, `block_size`, `dtype`, and
-`kv_cache_dtype`.
+`long_prefill_token_threshold` and `block_size`.
+
+There is deliberately no `dtype` or `kv_cache_dtype` field: every dtype
+comes from the model config now, so serving two precisions of one model
+means two **model configs**, one per checkpoint. See
+**[Cluster config → Dtypes are not overridable](/docs/reference/cluster-config)**.
 
 :::caution[`max_num_batched_tokens: 0` is not infinity]
 `0` maps to "unlimited", but the scheduler then applies
@@ -272,7 +278,7 @@ unbounded. See **[Model config](/docs/reference/model-config)**.
 
 ### What you cannot set per instance
 
-The other 15 flags are cluster-wide. Writing one inside an instance
+Run-wide flags are not per-instance overrides. Writing one inside an instance
 object does nothing at all: no key reads it, and no error is raised.
 
 | Scope | Flags |
@@ -294,7 +300,7 @@ config-load time:
   trace leaves both sub-batches mid-block at every stage edge, so a
   pipeline stage has no single hidden state to hand on.
 
-Full semantics, including `dtype`'s three-level fallback and the
+Full semantics, including why dtypes are not overridable and the
 `mem_util` range check, are in
 **[Reference → Cluster config](/docs/reference/cluster-config#runtime-overrides-optional)**.
 
@@ -316,7 +322,7 @@ wave-synchronized scheduling. MoE expert weights are sharded by
 
 Concrete example: Qwen3-30B-A3B has 128 experts. With
 `tp_size=1, ep_size=2, dp_group="A"` and two instances, each holds
-64 experts. Per-token activation crosses the DP group via ALLTOALL.
+64 experts. Per-token activation crosses the DP group via the EP all-to-all.
 
 This is the [DP+EP MoE](./parallelism/dp-ep-moe) example.
 

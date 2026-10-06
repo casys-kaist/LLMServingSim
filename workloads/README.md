@@ -7,7 +7,7 @@ and the `examples/` folder ships ready-to-edit invocation templates.
 
 ## Layout
 
-```
+```text
 workloads/
 ├── *.jsonl                    workload files (flat or agentic; see Format)
 ├── generators/                JSONL generators
@@ -85,6 +85,7 @@ populated for prefix-cache hashing.
 
 
 ### SWE-bench agentic traces
+
 Agentic sessions derived from real SWE-bench coding tasks with LLM calls chained
 by tool calls (bash, grep, file edits). Each session is a complete coding task
 consisting of multiple LLM sub-requests (6--20 per session) interleaved with tool
@@ -101,6 +102,7 @@ and the format reference is
 [Workloads → JSONL format](https://llmservingsim.ai/docs/workloads/jsonl-format).
 
 ### Other
+
 | File | Description |
 | --- | --- |
 | `example_trace.jsonl` | Small example trace for quick testing |

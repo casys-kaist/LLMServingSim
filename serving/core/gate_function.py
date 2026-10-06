@@ -1,12 +1,73 @@
+import json
+import os
 import random
+from bisect import bisect_left
 from dataclasses import dataclass
+from math import comb
 from .logger import get_logger
+
+# path -> parsed payload (or None when it could not be read). One process
+# reads a given gate_stats.json once, however many instances consult it.
+_GATE_STATS_CACHE = {}
+
+# A GateRouter is built per batch, so every message about the curve has to be
+# one-shot or it lands thousands of times in one run.
+_GATE_STATS_REPORTED = set()
+
+
+def _report_once(logger, key, level, fmt, *args):
+    if key in _GATE_STATS_REPORTED:
+        return
+    _GATE_STATS_REPORTED.add(key)
+    getattr(logger, level)(fmt, *args)
+
+
+def load_gate_stats(path):
+    """Read a ``gate_stats.json`` written by ``bench run --record-gate-stats``.
+
+    Returns ``None`` for a missing or unusable file rather than raising: the
+    documented behaviour when no measurement exists is to fall back to the
+    closed form, and that has to hold for a path that turns out to be wrong as
+    much as for one that was never passed.
+    """
+    if path in _GATE_STATS_CACHE:
+        return _GATE_STATS_CACHE[path]
+    payload = None
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        curve = [(int(n), float(mean)) for n, mean, _cnt in raw["curve"]]
+        curve.sort()
+        if curve:
+            payload = {
+                "model": raw.get("model"),
+                "num_experts": int(raw.get("num_experts") or 0),
+                "num_experts_per_tok": int(raw.get("num_experts_per_tok") or 0),
+                "n_calls": int(raw.get("n_calls") or 0),
+                "tokens": [c[0] for c in curve],
+                "activated": [c[1] for c in curve],
+                "path": path,
+            }
+    except (OSError, ValueError, KeyError, TypeError):
+        payload = None
+    _GATE_STATS_CACHE[path] = payload
+    return payload
 
 
 @dataclass
 class RoutingResult:
-    """Per-EP-rank routing information for a single MoE layer."""
-    local_tokens: list     # [rank] -> token count routed to this rank
+    """Per-EP-rank routing information for a single MoE layer.
+
+    ``local_tokens`` models a **dispatching** backend -- one that sends a rank
+    only the tokens with an expert it owns, which is what DeepEP does. The
+    trace generator emits vLLM's default ``allgather_reducescatter`` instead,
+    where every rank receives the whole gathered tensor and the expert kernel
+    permutes out the local ``(token, expert)`` pairs, so ``_emit_moe`` reads
+    only ``activated_experts`` and takes the token count from the gathered
+    total. Keep the field: it is the right answer for the backend it describes,
+    and it is what an all-to-all emitter would need.
+    """
+    local_tokens: list     # [rank] -> tokens a dispatching backend would send here
     activated_experts: list # [rank] -> number of distinct experts activated on this rank
     source_tokens: list    # [rank] -> token count originating from this rank before dispatch
 
@@ -20,7 +81,14 @@ class GateRouter:
                               auxiliary loss. Deterministic.
         RR                  — deterministic round-robin per token.
         RAND                — uniform random per token (seedable).
-        CUSTOM              — user-supplied ``_custom_gate_function``.
+        CUSTOM              — the **measured** distinct-expert count, read
+                              from a ``gate_stats.json`` recorded by
+                              ``bench run --record-gate-stats``. Falls back to
+                              BALANCED's closed form when no usable file is
+                              given, since a trained gate's concentration
+                              cannot be guessed. Per-token call sites
+                              (``route``) still go through
+                              ``_custom_gate_function``.
 
     ``block_copy``: simulator-side optimization that emits one
     transformer block's trace and replays it ``num_hidden_layers``
@@ -28,9 +96,8 @@ class GateRouter:
     trace-generation time by roughly ``num_hidden_layers`` × on MoE
     models. Safe whenever every layer's routing produces the same
     (local_tokens, activated_experts) pair — which is true for
-    BALANCED (deterministic), and a harmless approximation for
-    RR / RAND (per-layer variance in activated-count is small once
-    the batch is at saturation). Default True for speed; CUSTOM
+    BALANCED and RR (deterministic). For RAND it suppresses per-layer
+    routing variance and is only an approximation. Default True for speed; CUSTOM
     policies that legitimately need per-layer variance can set
     ``block_copy=False`` in the constructor.
     """
@@ -46,10 +113,27 @@ class GateRouter:
         routing_policy="BALANCED",
         seed=42,
         block_copy=True,
+        n_group=1,
+        topk_group=1,
+        gate_stats=None,
+        model_name=None,
     ):
         self.instance_id = instance_id
         self.E = int(num_local_experts)
         self.k = max(1, min(int(num_experts_per_tok), self.E))
+        # Group-limited routing (DeepSeek-V3/V3.2, GLM). A token's k experts
+        # are drawn only from ``topk_group`` of ``n_group`` groups, so it
+        # reaches fewer EP ranks than an unrestricted gate would. Absent
+        # fields mean one group, which is the unrestricted case.
+        self.n_group = max(1, int(n_group or 1))
+        self.topk_group = max(1, min(int(topk_group or 1), self.n_group))
+        if self.E % self.n_group:
+            raise ValueError(
+                f"n_group={self.n_group} does not divide num_experts={self.E}; "
+                f"vLLM's grouped_topk reshapes the scores to "
+                f"(tokens, n_group, experts_per_group), which requires it"
+            )
+        self._hit_cache = {}
         self.routing_policy = routing_policy.upper()
         self.seed = seed
         self.rnd = random.Random(seed) if seed is not None else random
@@ -74,10 +158,178 @@ class GateRouter:
             )
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
 
+        # The measured distinct-expert curve, or None. Resolved here so a bad
+        # path is reported once at construction rather than per layer, and so
+        # ``route_ep`` has a plain "is there a curve" question to ask.
+        self.gate_curve = None
+        if self.routing_policy == "CUSTOM":
+            self.gate_curve = self._resolve_gate_curve(gate_stats, model_name)
+            if self.gate_curve is None:
+                _report_once(
+                    self.logger, ("nocurve", self.instance_id), "warning",
+                    "expert routing CUSTOM with no usable gate_stats.json -- "
+                    "using BALANCED's closed form. Record one with "
+                    "`bench run --record-gate-stats --enforce-eager`.")
+            else:
+                _report_once(
+                    self.logger, ("curve", self.gate_curve["path"]), "info",
+                    "expert routing CUSTOM: measured curve over %d batch "
+                    "sizes from %d gate calls (%s)",
+                    len(self.gate_curve["tokens"]), self.gate_curve["n_calls"],
+                    self.gate_curve["path"])
+
+    def _resolve_gate_curve(self, gate_stats, model_name):
+        """Load and vet a gate-stats path against *this* model.
+
+        The distinct count is a property of these weights and this ``E``, so a
+        curve from another checkpoint is worse than the closed form -- which at
+        least knows the right ``E``. A mismatch therefore refuses rather than
+        rescaling: there is no defensible way to map one model's concentration
+        onto another's expert count.
+        """
+        if not gate_stats:
+            return None
+        path = os.fspath(gate_stats)
+        if os.path.isdir(path):
+            path = os.path.join(path, "gate_stats.json")
+        stats = load_gate_stats(path)
+        if stats is None:
+            _report_once(self.logger, ("unreadable", path), "warning",
+                         "gate stats: could not read %s", path)
+            return None
+        if stats["num_experts"] and stats["num_experts"] != self.E:
+            _report_once(self.logger, ("E", path), "warning",
+                         "gate stats: %s was measured at num_experts=%d, this "
+                         "model has %d -- ignoring it",
+                         path, stats["num_experts"], self.E)
+            return None
+        if stats["num_experts_per_tok"] and stats["num_experts_per_tok"] != self.k:
+            _report_once(self.logger, ("k", path), "warning",
+                         "gate stats: %s was measured at top_k=%d, this model "
+                         "has %d -- ignoring it",
+                         path, stats["num_experts_per_tok"], self.k)
+            return None
+        # Compared on the basename, because the two sides legitimately spell
+        # the same checkpoint differently: bench is routinely pointed at a
+        # local directory (``/data/model/Qwen3-30B-A3B-Instruct-2507``) while
+        # the simulator names the repo (``Qwen/Qwen3-30B-A3B-Instruct-2507``).
+        # The checks that actually protect correctness are ``E`` and ``top_k``
+        # above; this one is a typo guard, so it must not reject a real match.
+        if model_name and stats["model"]:
+            measured = os.path.basename(stats["model"].rstrip("/"))
+            asked = os.path.basename(model_name.rstrip("/"))
+            if measured != asked:
+                _report_once(self.logger, ("model", path), "warning",
+                             "gate stats: %s was measured on %s, this run is "
+                             "%s -- ignoring it", path, stats["model"],
+                             model_name)
+                return None
+        return stats
+
+    def _measured_activated(self, n):
+        """Distinct experts a real gate reaches at ``n`` tokens, interpolated.
+
+        Linear between the two neighbouring measured batch sizes, and
+        **clamped** at both ends rather than extrapolated. Below the first
+        point there is nothing under it -- the curve starts at one token, where
+        the count is exactly ``k`` and both models agree. Above the last, the
+        count is bounded by ``E`` and the curve is already flat there (0.90 to
+        0.97 of ``E`` across every prefill-sized batch measured), so extending
+        the last slope would push it past the ceiling for no reason.
+        """
+        xs = self.gate_curve["tokens"]
+        ys = self.gate_curve["activated"]
+        if n <= xs[0]:
+            return ys[0]
+        if n >= xs[-1]:
+            return ys[-1]
+        i = bisect_left(xs, n)
+        if xs[i] == n:
+            return ys[i]
+        x0, x1 = xs[i - 1], xs[i]
+        y0, y1 = ys[i - 1], ys[i]
+        return y0 + (y1 - y0) * (n - x0) / (x1 - x0)
+
     @staticmethod
     def expert_owner(expert_id, ep_size, num_experts):
         """Determine which EP rank owns a given expert. Even distribution across ranks."""
         return min(int(expert_id * ep_size // num_experts), ep_size - 1)
+
+    def _rank_group_overlap(self, ep_size):
+        """``m[r][g]`` -- how many of EP rank r's experts lie in group g.
+
+        Groups are contiguous expert ranges (vLLM reshapes the score vector to
+        ``(tokens, n_group, experts_per_group)``, so group g holds experts
+        ``[g * E/n_group, (g+1) * E/n_group)``), and ``expert_owner``
+        partitions the same range contiguously, so a rank either spans whole
+        groups or sits inside one.
+        """
+        per_group = self.E // self.n_group
+        m = [[0] * self.n_group for _ in range(ep_size)]
+        for e in range(self.E):
+            m[self.expert_owner(e, ep_size, self.E)][e // per_group] += 1
+        return m
+
+    def _hit_probs(self, ep_size):
+        """Per-rank P(a token sends at least one of its k experts to rank r).
+
+        Exact under a balanced gate, by enumerating how many of rank r's
+        experts fall inside the token's selected groups. The subset
+        distribution is built with a DP over groups (``n_group`` is 1-8 in
+        practice, so this is microseconds) rather than by drawing samples,
+        because the simulator must stay deterministic.
+
+        Without replacement, which is what ``torch.topk`` does: a token
+        selects k *distinct* experts. The previous closed form
+        ``1 - ((ep-1)/ep)**k`` modelled k independent draws, which double
+        counts and reads ~1% low even with no grouping at all.
+        """
+        key = ep_size
+        cached = self._hit_cache.get(key)
+        if cached is not None:
+            return cached
+
+        E, k, ng, tg = self.E, self.k, self.n_group, self.topk_group
+        reach = E * tg // ng            # experts the selected groups hold
+        m = self._rank_group_overlap(ep_size)
+        subsets = comb(ng, tg)
+        probs = []
+        for r in range(ep_size):
+            # dp[(groups_taken, experts_of_r_reached)] -> subset count
+            dp = {(0, 0): 1}
+            for g in range(ng):
+                nxt = {}
+                for (c, a), w in dp.items():
+                    nxt[(c, a)] = nxt.get((c, a), 0) + w
+                    if c < tg:
+                        hit = (c + 1, a + m[r][g])
+                        nxt[hit] = nxt.get(hit, 0) + w
+                dp = nxt
+            miss = 0.0
+            for (c, a), w in dp.items():
+                if c != tg:
+                    continue
+                avail = reach - a
+                if avail >= k:
+                    miss += (w / subsets) * (comb(avail, k) / comb(reach, k))
+            probs.append(1.0 - miss)
+
+        self._hit_cache[key] = probs
+        return probs
+
+    def _token_experts(self, token_idx):
+        """One token's k experts, honouring group-limited routing."""
+        if self.n_group == 1:
+            return self.routing_fn(token_idx, self.E, self.k)
+        per_group = self.E // self.n_group
+        if self.routing_policy == "RR":
+            first = (token_idx * self.topk_group) % self.n_group
+            groups = [(first + i) % self.n_group for i in range(self.topk_group)]
+        else:
+            groups = self.rnd.sample(range(self.n_group), self.topk_group)
+        pool = [g * per_group + i for g in groups for i in range(per_group)]
+        picked = self.routing_fn(token_idx, len(pool), self.k)
+        return [pool[i] for i in picked]
 
     def _rr_routing(self, token_idx, E, k):
         base = token_idx % E
@@ -93,7 +345,7 @@ class GateRouter:
         """Returns flat token counts per expert (used when EP=1)."""
         counts = [0] * self.E
         for t in range(int(total_len)):
-            exps = self.routing_fn(t, self.E, self.k)
+            exps = self._token_experts(t)
             for e in exps:
                 counts[e] += 1
 
@@ -107,8 +359,8 @@ class GateRouter:
     def route_ep(self, layer_num, batch_id, total_len, ep_size):
         """EP-aware routing: returns per-rank token counts and activated experts.
 
-        Tokens are distributed evenly across EP ranks before dispatch
-        (matching vLLM's EP execution model). Each token selects k
+        Source-token counts here are a synthetic even split, not the real
+        DP batch vector used to size communication. Each token selects k
         experts; the owning rank receives the token for local
         execution. Expert-to-rank assignment uses even partitioning:
         ``expert_id * ep // num_experts``.
@@ -126,7 +378,12 @@ class GateRouter:
         remainder = total_len % ep_size
         source_tokens = [base + (1 if r < remainder else 0) for r in range(ep_size)]
 
-        if self.routing_policy == "BALANCED":
+        # CUSTOM joins BALANCED here: both answer the per-rank
+        # (local_tokens, activated_experts) pair without a per-token draw, and
+        # differ only in where the distinct count comes from -- a closed form
+        # or the measured curve. Both are deterministic in ``total_len``, which
+        # is what keeps ``block_copy`` safe for either.
+        if self.routing_policy in ("BALANCED", "CUSTOM"):
             local_tokens, activated_counts = self._balanced_route_ep(
                 total_len, ep_size, source_tokens,
             )
@@ -134,16 +391,15 @@ class GateRouter:
             local_tokens = [0] * ep_size
             activated_experts = [set() for _ in range(ep_size)]
 
-            for src_rank in range(ep_size):
-                for _ in range(source_tokens[src_rank]):
-                    selected = self.routing_fn(0, self.E, self.k)
-                    dest_ranks = set()
-                    for expert_id in selected:
-                        owner = self.expert_owner(expert_id, ep_size, self.E)
-                        activated_experts[owner].add(expert_id)
-                        dest_ranks.add(owner)
-                    for owner in dest_ranks:
-                        local_tokens[owner] += 1
+            for token_idx in range(total_len):
+                selected = self._token_experts(token_idx)
+                dest_ranks = set()
+                for expert_id in selected:
+                    owner = self.expert_owner(expert_id, ep_size, self.E)
+                    activated_experts[owner].add(expert_id)
+                    dest_ranks.add(owner)
+                for owner in dest_ranks:
+                    local_tokens[owner] += 1
 
             activated_counts = [len(s) for s in activated_experts]
 
@@ -162,34 +418,84 @@ class GateRouter:
     def _balanced_route_ep(self, total_len, ep_size, source_tokens):
         """Closed-form per-rank load for a perfectly-balanced learned gate.
 
-        Pigeonhole model:
-          * total expert-token pairs = ``total_len * k``
-          * split evenly across EP ranks
-          * ``pairs_per_rank       = total_len * k / ep_size``
-          * ``activated_per_rank   = min(pairs_per_rank, experts_per_rank)``
-            — each owned expert fires as long as there are enough
-            pairs to go around; beyond saturation the count is
-            capped at ``E / ep_size``.
+        The activated-expert count is a **distinct**-expert count, so it has to
+        allow for two tokens picking the same expert. A token takes ``k`` of
+        the ``E`` experts, so a given expert is missed by one token with
+        probability ``(E - k) / E`` and by all ``n`` of them with that raised
+        to the ``n``:
 
-        Per-rank token count uses the probability a given token hits
-        at least one of rank r's experts:
+            activated_per_rank = (E / ep) * (1 - ((E - k) / E) ** n)
 
-          P(token hits r) = 1 − ((ep − 1) / ep) ** k
+        It reduces correctly at both ends: ``n = 1`` gives exactly ``k`` (one
+        token, ``k`` distinct experts) and large ``n`` approaches ``E / ep``.
 
-        which collapses to ~1 when ``k ≫ ep`` (so every token reaches
-        every rank) and degrades gracefully for small-k / large-ep.
+        This used to count expert-token *pairs* instead --
+        ``min(round(n * k / ep), E / ep)`` -- which is the collision-free
+        count and saturates far too early. On Qwen3-30B-A3B at ep=1 (E=128,
+        k=8) it hit the cap at **n = 16**, where the real expectation is 82 of
+        128, so every decode step from 16 sequences up was charged the whole
+        MoE weight matrix. Measured against a real DP=1 run with real weights,
+        that put the simulator's decode step at **+56% at 16 sequences**,
+        +45% at 24, +22% at 32, +13% at 48 -- and -3% at 119, which is why it
+        was invisible in a saturated run's TPOT and showed up as a TTFT tail
+        instead: mid-size batches are what the ramp and the queue drain run at.
+
+        The same distinction is the one ``_hit_probs`` already makes for how
+        many *ranks* a token reaches, where modelling independent draws read
+        ~1% low. Here the collision-free reading is worth 56%.
+
+        Group-limited routing does not change the formula: it restricts *which*
+        experts a given token may pick, not the per-expert selection
+        probability of a balanced gate. What it does change is how many ranks
+        one token reaches, which is ``_hit_probs``.
         """
         k = self.k
-        E_rank = max(1, self.E // ep_size)
+        E = max(1, self.E)
+        E_rank = max(1, E // ep_size)
 
-        pairs_per_rank = (total_len * k) / ep_size
-        activated_per_rank = min(int(round(pairs_per_rank)), E_rank)
+        n = max(0, int(total_len))
+        if n == 0:
+            activated_per_rank = 0
+        elif self.gate_curve is not None:
+            # The measured count is the gate's *global* distinct count -- the
+            # router selects from all E experts whatever the EP degree -- so
+            # the per-rank figure is that divided by the degree, exactly as
+            # the closed form's ``E_rank * (1 - miss)`` is ``E * (1 - miss)``
+            # divided by it.
+            activated_per_rank = min(
+                E_rank,
+                max(1, int(round(self._measured_activated(n) / ep_size))),
+            )
+        else:
+            miss = ((E - min(k, E)) / E) ** n
+            activated_per_rank = min(
+                E_rank, max(1, int(round(E_rank * (1.0 - miss))))
+            )
         activated_counts = [activated_per_rank] * ep_size
 
         if ep_size <= 1:
-            hit_prob = 1.0
+            local_tokens = [total_len] * ep_size
         else:
-            hit_prob = 1.0 - ((ep_size - 1) / ep_size) ** k
-        tokens_to_r = int(round(total_len * hit_prob))
-        local_tokens = [tokens_to_r] * ep_size
+            # Floored at one whenever the batch has tokens at all. A token's k
+            # experts are owned by *some* ranks, so at least one rank runs it,
+            # but this model gives every rank the same count and cannot say
+            # "some" -- and ``round`` drops it to zero on every rank as soon as
+            # ``total_len * p < 0.5``. That is a single-token decode step on
+            # anything with a low hit probability: DeepSeek-V3.2 at EP=8
+            # (0.454, grouped), Mixtral at EP=8 (0.250), any model at EP=16.
+            # The MoE block would then be priced at zero tokens on every rank.
+            #
+            # Rounding up is the right error direction because the ranks run in
+            # parallel behind the ALLTOALL barrier, so what the trace needs is
+            # the **critical path**, i.e. the max over ranks -- and that is
+            # ``latency(1 token)`` whether one rank holds the token or all of
+            # them do. Rounding down loses it; rounding up only over-states
+            # ranks that are off the critical path anyway. The ALLTOALL size is
+            # computed separately from the group-wide padded total, so nothing
+            # else reads this as a sum.
+            floor = 1 if total_len > 0 else 0
+            local_tokens = [
+                max(floor, int(round(total_len * p)))
+                for p in self._hit_probs(ep_size)
+            ]
         return local_tokens, activated_counts

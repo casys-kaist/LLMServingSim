@@ -29,6 +29,32 @@ Phase B is skipped entirely on any step that preempted. That anti-thrash
 rule is what keeps the running set from oscillating
 preempt → refill → preempt.
 
+## Admission is one step stale
+
+Phase B's arrival horizon lags by one step, because vLLM's
+`scheduler_config.async_scheduling` is on by default. That makes vLLM's
+`max_concurrent_batches` 2 at `pp_size` 1, and
+`EngineCore.step_with_batch_queue` composes batch k+1 right after submitting
+k, then blocks on k's future. The batch that runs next was therefore built
+while the previous one was still on the GPU, and a request arriving after
+that composition cannot join it — it waits for the batch after.
+
+Following vLLM's loop for a request arriving at `a` during batch A: it misses
+B (composed when A was submitted) and lands in C (composed when A finished),
+so `TTFT = (t_A_end − a) + dt_B + dt_C`. `_arrival_cutoff` reproduces this by
+lagging the horizon to the completed batch's own composition clock.
+
+The lag is dropped when the instance was not busy right up to the current
+clock — an idle engine's batch queue is empty, and vLLM admits a new arrival
+immediately — and `schedule()` retries phase B with the full horizon whenever
+the lagged pass admitted nothing.
+
+It is worth roughly 0.6 of a step. That is invisible on a saturated run,
+where TTFT is dominated by queueing (the RTXPRO6000/Qwen3-32B example is
++1.3% with or without it, on a 37 s TTFT), and about a fifth of the median
+TTFT on a lightly loaded one. Turn it off with `--no-async-scheduling` to
+model an engine started with vLLM's `--no-async-scheduling`.
+
 `--enable-prefix-caching` does not change the code path, only whether
 blocks get indexed for reuse. There is one scheduler for both.
 
@@ -167,6 +193,37 @@ processed.
 Decode steps continue to run *concurrently* in the same batch, the
 chunked prefill just keeps long prompts from monopolizing.
 
+### On a hybrid model, chunks must end on a block boundary
+
+A gated-DeltaNet layer keeps its state in slots where slot *p* holds
+the state after exactly `(p + 1) * block_size` tokens, and the state is
+written at a **chunk end**. So a chunk that ends mid-block would leave a
+slot holding a state no position can name. With prefix caching on —
+vLLM's `mamba_cache_mode: "align"` — the scheduler therefore clips the
+chunk, which is `Scheduler._mamba_block_aligned_split`:
+
+- a chunk that is **not the prompt's last** is floored to a block
+  boundary — unless flooring would leave nothing *and* the block is
+  wider than one chunk's budget, in which case it advances sub-block
+  and realigns at the next boundary;
+- a chunk **starting mid-block** stops at the next boundary;
+- no chunk runs past the last block-aligned position in the sequence.
+
+This changes batch composition on every hybrid run. Qwen3.8-27B's
+state forces vLLM to resolve `block_size 784`, so with a 2048-token
+budget a chunk is 784 or 1568 — never 2048.
+
+The split can legitimately return **zero** tokens: that is vLLM's
+"insufficient budget for a block-aligned chunk", and the request waits
+for a step whose budget covers a whole block. It is not the deadlock
+the scheduler's `num_new <= 0` guard catches, because the split only
+floors to zero when `block_size <= max_prefill_tokens` — so a fresh
+step's budget does cover one and the request always moves.
+
+The rule is off for every non-hybrid model and whenever prefix caching
+is disabled (`mamba_cache_mode: "none"`, where nothing is checkpointed
+and there is no invariant to protect).
+
 ## No prefill phase, no decode phase
 
 There is no prefill-vs-decode branch in the scheduler, exactly as in
@@ -181,6 +238,16 @@ sequence for a request that was preempted and is recovering. The trace
 classifies by the **scheduled token count** instead: more than one token
 is a prefill chunk, exactly one is a decode. That is also how the
 attention kernel sees the batch.
+
+With speculative decoding the target is `num_tokens_with_spec =
+num_tokens + spec_tokens`, so a verification step schedules `1 + N`
+tokens for one sequence. That is classified by **why** it has many
+tokens, not by the count: `req.num_spec_scheduled > 0` makes it a
+speculative decode, not a prefill chunk, because its `1 + N` queries
+share one sequence's KV read where a prefill chunk of the same size
+does not. Rejection rolls back with `num_computed_tokens -=
+num_rejected`, and the rollback happens **before** the prefix cache
+hashes anything, so a block holding a rejected token is never indexed.
 
 ## Pipeline depth (PP)
 

@@ -50,7 +50,16 @@ LOG_DIR="${LOG_DIR:-$(mktemp -d)}"
 mkdir -p "$LOG_DIR" || { echo "cannot create LOG_DIR: $LOG_DIR" >&2; exit 2; }
 TIMEOUT="${TIMEOUT:-1800}"
 
-COMMON=(--dtype bfloat16 --block-size 16 --log-level WARNING)
+# No --block-size: vLLM derives it from the backend rather than accepting what
+# it is given, so the value that matches the measurement is the one the profile
+# bundle recorded. Omitting the flag is what reads it back. This is a no-op for
+# the four bundles that predate the field (Llama-3.1-8B on both hardwares,
+# Qwen3-30B-A3B, Qwen3-32B) -- they record none, so the resolver falls through
+# to the same 16 that used to be passed here. It bites only on the modern
+# families, where 16 is a configuration vLLM cannot serve: MiniMax-M3's sparse
+# backend accepts 128 only, and Qwen3.8-27B's gated-DeltaNet stack raises the
+# attention block to 784 so one attention page covers one mamba page.
+COMMON=(--log-level WARNING)
 
 C=configs/cluster
 TRACE=workloads/example_trace.jsonl
@@ -154,6 +163,47 @@ SCENARIOS=(
     # --- agentic sessions (dependency chains through tool calls) ---
     "agentic_single|--cluster-config $C/single_node_single_instance.json --dataset $SWEBENCH --num-reqs 1"
     "agentic_moe_dp_ep|--cluster-config $C/single_node_moe_dp_ep_instance.json --dataset $SWEBENCH --num-reqs 1"
+
+    # --- modern model families. Everything above runs Llama-3.1-8B/70B,
+    # --- Qwen3-30B-A3B or Qwen3-32B, so none of it touches linear attention,
+    # --- sparse attention, MLA, a heterogeneous stack or the drafter. These
+    # --- are the smallest configurations in which each model fits on the
+    # --- profiled hardware -- DeepSeek-V3.2 is 625 GB at fp8, so 16 cards is
+    # --- the floor, not a knob. num-reqs is small because the point is which
+    # --- layers get emitted, and these stacks are 60-78 deep.
+    "hybrid|--cluster-config $C/single_node_hybrid_instance.json --dataset $TRACE --num-reqs 4"
+    # Prefix caching on a mamba stack selects vLLM's "align" cache mode, which
+    # is what makes a prefill chunk end block-aligned and holds 2 + N state
+    # pages per layer instead of 1 + N. Off, neither applies.
+    "hybrid_prefix_off|--cluster-config $C/single_node_hybrid_instance.json --no-enable-prefix-caching --dataset $TRACE --num-reqs 4"
+    # The GDN state is TP-sharded, so tp2 is not just a smaller dense layer.
+    "hybrid_tp|--cluster-config $C/single_node_hybrid_tp_instance.json --dataset $TRACE --num-reqs 4"
+    "hybrid_pp|--cluster-config $C/single_node_hybrid_pp_instance.json --dataset $TRACE --num-reqs 4"
+
+    # MLA + the DSA indexer, a stack whose first three layers are dense, and
+    # group-limited expert routing (n_group 8, topk_group 4) -- the only
+    # checkpoint that restricts.
+    "sparse_mla|--cluster-config $C/single_node_sparse_mla_instance.json --dataset $TRACE --num-reqs 4"
+    # GLM-5 shares that catalog but ships n_group 1, the unrestricted case
+    # spelled out, and reaches it through a DP group's shared experts.
+    "sparse_mla_dp_ep|--cluster-config $C/single_node_sparse_mla_dp_ep_instance.json --dataset $TRACE --num-reqs 4"
+    # The other sparse shape: top-16 blocks of 128 over GQA rather than
+    # top-2048 tokens over MLA, and sparse on the attention axis as well.
+    "sparse_gqa|--cluster-config $C/single_node_sparse_gqa_instance.json --dataset $TRACE --num-reqs 4"
+
+    # --- speculative decoding. Each family's drafter differs in shape: whether
+    # --- its wrapper has a head to emit, whether its block ends in MoE (whose
+    # --- trailing marker the Chakra converter cannot end a trace on), and
+    # --- whether the block is the target's own or a forced full-attention one.
+    # --- N comes from configs/spec_decode.json, each family's published value.
+    "spec_hybrid|--cluster-config $C/single_node_hybrid_instance.json --num-speculative-tokens 5 --dataset $TRACE --num-reqs 4"
+    "spec_sparse_mla|--cluster-config $C/single_node_sparse_mla_instance.json --num-speculative-tokens 4 --dataset $TRACE --num-reqs 4"
+    "spec_sparse_gqa|--cluster-config $C/single_node_sparse_gqa_instance.json --num-speculative-tokens 3 --dataset $TRACE --num-reqs 4"
+    # A pipeline holds several batches at once, so the draft count has to be
+    # snapshotted per batch. Read off the request instead, the next schedule()
+    # rewrites it while the batch is still in flight and the run deadlocks.
+    "spec_pp|--cluster-config $C/single_node_hybrid_pp_instance.json --num-speculative-tokens 5 --dataset $TRACE --num-reqs 4"
+    "spec_dp_ep|--cluster-config $C/single_node_sparse_mla_dp_ep_instance.json --num-speculative-tokens 4 --dataset $TRACE --num-reqs 4"
 
     # --- a second hardware profile ---
     "rtx4090_single|--cluster-config $C/rtx4090_single_instance.json --dataset $SG_L --num-reqs 20"

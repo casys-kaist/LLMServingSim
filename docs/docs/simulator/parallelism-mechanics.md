@@ -15,10 +15,10 @@ of these on) is on
 
 | Style | What's parallelized | Collective | Where it fires |
 | --- | --- | --- | --- |
-| **TP** (tensor) | Linear weights split along head dim | ALLREDUCE | After `o_proj` and `down_proj` |
+| **TP** (tensor) | Linear and vocabulary weights partitioned across ranks | ALLREDUCE / ALLGATHER | Decoder projections plus shared target embedding/logits |
 | **PP** (pipeline) | Decoder layers split across GPU groups | (point-to-point in `inflight` queue) | At stage boundaries |
-| **EP** (expert) | MoE experts split across ranks | ALLTOALL | Around the MoE block |
-| **DP+EP** | EP across multiple instances | ALLTOALL | Same, but across instance boundaries with wave-sync |
+| **EP** (expert) | MoE experts split across ranks | all-to-all, as ALLGATHER + REDUCESCATTER | Around the MoE block |
+| **DP+EP** | EP across multiple instances | the same pair | Same, but across instance boundaries with wave-sync |
 
 TP and EP can share the same GPUs. DP requires a `dp_group`
 identifier on the cluster config — for a dense model that is plain data
@@ -52,7 +52,37 @@ The `comm_size` on each ALLREDUCE is the full output tensor size
 `qkv_proj`, `gate_up_proj`, etc. don't need ALLREDUCE because they
 *split* the input along the head dim, those layers' output is
 already correctly sharded for the next layer. TP's collective cost
-is bound by `o_proj` + `down_proj`, two ALLREDUCEs per decoder block.
+includes `o_proj` + `down_proj`, two ALLREDUCEs per dense decoder block.
+
+### Once-per-forward vocab-parallel endpoints
+
+Two additional collectives run outside those decoder blocks in the ordinary
+vLLM 0.28 target path. The catalog binding and shared placement are checked
+before emitting either, and TP=1 emits neither:
+
+| Endpoint | Collective | ASTRA-Sim payload |
+| --- | --- | --- |
+| Shared `VocabParallelEmbedding` | ALLREDUCE | scheduled tokens × hidden size × activation bytes |
+| Shared `LogitsProcessor` | ALLGATHER | head rows × padded vocabulary / TP × head-dtype bytes |
+
+The all-gather size is the **local vocabulary shard**, whereas the
+all-reduce size is the full replicated hidden tensor. vLLM pads the ordinary
+vocabulary to a multiple of 64 before dividing by TP. The sampler then reads
+the full, unpadded vocabulary and is not TP-sharded. Its tensor dimensions,
+and those of the logits head, use the per-sequence lookup row count rather
+than all scheduled prompt tokens. Both endpoint collectives contribute to
+link-energy accounting.
+
+This implements `VocabParallelEmbedding.forward` and
+`LogitsProcessor._get_logits`/`_gather_logits` for the default target path;
+it is not a claim about local-argmax sampling, MTP, alternative heads or
+expert dispatch/combine. Idle-DP head rows are a separate contract.
+
+:::caution[MoE scope]
+Target embedding/logits support does not validate expert dispatch/combine
+or DP+TP expert-group sizing. In vLLM, an EP group spans TP × DP ranks;
+a simulator configuration must match that layout before comparing timings.
+:::
 
 ## PP, pipeline stages and `inflight`
 
@@ -115,11 +145,11 @@ therefore part of the reported iteration time, and pipeline overlap
 between in-flight batches falls out from each NPU's independent `.et`
 schedule.
 
-## EP, ALLTOALL around the MoE block
+## EP, the all-to-all around the MoE block
 
 ```mermaid
 flowchart LR
-    INPUT[Input residue] --> DISP["Dispatch<br/>ALLTOALL"]
+    INPUT[Input residue] --> DISP["Dispatch<br/>ALLGATHER"]
     subgraph EXP["Expert compute (parallel ranks)"]
         direction TB
         E0["Rank 0<br/>experts 0..N/2"]
@@ -127,27 +157,59 @@ flowchart LR
     end
     DISP --> E0
     DISP --> E1
-    E0 --> COMB["Combine<br/>ALLTOALL"]
+    E0 --> COMB["Combine<br/>REDUCESCATTER"]
     E1 --> COMB
     COMB --> OUTPUT[Output residue]
 ```
 
-For MoE models, `trace_generator` wraps the MoE block with two
-ALLTOALL collectives:
+MoE dispatch/combine is a logical all-to-all. The supported vLLM
+`allgather_reducescatter` path realizes it with gather/scatter collectives;
+other backends require their own execution contracts.
 
-```
-... → MoE dispatch ALLTOALL → expert compute → MoE combine ALLTOALL → ...
-```
+### Deployment-matched native components
 
-The dispatch ALLTOALL routes each token to its assigned expert's
-rank. The combine ALLTOALL gathers expert outputs back to the
-originating ranks. Both are scoped to the EP dimension.
+When a matching [native component table](../profiler/native-moe-components)
+is installed, the trace keeps local gate/routing before dispatch, gathered
+expert work between dispatch and combine, and local finalization afterward.
+For the modular path, dispatch carries three distinct tensors:
 
-Each EP rank gets a per-rank latency from
-`profiler/perf/<hw>/<model>/<variant>/tp1/moe.csv` keyed on its
-**local** token count (after dispatch) and the **activated experts**
-per token. Ranks execute in parallel and synchronize at the ALLTOALL
-barrier, slower ranks gate the others.
+| Tensor | Bytes per local row |
+| --- | --- |
+| Hidden states | `hidden_dim * input_dtype_bytes` |
+| Top-k weights | `global_top_k * topk_weights_dtype_bytes` |
+| Top-k IDs | `global_top_k * topk_ids_dtype_bytes` |
+
+These are emitted as separate ordered AllGathers. Combine is a ReduceScatter
+of hidden-state output. Sequence-parallel wrappers dispatch over EP and restore
+TP output with an AllGather; non-SP wrappers dispatch within DP and restore
+TP output with an AllReduce when TP is greater than one. The complete padded
+DP token vector determines local/gathered rows, including SP ceil division.
+
+Chakra chains every collective a marker carries and preserves the latest
+compute/communication dependency through skipped expert ranks. Reinstall the
+converter when updating this execution path; editing its source without
+reinstallation does not change the installed converter.
+
+For unequal dispatch counts the analytical envelope uses
+`remote_rows = gathered_rows - min(dispatch_rows)`. With group size `G`,
+a tensor of width `W` uses `ceil(remote_rows * W / (G - 1))` as its equivalent
+AllGather local chunk; ReduceScatter uses that hidden-state chunk times `G`.
+Equal counts recover the ordinary local chunk. This is a worst-rank Ring
+approximation, not a claim that NCCL packs these tensors or executes grouped
+calls as independent kernel startups.
+
+### Retained whole-block fallback
+
+Without a supported native table, the legacy path uses `moe.csv` and warns for
+unverified DP/backend coverage. Its dispatch approximation combines hidden state
+and full router logits into one AllGather payload. It does not become a modular
+full-top-k measurement merely because its EP degree matches. Legacy lookup uses
+gathered input rows and the appropriate global rank's activated-expert count;
+these are not the unique local-token counts from a dispatch-routing histogram.
+
+Ranks execute in parallel and synchronize at their collectives, so the slower
+rank constrains progress. Separate component tables and operation-specific link
+parameters do not remove that dependency or model other all-to-all backends.
 
 Token routing decisions come from `gate_function.py`. See
 **[MoE expert routing](./moe-expert-routing)** for the policies.
@@ -164,7 +226,7 @@ flowchart TB
         subgraph I2["Instance 2"]
             G2["GPU 0<br/>experts 64..127"]
         end
-        G1 <-->|"EP-ALLTOALL<br/>(involved_dim = [F, T])"| G2
+        G1 <-->|"EP all-to-all<br/>(involved_dim = [F, T])"| G2
     end
 ```
 
@@ -185,7 +247,7 @@ sequenceDiagram
     DPB->>I2: emit trace (comm_size = max)
     I1->>A: workload_dp_A.et
     I2->>A: workload_dp_A.et
-    Note over A: Matching stream IDs<br/>block at ALLTOALL
+    Note over A: Matching stream IDs<br/>block at the EP collective
     A-->>I1: cycle count
     A-->>I2: cycle count
 ```
@@ -205,21 +267,104 @@ forward joins the same collective as rank B's *j*-th. The queue matters
 at `pp_size > 1`, where a member can have up to `pp_size` batches
 outstanding at once. When a wave assembles:
 
-- The simulator takes `max_total_len` across the group and pads every
-  member's batch up to it, matching CUDA-graph DP padding in production
-  serving.
-- The MoE collective size is anchored to that same `max_total_len` — *not*
-  `max x dp_group_size`. That calibrates the AllGather/ReduceScatter
-  bandwidth model against the same `link_bw` that already matches
-  AllReduce.
-- All members generate their traces with the same `comm_size`, even
-  if their per-instance `total_len` differs.
+- **Local graph padding comes first, including without DP.** Each rank
+  selects a supported FULL or PIECEWISE graph and rounds its forward rows
+  up to that graph's capture size. Small prefill/mixed batches can use
+  PIECEWISE; prefill is not categorically outside the graph range.
+- **DP synchronizes modes after local dispatch.** The common mode is the
+  minimum across ranks. When it is non-NONE, all ranks use the largest
+  locally padded size. When it is NONE, each rank **retains its local
+  padding**, not its original unpadded count. With a grid containing 8 and
+  ending at 256, `[6, 1529]` executes as `[8, 1529]`, not `[6, 1529]` or
+  `[1529, 1529]`. A single independent six-token batch can likewise use
+  eight forward rows.
+- **Padding does not create requests.** Dense/model-forward work and its
+  collectives use padded rows; attention lookup retains real query and KV
+  geometry, and the head uses real selected rows. Zero-length graph padding
+  is not a new decode with KV=1. Graph-bound attention-kernel behavior is a
+  separate profiling concern, not a per-step timing correction here.
+- **The MoE collective is sized from the gathered total**, the sum of the
+  group's per-rank token counts — `max_total_len * dp_group_size` on a padded
+  round, the plain sum otherwise. Each member contributes its post-padding
+  forward rows. This is the simulator's aggregate dispatch/combine model,
+  not an exact representation of vLLM's grouped, multi-tensor NCCL path.
+- **Unequal per-rank sizes use a worst-rank analytical approximation**
+  rather than an average-rank chunk. The emitted chunk is
+  `(gathered - min) / (ep_total - 1)`. On a padded round that is exactly
+  `gathered / ep_total`. Equal sizes can also occur without DP padding.
+- All members of one round generate their traces with the same `comm_size`,
+  which is what makes the collectives match across the group's `.et` files.
 
 If one DP member has no pending requests, the scheduler synthesizes a
-**dummy batch** (1 decode token) so the wave still runs. When
+**dummy batch** (one decode query: one token, or `1 + num_speculative_tokens`
+under speculation) so the wave still runs. When
 all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
+
+#### Which layers see graph padding?
+
+For the ordinary vLLM 0.28 MRV1 Llama/Qwen target path, graph dispatch rounds
+the backbone input to a captured token count. This is not a lookup-table
+rounding rule, and it is not restricted to DP deployments. FULL captures
+attention as well; PIECEWISE runs attention outside the captured pieces.
+
+| Operation | PIECEWISE | FULL |
+| --- | --- | --- |
+| Token embedding, residual/RMSNorm, QKV projection, Q/K norms and RoPE | Padded forward rows | Padded forward rows |
+| Attention QK/softmax/V | Real query/request dimensions in attention metadata | Padded token/request dimensions; extra request slots have zero query/KV length |
+| KV cache insertion | Backend may receive padded slots; invalid slots do not write KV | Padded slots; invalid slots do not write KV |
+| Attention output projection, dense MLP and final backbone norm | Padded forward rows | Padded forward rows |
+| Qwen MoE gate/routing, expert dispatch and expert work | Padded forward input, then native TP/SP/EP mapping | Same row-domain rule |
+| Logits projection, vocabulary gather and sampling | Selected real hidden-state rows | Selected real hidden-state rows |
+
+In `vllm/v1/worker/gpu_model_runner.py`, `execute_model` sets
+`pad_attn = cudagraph_mode == CUDAGraphMode.FULL` and supplies padded dimensions
+to `_build_attention_metadata` only in that case. `_prepare_inputs` repeats
+the last query boundary for extra requests and zeros their sequence lengths;
+`_get_slot_mappings` marks padded KV slots invalid. FlashAttention slices by
+the metadata's `num_actual_tokens`; despite its name, that field receives the
+padded count for FULL graphs. Backend scheduling and empty-slot processing can
+therefore differ even though no extra real KV history is introduced.
+
+The simulator models padded backbone/MoE rows and communication, but retains
+real query/KV geometry for attention lookup. This preserves useful attention
+work; it is **not** an exact model of FULL-graph empty-slot or backend scheduling
+cost. The eager attention table has no graph-mode/padded-capacity axis. Do not
+replace empty slots with artificial decodes at the batch's mean KV length, or
+claim that all FULL-graph effects are measured. No timing correction is inferred
+from this distinction. Sparse, recurrent, speculative and alternative-backend
+paths require their own execution contracts.
+
+#### Head rows are not graph-padding rows
+
+Without speculative decoding, logits and sampling operate on one selected
+hidden-state row per actual request, even when the backbone runs a larger
+CUDA graph. Their latency lookup, tensor sizes and TP logits gather therefore
+use the real request count, not the padded forward count.
+
+An idle DP member still runs the backbone and its final norm to participate
+in the coordinated wave, but does not compute logits or sample tokens. The
+trace omits those per-sequence head operations and their energy costs. A
+zero-byte terminal host store preserves the graph converter's output contract;
+it does not represent CPU execution or fabricated sampled tokens.
+
+This distinction does not change the existing speculative head/drafter
+contract, profiling tables, attention lookup or network parameters. Idle
+speculative drafter participation requires a separate collective-order audit.
+
+Skipping a TP logits gather must not shift later EP messages. For collectives
+described by `involved_dim`, the backend maintains an independent sequence
+counter for each dimension scope and uses distinct tags for overlapping
+scopes. Source and destination ranks distinguish disjoint groups. Counters
+persist across batch graphs; exhausting the tag namespace fails explicitly
+instead of wrapping onto an outstanding message. Explicit communicator
+handling is unchanged.
+
+Update and rebuild the ASTRA-Sim submodule together with this frontend
+contract. A backend with one global collective counter can wait forever on
+an EP operation after one DP member skipped a TP-only head operation. This
+fix changes message matching, not bandwidth, latency or compute time.
 
 A wave's graphs cannot be emitted at schedule time — the padded
 `max_total_len` is not known until the barrier assembles — so each
@@ -228,11 +373,11 @@ next poll, ahead of anything the scheduler would otherwise start. That
 keeps each NPU running its batches in the order they were opened, which
 is what the completion bookkeeping assumes.
 
-### 2. ASTRA-Sim ALLTOALL barrier
+### 2. ASTRA-Sim collective barrier
 
 All DP-group instances' `.et` files share the same workload folder
 (`dp_<group>_batch<bid>/llm.et`) and use **matching stream IDs** on
-the ALLTOALL collectives. ASTRA-Sim's runtime sees the matching IDs
+the EP collectives. ASTRA-Sim's runtime sees the matching IDs
 and blocks until both NPUs reach the collective, naturally
 implementing the wave-sync at the network layer.
 
@@ -265,7 +410,7 @@ a `:dim0,dim1` suffix:
 
 ```
 ALLREDUCE:1,0     # TP only
-ALLTOALL:0,1      # EP across DP only
+ALLGATHER:0,1     # EP dispatch across DP only
 ```
 
 The Chakra converter parses this via `_parse_comm_type` and writes
@@ -278,20 +423,21 @@ topology dim, `config_builder` generates this automatically:
 
 ## Communication sizes (ASTRA-Sim semantics)
 
-Every `comm_size` in the trace is the **total** data size, not
-per-NPU. ASTRA-Sim divides internally by the number of nodes in the
-ring (`msg_size = data_size / nodes_in_ring`).
+The size convention depends on the collective:
 
-So:
+- AllReduce takes the full replicated input size; Ring divides it into chunks.
+- AllGather takes a per-rank input chunk, not the full gathered output.
+- ReduceScatter takes the full pre-scatter input, not one rank's output.
 
-- ALLREDUCE on `o_proj`: pass the **full output tensor size**
-  (`total_len * hidden_size * fp_size`).
-- ALLTOALL for MoE: pass the **full activation tensor size**
-  (`total_len * hidden_size * fp_size`).
+Native MoE dispatch applies the AllGather convention separately to hidden state,
+top-k weights and IDs, and combine applies the ReduceScatter convention to
+hidden states. The retained fallback instead aggregates hidden/router-logit
+bytes. Unequal DP counts use the analytical envelope described above.
 
-If you see surprisingly fast collectives in your trace logs, check
-that you're not accidentally passing per-rank sizes, that's a
-common mistake when extending the trace generator.
+Network bandwidth overrides must not alter these tensor sizes or local-memory
+reduction charges. AllReduce retains its original operation's link settings
+even through internal scatter/gather phases. See
+[Collective-specific links](../reference/cluster-config#collective-specific-links).
 
 ## When to use which
 
@@ -304,7 +450,7 @@ A rough decision tree (the *configuration* angle is on
 - **Multiple replicas for throughput:** add `num_instances` (no
   `dp_group`). Independent instances behind a router.
 - **MoE model, single instance:** add `ep_size = tp_size`. Same GPUs,
-  EP-ALLTOALL replaces TP-ALLREDUCE on the MoE block.
+  the EP all-to-all replaces TP-ALLREDUCE on the MoE block.
 - **MoE, want to scale experts past one instance's GPUs:** DP+EP
   with `dp_group` set. EP spans instances via wave-sync.
 - **Dense model, want data-parallel replicas:** `dp_group` set and no
@@ -316,12 +462,13 @@ A rough decision tree (the *configuration* angle is on
    config builder rejects the spec. EP needs the DP dimension of the
    topology to scale beyond a single instance's GPU count.
 2. **Dummy batches are real ASTRA-Sim work.** A DP group with one
-   idle instance still pays the ALLTOALL cost on the dummy batch.
+   idle instance still pays the collective's cost on the dummy batch.
    This is what production looks like, wave-sync is wave-sync.
-3. **`comm_size` is synchronized to the max.** Even if one DP
-   member's batch is much smaller, the ALLTOALL message size matches
-   the largest member's. This is *correct* (matches production
-   padding) but worth knowing.
+3. **Local graph padding precedes DP synchronization.** Even a NONE
+   common mode retains each rank's earlier local padding. The collective
+   uses the sum of the resulting forward rows, not an unconditional group
+   maximum. Target graph settings are [per-instance configuration](/docs/reference/cluster-config#cuda-graph-contract), independent of
+   the profiler's eager settings.
 4. **PP models inter-stage forwarding via send/recv, not via
    micro-batch splitting inside an iteration.** Activation shipment
    between stages goes through ASTRA-Sim send/recv (so link bandwidth
@@ -334,6 +481,6 @@ A rough decision tree (the *configuration* angle is on
 ## What's next
 
 - **[MoE expert routing](./moe-expert-routing)**: how tokens get
-  distributed across EP ranks before the dispatch ALLTOALL.
+  distributed across EP ranks before the dispatch AllGather.
 - **[Examples → DP+EP MoE](/docs/examples/parallelism/dp-ep-moe)** -
   a worked-out config that exercises this whole machinery.

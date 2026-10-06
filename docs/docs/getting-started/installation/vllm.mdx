@@ -13,26 +13,37 @@ plan to:
 
 - **Profile** a new GPU or model (`python -m profiler`)
 - **Benchmark** real vLLM end-to-end (`python -m bench run`)
-- **Validate** the simulator against vLLM (`python -m bench validate`)
 - **Generate** ShareGPT-style workload datasets
   (`python -m workloads.generators`)
 
 If you only want to run pre-profiled simulations on the bundled
-hardware (RTXPRO6000 or RTX 4090), skip this page.
+hardware (RTXPRO6000 or RTX 4090), skip this page. Comparing stored benchmarks
+with `python -m bench validate` also runs in the CPU-only simulator environment.
 
 ## Choose an install method
 
 <Tabs groupId="install-method">
   <TabItem value="docker" label="Docker (recommended)" default>
 
-The Docker path uses the official `vllm/vllm-openai:v0.19.0` image,
+The Docker path uses the official `vllm/vllm-openai:v0.28.0` image,
 which already contains vLLM, PyTorch, and all CUDA dependencies.
 
-That tag is built against **CUDA 12.x**. On a CUDA 13.x host, edit the
-image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.19.0-cu130`
-instead. The pin matters beyond the driver: the profiler's MoE hook
-patches `FusedMoE.forward_native`, whose name is version-specific, so a
-different vLLM release can break profiling silently.
+That tag is built against **CUDA 13.x**. On a CUDA 12.9 host, edit the
+image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.28.0-cu129`
+instead. The pin matters beyond the driver: every module under
+`profiler/core/hooks/` binds to a vLLM *internal* API — the MoE router,
+the model runner's KV cache groups, `layerwise_profile` — and those move
+between releases, so a different vLLM can break profiling silently.
+
+On a shared machine, set `VLLM_GPUS` to keep the container off GPUs
+someone else is using. The inner quotes are part of the value:
+
+```bash
+VLLM_GPUS='"device=2,3"' ./scripts/docker-vllm.sh
+```
+
+Without them Docker splits on the comma and reads the second field as a
+GPU *count*, failing with `cannot set both Count and DeviceIDs`.
 
 ### 1. (Optional) Set HF_TOKEN
 
@@ -56,15 +67,22 @@ From the repo root:
 
 This:
 
-- Requests all GPUs via `--gpus all`
+- Requests the GPUs selected by `VLLM_GPUS` (all GPUs if unset)
 - Forwards `HF_TOKEN` from your shell
 - Mounts the repo root to `/workspace` (so `python -m profiler`,
   `python -m bench`, `python -m workloads.generators` all work)
-- Mounts `~/.cache/huggingface` to share the model cache with the
-  host
+- Mounts the Hugging Face and vLLM compile caches to share them with the host
 - Sets `--shm-size=16g` (vLLM needs this for inter-process tensors)
-- Pre-installs `datasets` and `matplotlib` (extra deps the profiler
-  and bench plots need)
+- Pre-installs `pandas`, `matplotlib` and `datasets` (the alpha fit,
+  the bench plots, and the workload generators), and pins
+  `nvidia-nccl-cu13` — installing `datasets` otherwise pulls a newer
+  one than the image's torch declares, and pip reports the conflict
+  but installs it anyway
+- Applies the scripts in `scripts/patches/`, including the SM120 sparse-MLA
+  fix and MiniMax-M3 MTP layer-name fix. The step-shape and MoE-activation
+  logging patches install optional instrumentation, enabled only by their
+  diagnostic environment settings. Inspect each patch's version guards when
+  changing the pinned vLLM version
 - Drops you into `bash` at `/workspace`
 
 The container is named `vllm_docker`. Re-attach later with:
@@ -82,7 +100,7 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.19.0` and your GPU listed.
+You should see vLLM `0.28.0` and your GPU listed.
 
   </TabItem>
   <TabItem value="bare-metal" label="Bare metal (uv venv)">
@@ -106,15 +124,25 @@ From the repo root:
 This:
 
 - Creates a local `uv` venv with Python 3.12
-- Installs `vllm==0.19.0` (with `VLLM_USE_PRECOMPILED=1` for the
+- Installs `vllm==0.28.0` (with `VLLM_USE_PRECOMPILED=1` for the
   prebuilt CUDA wheels)
-- Adds `datasets` and `matplotlib` for the workload generator and
-  bench plots
+- Adds `datasets`, `matplotlib` and `pandas` for workload generation,
+  profile processing and bench plots
 
 Activate the venv before running profiler / bench:
 
 ```bash
 source .venv/bin/activate
+```
+
+Unlike the Docker launcher, the installer does not apply the repository's
+vLLM source patches. Apply them in the activated environment when using the
+same supported paths:
+
+```bash
+for patch in scripts/patches/*.py; do
+  python "$patch"
+done
 ```
 
 ### 3. Verify the install
@@ -124,18 +152,18 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.19.0` and your GPU.
+You should see vLLM `0.28.0` and your GPU.
 
 **Bare-metal caveats**
 
 **CUDA driver mismatch** is the most common failure mode. The
-`vllm==0.19.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
-CUDA 12.x — check your driver with `nvidia-smi` before assuming the
+`vllm==0.28.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
+CUDA 13.x — check your driver with `nvidia-smi` before assuming the
 prebuilt wheel fits.
 
-The `VLLM_USE_PRECOMPILED=1` flag tells `uv` to skip building vLLM
-from source. If your CUDA version doesn't match the prebuilt wheel,
-drop the flag and accept the longer build.
+The script requests a pinned prebuilt package; setting or removing
+`VLLM_USE_PRECOMPILED` does not make an incompatible wheel or driver compatible.
+Use a compatible driver/package combination or the matching Docker variant.
 
 Outside Docker you're responsible for `HF_TOKEN`,
 `~/.cache/huggingface`, and shm size yourself.

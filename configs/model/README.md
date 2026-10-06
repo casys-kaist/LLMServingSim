@@ -19,7 +19,7 @@ under `load_format=dummy`:
 | Field | Purpose |
 | --- | --- |
 | `architectures` | vLLM picks the ForCausalLM class from this list |
-| `model_type` | Profiler picks the matching `profiler/models/<model_type>.yaml` |
+| `model_type` | Shared catalog resolver tries `profiler/models/<model_type>.yaml`, then declared `model_types:` aliases |
 | `hidden_size`, `intermediate_size` | Linear dims |
 | `num_attention_heads`, `num_key_value_heads` | Attention shapes (GQA) |
 | `num_hidden_layers` | Layer count (simulator multiplies per-layer time by this) |
@@ -30,15 +30,24 @@ under `load_format=dummy`:
 | `rope_theta`, `rope_scaling` | Rotary embedding setup (critical for Llama 3's rope_type) |
 | `tie_word_embeddings` | Whether lm_head shares weights with embedding |
 | `attention_bias`, `mlp_bias` | Linear layer biases |
-| `torch_dtype` | Profiler auto-derives variant folder name from this |
-| `num_local_experts` or `num_experts`, `num_experts_per_tok`, `moe_intermediate_size` | MoE only |
+| `torch_dtype` | Weight dtype, and the variant folder name derives from it. `quantization_config.quant_method` wins when present — on a quantized checkpoint the dtype fields describe the *activations* |
+| `num_local_experts` or `num_experts` or `n_routed_experts`, `num_experts_per_tok`, `moe_intermediate_size` | MoE only. Three spellings for the expert count, because the families disagree |
+| `n_group`, `topk_group` | Group-limited expert routing (DeepSeek-V3/V3.2, GLM). Restricts a token's experts to `topk_group` of `n_group` groups, which narrows the EP ranks it reaches |
+| `layer_types`, `full_attention_interval` | Which layers are linear attention vs full attention on a hybrid stack |
+| `first_k_dense_replace`, `decoder_sparse_step`, `moe_layer_freq`, `mlp_only_layers` | Which layers run MoE vs a dense MLP. The rules disagree on the off-by-one between vendors — `profiler/core/stack.py` owns them |
+| `sparse_attention_config`, `index_topk`, `index_topk_pattern`, `index_topk_freq` | Which layers run a sparse-attention selection branch |
+| `linear_num_key_heads`, `linear_num_value_heads`, `linear_key_head_dim`, `linear_value_head_dim`, `linear_conv_kernel_dim` | Gated-DeltaNet state shape. It is per **sequence**, not per token, so it bounds concurrency |
+| `mamba_cache_dtype`, `mamba_ssm_dtype` | Conv and recurrent state dtypes. `auto` on the conv means the weight dtype; `auto` on the recurrent one means the **conv** dtype, not the weight dtype |
+| `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` | Declares an fp8 KV cache for simulation. The simulator has no `--kv-cache-dtype` override; the profiler and bench have their own acquisition options |
+| `kv_lora_rank`, `qk_rope_head_dim`, `index_head_dim` | MLA latent and sparse-indexer cache shapes (DeepSeek, GLM) |
+| `num_nextn_predict_layers` / `num_mtp_modules` / `mtp_num_hidden_layers` | MTP module count — the model's own drafter, for speculative decoding |
 
 Leave everything verbatim from the HF repo — the profiler / simulator
 ignore keys they don't need, so extra fields are harmless. The only
 hard requirements are `architectures`, `model_type`, and the
 dimensional fields.
 
-## Currently provided
+## Provided configurations
 
 | File | Type | Layers | Hidden | Heads | KV | MoE |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -48,6 +57,34 @@ dimensional fields.
 | `Qwen/Qwen3-30B-A3B-Instruct-2507.json` | MoE | 48 | 2048 | 32 | 4 | 128E / top-8 |
 | `mistralai/Mixtral-8x7B-v0.1.json` | MoE | 32 | 4096 | 32 | 8 | 8E / top-2 |
 | `microsoft/Phi-mini-MoE-instruct.json` | MoE | 32 | 4096 | 32 | 8 | 16E / top-2 |
+| `Qwen/Qwen3.8-27B.json` | dense, **hybrid** | 64 | 5120 | 24 | 4 | — |
+| `deepseek-ai/DeepSeek-V3.2-Exp.json` | MoE, **MLA + sparse** | 61 | 7168 | 128 | 128 | 256E / top-8 |
+| `zai-org/GLM-5.json` | MoE, **MLA + sparse** | 78 | 6144 | 64 | 64 | 256E / top-8 |
+| `MiniMaxAI/MiniMax-M3.json` | MoE, **block-sparse** | 60 | 6144 | 64 | 4 | 128E / top-4 |
+
+The last four are not uniform stacks, which is the point of
+`profiler/core/stack.py`:
+
+| File | Layer composition | Drafter |
+| --- | --- | --- |
+| `Qwen3.8-27B` | 48 gated-DeltaNet + 16 full attention | 1 MTP module |
+| `DeepSeek-V3.2-Exp` | 3 dense MLP + 58 MoE, sparse attention on all 61 | 1 MTP module |
+| `GLM-5` | 3 dense MLP + 75 MoE, sparse attention on all 78 | 1 MTP module |
+| `MiniMax-M3` | 3 dense MLP + 57 MoE, sparse attention on 57 | 7 MTP modules |
+
+> **`MiniMax-M3.json` must stay nested**, keeping its `text_config`
+> key: vLLM's `MiniMaxM3Config` is a wrapper that builds its backbone
+> from that key and sends everything else to `**kwargs`, so a flattened
+> file silently yields an all-defaults backbone. `Qwen3.8-27B.json` is
+> the opposite — its config class resolves a flat config, so the text
+> tower is flattened to top level and `model_type` reads
+> `qwen3_5_text`. Every reader goes through `stack.text_config`, which
+> handles both.
+
+The additional `deepseek-ai/DeepSeek-V3.2-Exp-16L64E.json` is a reduced
+diagnostic configuration, not the full checkpoint in the table. Its recorded
+example does not establish full-model accuracy; see the
+[validation results](../../docs/docs/validation.md).
 
 ## Adding a new model
 
@@ -63,8 +100,11 @@ and caches it here.
 ```bash
 python3 -c "
 from huggingface_hub import hf_hub_download; import shutil
+from pathlib import Path
 src = hf_hub_download(repo_id='google/gemma-2-9b', filename='config.json')
-shutil.copyfile(src, '/workspace/configs/model/google/gemma-2-9b.json')
+dst = Path('/workspace/configs/model/google/gemma-2-9b.json')
+dst.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(src, dst)
 "
 ```
 
@@ -98,15 +138,15 @@ run. The profiler will feed this config to vLLM directly.
 
 ## Architecture support
 
-The profiler only runs when a matching architecture yaml exists at
-`profiler/models/<model_type>.yaml`. Currently supported
-`model_type` values:
+Both profiler and simulator use `profiler/core/catalog_path.py` to resolve
+the catalogs in `profiler/models/`. The resolver tries the filename first,
+then scans declared `model_types:` aliases. For example, `qwen3_moe` uses
+`qwen3.yaml`, and `glm_moe_dsa` uses `deepseek_v32.yaml`. Ambiguous alias
+matches are rejected; an unknown type reports available catalogs.
 
-* `llama` — Llama 3.x family (uses `Llama3RotaryEmbedding`)
-* `qwen3` — Qwen3 dense family
-* `qwen3_moe` — Qwen3 MoE family
-* `mixtral` — Mixtral family
-* `phimoe` — Phi MoE family
-
-Any other `model_type` (e.g. `gemma2`, `deepseek_v3`) produces a clear
-error at profile time with instructions for adding support.
+The files and their declarations are the authoritative support inventory.
+Downloading a config alone does not add support: the live vLLM profile tree,
+cache layout and simulator execution path must match the catalog. Catalog
+availability does not establish end-to-end accuracy for every checkpoint.
+See the [architecture guide](../../docs/docs/profiler/adding-model-architecture.md)
+and [validated configurations](../../docs/docs/validation.md).

@@ -13,12 +13,12 @@ TITLE_PREFIX="${TITLE_PREFIX:-vLLM vs LLMServingSim}"
 
 # Examples are keyed by <hardware>/<model>, matching the directory layout
 # under this folder.
-DEFAULT_EXAMPLES=(
-    "RTXPRO6000/Llama-3.1-8B"
-    "RTXPRO6000/Qwen3-32B"
-    "RTXPRO6000/Qwen3-30B-A3B-Instruct-2507"
-    "RTX4090/Llama-3.1-8B"
-)
+DEFAULT_EXAMPLES=()
+for config in "$SCRIPT_DIR"/*/*/config.json; do
+    [[ -f "$config" ]] || continue
+    example=${config#"$SCRIPT_DIR/"}
+    DEFAULT_EXAMPLES+=("${example%/config.json}")
+done
 
 repo_relative_path() {
     local path="$1"

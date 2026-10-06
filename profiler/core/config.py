@@ -27,6 +27,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from profiler.core.catalog_path import resolve_architecture_path
+
 
 # ---------------------------------------------------------------------------
 # Constants shared with engine.py
@@ -36,11 +38,28 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # multi-TP deployment (see engine.fuse_engine_kwargs). The same list
 # covers every common dense + MoE architecture, so it's a module
 # constant rather than per-architecture data.
+# Config fields divided by the TP degree to emulate one rank's shapes on a
+# single GPU. Every field vLLM shards has to appear here, or that part of the
+# model is measured at full size while the rest is measured per-rank -- and a
+# mixed measurement is worse than either.
+#
+# The linear-attention pair is here because vLLM's
+# ``MambaStateShapeCalculator.gated_delta_net_state_shape`` shards the
+# recurrent state: ``divide(conv_dim, tp)`` where
+# ``conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads``, and
+# ``divide(num_v_heads, tp)``. Dividing the two head counts reproduces both,
+# and keeps their ratio (Qwen3.8-27B is 16 / 48) so the kernel's grouping is
+# unchanged. Without them, TP>1 on a hybrid measured a rank holding the
+# **full** GDN state while its attention was already per-rank: the engine then
+# resolved ``block_size`` 1568 instead of 784 on Qwen3.8-27B, because only the
+# attention page had halved.
 SHARD_FIELDS: list[str] = [
     "intermediate_size",
     "num_attention_heads",
     "num_key_value_heads",
     "vocab_size",
+    "linear_num_key_heads",
+    "linear_num_value_heads",
 ]
 
 
@@ -57,6 +76,97 @@ MOE_TOP_K_KEYS: tuple[str, ...] = (
     "num_experts_per_token",  # some variants
     "moe_k",                  # edge cases
 )
+
+
+# HF config field-name variants for the linear-attention prefill chunk length.
+# Mamba2-style configs declare it; gated-DeltaNet ones don't, and take it from
+# flash-linear-attention's fixed constant instead.
+LINEAR_ATTN_CHUNK_KEYS: tuple[str, ...] = (
+    "chunk_size",        # Mamba2 / Nemotron-H
+    "mamba_chunk_size",  # some hybrids
+)
+
+
+# HF config field-name variants for the model's weight dtype.
+MODEL_DTYPE_KEYS: tuple[str, ...] = ("torch_dtype", "dtype")
+
+
+def model_config_weight_dtype(hf_cfg: dict[str, Any]) -> Any | None:
+    """The weight precision a model config declares, or None.
+
+    A ``quantization_config`` wins over the dtype fields, because for a
+    quantized checkpoint those describe the *activation* dtype, not the
+    weights. DeepSeek-V3.2-Exp ships FP8 block-quantized with
+    ``torch_dtype: bfloat16``; naming its variant folder ``bf16`` would both
+    mislabel what was measured (FP8 GEMMs) and collide with a genuine bf16
+    release of the same model.
+
+    HuggingFace renamed this field: ``torch_dtype`` is the legacy spelling
+    and ``dtype`` the current one (Qwen3.8's config carries only the latter).
+    Both are accepted. ``torch_dtype`` is consulted first because every
+    profile bundle already committed was named from it, so a config that
+    somehow carried both would keep pointing at its existing folder rather
+    than silently renaming it.
+
+    Kept next to the other config probes so the profiler and the simulator's
+    ``trace_generator.resolve_variant`` can agree — if they disagree the
+    simulator looks in a variant folder the profiler never wrote.
+    """
+    quant = hf_cfg.get("quantization_config")
+    if isinstance(quant, dict):
+        method = quant.get("quant_method")
+        if method:
+            return method
+    for key in MODEL_DTYPE_KEYS:
+        v = hf_cfg.get(key)
+        if v:
+            return v
+    return None
+
+
+def probe_linear_attn_chunk(hf_cfg: dict[str, Any]) -> int | None:
+    """Chunk length the linear-attention prefill scan works in.
+
+    Resolution order, most authoritative first:
+
+    1. the model config, when the architecture declares it — Mamba2-style
+       models do, and their value is not the same as anyone else's;
+    2. vLLM's ``FLA_CHUNK_SIZE``, the fixed ``BT`` every gated-DeltaNet kernel
+       compiles with (64). Read from the installed vLLM rather than copied,
+       since it is a kernel property and can change with the release.
+
+    Returns None when neither is available, which is the signal to fall back
+    to a plain geometric grid. The caller applies a CLI override on top.
+    """
+    for key in LINEAR_ATTN_CHUNK_KEYS:
+        if key in hf_cfg:
+            try:
+                v = int(hf_cfg[key])
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                return v
+    try:
+        from vllm.third_party.flash_linear_attention.ops.utils import (
+            FLA_CHUNK_SIZE,
+        )
+    except Exception:
+        return None
+    return int(FLA_CHUNK_SIZE) or None
+
+
+def declares_moe(hf_cfg: dict[str, Any]) -> bool:
+    """True if the config mentions MoE at all, however partially.
+
+    Distinguishes the two reasons ``probe_moe_params`` can come back None. A
+    **dense checkpoint of a family whose catalog covers both shapes** declares
+    nothing MoE and should simply skip the expert sweep — that is normal now
+    that one catalog serves a family. A config that declares *some* MoE field
+    but not the pair we need is a different thing: almost certainly a spelling
+    this repo doesn't know yet, and worth failing on.
+    """
+    keys = set(MOE_NUM_EXPERTS_KEYS) | set(MOE_TOP_K_KEYS)
+    return any(k in hf_cfg for k in keys)
 
 
 def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
@@ -92,18 +202,104 @@ class LayerEntry(BaseModel):
     # extra="forbid" catches typos in YAML early (e.g., `tp_stabe: true`).
     model_config = ConfigDict(extra="forbid")
 
-    vllm: str
-    """vLLM leaf class name as reported by the CUDA profiler, e.g.
-    ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``."""
+    vllm: str | list[str]
+    """Name the CUDA profiler reports for this layer, e.g.
+    ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``.
 
-    within: str | None = None
-    """Optional immediate-parent class name to disambiguate when the
-    same ``vllm`` class appears multiple times in the model (most
-    commonly RMSNorm, which shows up as input/post/final layernorm)."""
+    Usually a vLLM leaf class, but a **raw CUDA kernel name** works exactly as
+    well: matching strips a trailing ``(...)`` and compares the rest, and a
+    kernel node has no parentheses. That is the only way to reach layers vLLM
+    never wraps in a module — gated DeltaNet's conv and decode recurrence, and
+    MiniMax-M3's sparse attention, among them.
+
+    A trailing ``*`` matches by **prefix**. Needed for a fused kernel, whose
+    reported name inlines its template arguments and so carries the dtypes:
+    ``fusedMiniMaxM3QNormRopeKVInsertKernel<c10::BFloat16, ...`` would stop
+    matching on the fp8 variant, which is a run we deliberately make. No class
+    or Triton-kernel name contains ``*``, so the sigil is unambiguous.
+
+    A **list** means "every one of these that the checkpoint has", and covers
+    two situations. A family may swap the class by checkpoint rather than by
+    structure: Llama 3 uses ``Llama3RotaryEmbedding`` for its extended rope
+    scaling where Llama 1/2 and Mistral use the base ``RotaryEmbedding``, with
+    the layer playing the same role either way — listing both lets one catalog
+    cover the family instead of quietly measuring nothing on half of it. Or one
+    canonical layer may genuinely be several kernels, as MiniMax-M3's sparse
+    attention is (prefill kernel, decode kernel, merge), in which case the
+    matches are summed."""
+
+    def vllm_names(self) -> list[str]:
+        """``vllm`` as a list."""
+        if isinstance(self.vllm, str):
+            return [self.vllm]
+        return list(self.vllm)
+
+    within: str | list[str] | None = None
+    """Optional ancestor class name to disambiguate when the same ``vllm``
+    class appears multiple times in the model (most commonly RMSNorm, which
+    shows up as input / post / final layernorm).
+
+    A **list** means "any of these", which is what lets one catalog serve a
+    whole family: vLLM names the same structural class differently per
+    checkpoint shape, so Qwen3's decoder layer is ``Qwen3DecoderLayer`` for a
+    dense checkpoint and ``Qwen3MoeDecoderLayer`` for a MoE one, with
+    everything else identical. Without alternatives the two need duplicate
+    catalogs, and a fix to one silently misses the other. Matching takes the
+    deepest alternative present in the ancestor chain, so listing a name that
+    this checkpoint does not have costs nothing."""
+
+    not_within: str | list[str] | None = None
+    """Ancestor class(es) that **disqualify** a node from matching this entry.
+
+    Needed when one class plays two roles that ``within`` cannot separate
+    because it is the immediate parent in both. DeepSeek's shared expert is a
+    ``DeepseekV2MLP``, exactly like the dense-MLP layers' own ``mlp``, so
+    ``gate_up_proj`` with ``within: DeepseekV2MLP`` matches both — an 18432-wide
+    GEMM and a 2048-wide one, whose mean describes neither. The deepest-
+    ``within`` rule cannot help: ``DeepseekV2MLP`` is the closest ancestor
+    either way. ``not_within: DeepseekV2MoE`` excludes the shared-expert copy,
+    whose cost is already inside the ``moe`` entry that binds the whole block.
+    """
+
+    def within_names(self) -> list[str]:
+        """``within`` as a list, empty when unset."""
+        if self.within is None:
+            return []
+        if isinstance(self.within, str):
+            return [self.within]
+        return list(self.within)
+
+    def not_within_names(self) -> list[str]:
+        """``not_within`` as a list, empty when unset."""
+        if self.not_within is None:
+            return []
+        if isinstance(self.not_within, str):
+            return [self.not_within]
+        return list(self.not_within)
 
     tp_stable: bool = False
     """If True, profile this layer only at TP=1 and replicate the
     results into every tp{N}/ folder."""
+
+    sequence_parallel: bool | None = None
+    """Whether the MoE wrapper sequence-shards its input under DP+TP."""
+
+    key_saturates: bool = False
+    """If True, this kernel's cost stops growing once a sequence's key window
+    passes the checkpoint's bound (``probe_key_saturation``), so the
+    simulator caps the key length it looks the kernel up at.
+
+    A property of the computation, and it varies *within* a model rather than
+    between models. DeepSeek-V3.2's ``attention`` is sparse MLA and saturates
+    -- a 16-token prefill costs 139.3 us at 2048 of context and 138.3 at 8192
+    -- while its ``indexer`` scores the whole KV to make the selection and
+    keeps growing (52 -> 101 us from kv 2048 to 16384). MiniMax-M3 has both
+    kinds of attention in one stack, sparse from its fourth layer on.
+
+    Why it is capped at lookup rather than at sweep time: the two kernels
+    share one grid, so a capped column would collapse the indexer's
+    large-key rows onto one cell. The grid records the key length uncapped
+    and each kernel reads it at its own resolution."""
 
 
 class Catalog(BaseModel):
@@ -117,49 +313,203 @@ class Catalog(BaseModel):
     dense: dict[str, LayerEntry] = Field(default_factory=dict)
     per_sequence: dict[str, LayerEntry] = Field(default_factory=dict)
     attention: dict[str, LayerEntry] = Field(default_factory=dict)
+    linear_attention: dict[str, LayerEntry] = Field(default_factory=dict)
     moe: dict[str, LayerEntry] = Field(default_factory=dict)
+    # The model's own drafter. A separate group rather than entries in `dense`
+    # because it only exists when the engine boots with speculative_config, and
+    # because it is emitted N times per step rather than once per layer.
+    mtp: dict[str, LayerEntry] = Field(default_factory=dict)
 
     def all_entries(self) -> list[tuple[str, str, LayerEntry]]:
         """Flatten to ``[(profile_kind, layer_name, entry), ...]``."""
         out: list[tuple[str, str, LayerEntry]] = []
-        for kind in ("dense", "per_sequence", "attention", "moe"):
+        for kind in ("dense", "per_sequence", "attention", "linear_attention",
+                     "moe"):
             for name, entry in getattr(self, kind).items():
                 out.append((kind, name, entry))
         return out
 
 
-class Sequence(BaseModel):
-    """Ordered pipeline the simulator's ``trace_generator`` walks to
-    emit one iteration. Not used by the profiler itself — only
-    validated here so typos in the yaml fail loudly before profiling.
+class AttnBlock(BaseModel):
+    """One attention block type's layer order, around its attention kernel."""
+    model_config = ConfigDict(extra="forbid")
+
+    pre_attn: list[str] = Field(default_factory=list)
+    post_attn: list[str] = Field(default_factory=list)
+
+    def all_layers(self) -> list[str]:
+        return [*self.pre_attn, *self.post_attn]
+
+
+class Blocks(BaseModel):
+    """Heterogeneous stack: layer order keyed by **axis**, not by block name.
+
+    A layer's identity in a modern stack is a tuple, not a name — Qwen3.8
+    varies the attention type along ``layer_types``, GLM and DeepSeek vary the
+    MLP along ``first_k_dense_replace``, MiniMax-M3 varies both. Naming every
+    combination explodes; keying each axis separately does not, and the
+    per-layer values come from the checkpoint's own config rather than from
+    this file.
+
+    Keys under ``attn`` are the values the model config uses (e.g.
+    ``linear_attention`` / ``full_attention`` from ``layer_types``), so the
+    resolver can look a layer up directly.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    attn: dict[str, AttnBlock] = Field(default_factory=dict)
+    sparse_attn: dict[str, AttnBlock] = Field(default_factory=dict)
+    """Overlay used on layers that run a sparse-attention selection branch.
+
+    A third axis rather than more keys under ``attn`` because vendors vary it
+    independently of the attention type: MiniMax-M3 keeps full attention on
+    every layer and switches only sparsity, swapping
+    ``MiniMaxM3Attention`` for ``MiniMaxM3SparseAttention`` with a different
+    qkv projection and an indexer subtree. Keyed by the same attention-type
+    names as ``attn``, so a model varying both stays expressible. Empty means
+    sparse layers use the plain ``attn`` block, which is right for
+    DeepSeek-V3.2 and GLM-5: they are sparse on every layer, so there is
+    nothing to distinguish."""
+
+    mlp: dict[str, list[str]] = Field(default_factory=dict)
+
+    def all_layers(self) -> list[str]:
+        out: list[str] = []
+        for block in self.attn.values():
+            out.extend(block.all_layers())
+        for block in self.sparse_attn.values():
+            out.extend(block.all_layers())
+        for layers in self.mlp.values():
+            out.extend(layers)
+        return out
+
+    def occurrences(self) -> dict[str, int]:
+        """Emissions per block instance, maxed across block types.
+
+        Per block type, because that is what the profiled node's parent
+        invocation count is relative to: a layernorm emitted twice inside
+        every decoder layer has 2 regardless of which attention type the layer
+        carries, while a gated-DeltaNet projection emitted once inside the GDN
+        block has 1 — and taking the max is exactly right, since a layer
+        belongs to one block type or is shared by all of them with the same
+        count.
+        """
+        counts: dict[str, int] = {}
+        groups: list[list[str]] = [b.all_layers() for b in self.attn.values()]
+        groups += [b.all_layers() for b in self.sparse_attn.values()]
+        groups += [list(v) for v in self.mlp.values()]
+        for group in groups:
+            per_group: dict[str, int] = {}
+            for name in group:
+                per_group[name] = per_group.get(name, 0) + 1
+            for name, c in per_group.items():
+                counts[name] = max(counts.get(name, 0), c)
+        return counts
+
+
+class Shared(BaseModel):
+    """Layers outside the repeated stack: once per iteration, not per block."""
+    model_config = ConfigDict(extra="forbid")
+
+    prologue: list[str] = Field(default_factory=list)
+    head: list[str] = Field(default_factory=list)
+
+    def all_layers(self) -> list[str]:
+        return [*self.prologue, *self.head]
+
+    def occurrences(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for name in self.all_layers():
+            counts[name] = counts.get(name, 0) + 1
+        return counts
+
+
+class DrafterBlock(BaseModel):
+    """The decoder block one drafter pass wraps.
+
+    Declared rather than resolved from the checkpoint, because vLLM's MTP
+    modules **force** it per family and the forcing lives in each family's
+    ``*_mtp.py`` rather than in the config:
+
+    * DeepSeek/GLM (``deepseek_mtp.py``) build the block at layer index
+      ``num_hidden_layers``, which is past ``first_k_dense_replace`` (MoE) and
+      inherits the model-wide ``index_topk`` (sparse).
+    * Qwen3.5 (``qwen3_5_mtp.py``) passes ``layer_type="full_attention"``
+      explicitly, overriding whatever ``layer_types`` says.
+    * MiniMax-M3 (``minimax_m3/*/mtp.py``) passes ``force_sparse_attn=True,
+      force_moe=True``.
+
+    Indexing the checkpoint's own stack gets all three wrong: the stack has
+    exactly ``num_hidden_layers`` entries, so index ``num_hidden_layers`` wraps
+    to layer 0 -- dense for DeepSeek/GLM, non-sparse for M3, linear attention
+    for Qwen3.8. The values here name axes of ``blocks:``, exactly as
+    ``stack.LayerSpec`` does.
+
+    An axis left **unset** means "whatever the checkpoint says", and the
+    simulator then requires that axis to be uniform across the target's stack
+    -- otherwise there is no single answer to inherit and the catalog has to
+    name one. Qwen3.5 is the case that needs it: ``qwen3_5.py`` picks the MLP
+    off ``model_type`` rather than per layer, so the drafter's MLP is the
+    model's, whichever that is.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    attn: str | None = None
+    mlp: str | None = None
+    sparse: bool | None = None
+
+
+class MtpSection(BaseModel):
+    """``mtp:`` -- what one drafter pass emits.
+
+    vLLM runs the drafter **N times per step** for N speculative tokens: once,
+    then ``num_speculative_tokens - 1`` more inside
+    ``llm_base_proposer.py``'s loop. The first pass is target-shaped; the rest
+    are decode-shaped at ``max_query_len = 1``.
+
+    Split the way ``shared:`` is, around the decoder block the wrapper holds:
+    ``prologue`` runs before it (the norms and the 2h->h combine), ``head``
+    after (DeepSeek/GLM's ``SharedHead``; Qwen and M3 keep ``lm_head`` outside
+    the predictor and so declare none).
     """
     model_config = ConfigDict(extra="forbid")
 
     prologue: list[str] = Field(default_factory=list)
-    pre_attn: list[str] = Field(default_factory=list)
-    post_attn: list[str] = Field(default_factory=list)
-    mlp_dense: list[str] = Field(default_factory=list)
-    mlp_moe: list[str] = Field(default_factory=list)
+    decoder_block: DrafterBlock | None = None
     head: list[str] = Field(default_factory=list)
-
-    def all_layers(self) -> list[str]:
-        return [
-            *self.prologue, *self.pre_attn, *self.post_attn,
-            *self.mlp_dense, *self.mlp_moe, *self.head,
-        ]
 
 
 class Architecture(BaseModel):
     """Parsed architecture yaml.
 
-    Holds ``catalog`` (vLLM class bindings — used by the profiler) and
-    ``sequence`` (ordered canonical names — used by the simulator's
-    trace generator).
+    Holds ``catalog`` (vLLM class bindings — used by the profiler) and the
+    layer order the simulator's trace generator walks: ``blocks`` keyed by
+    axis, plus ``shared`` for what sits outside the repeated stack.
+
+    There used to be a second form, ``sequence``, for a uniform stack. It was
+    the same thing flattened -- its ``pre_attn`` / ``post_attn`` were the
+    single implicit ``attn.full_attention`` block and its ``mlp_dense`` /
+    ``mlp_moe`` were the ``mlp`` axis with the value baked into the key name.
+    Two forms meant two code paths, and the simulator only ever implemented
+    the flat one, so half the catalogs could not be simulated at all. Worse,
+    the flattening encoded a claim that is not true: baking the axis into the
+    key removes the per-layer question, and the MLP choice was resolved once
+    per *model* -- which modelled DeepSeek-V3.2's and GLM-5's first three
+    dense layers as MoE. One form, and the per-layer values come from the
+    checkpoint's config (``layer_types``, ``first_k_dense_replace``, ...),
+    never from here.
     """
     model_config = ConfigDict(extra="forbid")
 
     catalog: Catalog
-    sequence: Sequence | None = None
+    model_types: list[str] = Field(default_factory=list)
+    blocks: Blocks | None = None
+    shared: Shared | None = None
+    # What one drafter pass emits, in order. Present only for a model with MTP
+    # modules; `mtp_block` is deliberately not listed, because it is the same
+    # class as a target decoder layer and the simulator replays the target's
+    # own block sequence for it.
+    mtp: MtpSection | None = None
 
     # ------------------------------------------------------------------
     # Validation
@@ -174,19 +524,27 @@ class Architecture(BaseModel):
                 raise ValueError(f"Layer name {name!r} appears twice in catalog")
             seen.add(name)
 
-        # Exactly one attention entry.
-        if len(self.catalog.attention) != 1:
+        # At least one softmax-attention entry, unless the architecture is
+        # purely linear-attention. More than one is allowed: a sparse-attention
+        # model runs an indexer kernel alongside the attention kernel, and both
+        # are keyed on the same axes, so both belong in this category.
+        if not self.catalog.attention and not self.catalog.linear_attention:
             raise ValueError(
-                f"catalog.attention must have exactly 1 entry; got "
-                f"{len(self.catalog.attention)}"
+                "catalog must declare at least one attention or "
+                "linear_attention entry"
             )
 
         # (vllm, within) pairs globally unique so layer matching is
-        # deterministic. (Multiple catalog-tree nodes can match one
-        # entry, that's fine — their timings get averaged by the sink.)
-        pairs: dict[tuple[str, str | None], str] = {}
+        # deterministic. Several profile-tree nodes may still match one entry,
+        # which is fine and sometimes the point: their timings are summed,
+        # because one canonical name is one trace node.
+        pairs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
         for _, name, entry in self.catalog.all_entries():
-            key = (entry.vllm, entry.within)
+            key = (
+                tuple(sorted(entry.vllm_names())),
+                tuple(sorted(entry.within_names())),
+                tuple(sorted(entry.not_within_names())),
+            )
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "
@@ -195,15 +553,33 @@ class Architecture(BaseModel):
                 )
             pairs[key] = name
 
-        # Every sequence entry must be a canonical name declared in the
+        # One layer-order form, and it has to be there: the trace generator
+        # has nothing to walk otherwise.
+        if self.blocks is None:
+            raise ValueError(
+                "architecture must declare 'blocks' (layer order keyed by "
+                "axis: attn.<layer_types value>, mlp.dense|moe, and "
+                "sparse_attn.<...> when a layer's sparse flag applies)"
+            )
+        if not self.blocks.attn:
+            raise ValueError(
+                "'blocks.attn' must declare at least one attention block type"
+            )
+
+        # Every referenced name must be a canonical name declared in the
         # catalog — catches typos before a profile/simulation run.
-        if self.sequence is not None:
-            catalog_names = {n for _, n, _ in self.catalog.all_entries()}
-            unknown = [n for n in self.sequence.all_layers() if n not in catalog_names]
-            if unknown:
-                raise ValueError(
-                    f"sequence references names not in catalog: {sorted(set(unknown))}"
-                )
+        catalog_names = {n for _, n, _ in self.catalog.all_entries()}
+        referenced: list[str] = []
+        if self.blocks is not None:
+            referenced += self.blocks.all_layers()
+        if self.shared is not None:
+            referenced += self.shared.all_layers()
+        unknown = [n for n in referenced if n not in catalog_names]
+        if unknown:
+            raise ValueError(
+                f"layer order references names not in catalog: "
+                f"{sorted(set(unknown))}"
+            )
 
         return self
 
@@ -213,6 +589,26 @@ class Architecture(BaseModel):
 
     def has_moe(self) -> bool:
         return bool(self.catalog.moe)
+
+    def layer_occurrences(self) -> dict[str, int]:
+        """How many trace nodes each canonical layer contributes per block.
+
+        The profiler needs this to normalize a profiled node's total CUDA
+        time: vLLM merges same-class siblings into one node, so the reported
+        ``invocations`` counts module calls, not trace nodes. See
+        ``hooks/timings.py``.
+
+        A name absent from the layer order is reported as 1 by the caller's
+        ``or 1``, which is the right default — a layer nothing emits has
+        nothing to divide.
+        """
+        counts: dict[str, int] = {}
+        for source in (self.blocks, self.shared):
+            if source is None:
+                continue
+            for name, c in source.occurrences().items():
+                counts[name] = max(counts.get(name, 0), c)
+        return counts
 
     def has_tp_dependent_work(self, tp: int) -> bool:
         """True iff this TP pass has any non-tp_stable layers to profile."""
@@ -296,30 +692,43 @@ def resolve_architecture_by_model_type(
     model_type: str,
     arch_dir: Path,
 ) -> Path:
-    """Find the architecture yaml matching ``model_type``.
+    """Find the architecture yaml serving ``model_type``.
 
-    Convention: architecture yaml filename equals ``<model_type>.yaml``.
-    So ``model_type == "qwen3_moe"`` resolves to
-    ``<arch_dir>/qwen3_moe.yaml``.
+    Thin wrapper over ``catalog_path.resolve_architecture_path``, which holds
+    the naming rule. That rule lives in its own dependency-free module because
+    the **simulator** resolves catalogs too, and two implementations of it
+    already drifted once — aliasing landed here and not there, and every MoE
+    scenario broke the moment two ``model_type`` values shared one file.
     """
-    candidate = arch_dir / f"{model_type}.yaml"
-    if candidate.is_file():
-        return candidate.resolve()
-
-    # List available architectures to help the user decide what to do.
-    available = sorted(p.stem for p in arch_dir.glob("*.yaml"))
-    raise FileNotFoundError(
-        f"No architecture yaml found for model_type={model_type!r}. "
-        f"Tried {candidate}.\n"
-        f"Available architectures: {available}\n"
-        f"To add support, create {candidate.name} under {arch_dir} "
-        f"with a catalog matching this model family's vLLM classes."
-    )
+    return Path(resolve_architecture_path(model_type, str(arch_dir)))
 
 
 # ---------------------------------------------------------------------------
 # Profile session args (CLI, no yaml)
 # ---------------------------------------------------------------------------
+
+#: Default geometric factor for attention axes.
+#:
+#: Smaller geometric factors trade more shots for finer resolution. A doubling
+#: axis is nested in the sqrt(2) axis: even powers retain its coordinates.
+#: Reuse still requires compatible acquisition identities and matching complete
+#: shot keys; changing another axis can remove those matches.
+#:
+#: For a fixed range, the number of intervals scales as 1/log(factor).
+#: Changing 2.0 to sqrt(2) roughly doubles intervals on EACH axis, not 1.4x.
+#: Attention combines four shape axes, with one KV factor controlling two of
+#: them. Their costs multiply before rounding, degenerate-axis deduplication
+#: and feasibility filters. Count the composed plan rather than assuming a
+#: fixed multiplier or wall time. Denser sampling alone does not establish
+#: better end-to-end accuracy on every axis or workload.
+#:
+#: A bundle records the factor it was swept at, per axis, in
+#: ``meta.yaml::attention_grid``. **Refreshing one axis of an existing bundle
+#: means restating the others**, or the defaults silently re-grid them: the
+#: RTXPRO6000 Llama/Qwen bundles are at 1.5 on chunk and kv, everything else
+#: at 2.0.
+SQRT2 = 2.0 ** 0.5
+
 
 @dataclass(frozen=True)
 class ProfileArgs:
@@ -336,7 +745,8 @@ class ProfileArgs:
             ``vllm.LLM(model=...)``.
         hardware: Free-form hardware label that becomes an output
             folder name (e.g. "H100", "A6000", "RTXPRO6000").
-        tp_degrees: Which TP shardings to sweep. Must include 1.
+        tp_degrees: Positive TP shardings to sweep. Ordinary category sweeps
+            require 1 for TP-stable replication; skew-only work is independent.
         variant: Free-form output folder label under the model's
             directory. If omitted at the CLI, auto-derived from
             ``dtype`` + ``kv_cache_dtype`` so that profiles with
@@ -344,8 +754,26 @@ class ProfileArgs:
         dtype / kv_cache_dtype / max_num_batched_tokens / max_num_seqs:
             Common vLLM engine kwargs. None means "use defaults"
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
-        attention_max_kv: Cap for attention grid's KV axes. Doubles
-            from 512 up to min(this, max_model_len).
+        attention_max_kv: Cap for the attention and skew grids' KV axes.
+            Doubles from 512 up to min(this, max_model_len). ``None`` means
+            the model's own context, and ``runner`` resolves it against the
+            live engine's ``max_model_len`` (see
+            ``engine.resolve_attention_max_kv``) before any grid is composed --
+            so every reader downstream, including the meta the run records,
+            sees one concrete number and never ``None``.
+        moe_ep_degrees: EP degrees to profile the MoE block at. Each one past
+            1 costs its own engine boot, because the slice a rank runs -- E/ep
+            experts, k/ep assignments per token -- is a config the engine is
+            built with, not a per-shot knob. Default ``(1,)``, which is the
+            whole model on one rank and what every bundle held before the axis
+            existed.
+        profile_mtp: When set, boot with ``speculative_config`` so the drafter
+            is built and its kernels land in the profile tree. The drafter
+            runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
+            ``drafter.propose``), which the fire path already calls inside
+            ``layerwise_profile``. Always at ``num_speculative_tokens=1``, so
+            what lands in ``mtp.csv`` is **one** drafter pass -- the unit the
+            simulator multiplies by its own N.
         hf_overrides: Extra HF config overrides, merged under the
             profiler's own (num_hidden_layers=1) + TP sharding.
     """
@@ -366,6 +794,62 @@ class ProfileArgs:
     kv_cache_dtype: str | None = None
     max_num_batched_tokens: int | None = None
     max_num_seqs: int | None = None
+    block_size: int | None = None
+    """KV block size in tokens, vLLM's own ``--block-size``. None uses
+    HOST_ENGINE_DEFAULTS (16). Exposed because the simulator has the same knob
+    and the two have to agree: a profile measured at one block size describes a
+    different paging regime than a simulation run at another. It also stops
+    mattering only for uniform models — on a hybrid stack vLLM *overrides*
+    whatever is requested here to unify attention and mamba page sizes, and
+    ``probe_limits`` reports what it settled on."""
+
+    gpu_memory_utilization: float | None = None
+    """vLLM's own ``--gpu-memory-utilization``; the simulator spells the same
+    quantity ``--npu-memory-utilization``. None uses HOST_ENGINE_DEFAULTS
+    (0.9). It decides ``num_gpu_blocks`` and therefore ``num_cache_tokens``,
+    which every shot-feasibility filter is measured against — so it changes
+    *which* shots a sweep contains, not just how fast it runs."""
+
+    max_model_len: int | None = None
+    """Cap the engine's context length. None lets vLLM take it from the model
+    config. Bounds the kv axes and the per-shot length checks, so lowering it
+    on a long-context model cuts profile time; ``--attention-max-kv`` caps the
+    same axes from the grid side."""
+
+    num_hidden_layers: int | None = None
+    # Boot the engine with a speculative_config so vLLM also builds the
+    # model's own MTP module. Needed to profile the drafter at all: the MTP
+    # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
+    # produced by SpeculativeConfig.hf_config_override and is unknown to HF
+    # Transformers, so the module cannot be loaded standalone.
+    moe_ep_degrees: tuple[int, ...] = (1,)
+    moe_dp_degrees: tuple[int, ...] | None = None
+    """Explicit target DP degrees for native, separately timed MoE components.
+
+    None retains legacy whole-block acquisition. This is target metadata, not
+    the number of actual profiler processes. EP is resolved as TP times DP.
+    """
+    moe_rounds: int = 3
+    profile_mtp: bool = False
+    """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
+    right for a uniform stack: every block is identical, so profiling one
+    captures the per-block cost. A **hybrid** stack needs the smallest count
+    that instantiates every distinct block type — 4 for Qwen3.8-27B, whose
+    ``layer_types`` runs gated-DeltaNet x3 then full attention — or the
+    catalog can only ever see one of them."""
+
+    linear_attn_chunk: int | None = None
+    """Chunk length the linear-attention (gated-DeltaNet / Mamba) prefill
+    scan works in, used to place grid points. None resolves it, in order,
+    from the model config's ``chunk_size`` and then from vLLM's own constant.
+
+    This is a *grid placement* knob, not an engine one. Measured cost tracks
+    the chunk count, not the token count: on Qwen3.8-27B one token past a
+    64-boundary costs 13.5% more than the boundary itself, and the interval
+    between boundaries is nearly flat. Sampling on a plain geometric grid
+    lands only on boundaries and interpolating across them underestimates by
+    that much."""
+
     hf_overrides: dict[str, Any] | None = None
     """CLI-specified hf_overrides applied on top of the model config
     at vLLM load time."""
@@ -378,39 +862,128 @@ class ProfileArgs:
     profiling is one file-edit away."""
 
     # Attention grid
-    attention_max_kv: int = 16384
-    attention_chunk_factor: float = 2.0
-    """Geometric factor for the prefill_chunk axis. Default 2.0
-    (doubling). Override via --attention-chunk-factor."""
-    attention_kv_factor: float = 2.0
-    """Geometric factor for the kv_prefill / kv_decode axes. Default
-    2.0 (doubling). Override via --attention-kv-factor."""
+    attention_max_kv: int | None = None
+    attention_decode_q_lens: tuple[int, ...] = (1,)
+    """Query tokens per decode sequence to sweep on the attention axis.
 
+    ``(1,)`` is ordinary decoding and the default. A speculative-decoding
+    verification step submits ``1 + num_speculative_tokens`` queries per
+    sequence against that sequence's own KV -- a shape the other four axes
+    cannot express, since it is neither a prefill chunk of the same token
+    count nor that many single-token decodes. Sweeping it multiplies the
+    attention grid, so it is opt-in: pass the ``1 + N`` values you intend to
+    simulate. Published N for the four modern families are 3, 4 and 5.
+    """
+    attention_chunk_factor: float = SQRT2
+    """Geometric factor for the prefill-token axis. Default ``SQRT2``;
+    override via --attention-chunk-factor.
+
+    It was briefly 1.5, on an end-to-end A/B that turned out to be confounded.
+    Swapping only the attention grid moved the Llama bench example's TTFT mean
+    from -4.6% to -1.1% -- but the denser file was measured on vllm=0.19 and
+    the ground truth it was scored against was recorded on 0.19 too, while the
+    coarse file was 0.28. Re-recording that truth on 0.28 **with cudagraphs
+    off**, so the execution mode matches what the profiler can measure, the
+    two grids read |err| p50 2.7% (x2) against 3.4% (x1.5 union) -- the
+    advantage is gone and slightly reversed. Do not lower this again without
+    an A/B whose truth matches the bundle's vLLM version *and* runs eager.
+
+    That is an argument against 1.5, not against ``SQRT2``, and the two are
+    not interchangeable: 1.5 lands on none of the doubling grid's values above
+    2, so it *replaces* a bundle's measurements, while ``SQRT2`` interleaves
+    with them. What the A/B refutes is the claim that a denser chunk axis pays
+    for a re-measure on its own; it says nothing about the value to sweep a
+    *new* bundle at.
+
+    **Every committed RTXPRO6000 Llama/Qwen bundle is at 1.5 on this axis and
+    on kv** -- `meta.yaml` records `chunk_factor: 1.5, kv_factor: 1.5` -- and
+    every other bundle is at 2.0. So a `slice --group attention` refresh at
+    the defaults would silently re-grid those two axes as well as the one
+    being refreshed. Pass the bundle's own `--attention-chunk-factor` /
+    `--attention-kv-factor` (and `--attention-max-kv` and `--max-num-seqs`,
+    which the meta also records) to refresh one axis without moving the
+    others."""
+    attention_kv_factor: float = SQRT2
+    """Geometric factor for the prefill-key and kv_decode axes. Default
+    ``SQRT2``; override via --attention-kv-factor. See the note above."""
+    attention_n_factor: float = SQRT2
+    """Geometric factor for the n_decode axis. Override via
+    --attention-n-factor.
+
+    **Below doubling, because the axis is smooth only on a *pure decode*
+    batch.** It was 2.0 on exactly that evidence -- per-sequence decode cost
+    on Llama-3.1-8B is flat and slightly falling, 6.60 / 6.33 / 5.94 / 5.81 /
+    5.70 us at n = 16 / 32 / 64 / 128 / 256 (kv 2076) -- and that measurement
+    is right. It just does not describe a **mixed** batch, where the same
+    model rises **37%** across the same doubling:
+
+        n_decode      16    32    64    72    80    88    96   104   112   128
+        pure  us/seq 6.60  6.33  5.94    -     -     -     -     -     -  5.81
+        mixed us/seq 9.18  9.28  8.99  9.33  9.45  9.47 10.39 11.03 11.55 12.31
+
+    (chunk 273, kv 2076, one prefill sequence; the mixed figures subtract the
+    chunk's own 13.2 us.) The curve is flat to n=88 and then climbs, so a
+    doubling grid's linear blend between 64 and 128 over-charges the middle by
+    up to **12.7%** -- blend 954.2 us against a measured 846.3 at n=88, 1081.3
+    against 1010.3 at n=96. ``SQRT2`` puts a profiled point at **91**, i.e. on
+    the knee.
+
+    That is where a real run lives: matching Llama-3.1-8B's steps against a
+    vLLM run one for one, the simulator is exact at n_decode 0 and 32 (both
+    grid points: 0.983-1.032) and 5-12% slow at 64-127, with attention 54.8%
+    of such a step. It is the largest identified piece of that example's
+    +4.8% TTFT.
+
+    Note what kind of evidence this is. The chunk and kv factors were lowered
+    once on an end-to-end A/B and reverted when that turned out confounded
+    (see ``attention_chunk_factor``); this is not that. It is the
+    interpolation error of the modelled quantity, measured against the same
+    engine in the same run, so no vLLM version or execution mode enters it.
+
+    A sparse model needs it lower still: DeepSeek-V3.2's per-sequence cost
+    drops ~3x between n=64 and n=128 at **every** kv (48.63 -> 15.64 us/seq at
+    kv=256, 7.57 -> 3.45 at kv=8192).
+
+    **1.5 is the wrong way to get that resolution**, even though it is
+    denser. It lands on none of the doubling grid's values above 2, so it
+    discards what a bundle already holds -- 37.9% reuse and 23,579 orphaned
+    rows on Llama-3.1-8B, against ``SQRT2``'s 99.9% and 19 -- and needs
+    37,696 new shots where ``SQRT2`` needs 28,272. Measured at 2.19 shot/s
+    that is 4.8 h against 3.6 h, for a grid that is no better placed.
+    """
     # Measurement averaging
     measurement_iterations: int = 3
     """N timed forwards per shot, averaged."""
+
+    """If True, skip the step sweep (step.csv will not be written and the
+    simulator applies no cudagraph correction -- it then predicts eager
+    execution, which is 2-5% slower than production on a dense model).
+
+    On by default, unlike ``skip_skew``, because a missing correction is a
+    *known* bias rather than an unknown one: skew's fallback of alpha=0 is
+    defensible since a guessed alpha is worse than none, while here the
+    direction and rough size are established. Skippable all the same, and for
+    two real reasons -- the sweep needs a second engine boot (minutes on a
+    large model, and vLLM's graph capture allocates memory a checkpoint that
+    only just fits under ``enforce_eager`` may not have), and a per-category
+    ``slice`` refresh has no reason to pay it."""
 
     skip_skew: bool = False
     """If True, skip the skew profiling step (skew.csv will not be
     written and alpha fit cannot run). Useful for quick profile runs
     that only need uniform attention data."""
 
-    # Skew grid density. Mirrors the attention factor knobs — the
-    # default 2.0 (doubling) is what ships today; crank higher
-    # (e.g. 4.0) to coarsen the sweep and cut profile time when the
-    # target workload doesn't stress every axis.
+    # Acquisition density is independent of the supported-N fit partitions.
     skew_n_factor: float = 2.0
-    """Geometric factor for the skew n (total decode count) axis.
-    Default 2.0 (doubling). Override via --skew-n-factor."""
     skew_pc_factor: float = 2.0
-    """Geometric factor for the skew pc (prefill chunk) axis.
-    Default 2.0. Override via --skew-pc-factor."""
     skew_kp_factor: float = 2.0
-    """Geometric factor for the skew kp (prefill history) axis.
-    Default 2.0. Override via --skew-kp-factor."""
     skew_kvs_factor: float = 2.0
-    """Geometric factor for the skew kvs (small-decode kv) axis.
-    Default 2.0. Override via --skew-kvs-factor."""
+    skew_samples_per_cell: int = 32
+    """Distribution draws per geometric N/prefill/history operating cell."""
+    skew_rounds: int = 3
+    """Independent profile contexts; target is the median of forward medians."""
+    skew_seed: int = 0
+    """Deterministic acquisition seed, shared by every hardware/model."""
 
     only_skew: bool = False
     """If True, skip dense/per_sequence/attention/moe categories and
@@ -440,7 +1013,7 @@ class ProfileArgs:
         When the user doesn't pass ``--variant``, we name the folder
         after the engine flags that actually change kernel timings:
         ``dtype`` and ``kv_cache_dtype``. The weight dtype defaults to
-        the model config's ``torch_dtype`` so the folder always carries
+        the model config's ``torch_dtype`` / ``dtype`` so the folder carries
         meaningful info (no bare "default").
 
         Examples (typical BF16 models like Llama 3.x):
@@ -456,7 +1029,7 @@ class ProfileArgs:
         # Weight dtype: CLI wins; otherwise probe the model config.
         weight_dtype = self.dtype
         if weight_dtype is None and self.model_config:
-            weight_dtype = self.model_config.get("torch_dtype")
+            weight_dtype = model_config_weight_dtype(self.model_config)
         parts = [_short_dtype(weight_dtype) if weight_dtype else "default"]
 
         if self.kv_cache_dtype and self.kv_cache_dtype != "auto":
@@ -515,9 +1088,15 @@ HOST_ENGINE_DEFAULTS: dict[str, Any] = {
     # Default TP; actual engine always spins up single-GPU (we emulate
     # multi-TP via shrunk hf_overrides, see engine.fuse_engine_kwargs).
     "tensor_parallel_size": 1,
-    # Paging block size. Only affects how we size the synthetic block
-    # table; does not change kernel time.
-    "block_size": 16,
+    # Paging block size is deliberately NOT set: vLLM's platform layer picks
+    # one the model's attention backend can actually use, and forcing a value
+    # can leave it with none. DeepSeek-V3.2's sparse MLA is the case in point --
+    # requesting 16 fails backend selection outright
+    # ("FLASHINFER_MLA_SPARSE_SM120: [block_size not supported]") where letting
+    # vLLM choose gives 64. It only sizes the synthetic block table and never
+    # changes kernel time, so there was nothing to gain by pinning it.
+    # ``--block-size`` still overrides, and ``probe_limits`` reports whatever
+    # the engine settled on so the feasibility filters use the real value.
     # KV cache fraction of GPU memory. 0.9 is generous for the
     # 1-decoder-layer dummy model.
     "gpu_memory_utilization": 0.9,

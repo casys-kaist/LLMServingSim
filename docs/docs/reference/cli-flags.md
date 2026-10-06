@@ -9,11 +9,11 @@ Complete reference for every command-line flag accepted by
 `python -m serving`. For the conceptual side of each flag (what it
 *does* internally), see **[Simulator](/docs/simulator/architecture)**.
 
-:::tip[14 of these can be set per instance]
+:::tip[Runtime overrides can be set per instance]
 Flags marked **(per-instance)** below can also be written into an
 individual `instances[i]` object in the cluster config, which wins over
 the CLI value for that instance only. That is how one run serves
-heterogeneous instances. The other 15 flags are cluster-wide. See
+heterogeneous instances. Flags without that marker remain run-wide. See
 **[Cluster config → Runtime overrides](./cluster-config#runtime-overrides-optional)**.
 :::
 
@@ -38,7 +38,8 @@ matching runtime knobs per `instances[i]`; see
 | `--enable-chunked-prefill` **(per-instance)** | bool | `True` | Split long prefill across iterations. Use `--no-enable-chunked-prefill` to disable |
 | `--npu-memory-utilization` **(per-instance,** as `npu_mem.mem_util`**)** | float | `0.9` | Fraction of NPU memory usable for weights plus KV cache. Corresponds to vLLM's `--gpu-memory-utilization`; KV capacity is `npu_mem.mem_size * this - model weight`. Override per instance with `npu_mem.mem_util` |
 | `--reserve-full-isl` / `--no-reserve-full-isl` **(per-instance)** | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
-| `--block-size` **(per-instance)** | int | `16` | KV cache block size in tokens |
+| `--async-scheduling` / `--no-async-scheduling` **(per-instance)** | flag | on | Compose the next batch while the current one is still running, as vLLM's `scheduler_config.async_scheduling` does (on there too). It makes vLLM's `max_concurrent_batches` 2 at `pp_size` 1, so a request that arrives after the next batch was composed waits one more step. Worth ~0.6 step of TTFT: invisible on a saturated run, about a fifth of the median TTFT on a light one |
+| `--block-size` **(per-instance)** | int | the profiled value, else `16` | KV cache block size in tokens. vLLM treats this as a **floor and an alignment unit**, not the answer: it takes `max(backend minimum, your value)` as the alignment, derives the smallest multiple of that whose attention page covers one mamba page, and raises the block size to it — never lowering it. On Qwen3.8-27B, asking for 16 gives **784** and asking for 64 gives **832**. The profiler records what the engine settled on in `meta.yaml::engine_resolved.per_tp[tp]` — **per TP degree**, since both the mamba page and the attention page scale with the rank's shard — and the simulator reads back the entry for the instance's `tp_size`, so lookups match the block size the latencies were measured at. An explicit value that disagrees is allowed but warned about. Bundles profiled before the field existed do not carry it and fall back to `16`; ones written before it was split by TP carry a flat value, which is read as a fallback |
 | `--skip-prefill` | flag | off | Skip prefill, run decode only |
 
 ## Routing
@@ -46,15 +47,59 @@ matching runtime knobs per `instances[i]`; see
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
 | `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing |
-| `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing |
+| `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing. `CUSTOM` reads the **measured** distinct-expert count from `--gate-stats` instead of deriving it from a uniform gate |
+| `--gate-stats` | path | `None` | A `gate_stats.json` (or the `bench run` directory holding one) recorded by [`bench run --record-gate-stats`](/docs/reference/bench-cli). Read only under `--expert-routing-policy CUSTOM`. A trained gate concentrates on popular experts, so the uniform closed form over-counts — on Qwen3-30B-A3B by 13% through the middle of the range and 6% at a saturated decode, which is worth 6.0 points of TPOT error. Relative paths resolve against the repo root, not `astra-sim/`. A missing, unreadable or mismatched file falls back to `BALANCED` with a warning. See **[MoE expert routing](/docs/simulator/moe-expert-routing)** |
 | `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers (set False for per-layer EP variance) |
 
 ## Precision
 
+**There are no precision flags.** Every dtype is read from the model config,
+because that is where each one is actually decided:
+
+| Cache | Config field | Rule |
+| --- | --- | --- |
+| Weights | `quantization_config.quant_method`, then `torch_dtype` / `dtype` | On a quantized checkpoint the dtype fields describe the *activation* dtype, so DeepSeek-V3.2 (`quant_method: fp8`, `torch_dtype: bfloat16`) is fp8, not bf16. Same rule as the profiler's, because it also picks which `perf/.../<variant>/` folder is read |
+| KV cache | `quantization_config.kv_cache_scheme` (compressed-tensors) or `kv_cache_quant_algo` (ModelOpt) | Either one present means fp8, otherwise the weight dtype. This is vLLM's own promotion at `attention.py:281`, and the direction its source states for itself: *"kv cache dtype should be specified in the FP8 checkpoint config and become the 'auto' behavior"* |
+| Mamba conv state | `mamba_cache_dtype` | `auto` falls back to the weight dtype |
+| Mamba recurrent state | `mamba_ssm_dtype` | `auto` falls back to the conv dtype. Qwen3.8-27B declares `float32`, so its recurrent state is 4 bytes where its conv state is 2 |
+| Sparse-indexer side cache | none — fixed by the model | DeepSeek/GLM store fp8 keys plus fp32 scales as uint8; MiniMax-M3 stores bf16. Neither follows the KV cache dtype |
+
+A dtype is a property of the checkpoint, and once a model carries five of
+them a flag per dtype is both unusable and unfaithful — it describes a model
+nobody can serve. To simulate a different precision, profile it: the
+profiler's `--dtype` / `--kv-cache-dtype` / `--variant` write a separate
+`perf/.../<variant>/` bundle, and the simulator reads the one the checkpoint
+names.
+
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--dtype` **(per-instance)** | `float16` / `bfloat16` / `float32` / `fp8` / `int8` | model's `torch_dtype`, fallback `bfloat16` | Model weight dtype |
-| `--kv-cache-dtype` **(per-instance)** | `auto` / `fp8` | `auto` (inherits dtype) | KV cache dtype. `fp8` halves KV memory and selects a `*-kvfp8` profile variant |
+| `--num-speculative-tokens` **(per-instance)** | int | `0` (off) | Draft length N, vLLM's own flag name. Omit `--spec-acceptance-rate` to take the model's published N and acceptance from `configs/spec_decode.json` |
+| `--spec-acceptance-rate` **(per-instance)** | float | the model's published value | Fraction of drafted tokens the target accepts, so the mean accept length is `1 + rate * N`. **Marginal**, which is what every published source reports — not Leviathan's conditional per-position alpha. A model with no published figure must be given one |
+| `--spec-acceptance-policy` **(per-instance)** | `FIXED` / `DECAY` / `CUSTOM` | `FIXED` | How the accepted count is drawn. `DECAY` uses per-position rates, which fall with draft position — same mean, different spread |
+
+**The drafter's time is not charged yet, and a model that drafts with
+itself refuses to run.** vLLM runs the drafter **N times per step** —
+once, then `num_speculative_tokens - 1` more. Each pass is a norm pair,
+an `eh_proj`, **a full decoder layer**, and (DeepSeek/GLM) a norm plus
+`lm_head` — the decoder layer dominating by roughly 4:1 over the
+wrapper. Reporting any of it as free would claim a speedup no engine
+can deliver, so a model with MTP modules (`num_nextn_predict_layers`,
+`num_mtp_modules`, `mtp_num_hidden_layers`) is charged for all N
+passes, emitted after the target's head — which is where vLLM runs
+them, from `sample_tokens()`. It raises if the architecture catalog is
+missing `mtp.prologue` or `mtp.decoder_block`, or if the bundle has no
+profiled `mtp.csv`. All four modern families ship both; a new family
+needs a profile run with `--profile-mtp`.
+
+A model with **no** MTP modules drafts with a separate model or with
+n-gram — a serving choice rather than a checkpoint property, and the
+simulator has no second model to charge. That case warns instead of
+refusing, and says plainly that the reported speedup is an upper bound.
+
+The drafter's **KV cache** is charged either way: an MTP module wraps a
+real decoder layer, so it publishes a cache spec of its own. That is
++1.6% bytes/token on DeepSeek-V3.2's one module, +11.7% on
+MiniMax-M3's seven, +6.2% on Qwen3.8-27B.
 
 ## Prefix caching and offloading
 
@@ -108,7 +153,7 @@ removed after a successful simulation by default.
 | Prefix caching | `--enable-prefix-caching` (default on), `--enable-prefix-sharing`, `--prefix-storage` |
 | Chunked prefill | `--enable-chunked-prefill` (default on), `--long-prefill-token-threshold` |
 | PIM attention offload | `--enable-attn-offloading` (cluster config sets `pim_config`) |
-| FP8 KV cache | `--kv-cache-dtype fp8` |
+| FP8 KV cache | (model config `quantization_config.kv_cache_scheme`) |
 | ns3 backend | `--network-backend ns3` |
 | Heterogeneous instances in one run | (cluster config per-instance overrides; see the tip above) |
 

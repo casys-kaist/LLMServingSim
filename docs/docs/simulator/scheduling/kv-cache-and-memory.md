@@ -73,9 +73,28 @@ weight_bytes_per_gpu = (
 ```
 
 `fp` is 2 bytes for `bfloat16` / `float16`, 4 for `float32`,
-1 for `int8` and `fp8`. Actually loading is done via `get_weight()`,
-which reads the model config and accounts for shared embeddings,
-tied weights, etc.
+1 for `int8` and `fp8`.
+
+`get_weight()` gets the parameter count by **walking the architecture yaml's
+blocks and the checkpoint's own per-layer composition**, summing
+`calculate_sizes()` over every canonical layer each decoder layer emits. So a
+heterogeneous stack is weighed layer by layer: DeepSeek-V3.2's first three
+layers carry a dense MLP and its other 58 carry 256 experts. It is one built
+weight per distinct block *shape*, not per layer, so the walk stays cheap.
+
+Some layers carry parameters that a Llama-shaped block has nowhere to put —
+MLA's `mla_qkv_a_proj` is replicated rather than sharded, its `q_b_proj` and
+`kv_b_proj` read low-rank latents, and DeepSeek's sparse indexer adds three
+more projections. That is why the weight is read from the catalog rather than
+from a fixed list of six layer names.
+
+:::tip[Check a new family against its published parameter count]
+It is the one number that catches a wrong tensor shape anywhere in the stack,
+and it is public. Summing the size formulas over DeepSeek-V3.2-Exp's layer
+composition gives 671.878B; subtracting the sparse indexer's 0.852B leaves
+671.026B, which is DeepSeek-V3's published 671B — and the difference is exactly
+what V3.2 adds over V3.
+:::
 
 This bytes amount is reserved on every NPU at startup and never
 freed. If `weight_per_gpu > npu_mem.mem_size`, the simulator exits
@@ -108,11 +127,134 @@ Note also that `head_dim` is read explicitly from the model config, not
 derived — see **[Model config](/docs/reference/model-config)**. On Qwen3
 `hidden_size / num_attention_heads` gives the wrong answer.
 
+### KV is not one shape
+
+That formula is grouped-query attention, and it is what most families use. It
+is not universal, and `kv_bytes_per_token_per_layer()` resolves which shape a
+layer has from the checkpoint:
+
+| Attention | Bytes per token per layer | Sharded by TP? |
+| --- | --- | --- |
+| GQA | `2 * num_key_value_heads * head_dim * kv_fp` | yes |
+| **MLA** (DeepSeek-V3.2, GLM-5) | `(kv_lora_rank + qk_rope_head_dim) * kv_fp` — one latent, no separate V | **no** — `num_kv_heads` is 1, so every rank holds the same bytes |
+| **+ sparse indexer** (the same two) | plus `index_head_dim + index_head_dim/128 * 4` — a **second** cache beside the latent, fp8 keys with one fp32 scale per 128 elements | no |
+| **Linear attention** (Qwen3.5/3.8 gated DeltaNet) | 0 — its state is fixed *per sequence*, not per token | n/a |
+
+The MLA row is the reason this matters rather than being a detail: sizing
+DeepSeek-V3.2 with the GQA formula reads 1,748,992 bytes per token where it
+actually caches 78,324, a 22x overstatement of the thing that decides how many
+requests fit.
+
+### 3. Per-sequence layer state
+
+A linear-attention layer caches nothing per token, but it does hold a fixed
+state for as long as the sequence lives — a rolling convolution state plus a
+recurrent state. Their size does not depend on the sequence length, which is
+why the layer's *cost* does not either, and it is not small:
+
+```
+conv_state = (2*key_head_dim*num_key_heads + value_head_dim*num_value_heads)
+             * (conv_kernel_dim - 1)
+ssm_state  = num_value_heads * value_head_dim * key_head_dim
+```
+
+The two do **not** share a dtype. The conv state follows
+`mamba_cache_dtype` (`auto` → the weight dtype) and the recurrent state
+follows `mamba_ssm_dtype` (`auto` → the *conv* dtype, not the weight dtype),
+which is vLLM's `MambaStateDtypeCalculator._mamba_state_dtype`. Qwen3.8-27B
+declares `mamba_ssm_dtype: float32`, so its recurrent state is 4 bytes per
+element against the conv state's 2 — and it is the large half, 786,432 elements
+per layer against 30,720. That comes to 3.21 MB per sequence per layer, and 48
+of its 64 layers are gated DeltaNet: **153.9 MB per concurrent sequence**. Its
+KV per token is 65,536 bytes, from the 16 full-attention layers only.
+
+So it bounds **concurrency** the way a KV cache bounds context.
+
+#### It is counted in pages, not in bytes
+
+vLLM raises the attention block size until one attention page covers one mamba
+page, then pads the mamba page up to it. The block size you pass is the
+**floor and the alignment unit**, not the answer:
+
+```
+alignment             = max(min(backend supported block sizes),
+                            cache_config.block_size)
+attn_block_size       = alignment * cdiv(mamba_page_size,
+                                         alignment * attn_page_size_1_token)
+mamba_page_size_padded = attn_page_size
+```
+
+so a layer's whole state occupies **exactly one page** and the padding is
+really allocated. On Qwen3.8-27B the mamba page is 3,207,168 bytes against an
+attention page of 3,211,264 at `block_size 784` — and that is where 784 comes
+from: `16 * cdiv(3,207,168, 16 * 4,096) = 784`, starting from vLLM's default
+`--block-size 16`. Start from 64 instead and the answer is 832, because the
+alignment is `max(backend minimum, your value)`. That is why the block size is
+read out of the profile bundle rather than recomputed — the bundle records the
+value the latencies were actually measured at, per TP degree
+(`engine_resolved.per_tp[tp]`). The older dense bundles predate the field and
+fall back to 16.
+
+How many pages per layer is `MambaSpec.max_memory_usage_bytes`, and it depends
+on the cache mode:
+
+| `mamba_cache_mode` | Pages per mamba layer | When |
+| --- | --- | --- |
+| `none` | `1 + N` | prefix caching **off** |
+| `align` | `2 + N` | prefix caching **on** — the default |
+| `all` | `cdiv(max_model_len, block_size)` | opt-in, not modelled |
+
+`align` holds two because one page carries the state being written this step
+and the other the last checkpoint committed at a block boundary — which is what
+a later prefix hit resumes from. `N` is `--num-speculative-tokens`, one extra
+page per draft token, and it also **widens the conv state itself**
+(`conv_kernel_size - 1 + N`).
+
+On Qwen3.8-27B at `block_size 784` that is 48 layers × 2 pages = 96 pages, or
+**6 pool blocks per request** with prefix caching on against 3 with it off.
+Charging one page per layer — the caching-off figure — understated the default
+configuration by exactly 2x.
+
+Those blocks live in a separate list from the token blocks, because the token
+list is positional — block `i` backs tokens `[i*block_size, (i+1)*block_size)`
+— and a state block backs no tokens, so nothing may hash or index it.
+
+Models whose layers all cache per token charge 0 here, which is every family
+except the gated-DeltaNet hybrids.
+
+### 4. The drafter's own KV cache
+
+With `--num-speculative-tokens` on, a model that drafts with itself runs MTP
+modules, and an MTP module wraps a **real decoder layer**
+(`DeepseekV2DecoderLayer`, `Glm4DecoderLayer`, `MiniMaxM3DecoderLayer`,
+`Qwen3_5DecoderLayer`), so it publishes a KV cache spec of its own and vLLM
+allocates for it:
+
+| Model | MTP modules | Extra bytes per token |
+| --- | --- | --- |
+| DeepSeek-V3.2-Exp | 1 | +1.6% |
+| MiniMax-M3 | 7 | +11.7% |
+| Qwen3.8-27B | 1 | +6.2% |
+
+Which block that decoder layer is comes from the catalog's
+`mtp.decoder_block`, not from the checkpoint, because each family's MTP module
+**forces** it in vLLM's own source: DeepSeek/GLM build at layer index
+`num_hidden_layers`, Qwen3.5 passes `layer_type="full_attention"` explicitly,
+MiniMax-M3 passes `force_sparse_attn=True, force_moe=True`. So a *hybrid's*
+drafter carries a KV cache but no recurrent state (Qwen's forced
+full-attention), while M3's carries the sparse indexer's side cache too. That
+forcing is also why Qwen3.8's 6.2% is larger than DeepSeek's 1.6% despite both
+having one module: only 16 of Qwen3.8's 64 layers cache per token, so one more
+full-attention layer is 1/16.
+
 Where `kv_fp` is:
 
-- 2 bytes for `bfloat16` / `float16` — what `--kv-cache-dtype auto`
-  inherits from `--dtype`; 4 for `float32`.
-- **1 byte for `--kv-cache-dtype fp8`**, which halves KV memory against
+- 2 bytes for `bfloat16` / `float16` — the checkpoint's weight dtype,
+  which the KV cache inherits unless the config says otherwise; 4 for
+  `float32`.
+- **1 byte when the checkpoint declares an fp8 KV cache**
+  (`quantization_config.kv_cache_scheme` or `kv_cache_quant_algo`),
+  which halves KV memory against
   a 16-bit weight dtype.
 
 How many blocks exist is fixed at startup, the way vLLM sizes its cache:
@@ -175,7 +317,7 @@ The scheduler takes `ceil(tokens / block_size)` blocks per active request
 from the pool's free list, and returns them when the request finishes or is
 preempted.
 
-### 3. NPU prefix cache
+### 5. NPU prefix cache
 
 Not a separate allocation. A block that becomes full is indexed under a
 **chained hash** of its tokens, and it keeps that index entry after its

@@ -15,8 +15,10 @@ Also here:
 
 from __future__ import annotations
 
+import shutil
 import csv
 import datetime
+import math
 import os
 import platform
 import subprocess
@@ -25,6 +27,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+from profiler.core.measurement import FIELDS as MEASUREMENT_FIELDS
 
 from profiler import __version__ as profiler_version
 from profiler.core import logger as log
@@ -56,7 +60,7 @@ class DedupSink:
     Duplicate detection key = every field except ``microseconds``.
     """
 
-    def __init__(self, out_path: Path, key_fields: list[str]) -> None:
+    def __init__(self, out_path: Path, key_fields: list[str], measurement=None) -> None:
         """
         Args:
             out_path: full CSV path, e.g. ``perf/.../tp1/dense.csv``.
@@ -66,6 +70,12 @@ class DedupSink:
         """
         self.out_path = out_path
         self.key_fields = key_fields
+        self.measurement = dict(measurement) if measurement is not None else None
+        if self.measurement is not None and (
+                set(self.measurement) != set(MEASUREMENT_FIELDS)
+                or any(not isinstance(v, str) or not v for v in self.measurement.values())):
+            raise ValueError('Incomplete measurement identity')
+        self._row_measurements = {}
         # key tuple -> (running_sum, count)
         self._bucket: dict[tuple, tuple[float, int]] = {}
         # Track fieldnames in the order we first see them so the CSV
@@ -88,7 +98,13 @@ class DedupSink:
             self._fieldnames = ordered
 
         key = tuple(d[f] for f in self.key_fields)
+        if self.measurement is None and self._row_measurements:
+            raise ValueError('New samples need an identity when extending a versioned table')
         us = float(d["microseconds"])
+        if self.measurement is not None and (not math.isfinite(us) or us <= 0):
+            raise ValueError('Versioned measurements require positive finite CUDA time')
+        if self.measurement is not None:
+            self._row_measurements[key] = self.measurement
         prev = self._bucket.get(key)
         if prev is None:
             self._bucket[key] = (us, 1)
@@ -117,17 +133,44 @@ class DedupSink:
             field_order = reader.fieldnames or []
             if not field_order:
                 return 0
+            if self.measurement is not None and any(k not in field_order for k in MEASUREMENT_FIELDS):
+                raise ValueError(
+                    f'{self.out_path} has no current measurement identity; '
+                    'use a separate output root or --force to remeasure')
+            # A prior file that predates one of this sink's key fields cannot
+            # be preloaded at all -- every row would fail the key build below --
+            # and adopting its column order would pin ``flush`` to a schema too
+            # narrow for the rows about to be written. That is not
+            # hypothetical: adding the ``ep`` key to moe.csv made flush raise
+            # ``dict contains fields not in fieldnames: 'ep'`` *after* the whole
+            # sweep had run, and the file had already been truncated.
+            missing = [k for k in self.key_fields if k not in field_order]
+            if missing:
+                log.info(
+                    "%s predates the %s column(s); its rows cannot be keyed, "
+                    "so the sweep starts clean rather than resuming",
+                    self.out_path.name, ", ".join(missing),
+                )
+                return 0
             # Establish ordering now so flush preserves the original
             # schema even when no new rows come in.
             if self._fieldnames is None:
-                ordered = [f for f in field_order if f != "time_us"]
-                ordered.append("microseconds")
+                ordered = ['microseconds' if f == 'time_us' else f for f in field_order]
                 self._fieldnames = ordered
             for row in reader:
+                recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
+                if self.measurement is not None and recorded != self.measurement:
+                    raise ValueError(
+                        f'{self.out_path} uses a different measurement method; '
+                        'use a separate output root or --force to remeasure')
                 try:
                     us = float(row["time_us"])
                 except (KeyError, ValueError):
+                    if self.measurement is not None:
+                        raise ValueError(f'Invalid measurement time in {self.out_path}')
                     continue
+                if self.measurement is not None and (not math.isfinite(us) or us <= 0):
+                    raise ValueError(f'Invalid measurement time in {self.out_path}')
                 key_parts: list[Any] = []
                 bad = False
                 for kf in self.key_fields:
@@ -149,6 +192,10 @@ class DedupSink:
                 key = tuple(key_parts)
                 # Single-sample bucket entry: preserve the exact value.
                 self._bucket[key] = (us, 1)
+                if any(recorded.values()):
+                    if not all(recorded.values()):
+                        raise ValueError(f'Incomplete measurement identity in {self.out_path}')
+                    self._row_measurements[key] = recorded
                 count += 1
         return count
 
@@ -170,15 +217,15 @@ class DedupSink:
     # Output
     # ------------------------------------------------------------------
 
-    def flush(self) -> None:
-        """Write the accumulated rows to ``out_path`` and clear state.
+    def flush(self, *, clear: bool = True) -> None:
+        """Atomically write accumulated rows, optionally retaining checkpoint state.
 
         CSV conventions:
           * Rows sorted lexicographically by key fields (deterministic
             diffs; shape-friendly for human skim).
           * ``microseconds`` column renamed to ``time_us`` on write.
-          * Floats emitted with 6 sig figs (``%.6g``) to keep files
-            readable while preserving resolution.
+          * Latencies emitted with 6 sig figs (``%.6g``); coordinate
+            floats retain their full precision for exact resume matching.
         """
         if not self._bucket:
             log.warning("nothing to write to %s", self.out_path)
@@ -193,6 +240,7 @@ class DedupSink:
             avg_us = total_us / count
             row = {f: v for f, v in zip(self.key_fields, key)}
             row["time_us"] = _format_time_us(avg_us)
+            row.update(self._row_measurements.get(key, {}))
             rows.append(row)
 
         assert self._fieldnames is not None
@@ -202,14 +250,27 @@ class DedupSink:
             "time_us" if f == "microseconds" else f
             for f in header
         ]
+        if self._row_measurements:
+            header.extend(k for k in MEASUREMENT_FIELDS if k not in header)
 
-        with self.out_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=header)
-            writer.writeheader()
-            writer.writerows(rows)
+        # Write beside the target and rename. Opening ``out_path`` directly
+        # truncates it before the first row is validated, so one bad row
+        # destroys a bundle that took hours -- which is exactly what happened
+        # when the moe key grew an ``ep`` field.
+        tmp = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
+        try:
+            with tmp.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=header)
+                writer.writeheader()
+                writer.writerows(rows)
+            tmp.replace(self.out_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
         log.debug("wrote %d rows → %s", len(rows), self.out_path)
-        self._bucket.clear()
+        if clear:
+            self._bucket.clear()
+            self._row_measurements.clear()
 
     # ------------------------------------------------------------------
     # Convenience: attach a human-friendly 'layer' prefix
@@ -231,11 +292,11 @@ def _format_time_us(v: float) -> str:
 # Sink factory per category
 # ---------------------------------------------------------------------------
 
-def sink_for(category: Category, out_dir: Path) -> DedupSink:
+def sink_for(category: Category, out_dir: Path, measurement=None) -> DedupSink:
     """Build a DedupSink pre-configured for a given category's schema."""
     csv_path = out_dir / category.sink_filename
     key_fields = _KEY_FIELDS_BY_CATEGORY[category.name]
-    return DedupSink(out_path=csv_path, key_fields=key_fields)
+    return DedupSink(out_path=csv_path, key_fields=key_fields, measurement=measurement)
 
 
 # The only place where category→key-field mapping is specified. Adding
@@ -243,20 +304,17 @@ def sink_for(category: Category, out_dir: Path) -> DedupSink:
 _KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
     "dense": ["layer", "tokens"],
     "per_sequence": ["layer", "sequences"],
-    "attention": ["prefill_chunk", "kv_prefill", "n_decode", "kv_decode"],
-    "moe": ["tokens", "activated_experts"],
+    "attention": ["layer", "prefill_chunk", "prefill_key", "n_decode",
+                  "kv_decode", "decode_q_len"],
+    "linear_attention": ["layer", "prefill_tokens", "n_decode"],
+    "moe": ["ep", "tokens", "activated_experts"],
+    "mtp": ["layer", "sequences"],
 }
 
 
 # ---------------------------------------------------------------------------
 # meta.yaml — per-variant session metadata
 # ---------------------------------------------------------------------------
-
-# CSV filename under tp{N}/ that holds the per-bucket alpha table.
-# The meta.yaml skew_fit.per_tp[tp] block points at this file instead
-# of inlining the (usually 1-2k) bucket rows as a YAML mapping.
-_SKEW_FIT_CSV_NAME = "skew_fit.csv"
-
 
 def _geometric_spec(values) -> Any:
     """Compact string for a geometric (doubling) sequence.
@@ -302,160 +360,15 @@ def _geometric_spec(values) -> Any:
     return core if prefix is None else f"{prefix}, {core}"
 
 
-def _skew_fit_block(variant_root: Path, tp_degrees: list[int]) -> dict:
-    """Fit alpha per TP from each tp{N}/skew.csv and return a meta
-    block. Empty / missing skew.csv → ``{"enabled": False}``.
-
-    The per-bucket alpha table (potentially 1k+ rows per TP) is written
-    to ``tp{N}/skew_fit.csv``; the returned dict keeps only a per-TP
-    summary (method, n_samples, alpha_default, self-eval errors, and a
-    pointer to the CSV).
-
-    ``bucket_axes`` — derived from the skew.csv data by
-    ``profiler.fit_alpha`` so the bins adapt to whatever axis coverage
-    the profile actually contains — is promoted to the block top level
-    when all TPs agree (the common case, since all TPs share the same
-    profile grid). If TPs disagree, each entry keeps its own axes; the
-    simulator handles both shapes.
-    """
-    from profiler.core.fit_alpha import fit_alpha_per_tp
-    fit = fit_alpha_per_tp(variant_root, tp_degrees)
-    if not fit.get("enabled"):
-        return fit
-
-    per_tp_in = fit.get("per_tp", {})
-    per_tp_out: dict[int, dict[str, Any]] = {}
-    axes_seen: list[Any] = []
-
-    for tp, entry in per_tp_in.items():
-        axes_seen.append(entry.get("bucket_axes"))
-        tp_dir = variant_root / f"tp{int(tp)}"
-        csv_path = tp_dir / _SKEW_FIT_CSV_NAME
-        _write_skew_fit_csv(csv_path, entry)
-        summary = {
-            "method": entry.get("method"),
-            "n_samples": entry.get("n_samples"),
-            "alpha_default": entry.get("alpha_default"),
-            "bucket_table": f"tp{int(tp)}/{_SKEW_FIT_CSV_NAME}",
-        }
-        for k in ("rel_err_p50", "rel_err_p90", "rel_err_p99", "signed_mean"):
-            if k in entry:
-                summary[k] = entry[k]
-        per_tp_out[int(tp)] = summary
-
-    out: dict[str, Any] = {"enabled": True}
-    if axes_seen and all(a == axes_seen[0] for a in axes_seen) and axes_seen[0]:
-        # All TPs derived the same axes — promote once to avoid
-        # duplicating the block in meta.yaml.
-        out["bucket_axes"] = axes_seen[0]
-    else:
-        # TPs disagree (e.g. one TP was profiled at a different sweep
-        # width); keep per-TP axes so the simulator resolves each one
-        # against its own entry.
-        for tp, axes in zip(per_tp_in.keys(), axes_seen):
-            if axes is not None:
-                per_tp_out[int(tp)]["bucket_axes"] = axes
-    out["per_tp"] = per_tp_out
-    return out
-
-
-def _write_skew_fit_csv(csv_path: Path, fit_entry: dict) -> None:
-    """Write one TP's per-bucket alpha table to CSV.
-
-    Bucket keys in the fit dict are pipe-delimited strings produced by
-    ``profiler.fit_alpha._bucket_key``. We split them back into their
-    components for analyst-friendly columns. The simulator reassembles
-    the key from these columns.
-    """
-    alphas = fit_entry.get("alpha_by_bucket") or {}
-    counts = fit_entry.get("n_by_bucket") or {}
-    if not alphas:
-        return
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    rows: list[dict[str, Any]] = []
-    for key, alpha in alphas.items():
-        parts = key.split("|")
-        if len(parts) != 5 or not parts[0].startswith("pc="):
-            # Don't silently drop malformed rows — keep the raw key.
-            rows.append({
-                "pc": "", "n_label": "", "skew_rate_label": "",
-                "kv_big_label": "", "kp_label": "",
-                "alpha": float(alpha),
-                "n_samples": int(counts.get(key, 0)),
-                "raw_key": key,
-            })
-            continue
-        pc_token, n_label, sr_label, kvb_label, kp_label = parts
-        try:
-            pc = int(pc_token.split("=", 1)[1])
-        except (IndexError, ValueError):
-            pc = pc_token
-        rows.append({
-            "pc": pc,
-            "n_label": n_label,
-            "skew_rate_label": sr_label,
-            "kv_big_label": kvb_label,
-            "kp_label": kp_label,
-            "alpha": float(alpha),
-            "n_samples": int(counts.get(key, 0)),
-        })
-
-    rows.sort(key=lambda r: (
-        r["pc"] if isinstance(r["pc"], int) else 1 << 30,
-        r["n_label"], r["skew_rate_label"],
-        r["kv_big_label"], r["kp_label"],
-    ))
-    fieldnames = [
-        "pc", "n_label", "skew_rate_label", "kv_big_label",
-        "kp_label", "alpha", "n_samples",
-    ]
-    # Preserve the optional raw_key column if any row needed it.
-    if any("raw_key" in r for r in rows):
-        fieldnames.append("raw_key")
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _skew_meta_block(args) -> dict:
-    """Record the skew grid configuration actually used.
-
-    Delegates to profiler.skew._build_grid for the dynamic axes and
-    emits each doubling axis as a compact ``"<start>-<end> x<factor>"``
-    spec string. Irregular axes (``ratio``) stay as literal lists.
-    Raw data is in tp<N>/skew.csv; this block tells the simulator
-    which grid density produced them.
-    """
-    if args.skip_skew:
-        return {"enabled": False}
-    # Import lazily to avoid a circular profiler import at module load.
-    from profiler.core.skew import _build_grid, _SKEW_REP
-
-    class _FakeLimits:
-        max_num_batched_tokens = args.max_num_batched_tokens or 2048
-        max_num_seqs = args.max_num_seqs or 256
-    grid = _build_grid(args, _FakeLimits())
-    return {
-        "enabled": True,
-        # Geometric factors actually used. 2.0 (doubling) is the
-        # default; higher values coarsen the sweep and speed it up.
-        "factors": {
-            "n": args.skew_n_factor,
-            "pc": args.skew_pc_factor,
-            "kp": args.skew_kp_factor,
-            "kvs": args.skew_kvs_factor,
-        },
-        "grid": {
-            "n": _geometric_spec(grid["n"]),
-            "ratio": list(grid["ratio"]),
-            "pc": _geometric_spec(grid["pc"]),
-            "kp": _geometric_spec(grid["kp"]),
-            "kvs": _geometric_spec(grid["kvs"]),
-            "skew_rep": _SKEW_REP,
-        },
-    }
+def _skew_meta_block(args, variant_root, prior=None):
+    """Record actual per-TP plans, never reconstruct engine bounds from defaults."""
+    result = dict(prior or {})
+    plans = {int(tp): value for tp, value in (result.get("per_tp") or {}).items()}
+    for path in sorted(Path(variant_root).glob("tp*/skew.meta.yaml")):
+        with path.open() as stream:
+            plans[int(path.parent.name[2:])] = yaml.safe_load(stream)
+    result.update(enabled=bool(plans) or bool(result.get("enabled")), per_tp=plans)
+    return result
 
 
 def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
@@ -476,37 +389,209 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
     )
     n_dec = _geometric_grid(
         effective_msq, _ATTN_N_DECODE_START,
+        factor=args.attention_n_factor,
     )
     kv = _geometric_grid(
         args.attention_max_kv, _ATTN_KV_START,
+        factor=args.attention_kv_factor,
+    )
+    key = _geometric_grid(
+        args.attention_max_kv + effective_mnbt // 2, _ATTN_KV_START,
         factor=args.attention_kv_factor,
     )
     return {
         "max_kv": args.attention_max_kv,
         "chunk_factor": args.attention_chunk_factor,
         "kv_factor": args.attention_kv_factor,
+        "n_factor": args.attention_n_factor,
+        # Which quantity the CSV's second prefill column holds. A bundle
+        # without this field predates the change and carries ``kv_prefill``,
+        # one sequence's context, which the simulator has to relabel before
+        # it can read the table -- see the axes note in the trace generator.
+        "axes": "prefill_tokens,prefill_key,n_decode,kv_decode",
         "chunks": _geometric_spec(chunks),
         "n_decode": _geometric_spec(n_dec),
         "kv": _geometric_spec(kv),
+        # The prefill key axis reaches further than the decode kv one: a
+        # decode's key length is its kv, but a prefill sequence's is its
+        # context plus half its own chunk.
+        "prefill_key": _geometric_spec(key),
+        # The fifth axis. Not derivable from the other four -- a q > 1 sweep
+        # yields no pure-prefill shot, so the row count alone cannot tell you
+        # which query lengths were fired -- and a bundle whose CSV holds five
+        # of them while the meta records none reads as a q=1 sweep.
+        "decode_q_lens": sorted({max(1, int(q))
+                                 for q in args.attention_decode_q_lens}),
     }
+
+
+# What carries a provenance stamp. ``skew`` is measured -- on its own sweep,
+# riding the attention engine -- so it needs one, but it is not a category:
+# it has no key-field schema and nothing looks it up by key, so putting it in
+# _KEY_FIELDS_BY_CATEGORY would make the rest of the writer treat skew.csv as
+# an ordinary keyed table. ``skew_fit`` is deliberately absent: it is derived
+# from skew.csv by the fit, and a slice refresh rewrites it without measuring
+# anything, so stamping it would claim a measurement that never happened.
+_STAMPED_ARTIFACTS: tuple[str, ...] = (*_KEY_FIELDS_BY_CATEGORY, "skew")
+
+
+def _tp_degrees_present(variant_root: Path, measured: list[int]) -> list[int]:
+    """Every TP degree the bundle holds, not just the one this run swept.
+
+    ``tp_degrees`` describes the bundle, and the writer replaces it wholesale,
+    so taking it from ``args`` alone means a ``--tp 1`` refresh records a
+    two-TP bundle as one-TP. That is what a MoE repair slice did to
+    Qwen3-30B-A3B. Nothing reads it -- the simulator scans tp* folders for
+    ``available_tps`` -- but it is the file's own claim about itself.
+    """
+    found: set[int] = {int(t) for t in measured}
+    for d in variant_root.glob("tp*"):
+        if not d.is_dir():
+            continue
+        try:
+            found.add(int(d.name[2:]))
+        except ValueError:
+            continue
+    return sorted(found)
+
+
+def _artifacts_present(variant_root: Path) -> set[str]:
+    """Which stamped artifacts this bundle actually holds, by CSV.
+
+    Seeding and pruning both need this. A bundle that never measured MoE must
+    not be labelled as having measured it -- Llama-3.1-8B carried
+    ``linear_attention``, ``moe`` and ``mtp`` entries for exactly that reason,
+    seeded from a loop over every known category rather than over the files
+    that exist.
+    """
+    present: set[str] = set()
+    for tp_dir in variant_root.glob("tp*"):
+        if not tp_dir.is_dir():
+            continue
+        present.update(name for name in _STAMPED_ARTIFACTS
+                       if (tp_dir / f"{name}.csv").exists())
+    return present
+
+
+def _category_provenance(
+    prior: dict[str, Any],
+    measured: tuple[str, ...],
+    version: str,
+    stamp: str,
+    present: set[str],
+) -> dict[str, Any] | None:
+    """``{artifact: {vllm_version, profiled_at}}``, accumulated across refreshes.
+
+    A bundle is not necessarily one measurement session: a slice refresh
+    rewrites one category and leaves the rest alone, and those rest may have
+    been measured under a different vLLM. Recording it per artifact is the only
+    way the file can say so.
+
+    ``present`` bounds the block to what the bundle holds, both when seeding an
+    older file and when carrying an existing block forward -- so a stale entry
+    for an artifact that was never measured is pruned on the next write rather
+    than inherited forever.
+    """
+    out: dict[str, Any] = {}
+    prior_block = prior.get("category_provenance")
+    if isinstance(prior_block, dict):
+        out.update({str(k): dict(v) for k, v in prior_block.items()
+                    if isinstance(v, dict) and str(k) in present})
+        # An artifact on disk that the block never named must not inherit the
+        # top-level stamp: that describes the most recent refresh, not the
+        # session that measured this one. Llama-3.1-8B holds 0.19 skew shots
+        # under a 0.28.0 header, so seeding from it would re-assert exactly
+        # the claim this block exists to prevent. Say unknown instead, which
+        # is both true and visible; the next sweep of that artifact replaces
+        # it with a real version.
+        for name in sorted(present - set(out)):
+            out[name] = {"vllm_version": "unknown", "profiled_at": "unknown"}
+    elif prior:
+        # First time: everything already in the file belongs to the run that
+        # wrote it, whose version and timestamp are the prior top-level ones.
+        seed = {"vllm_version": prior.get("vllm_version"),
+                "profiled_at": prior.get("profiled_at")}
+        if seed["vllm_version"]:
+            for name in sorted(present):
+                out[name] = dict(seed)
+    # ``measured`` is what the run set out to fire, which is not always what it
+    # fired: ``categories_for`` reports every category the catalog declares,
+    # and ``mtp`` is only built when --profile-mtp is passed. Measuring
+    # something leaves a file behind, so ``present`` is the check -- and with
+    # it the block is exactly the set of artifacts on disk, in every branch.
+    for name in measured:
+        if str(name) in present:
+            out[str(name)] = {"vllm_version": version, "profiled_at": stamp}
+    return out or None
 
 
 def persist_meta(
     args: ProfileArgs,
     arch_path: Path,
-    engine_kwargs_used: dict[str, Any],
+    engine_kwargs_used: dict[str, Any] | None,
     variant_root: Path,
+    limits: Any = None,
+    *,
+    records_engine: bool = True,
+    records_attention_grid: bool = True,
+    records_skew: bool = True,
+    measured_categories: tuple[str, ...] = (),
 ) -> None:
     """Write ``variant_root/meta.yaml`` describing the profile session.
 
-    Written once per variant. ``slice`` subcommand rewrites it in
-    place with the new timestamp.
+    Written once per variant; a ``slice`` refresh rewrites it in place. What a
+    refresh may rewrite is the point of the two flags, because the file
+    describes more than any one refresh measures:
+
+    ``records_engine`` -- ``engine_effective`` and ``engine_resolved`` describe
+    the **deepest main engine**, the one whose shapes the simulator will run
+    (``run_full`` picks it deliberately: "the deepest engine is the one whose
+    shapes describe the stack"). An MTP refresh boots a different engine
+    entirely -- one extra full-attention layer and a conv state widened by
+    ``num_speculative_tokens`` -- so its numbers describe a model nobody
+    simulates. Letting it write them put ``block_size: 800`` and half the KV
+    cache into Qwen3.8-27B's bundle where the main engine resolves 784 and
+    19,839,182, and the simulator reads that block size whenever
+    ``--block-size`` is omitted. A shrunk single-category engine is not
+    authoritative either, for the same reason.
+
+    ``records_skew`` -- same restraint for ``skew_profile``, which
+    ``_skew_meta_block`` merges from actual per-TP acquisition sidecars. A run
+    that swept no skew must retain earlier coverage and provenance rather
+    than replacing it with a grid inferred from defaults.
+
+    ``records_attention_grid`` -- only a run that swept attention knows which
+    axes were fired. A ``per_sequence`` refresh regenerating the block from its
+    own defaults would have reported DeepSeek-V3.2's five query lengths as one
+    and its 163,830 kv reach as 163,838.
+
+    ``measured_categories`` names what this run actually fired, which is what
+    ``category_provenance`` records. The top-level ``vllm_version`` and
+    ``profiled_at`` describe the *most recent* refresh and so cannot describe a
+    bundle a refresh only partly rewrote -- adding the EP axis to
+    Qwen3-30B-A3B's MoE stamped the whole file 0.28.0 while its dense,
+    attention and per_sequence rows stayed 0.19.0 measurements. Which matters:
+    vLLM 0.28 restructured MoE substantially, and the two versions agree to
+    within noise on decode-sized batches but differ by 16-26% at 2048 tokens.
+
+    The block is bounded by the artifacts the bundle actually holds
+    (``_artifacts_present``), in both directions. Seeding an older file by
+    looping over every known category instead put ``linear_attention``,
+    ``moe`` and ``mtp`` entries into Llama-3.1-8B's meta, dated to a session
+    that measured none of them, and once written they were carried forward on
+    every later refresh. And ``skew`` had no entry at all, in any bundle, so
+    the one artifact whose raw shots a slice refresh never re-measures was
+    also the one the file could not describe -- which is how Llama's bundle
+    came to hold 0.19 skew shots under a ``vllm_version: 0.28.0`` header.
+
+    Anything not recorded is carried over from the file, not dropped.
     """
+    prior = _prior_meta(variant_root)
     # ``engine_kwargs_used`` carries the BUMPED ``max_num_batched_tokens``
     # (see engine.fuse_engine_kwargs). Record the LOGICAL value in
     # meta.yaml so the simulator's runtime-vs-profiled bound comparison
     # and any human inspection see the user-intended cap.
-    engine_effective = dict(engine_kwargs_used)
+    engine_effective = dict(engine_kwargs_used or {})
     try:
         engine_effective["max_num_batched_tokens"] = (
             int(engine_effective["max_num_batched_tokens"])
@@ -538,21 +623,88 @@ def persist_meta(
         "architecture_sha256": architecture_hash(arch_path),
         "model": args.model,
         "variant": args.effective_variant,
-        "tp_degrees": args.tp_degrees,
-        "engine_effective": _stringify(engine_effective),
+        "tp_degrees": _tp_degrees_present(variant_root, args.tp_degrees),
+        # Per-category provenance. Seeded from the prior file's top-level
+        # version/timestamp for every category this run did not measure, so the
+        # first partial refresh of an older bundle labels its untouched
+        # categories correctly rather than inheriting the new run's version.
+        "category_provenance": _category_provenance(
+            prior, measured_categories, _vllm_version(), _utcnow_iso(),
+            _artifacts_present(variant_root)),
+        "engine_effective": (
+            _stringify(engine_effective) if records_engine
+            else prior.get("engine_effective") or _stringify(engine_effective)
+        ),
+        # What the engine actually SETTLED ON, which is not always what was
+        # asked for. vLLM derives the KV block size from the backend's
+        # ``get_supported_kernel_block_sizes`` and from hybrid page
+        # unification: MiniMax-M3's sparse backend accepts only 128, and a
+        # gated-DeltaNet stack enlarges the attention block until an attention
+        # page costs at least as many bytes as a mamba state page (784 on
+        # Qwen3.8-27B, against the 16 requested). The simulator reads this
+        # rather than reimplementing vLLM's backend selection, and a run whose
+        # --block-size disagrees is simulating a configuration vLLM cannot
+        # serve.
+        # Keyed by TP under ``per_tp``: on a hybrid stack the resolved block
+        # size is per-rank, so it is a per-TP fact, and a single value would be
+        # whichever TP happened to run last.
+        "engine_resolved": _engine_resolved_block(
+            variant_root, limits if records_engine else None),
         # Attention-grid shape knobs + compact spec of the values the
         # sweep actually visited. Simulator uses the knobs to recognise
         # which density produced the CSVs; humans get the axes too.
-        "attention_grid": _attention_grid_spec(args, eff_mnbt, eff_msq),
+        "attention_grid": (
+            _attention_grid_spec(args, eff_mnbt, eff_msq)
+            if records_attention_grid
+            else prior.get("attention_grid")
+            or _attention_grid_spec(args, eff_mnbt, eff_msq)
+        ),
         "measurement_iterations": args.measurement_iterations,
-        "skew_profile": _skew_meta_block(args),
-        "skew_fit": _skew_fit_block(variant_root, args.tp_degrees),
+        "skew_profile": (
+            _skew_meta_block(args, variant_root, prior.get("skew_profile"))
+            if records_skew
+            else prior.get("skew_profile") or None
+        ),
+        "skew_fit": _calibrated_skew_fit_block(variant_root, args),
+        "moe_components": prior.get("moe_components"),
     }
     variant_root.mkdir(parents=True, exist_ok=True)
     out = variant_root / "meta.yaml"
-    with out.open("w", encoding="utf-8") as f:
-        yaml.dump(meta, f, Dumper=_CompactDumper, sort_keys=False)
+    from profiler.core.skew_calibration import atomic_yaml
+    atomic_yaml(out, meta, Dumper=_CompactDumper)
     log.debug("wrote meta.yaml → %s", out)
+
+
+def persist_moe_component_meta(args, variant_root, tps):
+    """Record native-component ownership without restamping other categories."""
+    import hashlib
+    from .skew_calibration import atomic_yaml
+    prior = _prior_meta(variant_root)
+    for key, value in (("model", args.model), ("hardware", args.hardware),
+                       ("variant", args.effective_variant)):
+        if key in prior and prior[key] != value:
+            raise ValueError("Native MoE output identity differs from the existing bundle")
+        prior[key] = value
+    block = prior.setdefault("moe_components", {})
+    if block is None:
+        block = prior["moe_components"] = {}
+    block["schema"] = "moe-components-v1"
+    entries = block.setdefault("per_tp", {})
+    for tp in tps:
+        index = variant_root/f"tp{tp}"/"moe_components.json"
+        entries[tp] = dict(index=str(index.relative_to(variant_root)),
+                           sha256=hashlib.sha256(index.read_bytes()).hexdigest(),
+                           measured_at=_utcnow_iso(), vllm_version=_vllm_version())
+    atomic_yaml(variant_root/"meta.yaml", prior, Dumper=_CompactDumper)
+
+
+def _calibrated_skew_fit_block(variant_root, args):
+    from profiler.core.skew_calibration import fit_bundle
+    if not args.model_config:
+        raise ValueError("Skew calibration requires the resolved model configuration")
+    return fit_bundle(variant_root,
+        dict(hardware=args.hardware, model=args.model, variant=args.effective_variant),
+        args.model_config)
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +783,7 @@ def replicate_tp_stable(
             )
 
 
+
 def _replicate_layer_file(
     src: Path,
     dst: Path,
@@ -661,6 +814,16 @@ def _replicate_layer_file(
     else:
         merged = src_stable
 
+    protocols = {row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
+                 for row in merged}
+    if len(protocols) > 1:
+        raise ValueError(
+            f'TP-stable replication would mix timing methods in {dst}; '
+            'remeasure the destination category with the current profiler first')
+    if any(bool(row.get(MEASUREMENT_FIELDS[0])) != bool(row.get(MEASUREMENT_FIELDS[1]))
+           for row in merged):
+        raise ValueError('TP-stable replication encountered an incomplete measurement identity')
+
     # Re-sort for deterministic output.
     merged.sort(key=lambda r: tuple(
         int(r[k]) if k != "layer" else r[k]
@@ -688,10 +851,15 @@ def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
         return
     fieldnames = list(rows[0].keys())
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    try:
+        with temporary.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +897,68 @@ def _utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds"
     )
+
+
+def _prior_meta(variant_root: Path) -> dict[str, Any]:
+    """The meta.yaml already in this variant root, or ``{}``.
+
+    A refresh boots one engine and sweeps one category, so most of the file
+    describes work it did not do. Reading the prior file is how those parts
+    survive; see ``persist_meta``'s ``records_*`` flags for which.
+    """
+    existing = variant_root / "meta.yaml"
+    if not existing.is_file():
+        return {}
+    try:
+        with existing.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _engine_resolved_block(
+    variant_root: Path,
+    limits_by_tp: Any,
+) -> dict[str, Any] | None:
+    """``{"per_tp": {tp: {block_size, max_model_len, num_cache_tokens}}}``.
+
+    What the engine actually **settled on**, which is not always what was asked
+    for: vLLM derives the KV block size from the backend's
+    ``get_supported_kernel_block_sizes`` and from hybrid page unification --
+    MiniMax-M3's sparse backend accepts only 128, and a gated-DeltaNet stack
+    raises the attention block until an attention page costs at least as many
+    bytes as a mamba state page (784 on Qwen3.8-27B, against the 16
+    requested). The simulator reads this rather than reimplementing vLLM's
+    backend selection, and a run whose ``--block-size`` disagrees is
+    simulating a configuration vLLM cannot serve.
+
+    Keyed by TP because the mamba and attention pages both scale with the
+    rank's shard, so the resolved size is a per-rank fact. Entries already in
+    the file are **kept**: a ``slice`` refresh boots one TP and must not erase
+    what the other TPs resolved.
+    """
+    prior = _prior_meta(variant_root)
+    prior_block = prior.get("engine_resolved")
+    if not limits_by_tp:
+        # Nothing new to say. Returning None here erased the block instead of
+        # leaving it alone, which is how an MTP-only refresh could delete what
+        # the main engine resolved.
+        return prior_block or None
+
+    merged: dict[str, Any] = {}
+    prior_per_tp = ((prior_block or {}).get("per_tp") or {})
+    if isinstance(prior_per_tp, dict):
+        merged.update({str(k): v for k, v in prior_per_tp.items()})
+
+    for tp, limits in limits_by_tp.items():
+        if limits is None:
+            continue
+        merged[str(tp)] = _stringify({
+            "block_size": getattr(limits, "block_size", None),
+            "max_model_len": getattr(limits, "max_model_len", None),
+            "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
+        })
+    return {"per_tp": dict(sorted(merged.items(), key=lambda kv: int(kv[0])))} if merged else None
 
 
 def _stringify(obj: Any) -> Any:

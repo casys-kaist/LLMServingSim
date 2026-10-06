@@ -1,12 +1,9 @@
-# llm_profile v0 (Pytorch profiler)
+# profiler/v0
 
-A PyTorch-based profiling tool for measuring LLM layer latencies, attention latencies, and
-GPU/system-level power consumption. The outputs are used by LLMServingSim as performance and
-power models.
-
-To profile a new model or hardware target for use with LLMServingSim, follow the steps below.
-See also the [Adding a New Model & Hardware](../README.md#adding-a-new-model--hardware) section
-in the top-level README.
+**Archived implementation, retained for reference.** This directory is not the
+vLLM 0.28 profiling path and its CSV/predictor formats are not current simulator
+inputs. Use the [current profiler](../README.md) for new acquisitions. The
+commands below describe the legacy workflow, not a supported current setup.
 
 ## Overview
 
@@ -14,13 +11,14 @@ in the top-level README.
 layers to measure execution time on GPU. It supports dense and MoE architectures and
 produces per-layer latency CSVs and a scikit-learn-based attention latency predictor.
 GPU and system-level power consumption are measured via `nvidia-smi` and `ipmitool`,
-and the results feed into LLMServingSim's power model.
+and were inputs to the legacy simulator's power model.
 
 ## Usage
 
 ### 1. Environment
 
-Run inside the provided Docker container or a native PyTorch + CUDA environment:
+Run these legacy commands from `profiler/v0/`, using its own Docker setup or
+a compatible historical PyTorch + CUDA environment:
 
 ```bash
 ./docker.sh
@@ -58,24 +56,27 @@ power settings is provided (e.g., `cluster_config/single_node_power_instance.jso
 ./build_predictor.sh
 ```
 
-This trains a scikit-learn model on the profiled attention data to support real-time latency
-prediction during simulation (`--enable-attn-prediction`). The inference space covered by
+This trains the legacy scikit-learn attention predictor. The historical
+`--enable-attn-prediction` simulator flag is not part of the current CLI.
+The inference space covered by
 the predictor can be controlled via `--max-batch` and `--max-len`.
 
-## Output structure
+## Output schema
 
 Results are written to:
 
-```
+```text
 perf_models/{hardware}/{model}/tp{tp_size}/
-  layers.csv                              # Per-layer compute latency
-  attention.csv                           # Attention latency by (batch_size, seq_len)
-  predictions/
-    attn_decode_predictions.csv           # Predictor output for decode attention
-    attn_prefill_predictions.csv          # Predictor output for prefill attention
+├── layers.csv                          per-layer compute latency
+├── attention.csv                       latency by batch_size and seq_len
+└── predictions/
+    ├── attn_decode_predictions.csv     legacy decode predictor output
+    └── attn_prefill_predictions.csv    legacy prefill predictor output
 ```
 
-These files are loaded automatically by LLMServingSim at runtime.
+These are legacy outputs. The current simulator expects the per-category
+bundle documented in the [current output guide](../../docs/docs/profiler/output-bundle.md),
+not this layout or predictor.
 
 ## Supported models
 

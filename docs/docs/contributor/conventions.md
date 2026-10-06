@@ -46,8 +46,16 @@ arbitrary; each has bitten the project at least once.
                       default=True)
   ```
 - **Match vLLM naming where applicable**
-  (`--max-num-batched-tokens`, `--block-size`, `--kv-cache-dtype`).
-  Users coming from vLLM should not have to relearn.
+  (`--max-num-batched-tokens`, `--block-size`,
+  `--num-speculative-tokens`). Users coming from vLLM should not have
+  to relearn.
+- **Don't add a flag for something the checkpoint already states.**
+  vLLM has `--dtype` and `--kv-cache-dtype`; this simulator does not,
+  because a modern checkpoint carries five cache dtypes decided in four
+  places and overriding one describes a model nobody can serve. The
+  same reasoning removed `--block-size`'s hardcoded default: vLLM treats
+  a block size as a floor and raises it, so the profile bundle records
+  what the engine settled on and the simulator reads that back.
 
 ## File and config naming
 
@@ -58,6 +66,20 @@ arbitrary; each has bitten the project at least once.
   across unrelated examples; copy it.
 - **Don't commit machine-specific paths.** All paths in code and
   configs must be relative to the repo root.
+
+## README and Markdown formatting
+
+- Use `## Layout` for source-directory trees and `## Output schema` for generated
+  bundles. Label selected inventories instead of implying that they list every file.
+- Use `text` code fences and `├──`, `└──`, `│` tree connectors with four-column
+  nesting. Put longer explanations outside the diagram; Markdown emphasis and
+  links do not render inside code blocks.
+- Tag code blocks with their language, use sentence-case section headings, and
+  leave blank lines after headings and before lists or code blocks.
+- Keep the root README brief. Latest News links shipped changes to their PR;
+  in-progress roadmap items do not imply that support or validation is complete.
+- Preserve archived workflows as historical documentation. Do not reformat
+  third-party or submodule READMEs just to match the parent repository.
 
 ## Things to never do
 
@@ -122,9 +144,11 @@ These two trip up new contributors most often:
 - **Profiler CSVs store microseconds (`time_us` column).** The
   simulator multiplies by 1000 and rounds to nanoseconds at load
   time. Don't divide twice.
-- **Communication sizes for ASTRA-Sim are *total* (not per-NPU)
-  bytes.** ASTRA-Sim divides by ring size internally. If you pass
-  per-NPU sizes, every collective will be N times too small.
+- **Communication sizes describe the collective's full logical tensor, not
+  a Ring chunk.** AllReduce uses the input bytes on one rank, AllGather the
+  gathered output bytes, and ReduceScatter the full input bytes. Ring derives
+  its per-rank chunks internally; do not divide twice or sum replicated
+  AllReduce inputs. See [parallelism mechanics](/docs/simulator/parallelism-mechanics).
 
 ## Scheduler invariants
 
@@ -186,9 +210,10 @@ If you touch `trace_generator.py` or `graph_generator.py`:
 - **Don't "restore" log-space interpolation** in `_axis_bracket`
   because the profiler's sweep grid is geometric. Grid spacing decides
   where the kernel is sampled; the blend decides how two samples
-  combine; the kernel is linear in each axis. Log blending biased
-  estimates 11.6-14.4% high against 2.3-3.7% for linear, measured
-  leave-one-out across every bundle in `profiler/perf/`.
+  combine. The current lookup blends the geometry axes linearly; geometric
+  spacing alone does not justify log blending or prove a kernel globally
+  linear. Validate an interpolation change on fixed measured data and all
+  official benchmark statistics.
 
 ## Commit and PR style
 

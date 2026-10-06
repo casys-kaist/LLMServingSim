@@ -32,6 +32,24 @@ git checkout -b add-deepseek-v3
   support`, `Document MoE expert routing`.
 - **One logical change per commit.** A refactor and a feature in
   the same commit is a reviewer's nightmare.
+- **Commit adopted changes only.** Record verified bug fixes separately.
+  Do not commit intermediate work: development notes, intermediate measurements
+  or generated results, experimental code, or temporary diagnostic and
+  fix-verification scripts and tests. Validation is still required; its
+  temporary tools and outputs stay local. Exclusion does not authorize deletion.
+- **Every commit includes documentation updates**, even a docs-only commit:
+  the root README.md and affected directory READMEs, AGENTS.md, CHANGELOG.md,
+  and relevant public pages under docs/. Review repository READMEs, including
+  per-directory files, for affected or stale descriptions. Keep README changes
+  concise and regenerate the site's changelog from CHANGELOG.md.
+- **Document supported behavior, not development sessions.** Keep investigation
+  diaries, intermediate experiment notes and session checkpoints out of tracked
+  documentation, including contributor pages. Describe final supported behavior,
+  usage, verified changes and known limitations.
+- **Inspect the staged diff before every commit.** Check both the excluded
+  material and the required documentation surfaces. Never stage an entire
+  dirty worktree without reviewing its contents.
+- **No AI-tool references or AI attribution trailers in commit messages.**
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.
@@ -70,11 +88,47 @@ Run through the checklist:
 4. **Conventions checklist**: `getattr` fallbacks, `head_dim`
    handling, English-only, layer names, no `astra-sim/inputs/`
    edits. See **[Coding conventions](./conventions)**.
-5. **Docs updated** if behavior changed. The relevant page under
-   `docs/`, plus the module's `README.md` if applicable.
-6. **No machine-specific paths or generated files** in the diff.
-   Sanity-check with `git diff --stat` and
-   `git diff --check`.
+5. **Documentation accompanies every commit.** Check the root and affected
+   directory READMEs, AGENTS.md, CHANGELOG.md, the generated changelog page,
+   and relevant public docs against the commit-hygiene policy above.
+6. **No machine-specific paths or intermediate artifacts** in the staged diff,
+   including temporary verification scripts and tests. The generated site
+   changelog is an intentional tracked document, not an experiment output.
+   Sanity-check with `git diff --cached --stat` and
+   `git diff --cached --check`.
+
+## Publishing submodule changes
+
+The frontend, ASTRA-Sim and Chakra are separate Git repositories. A parent
+commit records a submodule commit ID; pushing the parent does not publish that
+commit to the submodule's remote.
+
+1. Check each repository's configured remote, branch and unpublished diff.
+   Keep temporary verification files and private run records out of every
+   commit being published, not only the final working tree.
+2. Publish required Chakra commits to the configured fork first, then publish
+   ASTRA-Sim with its recorded Chakra pointer. Verify both commits are reachable
+   from their intended remote branches.
+3. Publish the frontend branch with `git push --recurse-submodules=check`.
+   This refuses a parent push when referenced submodule commits are not available
+   on a remote. Do not use `--all` or `--mirror` to include local backup refs.
+
+Use normal fast-forward pushes; if a remote branch has advanced independently,
+reconcile it before publishing rather than force-pushing over other work.
+Only submodules with new required commits need a push.
+
+Consumers updating an existing clone should run:
+
+```bash
+git pull --ff-only
+git submodule sync --recursive
+git submodule update --init --recursive
+./scripts/compile.sh
+```
+
+Run the build inside the documented simulator environment. It rebuilds ASTRA-Sim
+and installs the pinned Chakra converter; source edits alone do not update an
+already-installed converter or backend binary.
 
 ## Opening the PR
 
@@ -136,9 +190,10 @@ rerun and gives the git log a record of what was checked.
 ## Squash, rebase, or merge?
 
 The project squashes most PRs to a single commit on `main`, with
-the PR title becoming the commit message. You don't need to clean
-up your branch's intermediate commits beforehand. If your PR is
-genuinely best as multiple commits (e.g., a refactor + a feature
+the PR title becoming the commit message. Every constituent commit
+must still follow the policy above: squashing does not excuse intermediate
+artifacts or missing documentation. If your PR is genuinely best as
+multiple commits (e.g., a refactor + a feature
 that depends on it), say so in the description and a maintainer
 will rebase rather than squash.
 

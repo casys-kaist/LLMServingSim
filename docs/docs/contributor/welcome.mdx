@@ -23,9 +23,8 @@ It's an open-source project from
 **[Prof. Jongse Park](https://jongse-park.github.io/)'s research
 group** at **[KAIST CASYS Lab](https://casys.kaist.ac.kr/)**,
 peer-reviewed at three venues over the last two years, and validated
-end-to-end against real vLLM: on all four bundled configurations, TPOT
-means land within 1.7% and end-to-end latency means within 2.2%; the
-RTX 4090 run is inside 1% on every metric. See
+end-to-end against real vLLM on fixed Llama and Qwen references. Accuracy
+depends on the measured bundle, execution settings and workload; see
 **[Validation](/docs/validation)**.
 
 **We're actively looking for contributors.** Not "PRs welcome"
@@ -44,8 +43,8 @@ If anything below resonates, we want to work with you.
   },
   {
     Icon: Sparkles,
-    title: 'Production-validated',
-    description: 'Sub-3% end-to-end error against real vLLM on Llama-3.1-8B, Qwen3-32B dense, and Qwen3-30B-A3B MoE. Numbers you predict are numbers production actually delivers.',
+    title: 'Reproducible validation',
+    description: 'Sub-3% error on the bundled Llama-3.1-8B, Qwen3-32B dense, and Qwen3-30B-A3B MoE references. Help test other workloads, deployments and freshly acquired profiles.',
   },
   {
     Icon: Users,
@@ -73,7 +72,7 @@ docs, examples, and ideas. Here's what's most needed right now.
   {
     Icon: BookOpen,
     title: 'New model architectures',
-    description: 'DeepSeek V3 (MLA), Gemma, GPT-OSS, sliding-window attention, future Qwen / Llama variants. Most are a small YAML; some need lightweight simulator extensions. Highly visible work, researchers cite the model coverage.',
+    description: 'Extend catalog coverage and validate architecture-specific behavior. Existing dense, MoE, MLA, sparse and hybrid paths are starting points; a new execution or cache contract can require simulator changes, not just YAML.',
   },
   {
     Icon: BarChart3,
@@ -83,7 +82,7 @@ docs, examples, and ideas. Here's what's most needed right now.
   {
     Icon: Wrench,
     title: 'Simulator features',
-    description: 'KV-compression, speculative decoding, advanced batching policies, network-backend improvements (ns3 path is WIP), better PIM models. If you have a research idea, this is where it lives.',
+    description: 'KV-compression, broader speculative-decoding validation, advanced batching policies, network-backend improvements (ns3 path is WIP), better PIM models. If you have a research idea, this is where it lives.',
   },
   {
     Icon: FileText,
@@ -103,8 +102,8 @@ docs, examples, and ideas. Here's what's most needed right now.
   codebase we run experiments on, no internal fork, no "cleaned-up
   version later".
 - **You get credited.** External contributors are listed in the
-  README next to what they shipped (`@waneon`, `@HyunsuYEE`,
-  `@junwha`, `@gleb-kun`, …). Your line lands there too.
+  [contributors file](https://github.com/casys-kaist/LLMServingSim/blob/main/CONTRIBUTORS.md)
+  next to what they shipped.
 - **A human reviews your PR.** Real feedback, within a few days. No
   bot triage, no "thanks for your interest" boilerplate.
 

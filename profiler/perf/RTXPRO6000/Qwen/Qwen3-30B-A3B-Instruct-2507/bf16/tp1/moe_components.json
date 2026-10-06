@@ -1,0 +1,29 @@
+{
+  "schema": "moe-components-v1",
+  "entries": [
+    {
+      "target": {
+        "tp": 1,
+        "dp": 2,
+        "ep": 2,
+        "rank": 0,
+        "sequence_parallel": false
+      },
+      "path": "moe_components/1bab816900f45218fbe1a37b885878164202f9e55f26772cc7390736e0b9b535",
+      "contract_id": "1bab816900f45218fbe1a37b885878164202f9e55f26772cc7390736e0b9b535",
+      "table_sha256": "a40b266d7f17bb72928b576ed21eae59a489e15ad9f9ed0218f3f856862fe9e8"
+    },
+    {
+      "target": {
+        "tp": 1,
+        "dp": 2,
+        "ep": 2,
+        "rank": 1,
+        "sequence_parallel": false
+      },
+      "path": "moe_components/8c5990df9b5697e03237fae452cc26441df863496388bcb4eac95f3cd05b8315",
+      "contract_id": "8c5990df9b5697e03237fae452cc26441df863496388bcb4eac95f3cd05b8315",
+      "table_sha256": "cf50541225abd750034c7fd7e17f4857a3f79a0ca4c9f9ffd25973f21e2e2b6f"
+    }
+  ]
+}

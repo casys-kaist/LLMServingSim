@@ -7,14 +7,15 @@ title: Adding new hardware
 
 This page is the workflow for bringing up a brand-new hardware target
 that doesn't have a profile bundle in `profiler/perf/<HARDWARE>/`
-yet. There are two distinct paths depending on whether vLLM supports
-the hardware:
+yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.28 internals.
+vLLM support alone does not establish that the profiler's CUDA attribution,
+cache preparation and hardware probes support another accelerator:
 
 ```mermaid
 flowchart TD
-    START([New hardware target]) --> Q{vLLM supports it?}
-    Q -->|Yes, NVIDIA / AMD GPU| GPU[Use profile.sh as-is<br/>set HARDWARE label,<br/>run.]
-    Q -->|No, TPU / custom NPU| SYNTH[Synthesize CSV bundle<br/>from your own measurement source]
+    START([New hardware target]) --> Q{Supported CUDA acquisition path?}
+    Q -->|Yes| GPU[Check backend and coverage<br/>set HARDWARE label,<br/>profile.]
+    Q -->|No| SYNTH[Port acquisition or synthesize a bundle<br/>from your own measurement source]
     GPU --> CONSUME[Simulator reads CSVs]
     SYNTH --> CONSUME
 ```
@@ -25,20 +26,132 @@ way regardless of how the data was collected.
 
 ## Adding a new GPU
 
-This is the easy case. The profiler's vLLM-based workflow already
-handles it. Three steps:
+For a compatible NVIDIA target, start with the workflow below. Check live
+kernel coverage and backend support before committing to a full sweep.
+
+### 0. Measure the machine
+
+```bash
+python -m profiler hardware --hardware <LABEL> --npus 2
+```
+
+The command defaults to INFO logging; no verbosity flag is required.
+Use `--log-level DEBUG`, `INFO`, `WARNING` or `ERROR` to override it.
+Invalid levels are rejected before probing the GPU.
+
+Writes `profiler/perf/<LABEL>/hardware.yaml`: the card's spec, queried from the
+device, and NCCL AllReduce, AllGather and ReduceScatter sweeps used to fit
+shared `link_bw` / `link_latency` parameters for the analytical backend,
+plus per-operation bandwidths at the shared fitted latency.
+Cluster configs on this hardware then inherit those instead of carrying a
+guess, and every inherited value is logged with its provenance
+(`measured` / `spec` / `assumed`).
+
+Do this first — it characterises the machine, not a model, and the same file
+serves every model bundle in the folder. Re-measure after interconnect or
+communication-software changes.
+
+**It needs two of the cards.** With one, the spec section is still written,
+`interconnect` is `null` with the reason, and the command exits non-zero; a
+cluster config then has to set `link_bw` and `link_latency` explicitly. That is
+the honest outcome: a link has two ends, and the simulator will not substitute
+a number nobody measured.
+
+#### Calibration contract
+
+The fit models a **single-chunk Ring in one local dimension on a one-hop
+FullyConnected topology**. It uses the actual measured rank count `N`.
+The raw `samples[].bytes` field, denoted `S` below, has these meanings:
+
+| Collective | `S` means | Ring message bytes `C` | Network phases `P` | Reduction steps `R` |
+| --- | --- | --- | --- | --- |
+| AllReduce | Full input per rank | `floor(S/N)` | `2(N-1)` | `N-1` |
+| AllGather | Local input per rank | `S` | `N-1` | `0` |
+| ReduceScatter | Local output per rank; input is `N*S` | `S` | `N-1` | `N-1` |
+
+The prediction, in nanoseconds, follows `Ring.cc`, `PacketBundle.cc`,
+`MemBus.cc` and the analytical network backend:
+
+```text
+time_ns = P * floor(L + C * 1e9 / (B * 2^30))
+        + 3 * R * floor(C / M)
+        + (P + 1) * E
+```
+
+`B` is network bandwidth in **GiB/s**; `L` is link latency in ns.
+`M` is local-memory bandwidth in decimal **GB/s**, using the integer spec
+value that `config_builder.py` supplies to ASTRA. `E` is the local endpoint
+event cost defined by the backend's `MemBus::Transmition::Fast` path.
+The local reduction and endpoint terms are accounted for separately, not
+mistaken for network transmission. At two ranks, AllReduce pays two network
+phases but AllGather and ReduceScatter pay only one.
+
+The fitter minimises relative squared error over the primitive sweep, with
+nonnegative latency and inverse bandwidth. It uses the continuous network
+term to solve the two-variable fit; saved residuals use the serialized
+parameters and the backend's integer-nanosecond truncation. No model benchmark
+or model-specific correction coefficient participates.
+
+The hardware file retains raw graphed and isolated timings, the timing source,
+fit version and assumptions, and per-size/per-collective residuals. The legacy
+key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
+unit explicit. Inherited defaults also record their units.
+
+A retained-data bandwidth refresh can instead hold an independently calibrated
+latency fixed. The bundled post-configuration-change RTXPRO6000 calibration uses
+that contract: the existing 6,600 ns common latency is retained, and common and
+per-operation bandwidths are recomputed from NCCL primitives. Its file records
+`fixed_latency_ns`, the source of that constraint, repetitions and residuals.
+This is not the same optimization as a fresh `profiler hardware` run, which
+estimates both common parameters. Do not silently relabel one as the other.
+
+Historical examples can pin their original transport values with explicit
+`link_bw`, `link_latency` and `collective_links: {}`. Their compute profiles and
+benchmark truths then remain comparable when shared hardware defaults change.
+
+The same primitive samples also feed `collective_fits`: one bandwidth fit
+per operation, with latency fixed to the saved shared fit. This solves the
+remaining one-variable problem in inverse bandwidth using the same relative
+objective and local costs. Per-operation residuals remain visible; a fit that
+cannot identify positive finite bandwidth records `unavailable` rather than
+publishing a value. The shared fit is retained as the fallback.
+
+Usable operation fits populate `defaults.collective_links.<operation>.link_bw`.
+The bundled RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples consume
+these values directly, with recorded NCCL references for that interconnect.
+They are inherited when the entire link is inherited, not when a user specifies
+a hypothetical common link. An explicit `collective_links` map can override
+bandwidth and latency or disable the operation defaults. See the
+[configuration precedence](../reference/cluster-config#collective-specific-links).
+Updating code alone does not add these values to existing hardware files.
+
+:::caution[Calibration is not an exact NCCL model]
+
+A shared BW/latency pair need not match all three NCCL curves. Inspect the
+residuals rather than assuming a successful fit proves accuracy. Different
+rank counts, topologies, dataset splitting or local-memory overrides change
+the model contract. Grouped multi-tensor MoE dispatch, uneven rank sizes and
+their broadcast/reduce implementations are **not measured by this primitive
+sweep**; summing bytes does not reproduce their execution costs.
+
+Updating profiler code does not migrate existing `hardware.yaml` values.
+Old fit residuals do not certify the corrected backend contract. Refit retained
+raw samples with their original rank count and hardware spec, or re-measure,
+then validate before adopting new defaults.
+
+:::
 
 ### 1. Confirm vLLM support
 
-The profiler runs vLLM `0.19.0` by default
-(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.19.0`). Check
+The profiler runs vLLM `0.28.0` by default
+(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Check
 that vLLM's release notes mention your GPU.
 
-| GPU family | vLLM 0.19.0 support |
+| GPU family | Image/backend notes |
 | --- | --- |
 | NVIDIA A100, H100, H200 | Yes |
 | NVIDIA RTX PRO 6000, RTX 6000 Ada, L40S | Yes |
-| NVIDIA Blackwell (B100, B200) | Yes (with CUDA 13.x image: `v0.19.0-cu130`) |
+| NVIDIA Blackwell (B100, B200) | Yes (with the CUDA 12.9 image: `v0.28.0-cu129`) |
 | NVIDIA Hopper SXM | Yes |
 | AMD MI300X | Yes (ROCm path; needs `vllm/vllm-rocm`) |
 | AMD MI200 / older | Limited; check vLLM matrix |
@@ -172,12 +285,12 @@ engine_effective:
   max_num_seqs: <ditto>
 
 skew_fit:
-  enabled: true                 # REQUIRED, see below
-  per_tp:
-    1:
-      method: "synthetic-constant"
-      alpha_default: 0.3
+  enabled: false                # no measured heterogeneous correction
 ```
+
+Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration-v1` entries or their hashes:
+generate them from measured skew data and matching attention references with
+`profiler refit-skew`. See [Skew & alpha fit](./skew-alpha-fit).
 
 `hardware` is the folder name a cluster config's `hardware` field must
 match; `gpu` is free-form provenance. They are separate fields — don't
@@ -192,19 +305,12 @@ sweep-bound warning.
 **not read at run time**, so you can omit them from a synthetic bundle
 or fill them in however you like.
 
-:::danger[`alpha_default` does nothing without `enabled: true`]
-`_skew_alpha` returns the module fallback — which is **0**, i.e. no
-skew correction at all — unless `skew_fit.enabled` is truthy. So a
-bundle carrying `alpha_default: 0.3` but no `enabled` flag silently
-applies `alpha = 0`, not `0.3`. It also needs a `per_tp[<tp>]` entry
-for the TP being simulated; without one it falls back to a top-level
-`skew_fit.alpha_default` and then to 0.
-
-If you genuinely have no skew data, the honest choice is to leave
-`skew_fit` out entirely and accept `alpha = 0` (`t_mean`). A borrowed
-constant is not a safe default: the endpoint gap `(t_max - t_mean)` is
-a large fraction of an iteration, so alpha has to be known to about
-±0.02 to be worth applying at all.
+:::warning[Enable only measured, compiled calibration]
+An absent or disabled `skew_fit` applies zero correction. Enabled entries
+must use the versioned compiler output; the old constant-alpha and bucket
+formats are rejected. `profiler refit-skew` compiles your own raw measurements
+against matching attention references. A missing TP or query slice does not
+borrow another slice's correction.
 :::
 
 Omit `skew.csv` and `skew_fit.csv` when you have no

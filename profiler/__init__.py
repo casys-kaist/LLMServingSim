@@ -6,13 +6,14 @@ subfolders per TP degree) is consumed directly by LLMServingSim's
 trace_generator at simulation time.
 
 Module map:
-    __main__.py                 CLI dispatch (profile / slice)
+    __main__.py                 CLI dispatch (profile / slice / coverage)
     core/                       profiler internals
         runner.py               full-run orchestration
         config.py               Architecture loader + ProfileArgs + engine defaults
         engine.py               vLLM engine lifecycle
         categories.py           profile categories (dense / per_seq / attn / moe)
-        skew.py / fit_alpha.py  heterogeneous-decode skew sweep + fit
+        skew.py / skew_plan.py  dynamic heterogeneous acquisition
+        skew_calibration.py    offline supported-N fit and lookup
         writer.py               CSV output + meta.yaml
         logger.py               rich-based logging & progress UI
         hooks/                  vLLM-internal-API touchpoints

@@ -1,0 +1,273 @@
+# DeepSeek-V3.2 / GLM-5 — class catalog (MLA + DeepSeek Sparse Attention, MoE).
+#
+# One catalog for both, because vLLM runs them through the same module:
+# ``registry.py`` maps ``DeepseekV32ForCausalLM`` *and*
+# ``GlmMoeDsaForCausalLM`` (along with V2, V3 and the original Deepseek) to
+# ``deepseek_v2.py``, so the class names below are shared. The configs agree
+# structurally too — MLA with ``kv_lora_rank 512``, a sparse indexer at
+# ``index_topk 2048``, 256 routed experts plus one shared, and
+# ``first_k_dense_replace 3`` — differing only in head dimensions and in
+# whether expert routing is group-limited.
+#
+# Uniform attention stack (every layer is full attention over the latent KV),
+# heterogeneous MLP: layers 0..2 run a dense MLP and the rest run MoE. That
+# makes the minimum profiling depth 4, which the profiler resolves from the
+# config itself.
+#
+# ---------------------------------------------------------------------------
+# Read off a live profile dump, not off vLLM's source. What that caught here:
+#
+#  * The **shared expert is a ``DeepseekV2MLP``** — the same class as a dense
+#    layer's own ``mlp``. ``within: DeepseekV2MLP`` matches both, and the
+#    deepest-``within`` rule cannot separate them because that class is the
+#    immediate parent either way. Their widths differ by 9x (intermediate_size
+#    18432 against the shared expert's 2048), so the merged mean describes
+#    neither. Hence ``not_within: DeepseekV2MoE`` on the dense-MLP entries;
+#    the shared expert's cost is already inside ``moe``, which binds the whole
+#    block.
+#  * ``q_a_layernorm`` and ``kv_a_layernorm`` are both ``RMSNorm`` inside
+#    ``DeepseekV2MLAAttention``, and ``q_b_proj`` / ``kv_b_proj`` are both
+#    ``ColumnParallelLinear`` there. Each pair is reported as one merged node,
+#    so each is one canonical entry whose value is the pair's **sum** — the
+#    same situation as Qwen3.5's fused input projection.
+#  * The attention kernel is ``MLAAttention``, two levels down
+#    (``mla_attn`` -> ``MultiHeadLatentAttentionWrapper`` -> ``MLAAttention``),
+#    and the indexer kernel is ``SparseAttnIndexer`` inside an ``Indexer``
+#    wrapper. Both are bound in the ``attention`` group: they key on the same
+#    axes and both run per attention layer.
+#  * ``q_a_proj`` and ``kv_a_proj_with_mqa`` do not exist separately — vLLM
+#    fuses them into ``DeepSeekV2FusedQkvAProjLinear``.
+#  * ``rotary_emb`` and ``indexer_rope_emb`` are instantiated on layer 0 only
+#    and shared across layers (vLLM caches rope modules), which left open how
+#    the profile tree attributes a shared module. **Measured answer: to each
+#    caller's own subtree** -- one node under ``MultiHeadLatentAttentionWrapper``
+#    and one under ``Indexer``, each with ``invocations`` equal to its parent's,
+#    so both come out per-layer and ``within`` tells them apart (``Indexer`` is
+#    the deeper ancestor, so the deepest-``within`` rule keeps the indexer's
+#    copy off ``rotary_emb``). The **class differs by checkpoint** --
+#    ``DeepseekScalingRotaryEmbedding`` on DeepSeek-V3.2, plain
+#    ``RotaryEmbedding`` on GLM-5 -- so both are listed, exactly as Llama's
+#    catalog lists two.
+#  * The indexer's q-side rope and fp8 quantization are a **fused kernel** with
+#    no module of its own (``_fused_indexer_q_rope_quant_kernel``), and the
+#    ``Indexer`` block also launches eager reshape/copy glue. Neither is
+#    reachable by class, and together with the ropes they were the whole
+#    unattributed remainder: coverage goes from 99.4-99.8% to 100%.
+#
+# Re-derive from three dumps: the module structure, the profile tree per batch
+# regime, and what the catalog still fails to bind. The last is the authority,
+# since a module that launches no kernel of its own never appears in the
+# profile tree at all -- ``profiler coverage`` reports it.
+
+
+model_types:
+  - deepseek_v32   # DeepSeek-V3.2-Exp
+  - glm_moe_dsa    # GLM-5
+
+
+blocks:
+  attn:
+    full_attention:
+      pre_attn:  [layernorm, mla_qkv_a_proj, mla_a_layernorm, mla_b_proj,
+                  rotary_emb,
+                  indexer_wq_b, indexer_wk_proj, indexer_k_norm,
+                  indexer_rope_emb, indexer_q_rope_quant, indexer, indexer_glue,
+                  attention]
+      post_attn: [o_proj, layernorm]
+  mlp:
+    # Both populated, resolved per layer from the checkpoint: layers
+    # 0..first_k_dense_replace-1 (3) run the dense MLP, the rest MoE.
+    dense: [gate_up_proj, act_fn, down_proj]
+    moe:   [moe]
+
+shared:
+  prologue:  [embedding]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+# The model's own drafter, built only when the engine boots with
+# speculative_config (``--profile-mtp``). One MTP module per
+# ``num_nextn_predict_layers``, and vLLM runs it **N times per step** -- once,
+# then num_speculative_tokens - 1 more.
+#
+# Every entry needs ``within: DeepSeekMultiTokenPredictorLayer``, because
+# ``mtp_block`` is a ``DeepseekV2DecoderLayer`` -- the *same class* as a target
+# decoder layer. Without the guard the two merge into one profile node and the
+# drafter reads as free while the target reads as slower than it is.
+#
+# Read off ``profiler coverage --profile-mtp``, which reports exactly these
+# as unbound with their ancestor paths. Measured on DeepSeek-V3.2 at 4 target
+# layers, prefill / decode / mixed: eh_proj 161.0 / 143.2 / 166.4 us dominates,
+# the merged norms 5.6 / 5.4 / 5.7, shared_head 2.8 / 2.8 / 2.9, and the glue
+# 1-3 us apiece. GLM-5 reports the identical eight nodes -- it shares
+# DeepSeekMTP -- at 115.9 / 111.0 for eh_proj.
+mtp:
+  prologue: [mtp_embed, mtp_enorm_hnorm, mtp_eh_proj, mtp_glue]
+  # mtp_block gets no names of its own: it is a DeepseekV2DecoderLayer, so the
+  # simulator replays the target's own block sequence for it. What it cannot
+  # read off the checkpoint is *which* block -- ``deepseek_mtp.py`` builds it
+  # at prefix ``model.layers.<num_hidden_layers>``, i.e. past
+  # first_k_dense_replace (MoE) and inheriting the model-wide index_topk
+  # (sparse), where indexing the resolved stack would wrap to layer 0 and give
+  # a dense one.
+  decoder_block: {attn: full_attention, mlp: moe, sparse: true}
+  head: [mtp_shared_head]
+
+
+catalog:
+  mtp:
+    mtp_embed:
+      # The drafter's own embed_tokens, told apart from the target's by the
+      # predictor it hangs off.
+      vllm: VocabParallelEmbedding
+      within: DeepSeekMultiTokenPredictor
+    mtp_eh_proj:
+      # 2h -> h, and a plain nn.Linear rather than a TP-parallel one, so it is
+      # NOT sharded. The dominant cost of a drafter pass by two orders of
+      # magnitude.
+      vllm: Linear
+      within: DeepSeekMultiTokenPredictorLayer
+    mtp_enorm_hnorm:
+      # enorm + hnorm, reported as one merged node -- both RMSNorm at the same
+      # width under the same parent, so their sum is coherent. Same situation
+      # as mla_a_layernorm in the target.
+      vllm: RMSNorm
+      within: DeepSeekMultiTokenPredictorLayer
+      tp_stable: true
+    mtp_shared_head:
+      # norm + lm_head. Reported under the SharedHead wrapper itself rather
+      # than as its children.
+      vllm: SharedHead
+      within: DeepSeekMultiTokenPredictorLayer
+    mtp_glue:
+      # The eager elementwise work around the projection -- five distinct
+      # at::native instantiations, taken as a group by prefix and summed into
+      # one trace node, the same way indexer_glue is.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: DeepSeekMultiTokenPredictorLayer
+
+  dense:
+    embedding:
+      # The drafter builds its **own** embed_tokens of the same class, so an
+      # unguarded entry sums the two. The dump puts the target's under
+      # DeepseekV3ForCausalLM and the drafter's under
+      # DeepSeekMultiTokenPredictor -- a real profile node here, unlike
+      # Qwen3.5's flattened wrapper -- so not_within separates them, and the
+      # drafter's is bound as ``mtp_embed``.
+      vllm: VocabParallelEmbedding
+      not_within: DeepSeekMultiTokenPredictor
+    layernorm:
+      vllm: RMSNorm
+      within: DeepseekV2DecoderLayer
+      tp_stable: true
+    final_layernorm:
+      # Root class differs by checkpoint: DeepSeek-V3.2 loads as
+      # DeepseekV3ForCausalLM, GLM-5 as GlmMoeDsaForCausalLM. The profile tree
+      # flattens DeepseekV2Model away when it launches no kernels of its own,
+      # so bind the roots and let the deepest-within rule keep the
+      # decoder-layer norms on ``layernorm``.
+      vllm: RMSNorm
+      within: [DeepseekV3ForCausalLM, DeepseekV2ForCausalLM,
+               GlmMoeDsaForCausalLM, DeepseekV2Model]
+      tp_stable: true
+
+    # --- MLA projections ---------------------------------------------------
+    mla_qkv_a_proj:
+      # q_a and kv_a fused by vLLM into one linear.
+      vllm: DeepSeekV2FusedQkvAProjLinear
+    mla_a_layernorm:
+      # q_a_layernorm + kv_a_layernorm, reported as one merged node.
+      vllm: RMSNorm
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    mla_b_proj:
+      # q_b_proj + kv_b_proj, reported as one merged node.
+      vllm: ColumnParallelLinear
+      within: DeepseekV2MLAAttention
+    o_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLAAttention
+    rotary_emb:
+      # Shared across layers (built on layer 0), but the profile tree still
+      # reports it under each caller, so this is a per-layer number. The class
+      # differs by checkpoint: DeepSeek-V3.2 scales rope for its long context,
+      # GLM-5 does not.
+      vllm: [DeepseekScalingRotaryEmbedding, RotaryEmbedding]
+      within: MultiHeadLatentAttentionWrapper
+
+    # --- sparse-attention indexer ------------------------------------------
+    indexer_wq_b:
+      vllm: ReplicatedLinear
+      within: Indexer
+    indexer_wk_proj:
+      vllm: MergedColumnParallelLinear
+      within: Indexer
+    indexer_k_norm:
+      # A bare nn.LayerNorm, not RMSNorm.
+      vllm: LayerNorm
+      within: Indexer
+      tp_stable: true
+    indexer_rope_emb:
+      # The indexer's own rope. Same class as ``rotary_emb`` above and the same
+      # shared instance; ``Indexer`` is the deeper ancestor, so the
+      # deepest-``within`` rule assigns this node here and that one there.
+      vllm: [DeepseekScalingRotaryEmbedding, RotaryEmbedding]
+      within: Indexer
+    indexer_q_rope_quant:
+      # Indexer q-side rope plus the fp8 quantization of the index queries,
+      # fused into one Triton kernel with no module wrapper.
+      vllm: _fused_indexer_q_rope_quant_kernel
+      within: Indexer
+    indexer_glue:
+      # The eager reshape/copy work the indexer does around its kernels. Each
+      # is a distinct ``at::native::...<functor>`` instantiation, so the ``*``
+      # prefix takes them as a group; the matches are summed into one trace
+      # node. ~6 us per shot, and the last thing between this catalog and full
+      # coverage.
+      vllm: ["void at::native::*", "Memcpy*", "Memset*"]
+      within: Indexer
+      # These subtrees already belong to indexer_k_norm and indexer;
+      # their copy/fill kernels are not additional Indexer glue.
+      not_within: [LayerNorm, SparseAttnIndexer]
+
+    # --- dense MLP (layers 0..2) -------------------------------------------
+    # not_within excludes the shared expert, which is the same class nested
+    # inside DeepseekV2MoE and 9x narrower.
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+    act_fn:
+      vllm: SiluAndMul
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+    down_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLP
+      not_within: DeepseekV2MoE
+
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+
+  attention:
+    attention:
+      # mla_attn -> MultiHeadLatentAttentionWrapper -> MLAAttention.
+      vllm: MLAAttention
+      # A query reads at most index_topk selected positions, so the cost
+      # stops growing once a sequence's key window passes it: a 16-token
+      # prefill measures 139.3 us at 2048 of context and 138.3 at 8192.
+      key_saturates: true
+    indexer:
+      # Scores the whole KV before the top-k selection, so its cost tracks kv
+      # length on the same axes the attention kernel uses -- which is why it
+      # belongs in this group rather than in dense.
+      vllm: SparseAttnIndexer
+
+  moe:
+    moe:
+      # The whole block: gate, routed experts and the shared expert.
+      vllm: DeepseekV2MoE

@@ -5,13 +5,30 @@ title: Validating your changes
 
 # Validating your changes
 
-The project does not ship a unit-test suite. The simulator is
-**deterministic** instead — the same cluster config, workload and flags
+The simulator is **deterministic** — the same cluster config, workload and flags
 reproduce the same makespan exactly — so validation is equality against
-recorded results rather than eyeballing plots. `serving/validate.sh`
-runs that comparison for you.
+recorded results in addition to focused local checks. `serving/validate.sh`
+runs that comparison for you. Temporary scripts and tests written to diagnose
+or verify a fix remain local under the [commit policy](./pr-workflow#commit-hygiene).
 
 ## 1. Run the validation script (every PR)
+
+For resource-bounded execution, wrap a command with the shared watchdog:
+
+```bash
+python3 scripts/monitor_run.py --output outputs/resources/run.csv \
+  --max-rss-gib 8 --min-available-gib 16 --max-swap-growth-gib 0.5 \
+  --timeout 1800 -- ./serving/validate.sh
+```
+
+These are example limits; set them for your host. The CSV records sampled
+process-tree RSS and host memory, and a sibling JSON records completion or the
+stop reason. Use a new log path for each run. Shared pages may be counted more
+than once, and sampling is not a hard memory limit; container limits remain
+the backstop. Only the launched command and its descendants are stopped.
+Optional GPU telemetry requires both `--gpu-uuid` and `--max-gpu-temp-c`;
+it does not allocate a GPU or check other users' ownership. Confirm availability
+separately before launching GPU work.
 
 ```bash
 ./serving/validate.sh
@@ -23,8 +40,11 @@ Two stages, about eight minutes total:
    compared against its recorded `Total clocks (ns)`. Every cluster
    config, every parallelism shape (TP, PP, DP and their combinations, EP),
    prefix caching and the tiers below it, the scheduler flags, both routing
-   policies, PIM, CXL, P/D disaggregation, agentic sessions and two hardware
-   profiles.
+   policies, PIM, CXL, P/D disaggregation, agentic sessions, two hardware
+   profiles — and the **model families**: linear attention, both sparse
+   shapes, MLA, heterogeneous stacks and speculative decoding, which nothing
+   else reaches because the rest of the list runs Llama-3.1-8B/70B,
+   Qwen3-30B-A3B or Qwen3-32B.
 2. **Accuracy** — regenerates each `bench/examples` entry's `outputs/sim.csv`
    and `validation/summary.txt` and checks both md5s. `sim.csv` is the
    per-request TTFT / TPOT / latency against a recorded real vLLM run;
@@ -37,8 +57,8 @@ Two stages, about eight minutes total:
 A clean run ends with:
 
 ```
-Behaviour: 58/58 scenarios match their baselines.
-Accuracy: all 8 sim.csv + summary.txt files are byte-identical.
+Behaviour: 70/70 scenarios match their baselines.
+Accuracy: all 10 sim.csv + summary.txt files are byte-identical.
 ```
 
 That is the bar for a change that claims to be behaviour-preserving. A
@@ -53,7 +73,30 @@ Useful variations:
 ./serving/validate.sh --help            # all options
 ```
 
-Run it from the repo root inside the simulator container.
+Run it from the repo root inside the simulator container. In a **fresh**
+container run `./scripts/compile.sh` first — it installs the Chakra converter
+into the container's site-packages, which does not persist, and without it
+every scenario reports "did not finish". Pass `LOG_DIR=<a mounted path>` too,
+or the per-scenario logs die with the container.
+
+:::caution[Parts of `profiler/` are simulator inputs]
+The simulator shares data and CPU-only helpers with `profiler/`; changes there
+can move simulation clocks without changing `serving/`. Important inputs include:
+
+- **`profiler/models/*.yaml`** — the layer order. Merging two catalogs into one
+  broke all 16 MoE scenarios exactly this way.
+- **`profiler/core/stack.py`** — which block each decoder layer runs, resolved
+  from the checkpoint's config. Shared with the profiler on purpose.
+- **`profiler/core/catalog_path.py`** — `model_type` → yaml resolution. Also
+  shared; adding aliasing to only one side is what broke those 16 scenarios.
+- **Attention shape, skew calibration and MoE contract helpers** — geometry,
+  correction-table loading and deployment compatibility affect lookup.
+- **`profiler/perf/`** — measured data and hardware defaults.
+
+Audit actual imports when deciding the regression scope rather than treating
+this list as exhaustive. Shared helpers must remain usable without importing
+vLLM or the GPU acquisition environment.
+:::
 
 ## 2. If something changed, report it
 
@@ -116,23 +159,25 @@ simulator's output for the same dataset:
 
 Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 
-- `summary.txt`: aggregate error on TTFT / TPOT / throughput.
+- `summary.txt`: mean, median, P90, P95 and P99 errors for TTFT, TPOT and latency.
 - Three PNGs: `latency.png` (per-request latency CDF), `throughput.png`
   (throughput timeline), `requests.png` (running / waiting curves).
 
-The committed reference baselines land within 1.7% on TPOT means and
-2.2% on end-to-end latency means; TTFT means span +1.3% to -13.6%
-— see **[Validation](/docs/validation)** for the per-configuration
-table.
-**A regression beyond ~5% against those baselines is a blocker.**
-Smaller movements need an explanation in the PR description (e.g.,
-"this fixes an under-counting bug; the new error is closer to ground
-truth than the old").
+Compare all fifteen statistics against
+`bench/examples/<hardware>/<model>/validation/summary.txt`; do not use only a
+mean or the figure in the abstract. The headline Llama and Qwen examples meet
+the 5% absolute-error target on all fifteen statistics. The additional reduced
+DeepSeek diagnostic does not. See **[Validation](/docs/validation)** for the
+current per-configuration results and remaining limitations; these results
+do not establish accuracy for unmeasured deployments or workloads.
 
-Compare against the numbers in
-`bench/examples/<hardware>/<model>/validation/summary.txt`, not against the ~5%
-figure in the abstract: TTFT already sits at -13.6% on the MoE
-configuration, so "within 5%" is not a bar it currently clears.
+A matching regression digest establishes reproducibility, not agreement with
+vLLM. Explain every intentional movement, including regressions; correcting
+execution geometry can expose an independent timing error. Update the
+simulator-side examples and their public summaries together, preserving the
+recorded vLLM references. When fixed repeated references are available, report
+all fifteen statistics against each one. Engine-side variation is not a reason
+to omit TTFT or a failing percentile.
 
 For deeper detail on the validation methodology, see
 [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).
@@ -152,10 +197,36 @@ MODEL=meta-llama/Llama-3.1-8B HARDWARE=RTXPRO6000 \
 Then verify the simulator still loads it cleanly:
 `./serving/validate.sh --clocks-only single`.
 
-If you only changed the alpha fit (`fit_alpha.py`), you can use
-`SKIP_DENSE=1 SKIP_PER_SEQUENCE=1 SKIP_ATTENTION=1 SKIP_MOE=1
-ONLY_SKEW=1 ./profiler/profile.sh` to refresh just `skew_fit.csv`
-without rerunning the rest.
+For a calibration-only change (`skew_calibration.py`), rebuild a **copy** of
+the existing bundle with `python -m profiler refit-skew MODEL --hardware HW
+--out PROFILE_ROOT`. This CPU-only command does not remeasure skew or alter
+attention. `--only-skew`, in contrast, is an acquisition command.
+Run the committed bench examples and compare every reported latency statistic;
+keep temporary tests, scripts and validation artifacts out of commits.
+
+### If you touched `hardware.yaml`
+
+It feeds the simulator, so a change there can move every clock in
+`validate.sh` even though the file lives under `profiler/`.
+`python -m profiler hardware` prints the fitted `link_bw` / `link_latency`,
+the mean residual and the worst one, plus a per-collective breakdown; the
+residual per size is kept in the file. Two things to check:
+
+- **Check each collective against the backend, not just the fit equation.**
+  The [calibration contract](../profiler/adding-hardware#calibration-contract)
+  specifies Ring phases, GiB/s network units and local reduction costs. At
+  two ranks, AllReduce has two network phases but AllGather/ReduceScatter have
+  one. A common pair may leave substantial residuals even with the correct
+  formula; report them rather than tuning against a model benchmark. CPU
+  single-collective traces can verify the equation against the ASTRA binary.
+- **Check the timing scope.** `fit.timing` records graphed, isolated or mixed
+  inputs. For a captured execution target, verify that graph capture succeeded;
+  isolated timings include host launch/synchronisation overhead. Individual
+  primitives also do not validate grouped multi-tensor or uneven-rank MoE
+  dispatch/combine, which require their own execution-path checks.
+
+Two GPUs are needed for the second one. Without them the command writes the
+spec section, records `interconnect: null`, and exits non-zero.
 
 ## What "this should reproduce" looks like in a PR
 

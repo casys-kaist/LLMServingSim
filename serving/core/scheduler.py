@@ -36,7 +36,8 @@ class Scheduler:
                  enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage,
                  enable_chunked_prefill=False,
                  long_prefill_token_threshold=0, cxl_mem=0, ep_size=1, kv_cache_dtype='auto',
-                 npu_memory_utilization=1.0, reserve_full_isl=True):
+                 npu_memory_utilization=1.0, reserve_full_isl=True,
+                 acceptance_model=None, async_scheduling=True):
         self.model = model
         self.config = get_config(model)
         self.node_id = node_id
@@ -57,6 +58,44 @@ class Scheduler:
         # vLLM's scheduler_reserve_full_isl, True by default there: admit a
         # request only if its whole sequence fits, not merely its first chunk.
         self.reserve_full_isl = reserve_full_isl
+        # vLLM's ``need_mamba_block_aligned_split``:
+        # ``has_mamba_layers and mamba_cache_mode == "align"``, and "align" is
+        # what prefix caching selects. See ``_mamba_block_aligned_split``.
+        _stack = get_layer_stack(model) or []
+        _is_hybrid = any(spec.attn == 'linear_attention' for spec in _stack)
+        _is_moe = any(getattr(spec, 'mlp', None) == 'moe' for spec in _stack)
+        # vLLM's ``VllmConfig.use_v2_model_runner`` via
+        # ``_is_default_v2_model_runner_model``: V2 is the default for anything
+        # that is not MoE, except that a hybrid stack stays on V1 unless its
+        # architecture is explicitly a default-V2 one. vLLM also forces V2 for a
+        # short list of architectures
+        # (``config/vllm.py::default_v2_model_runner_architectures``); no config
+        # under ``configs/model/`` is on it, and a snapshot of a list that moves
+        # every release would drift silently, so adding one from that list means
+        # revisiting this. It matters only for ``_async_adds_a_batch``.
+        self._uses_v2_model_runner = (not _is_moe) and (not _is_hybrid)
+        self._needs_mamba_aligned_split = bool(enable_prefix_caching) and _is_hybrid
+        if self._needs_mamba_aligned_split and not enable_chunked_prefill:
+            # vLLM asserts this, in the same block that picks "align"
+            # (models/config.py: `assert enable_chunked_prefill, "Chunked
+            # prefill is required for mamba cache mode 'align'."`). The reason
+            # is structural rather than incidental: "align" exists so a state
+            # checkpoint lands on a block boundary, and the only lever for that
+            # is where a chunk ends -- with no chunking there is no lever, and
+            # the invariant the split protects cannot hold.
+            raise ValueError(
+                f"instance {instance_id}: {model} has linear-attention layers "
+                f"and prefix caching is on, which selects vLLM's mamba cache "
+                f"mode 'align' -- and that requires chunked prefill, because "
+                f"aligning a chunk end to a block boundary is what makes a "
+                f"state checkpoint addressable. vLLM refuses to start this "
+                f"combination. Enable chunked prefill, or turn prefix caching "
+                f"off (which selects 'none' and checkpoints nothing)."
+            )
+        # None when speculative decoding is off. See ``spec_decode.py``: which
+        # draft tokens the target accepts is the one thing a simulator cannot
+        # compute, so it is a policy with a per-model published default.
+        self.spec = acceptance_model
 
         # Requests admitted and still generating. Persistent across steps: this
         # is what gives the scheduler a notion of "already running", which the
@@ -69,6 +108,25 @@ class Scheduler:
         self.done = []
         self.batch_ids = -1
 
+        # vLLM's ``scheduler_config.async_scheduling``, True by default there.
+        # It makes ``max_concurrent_batches`` 2 at pp_size 1 (``config/vllm.py``:
+        # "Async scheduling requires 2 concurrent batches to overlap"), so the
+        # engine composes the *next* batch while the current one is still on the
+        # GPU. A request that arrives after that composition cannot join it and
+        # waits one more step. ``_arrival_cutoff`` is where that shows up.
+        self.async_scheduling = bool(async_scheduling)
+        # Clock of the batch that completed most recently, and the clock at
+        # which it was composed. Together they answer "was this instance busy
+        # right up to now, and if so what could the scheduler see when it built
+        # the batch that is finishing?"
+        self._last_batch_start = None
+        self._last_batch_end = None
+
+        # Speculative-decoding counters, reported as vLLM reports them: the
+        # acceptance rate is accepted/drafted.
+        self.spec_drafted = 0
+        self.spec_accepted = 0
+
         # Tokens recomputed because a request was preempted, and how many
         # preemptions happened. Both are reported: in the prefix-caching-off mode
         # a large recompute count is expected and is what that mode costs, while
@@ -80,7 +138,9 @@ class Scheduler:
                                   block_size, fp, enable_prefix_caching, enable_prefix_sharing,
                                   prefix_pool, prefix_storage, cxl_mem, ep_size=ep_size,
                                   pp_size=pp_size, kv_cache_dtype=kv_cache_dtype,
-                                  npu_memory_utilization=npu_memory_utilization)
+                                  npu_memory_utilization=npu_memory_utilization,
+                                  num_speculative_tokens=(
+                                      acceptance_model.N if acceptance_model else 0))
         self.kv = self.memory.kv
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
@@ -125,6 +185,17 @@ class Scheduler:
         # preempt -> refill -> preempt.
         if not preempted:
             token_budget = self._schedule_waiting(current, scheduled, token_budget)
+            if not scheduled and self._async_adds_a_batch():
+                # The lag only exists while there is a batch to compose ahead
+                # of, and there is none: nothing was admitted and nothing is
+                # running. vLLM's batch queue is empty in this state, so its
+                # ``schedule()`` admits whatever has arrived. Keeping the lag
+                # here would hide an already-queued request behind a cutoff
+                # that only a completed batch can advance -- the main loop
+                # answers "pass", the clock never moves (it advances only for
+                # arrivals still pending in the router), and the run spins.
+                token_budget = self._schedule_waiting(
+                    current, scheduled, token_budget, cutoff=current)
 
         if not scheduled:
             return None
@@ -136,6 +207,18 @@ class Scheduler:
         while i < len(self.running) and token_budget > 0:
             req = self.running[i]
             num_new = self._num_new_tokens(req, token_budget)
+            if num_new > 0 and self._needs_mamba_aligned_split:
+                aligned = self._mamba_block_aligned_split(
+                    req, num_new, req.num_computed_tokens)
+                if aligned <= 0:
+                    # This step's budget cannot cover a whole block for a chunk
+                    # that has to end block-aligned. Not the deadlock the guard
+                    # below catches: the split only floors to zero when
+                    # ``block_size <= max_prefill_tokens``, so a fresh step's
+                    # budget does cover one and the request moves next step.
+                    i += 1
+                    continue
+                num_new = aligned
             if num_new <= 0:
                 # Nothing left to compute for this request yet. vLLM continues
                 # rather than breaking here, so a later request is not blocked.
@@ -176,13 +259,67 @@ class Scheduler:
             i += 1
         return token_budget
 
-    def _schedule_waiting(self, current, scheduled, token_budget):
-        """Phase B: admit from the waiting queue. Never preempts to admit."""
+    def _async_adds_a_batch(self) -> bool:
+        """Whether async scheduling buys a lookahead the pipeline does not
+        already provide.
+
+        vLLM's ``max_concurrent_batches`` (``config/vllm.py``) is ``2`` at
+        ``pp_size`` 1 with async scheduling on, and ``pp_size + 1`` above it --
+        but only on the **V2** model runner. On V1 it stays at ``pp_size``,
+        because "V1 Model Runner does not fully support async scheduling with
+        PP". So for a V1 model at ``pp_size > 1`` async adds no batch at all,
+        and the one-step-stale composition is already what ``schedule()``'s
+        ``len(self.inflight) >= self.pp_size`` cap models. Charging the lag
+        there too double-counts it: it moved ``moe_pp`` -6.9% and
+        ``moe_dp_tp_pp_uneven`` -12.7%, since delaying admission repacks
+        batches rather than simply adding time.
+        """
+        if not self.async_scheduling:
+            return False
+        if self.pp_size <= 1:
+            return True
+        return self._uses_v2_model_runner
+
+    def _arrival_cutoff(self, current):
+        """The latest arrival time this step's admission can see.
+
+        Under vLLM's async scheduling the batch that executes next was composed
+        while the previous one was still running, so its view of the arrival
+        queue is one step stale. ``EngineCore.step_with_batch_queue`` keeps
+        ``max_concurrent_batches`` batches outstanding -- 2 at ``pp_size`` 1 when
+        async scheduling is on -- and submits batch k+1 right after k, then
+        blocks on k's future. So the batch dispatched at the end of step k saw
+        arrivals only up to the point where step k itself was composed.
+
+        Returns ``current`` (no lag) when this instance was *not* busy right up
+        to now: an idle engine's queue is empty, nothing is scheduled ahead, and
+        vLLM picks a newly arrived request up immediately. That case is not
+        cosmetic -- freezing the cutoff in the past while the engine idles would
+        make a request that arrives later permanently invisible.
+        """
+        if not self._async_adds_a_batch():
+            return current
+        if self._last_batch_end is None or self._last_batch_start is None:
+            return current
+        if current > self._last_batch_end:
+            # The instance went idle and the clock advanced past the last
+            # completion, so there is no in-flight step to hide behind.
+            return current
+        return self._last_batch_start
+
+    def _schedule_waiting(self, current, scheduled, token_budget, cutoff=None):
+        """Phase B: admit from the waiting queue. Never preempts to admit.
+
+        ``cutoff`` overrides the async-scheduling arrival lag; see
+        ``_arrival_cutoff`` and the retry in ``schedule()``.
+        """
+        if cutoff is None:
+            cutoff = self._arrival_cutoff(current)
         while self.waiting and token_budget > 0:
             if len(self.running) >= self.max_num_seqs:
                 break
             req = self.waiting[0]
-            if req.arrival > current:
+            if req.arrival > cutoff:
                 # Arrival-sorted, so nothing behind it has arrived either.
                 break
 
@@ -206,6 +343,14 @@ class Scheduler:
             num_new = min(num_new, token_budget)
             if num_new <= 0:
                 break
+            if self._needs_mamba_aligned_split:
+                # After the budget clamp, as vLLM applies it. A zero here means
+                # this step's budget cannot cover a whole block, so the queue
+                # stops -- FCFS, same as the branch above.
+                num_new = self._mamba_block_aligned_split(
+                    req, num_new, num_computed)
+                if num_new <= 0:
+                    break
 
             if self.reserve_full_isl and not self.kv.can_fit_full_sequence(
                     req, hit_blocks, num_npu_hit, num_lower_hit):
@@ -243,11 +388,86 @@ class Scheduler:
         with ``num_computed_tokens`` reset to 0 it yields the whole sequence,
         chunked by the budget.
         """
-        num_new = req.num_tokens - req.num_computed_tokens
+        req.num_spec_scheduled = self._draft_tokens_for(req)
+        num_new = req.num_tokens_with_spec - req.num_computed_tokens
         threshold = self.long_prefill_token_threshold
         if 0 < threshold < num_new:
             num_new = threshold
-        return min(num_new, token_budget)
+        num_new = min(num_new, token_budget)
+        # The budget may cut the draft short. Record what actually got a slot,
+        # since that is what gets verified -- vLLM's ``num_scheduled_spec_tokens``.
+        req.num_spec_scheduled = max(0, min(req.num_spec_scheduled, num_new - 1))
+        return num_new
+
+    def _mamba_block_aligned_split(self, req, num_new, start):
+        """Clip a prefill chunk so it ends where the mamba state can be cached.
+
+        vLLM's ``Scheduler._mamba_block_aligned_split``, which runs whenever a
+        model has mamba layers and prefix caching is on -- that pair is what
+        selects ``mamba_cache_mode "align"``. The invariant it protects: state
+        slot *p* holds the state after exactly ``(p + 1) * block_size`` tokens,
+        and state is only written at a chunk end, so **a chunk end must be
+        block aligned** or the slot holds a state no position can name.
+
+        Three rules, in vLLM's order:
+
+        * A chunk that is not the prompt's last is floored to a block boundary
+          -- unless flooring would leave nothing *and* the block is wider than
+          one chunk's budget, in which case it advances sub-block and realigns
+          at the next boundary instead.
+        * A chunk starting mid-block stops at the next boundary.
+        * No chunk runs past ``last_cache_position``, the last block-aligned
+          position in the sequence, mid-chunk.
+
+        Returning 0 is a real answer, not a failure: it is vLLM's "insufficient
+        budget for a block-aligned chunk", and the request simply waits for a
+        step whose budget covers a whole block.
+
+        Deliberately not modelled: the Eagle backoff, the partial-tail hash
+        boundary and the Marconi shared-prefix junction. Each adds a further
+        early stop, so leaving them out can only make a chunk longer than
+        vLLM's, never shorter.
+        """
+        prefill_end = max(req.original_input, req.num_tokens_reached - 1)
+        if start >= prefill_end:
+            return num_new                      # decoding: nothing to align
+
+        block_size = self.memory.block_size
+        last_cache_position = (
+            req.num_tokens_reached - req.num_tokens_reached % block_size
+        )
+
+        end = start + num_new
+        if end < prefill_end:
+            max_prefill_tokens = self.max_num_batched_tokens
+            if self.long_prefill_token_threshold > 0:
+                max_prefill_tokens = min(
+                    max_prefill_tokens, self.long_prefill_token_threshold)
+            aligned_end = end // block_size * block_size
+            if aligned_end > start or block_size <= max_prefill_tokens:
+                end = aligned_end
+
+        stops = (
+            (start // block_size + 1) * block_size if start % block_size else 0,
+            last_cache_position,
+        )
+        end = min((s for s in stops if start < s < end), default=end)
+        return max(end - start, 0)
+
+    def _draft_tokens_for(self, req):
+        """Draft tokens to verify alongside this request's real token.
+
+        Zero unless the request is **caught up**, i.e. in steady-state decode
+        with exactly one token to compute. That is not a prefill/decode branch
+        sneaking back in: it is where a draft exists at all. vLLM's drafter runs
+        after a decode step and fills ``spec_token_ids``, so a request working
+        through a prefill chunk, or recomputing after preemption, has none.
+        """
+        if self.spec is None or self.spec.N <= 0:
+            return 0
+        if req.num_tokens_reached - req.num_computed_tokens != 1:
+            return 0
+        return self.spec.N
 
     def _preempt_request(self, req):
         """Give up a running request's blocks so someone else can use them.
@@ -263,6 +483,11 @@ class Scheduler:
         self.kv.preempt(req)
         req.status = RequestStatus.PREEMPTED
         req.num_computed_tokens = 0
+        # The draft belonged to a step that will not complete, and vLLM drops
+        # it the same way (``scheduled_spec_decode_tokens.pop(preempted_req_id)``).
+        # Leaving it set would have the request re-admitted asking to verify
+        # tokens nothing proposed.
+        req.num_spec_scheduled = 0
         req.num_preemptions += 1
         self.num_preemptions += 1
         # vLLM prepends, so a preempted request is first in line to come back.
@@ -289,15 +514,35 @@ class Scheduler:
         prefill_q_list = []
         prefill_k_list = []
         decode_k_list = []
+        decode_q_lens = []
         scheduled_tokens = {}
+        spec_scheduled = {}
         pd_kv_send_tokens = 0
 
         for req, num_new, computed_before in scheduled:
             scheduled_tokens[req.id] = num_new
+            # Snapshot the draft count for the same reason as the token count:
+            # ``req.num_spec_scheduled`` is what *this* step scheduled, and at
+            # pp_size > 1 the next ``schedule()`` runs while this batch is in
+            # flight and rewrites it -- to 0, since the request is no longer
+            # caught up. ``add_done`` would then find no draft to roll back,
+            # leave num_computed_tokens N-1 past num_tokens_reached, and the
+            # request could never be scheduled again.
+            spec_scheduled[req.id] = req.num_spec_scheduled
             total_len += num_new
             q_list.append(num_new)
             k_list.append(computed_before)
-            if num_new > 1:
+            # Classify by *why* the request has more than one token, not by the
+            # count. A speculative-decode step submits 1 + N queries that all
+            # read one sequence's KV; a prefill chunk of the same size reads a
+            # different amount and is a different kernel shape. Reading the
+            # count alone filed every verification step as a prefill.
+            if req.num_spec_scheduled > 0:
+                num_decode += 1
+                kv_len += computed_before
+                decode_k_list.append(computed_before)
+                decode_q_lens.append(num_new)
+            elif num_new > 1:
                 num_prefill += 1
                 prefill_q_list.append(num_new)
                 prefill_k_list.append(computed_before)
@@ -305,6 +550,7 @@ class Scheduler:
                 num_decode += 1
                 kv_len += computed_before
                 decode_k_list.append(computed_before)
+                decode_q_lens.append(1)
             if req.is_init:
                 req.set_que_delay(current)
             if self.pd_type == "prefill":
@@ -326,10 +572,15 @@ class Scheduler:
         batch = Batch(self.get_batch_id(), self.model, total_len, kv_len, q_list, k_list,
                       num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list,
                       current, self.kv.npu_used_bytes(), 0, recall_bytes,
-                      pd_kv_send_tokens=pd_kv_send_tokens)
+                      pd_kv_send_tokens=pd_kv_send_tokens,
+                      # One shot per batch, so a mixed batch takes the longest
+                      # decode query -- the kernel is launched for the whole
+                      # batch and its cost follows the widest row.
+                      decode_q_len=max(decode_q_lens) if decode_q_lens else 1)
         batch.fired.append(sys)
         batch.requests.extend(req for req, _, _ in scheduled)
         batch.scheduled_tokens = scheduled_tokens
+        batch.spec_scheduled = spec_scheduled
         # Written down to a victim tier off the critical path, so it carries no
         # latency -- but the bytes still cost DRAM energy.
         batch.write_through = write_through_bytes
@@ -428,8 +679,29 @@ class Scheduler:
             # length it had reached. A resumed request recomputing its history
             # has not, so it stays silent until it does.
             if req.num_computed_tokens >= req.num_tokens_reached:
-                req.num_tokens_reached += 1
-                gen_t += 1
+                # Speculative decoding commits the bonus token plus whatever
+                # prefix of the draft the target accepted, and rolls the
+                # rejected slots back -- vLLM's
+                # ``request.num_computed_tokens -= num_rejected``. The rollback
+                # comes first so the prefix cache below indexes only committed
+                # tokens; a block holding a rejected token must never be hashed,
+                # or a later request could hit on text the model never emitted.
+                accepted = 0
+                n_draft = batch.spec_scheduled.get(req.id, 0)
+                if n_draft:
+                    accepted = self.spec.draw(n_draft)
+                    req.num_computed_tokens -= (n_draft - accepted)
+                    self.spec_drafted += n_draft
+                    self.spec_accepted += accepted
+                req.num_spec_scheduled = 0
+                # A verification step commits 1 + accepted tokens at once, which
+                # can run past the requested length. vLLM stops at max_tokens
+                # and discards the excess, so the overshoot is not generated
+                # output and must not be counted as throughput.
+                committed = min(1 + accepted,
+                                max(req.output - req.num_tokens_reached, 0))
+                req.num_tokens_reached += committed
+                gen_t += committed
                 if not prefill_done_now:
                     req.add_itl(finish)
                 if self.enable_prefix_caching:
@@ -444,6 +716,12 @@ class Scheduler:
                 self._retire(req)
                 self.done.append(req)
                 end_reqs.append(req)
+
+        # What the next admission is allowed to see. ``batch.batch_time`` is the
+        # clock at which this batch was composed; under async scheduling that is
+        # also the newest arrival the batch replacing it could have seen.
+        self._last_batch_start = batch.batch_time
+        self._last_batch_end = finish
 
         del self.inflight[idx]
         return prompt_t, gen_t, end_reqs

@@ -30,10 +30,16 @@ from vllm import LLM
 from profiler.core import logger as log
 from profiler.core.config import (
     HOST_ENGINE_DEFAULTS,
+    MOE_NUM_EXPERTS_KEYS,
+    MOE_TOP_K_KEYS,
     SHARD_FIELDS,
     ProfileArgs,
+    probe_linear_attn_chunk,
     probe_moe_params,
 )
+from profiler.core.stack import probe_key_saturation
+from profiler.core.stack import describe as describe_stack
+from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 
 
 # ---------------------------------------------------------------------------
@@ -49,18 +55,47 @@ class RuntimeLimits:
     Attributes:
         max_num_batched_tokens: vLLM's scheduler-side token budget.
         max_num_seqs: max concurrent sequences.
-        num_cache_tokens: total KV slots allocated.
+        num_cache_tokens: total KV slots allocated, group-aware (a
+            hybrid request occupies several KV cache groups at once).
+        block_size: KV block size in tokens, as the engine settled on it.
+            Not necessarily what we asked for: on a hybrid stack vLLM
+            enlarges the attention block until an attention page costs at
+            least as many bytes as a mamba state page, then pads the mamba
+            page to match, so one uniform pool covers both. Measured at 784
+            on Qwen3.8-27B against the 16 we requested.
         max_model_len: longest single sequence the engine accepts.
+        linear_attn_chunk: chunk length the linear-attention prefill scan
+            works in, or None when the model has no linear-attention layer.
+            A grid-placement quantity, not an engine one: measured cost
+            tracks the chunk count, so the sweep has to sample boundaries and
+            the points just past them.
         num_experts / top_k: MoE parameters from HF config. None for
-            non-MoE models.
+            non-MoE models. Under an EP override these are already the
+            **rank-local** values -- ``E/ep`` experts and ``k/ep`` slots per
+            token -- because the override goes through ``hf_overrides`` and
+            ``probe_limits`` reads the live config back.
+        moe_ep: the EP degree this engine stands in for, i.e. the label the
+            MoE rows are written under. 1 means the whole model on one rank,
+            which is what every bundle held before the axis existed.
+        key_saturation: how many key tokens a query can attend to, when the
+            checkpoint bounds it (``index_topk``, or M3's selected-block
+            count times its block size); None on a dense model, whose queries
+            read their whole causal window. The attention grid stops its key
+            axis there, because past it every shot measures the same thing --
+            DeepSeek-V3.2's current grid spends 15 kv points out to 163,830
+            and leaves only 9 below the bound, where all the variation is.
     """
 
     max_num_batched_tokens: int
     max_num_seqs: int
     num_cache_tokens: int
     max_model_len: int
+    block_size: int = 16
+    linear_attn_chunk: int | None = None
     num_experts: int | None = None
     top_k: int | None = None
+    moe_ep: int = 1
+    key_saturation: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -100,12 +135,20 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
         out["max_num_batched_tokens"] = args.max_num_batched_tokens
     if args.max_num_seqs is not None:
         out["max_num_seqs"] = args.max_num_seqs
+    if args.block_size is not None:
+        out["block_size"] = args.block_size
+    if args.gpu_memory_utilization is not None:
+        out["gpu_memory_utilization"] = args.gpu_memory_utilization
+    if args.max_model_len is not None:
+        out["max_model_len"] = args.max_model_len
     if args.hf_overrides is not None:
         out["hf_overrides"] = args.hf_overrides
     return out
 
 
-def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
+def fuse_engine_kwargs(
+    args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+) -> dict[str, Any]:
     """Produce the final ``**kwargs`` to pass to ``vllm.LLM()``.
 
     Design: profile every TP degree on a **single GPU** by keeping
@@ -123,8 +166,14 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     the written config:
 
         HOST_ENGINE_DEFAULTS["hf_overrides"]   num_hidden_layers=1 (profiling)
-        args.hf_overrides                       explicit CLI override
+        stack.minimal_layer_count               smallest stack reaching every
+                                                distinct block type
+        args.num_hidden_layers                  --num-hidden-layers
+        args.hf_overrides                       --hf-override KEY=VALUE
         sharded_overrides                       per-tp divide of SHARD_FIELDS
+
+    Later entries win, so an explicit ``--hf-override num_hidden_layers=...``
+    beats ``--num-hidden-layers``, and TP sharding beats both.
 
     MNBT bump: the engine is booted with ``max_num_batched_tokens``
     set to ``logical_mnbt + logical_msq`` so scheduler-bypass fires
@@ -155,6 +204,36 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     hf_overrides: dict[str, Any] = dict(
         HOST_ENGINE_DEFAULTS.get("hf_overrides", {})
     )
+
+    # How far to shrink the stack. The default of 1 is right only when every
+    # block is identical; a hybrid needs the smallest prefix that instantiates
+    # every distinct block type, or the catalog never sees the others and
+    # their layers read as free. Resolved from the checkpoint's own config so
+    # nobody has to know that Qwen3.8-27B's answer is 4, and logged because it
+    # decides whether a block type gets measured at all.
+    resolved_layers = minimal_layer_count_for(
+        args.model_config or {}, stack_axes)
+    hf_overrides["num_hidden_layers"] = resolved_layers
+    log.info("%s", describe_stack(args.model_config or {}))
+    if stack_axes != ALL_AXES:
+        # describe_stack answers for every axis; say what this engine is
+        # actually being shrunk to, or the two lines contradict each other.
+        log.info(
+            "shrinking to %d layer(s) for this engine: it measures %s only, "
+            "and the stack is uniform on %s",
+            resolved_layers, "/".join(stack_axes),
+            "those axes" if resolved_layers == 1 else "part of them",
+        )
+
+    if args.num_hidden_layers is not None:
+        hf_overrides["num_hidden_layers"] = args.num_hidden_layers
+        if args.num_hidden_layers < resolved_layers:
+            log.warning(
+                "--num-hidden-layers %d is below the %d needed to reach every "
+                "block type; some layers will have no profiled data and will "
+                "look free to the simulator",
+                args.num_hidden_layers, resolved_layers,
+            )
     if args.hf_overrides:
         hf_overrides = _deep_merge(hf_overrides, args.hf_overrides)
 
@@ -195,6 +274,7 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
     # 6. Wire the worker extension.
     kwargs["worker_extension_cls"] = "profiler.core.hooks.extension.Extension"
 
+
     return kwargs
 
 
@@ -202,8 +282,38 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
 # Spin up / spin down
 # ---------------------------------------------------------------------------
 
+def _materialize_config(
+    model_config: dict[str, Any],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """The config to write to disk, with the overrides mirrored where the
+    model's config class will actually read them.
+
+    ``hf_overrides`` reaches the **top level** of a config. That is enough for a
+    flat one, and useless for a wrapper that builds its backbone from a
+    ``text_config`` key: MiniMax-M3's class takes ``text_config`` and sends
+    everything else to ``**kwargs``, so ``num_hidden_layers`` and the TP shard
+    fields land nowhere and the backbone is constructed from its own defaults.
+    That fails loudly at 60 layers of experts (out of memory) and would fail
+    *silently* on a smaller model -- profiling a shape nobody asked for.
+
+    So for a nested config the same overrides are written into ``text_config``
+    as well. Only keys the backbone already declares are touched, so this
+    cannot invent fields the class would reject.
+    """
+    written = copy.deepcopy(model_config)
+    inner = written.get("text_config")
+    if not isinstance(inner, dict):
+        return written
+    for key, value in (kwargs.get("hf_overrides") or {}).items():
+        if key in inner or key == "num_hidden_layers":
+            inner[key] = value
+    return written
+
+
 def spin_up(
-    args: ProfileArgs, tp: int
+    args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+    moe_ep: int = 1,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -223,7 +333,7 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
-    kwargs = fuse_engine_kwargs(args, tp)
+    kwargs = fuse_engine_kwargs(args, tp, stack_axes)
 
     # Materialize the model's config.json in a temp directory so vLLM
     # can load it directly from disk.
@@ -233,17 +343,151 @@ def spin_up(
     )
     tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
     config_path = tmpdir / "config.json"
-    config_path.write_text(json.dumps(args.model_config, indent=2))
+    materialized = _materialize_config(args.model_config, kwargs)
+    if args.profile_mtp:
+        materialized = _cap_mtp_modules(materialized)
+    materialized = _slice_experts_for_ep(materialized, moe_ep)
+    config_path.write_text(json.dumps(materialized, indent=2))
     log.debug("model config written to %s", config_path)
 
     kwargs["model"] = str(tmpdir)
+    if args.profile_mtp:
+        # Same directory for both: MTP drafts with the target's own
+        # checkpoint, and vLLM rewrites the config into the MTP one itself
+        # (SpeculativeConfig.hf_config_override).
+        # Always 1, whatever N the user intends to simulate: the drafter runs
+        # once per speculative token, so booting at N records N passes in one
+        # shot and the simulator -- which emits N passes of its own -- would
+        # multiply again. One pass is the unit.
+        kwargs["speculative_config"] = {
+            "model": str(tmpdir),
+            "num_speculative_tokens": 1,
+        }
 
     with log.capture_stdio():
         llm = LLM(**kwargs)
     return llm, kwargs, tmpdir
 
 
-def probe_limits(llm: LLM) -> RuntimeLimits:
+def _slice_experts_for_ep(config: dict[str, Any], ep: int) -> dict[str, Any]:
+    """Cut the expert count and top-k down to one EP rank's share.
+
+    An EP rank does not run the model's MoE block, it runs a slice: ``E/ep``
+    local experts, and ``k/ep`` of a token's k expert assignments. Profiling at
+    ep=1 and charging the result per rank overstates all three of the permute
+    width, the GEMM rows and the distinct experts activated -- and the third is
+    the one that bites, because the ``activated_experts`` axis then floors at
+    ``top_k``, a value the runtime routinely goes under (98.4% of MoE lookups
+    in a GLM-5 EP=2 run asked for 4 against a floor of 8) and the lookup clamps
+    rather than extrapolating: 1.4x-3.7x over on the MoE term.
+
+    Written into the config **file**, not passed as ``hf_overrides``, for the
+    same reason ``_cap_mtp_modules`` is: on a wrapped checkpoint the fields
+    live under ``text_config``, where a top-level override never lands.
+    MiniMax-M3 is exactly that shape (``model_type: minimax_m3_vl``, experts
+    under ``text_config``), and the ``hf_overrides`` version raised "the model
+    config declares no expert count" on it while working fine on the three
+    flat ones.
+
+    ``k//ep`` floors at 1: past ``ep = k`` a token reaches only some ranks, and
+    a rank it reaches runs one expert for it.
+    """
+    if ep <= 1:
+        return config
+    # Deep, not shallow: ``text_config`` is a nested dict, and a shallow copy
+    # shares it with the caller's ``args.model_config``. spin_up is called once
+    # per EP degree from the same args, so a shared holder makes the slices
+    # compound -- 128 experts became 64 at ep=2 and then 16 at ep=4.
+    out = copy.deepcopy(config)
+    found = False
+    for holder in (out, out.get("text_config")):
+        if not isinstance(holder, dict):
+            continue
+        e_key = next((k for k in MOE_NUM_EXPERTS_KEYS if k in holder), None)
+        k_key = next((k for k in MOE_TOP_K_KEYS if k in holder), None)
+        if e_key is None or k_key is None:
+            continue
+        experts, top_k = int(holder[e_key]), int(holder[k_key])
+        if experts % ep:
+            raise ValueError(
+                f"ep={ep} does not divide {e_key}={experts}; a rank would hold "
+                f"a fractional number of experts"
+            )
+        local = experts // ep
+        # Group-limited routing (DeepSeek/GLM) constrains the slice: vLLM needs
+        # the local experts to divide evenly into n_group groups.
+        n_group = int(holder.get("n_group") or 1)
+        if n_group > 1 and (local < n_group or local % n_group):
+            raise ValueError(
+                f"ep={ep} leaves {local} local experts, which n_group="
+                f"{n_group} does not divide; that slice is not a configuration "
+                f"vLLM can build"
+            )
+        holder[e_key], holder[k_key] = local, max(1, top_k // ep)
+        found = True
+    if not found:
+        raise ValueError(
+            f"--moe-ep-degrees includes {ep} but the model config declares no "
+            f"expert count / top-k under any known key, at the top level or "
+            f"under text_config; cannot express a per-rank slice"
+        )
+    return out
+
+
+def _cap_mtp_modules(config: dict[str, Any], cap: int = 1) -> dict[str, Any]:
+    """Cap ``num_mtp_modules`` in the config **file**, for MTP profiling.
+
+    Not an ``hf_overrides`` entry, because the drafter reads
+    ``speculative_config.draft_model_config.hf_config`` -- built from the
+    config on disk -- rather than the target's overridden one. Unlike
+    ``num_hidden_layers`` the field has no cross-field validation, so writing
+    it is safe.
+
+    MiniMax-M3 declares 7 modules, each a full MoE decoder layer at ~14.8 GB,
+    which is ~103 GB and does not fit one card. They are all the same class and
+    the simulator multiplies by the declared count, so profiling one is enough.
+    """
+    out = dict(config)
+    for holder in (out, out.get("text_config")):
+        if isinstance(holder, dict) and "num_mtp_modules" in holder:
+            if int(holder["num_mtp_modules"] or 0) > cap:
+                log.info(
+                    "capping num_mtp_modules %s -> %d for MTP profiling; the "
+                    "modules are identical and the simulator multiplies by the "
+                    "declared count",
+                    holder["num_mtp_modules"], cap,
+                )
+                holder["num_mtp_modules"] = cap
+    return out
+
+
+def resolve_attention_max_kv(args: ProfileArgs, limits: RuntimeLimits) -> int:
+    """The kv-axis cap for the attention and skew grids.
+
+    Unset means **the model's own context window**, not a constant: a cap that
+    does not follow the checkpoint stops the sweep at 16k on a model that
+    serves 160k, and the simulator then extrapolates the rest. That is fine for
+    a dense kernel, which is linear in kv, and wrong for a sparse one -- past
+    ``index_topk`` the attention kernel is flat while the indexer keeps growing
+    with the whole KV, so the two curves diverge exactly in the region no shot
+    covers.
+
+    The derived cap is ``max_model_len - max(decode_q_len) - 1`` rather than
+    ``max_model_len``: a decode request occupies ``kv + q`` positions and the
+    grid needs one more to be a decode rather than the whole window, so passing
+    the context length verbatim gets the top point filtered out and the sweep
+    silently stops one doubling short.
+
+    An explicit value still wins, and is still clamped to what the engine
+    accepted.
+    """
+    if args.attention_max_kv is not None:
+        return min(args.attention_max_kv, limits.max_model_len)
+    q_max = max((int(q) for q in args.attention_decode_q_lens), default=1)
+    return max(1, limits.max_model_len - max(1, q_max) - 1)
+
+
+def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     """Read back the runtime shapes the engine accepted.
 
     Undoes the MNBT bump applied in ``fuse_engine_kwargs`` so
@@ -254,9 +498,18 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     """
     cfg = llm.llm_engine.vllm_config
 
-    num_cache_blocks = cfg.cache_config.num_gpu_blocks
-    block_size = cfg.cache_config.block_size
-    assert num_cache_blocks is not None, "vLLM did not report num_gpu_blocks"
+    # ``kv_cache_size_tokens`` is vLLM's own group-aware capacity, added in
+    # v0.28. Prefer it: for a hybrid model whose requests occupy several KV
+    # cache groups at once (attention pages + mamba state), the older
+    # ``num_gpu_blocks * block_size`` overstates what a request can actually
+    # get, and every feasibility filter downstream would inherit that error.
+    # Fall back to the product for engines that leave it unset.
+    num_cache_tokens = getattr(cfg.cache_config, "kv_cache_size_tokens", None)
+    if num_cache_tokens is None:
+        num_cache_blocks = cfg.cache_config.num_gpu_blocks
+        block_size = cfg.cache_config.block_size
+        assert num_cache_blocks is not None, "vLLM did not report num_gpu_blocks"
+        num_cache_tokens = num_cache_blocks * block_size
 
     # MoE params read from the live HF config (post-override).
     hf_cfg = getattr(cfg.model_config, "hf_text_config", None)
@@ -267,6 +520,13 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     )
     moe_params = probe_moe_params(cfg_dict)
     num_experts, top_k = moe_params or (None, None)
+    key_saturation = probe_key_saturation(cfg_dict)
+
+    # CLI wins over the resolved value, so a user can widen or coarsen the
+    # prefill grid without editing a model config.
+    chunk = probe_linear_attn_chunk(cfg_dict)
+    if args is not None and args.linear_attn_chunk is not None:
+        chunk = int(args.linear_attn_chunk)
 
     engine_mnbt = cfg.scheduler_config.max_num_batched_tokens
     engine_msq = cfg.scheduler_config.max_num_seqs
@@ -275,10 +535,13 @@ def probe_limits(llm: LLM) -> RuntimeLimits:
     return RuntimeLimits(
         max_num_batched_tokens=logical_mnbt,
         max_num_seqs=engine_msq,
-        num_cache_tokens=num_cache_blocks * block_size,
+        num_cache_tokens=int(num_cache_tokens),
+        block_size=int(cfg.cache_config.block_size),
+        linear_attn_chunk=chunk,
         max_model_len=cfg.model_config.max_model_len,
         num_experts=num_experts,
         top_k=top_k,
+        key_saturation=key_saturation,
     )
 
 

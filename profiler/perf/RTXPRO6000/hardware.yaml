@@ -1,0 +1,1653 @@
+hardware: RTXPRO6000
+written_by: profiler.core.hardware calibration of retained NCCL measurements
+written_at: '2026-10-02T02:28:39+00:00'
+spec:
+  gpu_name: NVIDIA RTX PRO 6000 Blackwell Server Edition
+  compute_capability: '12.0'
+  sm_count: 188
+  memory_total_gib: 94.97
+  memory_bus_width_bit: 512
+  memory_clock_mhz: 12481
+  memory_bw_gbps: 1597.6
+  l2_cache_mib: 128.0
+  sm_clock_mhz: 2430
+  torch: 2.13.0+cu130
+  cuda: '13.0'
+  driver_version: 590.48.01
+  pcie_gen_max: 5
+  pcie_width_max: 16
+  power_limit_w: 600.0
+measured:
+  at: '2026-09-26T12:33:26.552271+00:00'
+  interconnect:
+    npus: 2
+    collectives:
+    - all_reduce
+    - all_gather
+    - reduce_scatter
+    dtype: bfloat16
+    communicator: vLLM PyNcclCommunicator, NCCL-only, out-of-place buffers
+    gpu_uuids:
+    - GPU-7cb2946b-b80a-6932-b7cd-4ce7e1f38400
+    - GPU-46e929dc-3bb4-c690-07d5-dd45ecf5a3f1
+    sample_bytes: AllReduce input; AllGather local input; ReduceScatter local output
+    timing: Median of three independent runs; each run takes the median of five per-trial
+      maximum-rank CUDA-event times, with 8 graph operations replayed 8 times.
+    protocol:
+      graph_ops: 8
+      replays: 8
+      trials: 5
+    independent_runs: 3
+    host_configuration:
+      acs: disabled, operator-reported
+      iommu: disabled, operator-reported
+    note: Two-rank one-hop calibration only; different groups/topologies, grouped and ragged
+      NCCL calls require separate validation.
+    calibration:
+      latency_policy: retain previously calibrated common latency while refreshing bandwidth
+      fixed_latency_ns: 6600
+      latency_source_measured_at: '2026-09-08T17:59:31+00:00'
+      previous_hardware_sha256: 3d7525ee4133d2914fe94b6c0cab4dc4e47cea70ee648c609d3dc9aceb005ddd
+      acquisition_sha256:
+      - 8da4bf99182af59d29e2b037bebaacb96f7a9f72ffac33a52659ef31b0adbfa4
+      - 0e409f542174ebcf2042d4f8f2c7924231e6711f34047fedb7ae9ebbdc029cfa
+      - cc2320927dbb9763dc9ff0080107640ecde0bab4d391f1ca7f34488bb945279e
+      processing: profiler.core.hardware._fit and _fit_collectives
+      benchmark_input: false
+    samples:
+    - collective: all_gather
+      bytes: 4096
+      us: 10.495499707758427
+      us_graphed: 10.495499707758427
+      repeats_us:
+      - 10.495499707758427
+      - 10.291500017046928
+      - 10.816499590873718
+    - collective: all_gather
+      bytes: 8192
+      us: 11.410499922931194
+      us_graphed: 11.410499922931194
+      repeats_us:
+      - 10.64900029450655
+      - 11.410499922931194
+      - 13.326499611139297
+    - collective: all_gather
+      bytes: 10240
+      us: 11.64149958640337
+      us_graphed: 11.64149958640337
+      repeats_us:
+      - 11.301499791443348
+      - 11.662499979138374
+      - 11.64149958640337
+    - collective: all_gather
+      bytes: 16384
+      us: 11.935500428080559
+      us_graphed: 11.935500428080559
+      repeats_us:
+      - 11.614000424742699
+      - 11.935500428080559
+      - 12.241500429809093
+    - collective: all_gather
+      bytes: 32768
+      us: 12.492500245571136
+      us_graphed: 12.492500245571136
+      repeats_us:
+      - 12.492500245571136
+      - 12.42899987846613
+      - 12.734999880194664
+    - collective: all_gather
+      bytes: 40960
+      us: 12.679499574005604
+      us_graphed: 12.679499574005604
+      repeats_us:
+      - 12.679499574005604
+      - 12.810000218451023
+      - 12.66149990260601
+    - collective: all_gather
+      bytes: 65536
+      us: 13.620000332593918
+      us_graphed: 13.620000332593918
+      repeats_us:
+      - 15.104999765753746
+      - 13.620000332593918
+      - 13.088500127196312
+    - collective: all_gather
+      bytes: 131072
+      us: 16.755500808358192
+      us_graphed: 16.755500808358192
+      repeats_us:
+      - 16.739999875426292
+      - 16.755500808358192
+      - 16.8674997985363
+    - collective: all_gather
+      bytes: 139264
+      us: 16.685500741004944
+      us_graphed: 16.685500741004944
+      repeats_us:
+      - 16.630500555038452
+      - 18.853500485420227
+      - 16.685500741004944
+    - collective: all_gather
+      bytes: 262144
+      us: 18.82700063288212
+      us_graphed: 18.82700063288212
+      repeats_us:
+      - 18.98599974811077
+      - 18.82700063288212
+      - 18.70650053024292
+    - collective: all_gather
+      bytes: 327680
+      us: 20.887000486254692
+      us_graphed: 20.887000486254692
+      repeats_us:
+      - 20.825499668717384
+      - 20.908499136567116
+      - 20.887000486254692
+    - collective: all_gather
+      bytes: 524288
+      us: 26.924999430775642
+      us_graphed: 26.924999430775642
+      repeats_us:
+      - 26.94300003349781
+      - 26.758000254631042
+      - 26.924999430775642
+    - collective: all_gather
+      bytes: 557056
+      us: 27.10700035095215
+      us_graphed: 27.10700035095215
+      repeats_us:
+      - 27.00049988925457
+      - 27.10700035095215
+      - 27.556000277400017
+    - collective: all_gather
+      bytes: 1048576
+      us: 45.78150063753128
+      us_graphed: 45.78150063753128
+      repeats_us:
+      - 43.36899891495705
+      - 45.802999287843704
+      - 45.78150063753128
+    - collective: all_gather
+      bytes: 1114112
+      us: 45.38949951529503
+      us_graphed: 45.38949951529503
+      repeats_us:
+      - 45.5470010638237
+      - 45.38949951529503
+      - 45.25449872016907
+    - collective: all_gather
+      bytes: 1310720
+      us: 51.62699893116951
+      us_graphed: 51.62699893116951
+      repeats_us:
+      - 51.62699893116951
+      - 51.3870008289814
+      - 52.249498665332794
+    - collective: all_gather
+      bytes: 2097152
+      us: 76.34449750185013
+      us_graphed: 76.34449750185013
+      repeats_us:
+      - 76.34449750185013
+      - 76.323501765728
+      - 76.49149745702744
+    - collective: all_gather
+      bytes: 2228224
+      us: 80.45899868011475
+      us_graphed: 80.45899868011475
+      repeats_us:
+      - 80.45899868011475
+      - 80.14299720525742
+      - 80.63650131225586
+    - collective: all_gather
+      bytes: 4194304
+      us: 142.29099452495575
+      us_graphed: 142.29099452495575
+      repeats_us:
+      - 142.07099378108978
+      - 142.29099452495575
+      - 142.644003033638
+    - collective: all_gather
+      bytes: 5242880
+      us: 178.34900319576263
+      us_graphed: 178.34900319576263
+      repeats_us:
+      - 178.34900319576263
+      - 178.28750610351562
+      - 179.57399785518646
+    - collective: all_gather
+      bytes: 8388608
+      us: 277.4200141429901
+      us_graphed: 277.4200141429901
+      repeats_us:
+      - 277.16851234436035
+      - 277.4825096130371
+      - 277.4200141429901
+    - collective: all_gather
+      bytes: 8912896
+      us: 296.7444956302643
+      us_graphed: 296.7444956302643
+      repeats_us:
+      - 296.7444956302643
+      - 296.6024875640869
+      - 299.37100410461426
+    - collective: all_gather
+      bytes: 16777216
+      us: 546.2369918823242
+      us_graphed: 546.2369918823242
+      repeats_us:
+      - 546.2369918823242
+      - 546.1239814758301
+      - 547.401487827301
+    - collective: all_gather
+      bytes: 20971520
+      us: 682.8895211219788
+      us_graphed: 682.8895211219788
+      repeats_us:
+      - 680.2520155906677
+      - 683.1520199775696
+      - 682.8895211219788
+    - collective: all_reduce
+      bytes: 4096
+      us: 12.713000178337097
+      us_graphed: 12.713000178337097
+      repeats_us:
+      - 12.545499950647354
+      - 14.12350032478571
+      - 12.713000178337097
+    - collective: all_reduce
+      bytes: 8192
+      us: 12.666000053286552
+      us_graphed: 12.666000053286552
+      repeats_us:
+      - 12.521499767899513
+      - 13.728000223636627
+      - 12.666000053286552
+    - collective: all_reduce
+      bytes: 10240
+      us: 12.915000319480896
+      us_graphed: 12.915000319480896
+      repeats_us:
+      - 12.733999639749527
+      - 12.915000319480896
+      - 13.714499771595001
+    - collective: all_reduce
+      bytes: 16384
+      us: 13.87150026857853
+      us_graphed: 13.87150026857853
+      repeats_us:
+      - 13.87150026857853
+      - 13.63349985331297
+      - 13.968500308692455
+    - collective: all_reduce
+      bytes: 32768
+      us: 14.516999945044518
+      us_graphed: 14.516999945044518
+      repeats_us:
+      - 14.280499890446663
+      - 14.516999945044518
+      - 14.773000031709671
+    - collective: all_reduce
+      bytes: 40960
+      us: 14.608499594032764
+      us_graphed: 14.608499594032764
+      repeats_us:
+      - 14.623000286519527
+      - 14.607000164687634
+      - 14.608499594032764
+    - collective: all_reduce
+      bytes: 65536
+      us: 14.756499789655209
+      us_graphed: 14.756499789655209
+      repeats_us:
+      - 14.756499789655209
+      - 14.897500164806843
+      - 14.65549971908331
+    - collective: all_reduce
+      bytes: 131072
+      us: 17.38150045275688
+      us_graphed: 17.38150045275688
+      repeats_us:
+      - 17.28150062263012
+      - 17.38150045275688
+      - 17.889000475406647
+    - collective: all_reduce
+      bytes: 139264
+      us: 19.6090005338192
+      us_graphed: 19.6090005338192
+      repeats_us:
+      - 19.6090005338192
+      - 18.865499645471573
+      - 20.839499309659004
+    - collective: all_reduce
+      bytes: 262144
+      us: 21.717499941587448
+      us_graphed: 21.717499941587448
+      repeats_us:
+      - 21.58300019800663
+      - 21.717499941587448
+      - 22.417999804019928
+    - collective: all_reduce
+      bytes: 327680
+      us: 22.823499515652657
+      us_graphed: 22.823499515652657
+      repeats_us:
+      - 22.8704996407032
+      - 22.679999470710754
+      - 22.823499515652657
+    - collective: all_reduce
+      bytes: 524288
+      us: 29.8445001244545
+      us_graphed: 29.8445001244545
+      repeats_us:
+      - 30.04699945449829
+      - 28.418000787496567
+      - 29.8445001244545
+    - collective: all_reduce
+      bytes: 557056
+      us: 29.17099930346012
+      us_graphed: 29.17099930346012
+      repeats_us:
+      - 29.12300080060959
+      - 29.31400015950203
+      - 29.17099930346012
+    - collective: all_reduce
+      bytes: 1048576
+      us: 41.04100167751312
+      us_graphed: 41.04100167751312
+      repeats_us:
+      - 41.03400185704231
+      - 41.04100167751312
+      - 42.47400164604187
+    - collective: all_reduce
+      bytes: 1114112
+      us: 42.18750074505806
+      us_graphed: 42.18750074505806
+      repeats_us:
+      - 42.18750074505806
+      - 42.153000831604004
+      - 42.8600013256073
+    - collective: all_reduce
+      bytes: 1310720
+      us: 47.47350141406059
+      us_graphed: 47.47350141406059
+      repeats_us:
+      - 47.06550016999245
+      - 47.68899828195572
+      - 47.47350141406059
+    - collective: all_reduce
+      bytes: 2097152
+      us: 67.30549782514572
+      us_graphed: 67.30549782514572
+      repeats_us:
+      - 67.30549782514572
+      - 66.90599769353867
+      - 71.1280032992363
+    - collective: all_reduce
+      bytes: 2228224
+      us: 70.82200050354004
+      us_graphed: 70.82200050354004
+      repeats_us:
+      - 70.82200050354004
+      - 70.79599797725677
+      - 73.36050271987915
+    - collective: all_reduce
+      bytes: 4194304
+      us: 124.8679980635643
+      us_graphed: 124.8679980635643
+      repeats_us:
+      - 124.60750341415405
+      - 124.8679980635643
+      - 124.87699836492538
+    - collective: all_reduce
+      bytes: 5242880
+      us: 154.68749403953552
+      us_graphed: 154.68749403953552
+      repeats_us:
+      - 153.25850248336792
+      - 155.46050667762756
+      - 154.68749403953552
+    - collective: all_reduce
+      bytes: 8388608
+      us: 240.59049785137177
+      us_graphed: 240.59049785137177
+      repeats_us:
+      - 240.59049785137177
+      - 239.6254986524582
+      - 240.77999591827393
+    - collective: all_reduce
+      bytes: 8912896
+      us: 260.127991437912
+      us_graphed: 260.127991437912
+      repeats_us:
+      - 260.127991437912
+      - 259.84451174736023
+      - 260.8335018157959
+    - collective: all_reduce
+      bytes: 16777216
+      us: 471.1199998855591
+      us_graphed: 471.1199998855591
+      repeats_us:
+      - 471.1199998855591
+      - 471.54149413108826
+      - 470.9784984588623
+    - collective: all_reduce
+      bytes: 20971520
+      us: 587.0850086212158
+      us_graphed: 587.0850086212158
+      repeats_us:
+      - 586.529016494751
+      - 588.5754823684692
+      - 587.0850086212158
+    - collective: reduce_scatter
+      bytes: 4096
+      us: 9.831000119447708
+      us_graphed: 9.831000119447708
+      repeats_us:
+      - 9.735500440001488
+      - 9.831000119447708
+      - 10.103000327944756
+    - collective: reduce_scatter
+      bytes: 8192
+      us: 10.554499924182892
+      us_graphed: 10.554499924182892
+      repeats_us:
+      - 10.533000342547894
+      - 10.676500387489796
+      - 10.554499924182892
+    - collective: reduce_scatter
+      bytes: 10240
+      us: 10.66999975591898
+      us_graphed: 10.66999975591898
+      repeats_us:
+      - 10.645000264048576
+      - 10.66999975591898
+      - 11.638499796390533
+    - collective: reduce_scatter
+      bytes: 16384
+      us: 11.34950015693903
+      us_graphed: 11.34950015693903
+      repeats_us:
+      - 10.88349986821413
+      - 11.34950015693903
+      - 11.617500334978104
+    - collective: reduce_scatter
+      bytes: 32768
+      us: 11.717000044882298
+      us_graphed: 11.717000044882298
+      repeats_us:
+      - 13.718999922275543
+      - 11.53900008648634
+      - 11.717000044882298
+    - collective: reduce_scatter
+      bytes: 40960
+      us: 12.584500014781952
+      us_graphed: 12.584500014781952
+      repeats_us:
+      - 12.700499966740608
+      - 12.575499713420868
+      - 12.584500014781952
+    - collective: reduce_scatter
+      bytes: 65536
+      us: 12.745499610900879
+      us_graphed: 12.745499610900879
+      repeats_us:
+      - 12.681500054895878
+      - 12.745499610900879
+      - 12.749000452458858
+    - collective: reduce_scatter
+      bytes: 131072
+      us: 15.629999339580536
+      us_graphed: 15.629999339580536
+      repeats_us:
+      - 15.130000188946724
+      - 15.629999339580536
+      - 15.751000493764877
+    - collective: reduce_scatter
+      bytes: 139264
+      us: 16.20499975979328
+      us_graphed: 16.20499975979328
+      repeats_us:
+      - 16.20499975979328
+      - 15.913000330328941
+      - 16.56549982726574
+    - collective: reduce_scatter
+      bytes: 262144
+      us: 21.07050083577633
+      us_graphed: 21.07050083577633
+      repeats_us:
+      - 23.563500493764877
+      - 21.07050083577633
+      - 20.28699964284897
+    - collective: reduce_scatter
+      bytes: 327680
+      us: 23.105500265955925
+      us_graphed: 23.105500265955925
+      repeats_us:
+      - 22.89699949324131
+      - 23.105500265955925
+      - 23.74500036239624
+    - collective: reduce_scatter
+      bytes: 524288
+      us: 29.36450019478798
+      us_graphed: 29.36450019478798
+      repeats_us:
+      - 29.50900048017502
+      - 28.891000896692276
+      - 29.36450019478798
+    - collective: reduce_scatter
+      bytes: 557056
+      us: 31.131500378251076
+      us_graphed: 31.131500378251076
+      repeats_us:
+      - 31.585000455379486
+      - 31.100500375032425
+      - 31.131500378251076
+    - collective: reduce_scatter
+      bytes: 1048576
+      us: 49.27099868655205
+      us_graphed: 49.27099868655205
+      repeats_us:
+      - 49.27099868655205
+      - 49.0725003182888
+      - 50.319500267505646
+    - collective: reduce_scatter
+      bytes: 1114112
+      us: 51.52750015258789
+      us_graphed: 51.52750015258789
+      repeats_us:
+      - 51.46050080657005
+      - 51.52750015258789
+      - 51.8449991941452
+    - collective: reduce_scatter
+      bytes: 1310720
+      us: 59.11700055003166
+      us_graphed: 59.11700055003166
+      repeats_us:
+      - 59.04949828982353
+      - 59.11700055003166
+      - 59.37200039625168
+    - collective: reduce_scatter
+      bytes: 2097152
+      us: 88.41049671173096
+      us_graphed: 88.41049671173096
+      repeats_us:
+      - 88.32599967718124
+      - 88.41049671173096
+      - 89.21399712562561
+    - collective: reduce_scatter
+      bytes: 2228224
+      us: 93.21050345897675
+      us_graphed: 93.21050345897675
+      repeats_us:
+      - 92.95549988746643
+      - 93.21050345897675
+      - 93.57450157403946
+    - collective: reduce_scatter
+      bytes: 4194304
+      us: 166.64950549602509
+      us_graphed: 166.64950549602509
+      repeats_us:
+      - 166.64950549602509
+      - 166.6419953107834
+      - 170.04400491714478
+    - collective: reduce_scatter
+      bytes: 5242880
+      us: 207.6524943113327
+      us_graphed: 207.6524943113327
+      repeats_us:
+      - 207.40149915218353
+      - 207.6524943113327
+      - 208.85799825191498
+    - collective: reduce_scatter
+      bytes: 8388608
+      us: 324.54898953437805
+      us_graphed: 324.54898953437805
+      repeats_us:
+      - 324.54898953437805
+      - 324.5055079460144
+      - 326.8924951553345
+    - collective: reduce_scatter
+      bytes: 8912896
+      us: 347.6389944553375
+      us_graphed: 347.6389944553375
+      repeats_us:
+      - 345.9224998950958
+      - 347.6389944553375
+      - 348.76498579978943
+    - collective: reduce_scatter
+      bytes: 16777216
+      us: 635.4230046272278
+      us_graphed: 635.4230046272278
+      repeats_us:
+      - 634.190022945404
+      - 635.4230046272278
+      - 639.9725079536438
+    - collective: reduce_scatter
+      bytes: 20971520
+      us: 786.5300178527832
+      us_graphed: 786.5300178527832
+      repeats_us:
+      - 786.5300178527832
+      - 786.4609956741333
+      - 791.1645174026489
+    fit:
+      model: 'astra-sim analytical Ring: phases * floor(latency_ns + chunk_bytes * 1e9 / (bandwidth
+        * 2^30)) + 3 * reductions * floor(chunk_bytes / local_mem_bw_gbps) + (phases + 1)
+        * endpoint_ns'
+      model_version: 2
+      assumptions:
+        npus: 2
+        topology: FullyConnected
+        hops: 1
+        dimensions: 1
+        preferred_dataset_splits: 1
+        local_mem_bw_gbps: 1597
+        local_mem_bw_unit: GB/s (decimal)
+        endpoint_ns: 10
+      objective: nonnegative relative least squares over the whole sweep with shared latency
+        fixed; continuous network term for fitting, integer ns for residuals
+      timing: graphed
+      bandwidth_gbps: 28.731784
+      bandwidth_unit: GiB/s
+      latency_ns: 6600
+      residual_pct_by_size:
+      - collective: all_gather
+        bytes: 4096
+        charged_bytes: 4096
+        phases: 1
+        predicted_us: 6.752
+        err_pct: -35.668
+      - collective: all_reduce
+        bytes: 4096
+        charged_bytes: 4096
+        phases: 2
+        predicted_us: 13.365
+        err_pct: 5.129
+      - collective: reduce_scatter
+        bytes: 4096
+        charged_bytes: 4096
+        phases: 1
+        predicted_us: 6.758
+        err_pct: -31.258
+      - collective: all_gather
+        bytes: 8192
+        charged_bytes: 8192
+        phases: 1
+        predicted_us: 6.885
+        err_pct: -39.661
+      - collective: all_reduce
+        bytes: 8192
+        charged_bytes: 8192
+        phases: 2
+        predicted_us: 13.5
+        err_pct: 6.585
+      - collective: reduce_scatter
+        bytes: 8192
+        charged_bytes: 8192
+        phases: 1
+        predicted_us: 6.9
+        err_pct: -34.625
+      - &id001
+        collective: all_gather
+        bytes: 10240
+        charged_bytes: 10240
+        phases: 1
+        predicted_us: 6.951
+        err_pct: -40.291
+      - collective: all_reduce
+        bytes: 10240
+        charged_bytes: 10240
+        phases: 2
+        predicted_us: 13.569
+        err_pct: 5.064
+      - collective: reduce_scatter
+        bytes: 10240
+        charged_bytes: 10240
+        phases: 1
+        predicted_us: 6.969
+        err_pct: -34.686
+      - collective: all_gather
+        bytes: 16384
+        charged_bytes: 16384
+        phases: 1
+        predicted_us: 7.151
+        err_pct: -40.086
+      - collective: all_reduce
+        bytes: 16384
+        charged_bytes: 16384
+        phases: 2
+        predicted_us: 13.775
+        err_pct: -0.696
+      - collective: reduce_scatter
+        bytes: 16384
+        charged_bytes: 16384
+        phases: 1
+        predicted_us: 7.181
+        err_pct: -36.728
+      - collective: all_gather
+        bytes: 32768
+        charged_bytes: 32768
+        phases: 1
+        predicted_us: 7.682
+        err_pct: -38.507
+      - collective: all_reduce
+        bytes: 32768
+        charged_bytes: 32768
+        phases: 2
+        predicted_us: 14.322
+        err_pct: -1.343
+      - collective: reduce_scatter
+        bytes: 32768
+        charged_bytes: 32768
+        phases: 1
+        predicted_us: 7.742
+        err_pct: -33.925
+      - collective: all_gather
+        bytes: 40960
+        charged_bytes: 40960
+        phases: 1
+        predicted_us: 7.947
+        err_pct: -37.324
+      - collective: all_reduce
+        bytes: 40960
+        charged_bytes: 40960
+        phases: 2
+        predicted_us: 14.592
+        err_pct: -0.113
+      - collective: reduce_scatter
+        bytes: 40960
+        charged_bytes: 40960
+        phases: 1
+        predicted_us: 8.022
+        err_pct: -36.255
+      - collective: all_gather
+        bytes: 65536
+        charged_bytes: 65536
+        phases: 1
+        predicted_us: 8.744
+        err_pct: -35.8
+      - collective: all_reduce
+        bytes: 65536
+        charged_bytes: 65536
+        phases: 2
+        predicted_us: 15.414
+        err_pct: 4.456
+      - collective: reduce_scatter
+        bytes: 65536
+        charged_bytes: 65536
+        phases: 1
+        predicted_us: 8.867
+        err_pct: -30.43
+      - collective: all_gather
+        bytes: 131072
+        charged_bytes: 131072
+        phases: 1
+        predicted_us: 10.868
+        err_pct: -35.138
+      - collective: all_reduce
+        bytes: 131072
+        charged_bytes: 131072
+        phases: 2
+        predicted_us: 17.601
+        err_pct: 1.263
+      - collective: reduce_scatter
+        bytes: 131072
+        charged_bytes: 131072
+        phases: 1
+        predicted_us: 11.114
+        err_pct: -28.893
+      - collective: all_gather
+        bytes: 139264
+        charged_bytes: 139264
+        phases: 1
+        predicted_us: 11.134
+        err_pct: -33.271
+      - collective: all_reduce
+        bytes: 139264
+        charged_bytes: 139264
+        phases: 2
+        predicted_us: 17.873
+        err_pct: -8.853
+      - collective: reduce_scatter
+        bytes: 139264
+        charged_bytes: 139264
+        phases: 1
+        predicted_us: 11.395
+        err_pct: -29.682
+      - collective: all_gather
+        bytes: 262144
+        charged_bytes: 262144
+        phases: 1
+        predicted_us: 15.117
+        err_pct: -19.706
+      - collective: all_reduce
+        bytes: 262144
+        charged_bytes: 262144
+        phases: 2
+        predicted_us: 21.972
+        err_pct: 1.172
+      - collective: reduce_scatter
+        bytes: 262144
+        charged_bytes: 262144
+        phases: 1
+        predicted_us: 15.609
+        err_pct: -25.92
+      - collective: all_gather
+        bytes: 327680
+        charged_bytes: 327680
+        phases: 1
+        predicted_us: 17.241
+        err_pct: -17.456
+      - collective: all_reduce
+        bytes: 327680
+        charged_bytes: 327680
+        phases: 2
+        predicted_us: 24.156
+        err_pct: 5.838
+      - collective: reduce_scatter
+        bytes: 327680
+        charged_bytes: 327680
+        phases: 1
+        predicted_us: 17.856
+        err_pct: -22.72
+      - collective: all_gather
+        bytes: 524288
+        charged_bytes: 524288
+        phases: 1
+        predicted_us: 23.614
+        err_pct: -12.297
+      - collective: all_reduce
+        bytes: 524288
+        charged_bytes: 524288
+        phases: 2
+        predicted_us: 30.716
+        err_pct: 2.92
+      - collective: reduce_scatter
+        bytes: 524288
+        charged_bytes: 524288
+        phases: 1
+        predicted_us: 24.598
+        err_pct: -16.232
+      - collective: all_gather
+        bytes: 557056
+        charged_bytes: 557056
+        phases: 1
+        predicted_us: 24.676
+        err_pct: -8.968
+      - collective: all_reduce
+        bytes: 557056
+        charged_bytes: 557056
+        phases: 2
+        predicted_us: 31.808
+        err_pct: 9.04
+      - collective: reduce_scatter
+        bytes: 557056
+        charged_bytes: 557056
+        phases: 1
+        predicted_us: 25.72
+        err_pct: -17.383
+      - collective: all_gather
+        bytes: 1048576
+        charged_bytes: 1048576
+        phases: 1
+        predicted_us: 40.608
+        err_pct: -11.3
+      - collective: all_reduce
+        bytes: 1048576
+        charged_bytes: 1048576
+        phases: 2
+        predicted_us: 48.202
+        err_pct: 17.448
+      - collective: reduce_scatter
+        bytes: 1048576
+        charged_bytes: 1048576
+        phases: 1
+        predicted_us: 42.576
+        err_pct: -13.588
+      - collective: all_gather
+        bytes: 1114112
+        charged_bytes: 1114112
+        phases: 1
+        predicted_us: 42.733
+        err_pct: -5.853
+      - collective: all_reduce
+        bytes: 1114112
+        charged_bytes: 1114112
+        phases: 2
+        predicted_us: 50.386
+        err_pct: 19.433
+      - collective: reduce_scatter
+        bytes: 1114112
+        charged_bytes: 1114112
+        phases: 1
+        predicted_us: 44.824
+        err_pct: -13.01
+      - collective: all_gather
+        bytes: 1310720
+        charged_bytes: 1310720
+        phases: 1
+        predicted_us: 49.106
+        err_pct: -4.883
+      - collective: all_reduce
+        bytes: 1310720
+        charged_bytes: 1310720
+        phases: 2
+        predicted_us: 56.946
+        err_pct: 19.953
+      - collective: reduce_scatter
+        bytes: 1310720
+        charged_bytes: 1310720
+        phases: 1
+        predicted_us: 51.566
+        err_pct: -12.773
+      - collective: all_gather
+        bytes: 2097152
+        charged_bytes: 2097152
+        phases: 1
+        predicted_us: 74.597
+        err_pct: -2.289
+      - collective: all_reduce
+        bytes: 2097152
+        charged_bytes: 2097152
+        phases: 2
+        predicted_us: 83.174
+        err_pct: 23.577
+      - collective: reduce_scatter
+        bytes: 2097152
+        charged_bytes: 2097152
+        phases: 1
+        predicted_us: 78.536
+        err_pct: -11.169
+      - collective: all_gather
+        bytes: 2228224
+        charged_bytes: 2228224
+        phases: 1
+        predicted_us: 78.846
+        err_pct: -2.005
+      - collective: all_reduce
+        bytes: 2228224
+        charged_bytes: 2228224
+        phases: 2
+        predicted_us: 87.547
+        err_pct: 23.616
+      - collective: reduce_scatter
+        bytes: 2228224
+        charged_bytes: 2228224
+        phases: 1
+        predicted_us: 83.031
+        err_pct: -10.921
+      - collective: all_gather
+        bytes: 4194304
+        charged_bytes: 4194304
+        phases: 1
+        predicted_us: 142.575
+        err_pct: 0.2
+      - collective: all_reduce
+        bytes: 4194304
+        charged_bytes: 4194304
+        phases: 2
+        predicted_us: 153.123
+        err_pct: 22.628
+      - collective: reduce_scatter
+        bytes: 4194304
+        charged_bytes: 4194304
+        phases: 1
+        predicted_us: 150.453
+        err_pct: -9.719
+      - collective: all_gather
+        bytes: 5242880
+        charged_bytes: 5242880
+        phases: 1
+        predicted_us: 176.564
+        err_pct: -1.001
+      - collective: all_reduce
+        bytes: 5242880
+        charged_bytes: 5242880
+        phases: 2
+        predicted_us: 188.097
+        err_pct: 21.598
+      - collective: reduce_scatter
+        bytes: 5242880
+        charged_bytes: 5242880
+        phases: 1
+        predicted_us: 186.41
+        err_pct: -10.23
+      - collective: all_gather
+        bytes: 8388608
+        charged_bytes: 8388608
+        phases: 1
+        predicted_us: 278.531
+        err_pct: 0.4
+      - collective: all_reduce
+        bytes: 8388608
+        charged_bytes: 8388608
+        phases: 2
+        predicted_us: 293.018
+        err_pct: 21.791
+      - collective: reduce_scatter
+        bytes: 8388608
+        charged_bytes: 8388608
+        phases: 1
+        predicted_us: 294.287
+        err_pct: -9.324
+      - collective: all_gather
+        bytes: 8912896
+        charged_bytes: 8912896
+        phases: 1
+        predicted_us: 295.525
+        err_pct: -0.411
+      - collective: all_reduce
+        bytes: 8912896
+        charged_bytes: 8912896
+        phases: 2
+        predicted_us: 310.504
+        err_pct: 19.366
+      - collective: reduce_scatter
+        bytes: 8912896
+        charged_bytes: 8912896
+        phases: 1
+        predicted_us: 312.268
+        err_pct: -10.175
+      - collective: all_gather
+        bytes: 16777216
+        charged_bytes: 16777216
+        phases: 1
+        predicted_us: 550.442
+        err_pct: 0.77
+      - collective: all_reduce
+        bytes: 16777216
+        charged_bytes: 16777216
+        phases: 2
+        predicted_us: 572.808
+        err_pct: 21.584
+      - collective: reduce_scatter
+        bytes: 16777216
+        charged_bytes: 16777216
+        phases: 1
+        predicted_us: 581.957
+        err_pct: -8.414
+      - collective: all_gather
+        bytes: 20971520
+        charged_bytes: 20971520
+        phases: 1
+        predicted_us: 686.398
+        err_pct: 0.514
+      - collective: all_reduce
+        bytes: 20971520
+        charged_bytes: 20971520
+        phases: 2
+        predicted_us: 712.703
+        err_pct: 21.397
+      - collective: reduce_scatter
+        bytes: 20971520
+        charged_bytes: 20971520
+        phases: 1
+        predicted_us: 725.791
+        err_pct: -7.722
+      worst_residual: *id001
+      mean_abs_residual_pct: 16.728
+      mean_abs_residual_pct_by_collective:
+        all_gather: 17.658
+        all_reduce: 11.869
+        reduce_scatter: 20.658
+      fixed_latency_ns: 6600
+    collective_fits:
+      all_reduce:
+        model: 'astra-sim analytical Ring: phases * floor(latency_ns + chunk_bytes * 1e9 /
+          (bandwidth * 2^30)) + 3 * reductions * floor(chunk_bytes / local_mem_bw_gbps) +
+          (phases + 1) * endpoint_ns'
+        model_version: 2
+        assumptions:
+          npus: 2
+          topology: FullyConnected
+          hops: 1
+          dimensions: 1
+          preferred_dataset_splits: 1
+          local_mem_bw_gbps: 1597
+          local_mem_bw_unit: GB/s (decimal)
+          endpoint_ns: 10
+        objective: nonnegative relative least squares over the whole sweep with shared latency
+          fixed; continuous network term for fitting, integer ns for residuals
+        timing: graphed
+        bandwidth_gbps: 35.538758
+        bandwidth_unit: GiB/s
+        latency_ns: 6600
+        residual_pct_by_size:
+        - collective: all_reduce
+          bytes: 4096
+          charged_bytes: 4096
+          phases: 2
+          predicted_us: 13.339
+          err_pct: 4.924
+        - collective: all_reduce
+          bytes: 8192
+          charged_bytes: 8192
+          phases: 2
+          predicted_us: 13.45
+          err_pct: 6.19
+        - collective: all_reduce
+          bytes: 10240
+          charged_bytes: 10240
+          phases: 2
+          predicted_us: 13.507
+          err_pct: 4.584
+        - collective: all_reduce
+          bytes: 16384
+          charged_bytes: 16384
+          phases: 2
+          predicted_us: 13.673
+          err_pct: -1.431
+        - collective: all_reduce
+          bytes: 32768
+          charged_bytes: 32768
+          phases: 2
+          predicted_us: 14.118
+          err_pct: -2.749
+        - collective: all_reduce
+          bytes: 40960
+          charged_bytes: 40960
+          phases: 2
+          predicted_us: 14.338
+          err_pct: -1.852
+        - collective: all_reduce
+          bytes: 65536
+          charged_bytes: 65536
+          phases: 2
+          predicted_us: 15.006
+          err_pct: 1.691
+        - collective: all_reduce
+          bytes: 131072
+          charged_bytes: 131072
+          phases: 2
+          predicted_us: 16.787
+          err_pct: -3.42
+        - &id002
+          collective: all_reduce
+          bytes: 139264
+          charged_bytes: 139264
+          phases: 2
+          predicted_us: 17.007
+          err_pct: -13.269
+        - collective: all_reduce
+          bytes: 262144
+          charged_bytes: 262144
+          phases: 2
+          predicted_us: 20.344
+          err_pct: -6.324
+        - collective: all_reduce
+          bytes: 327680
+          charged_bytes: 327680
+          phases: 2
+          predicted_us: 22.122
+          err_pct: -3.074
+        - collective: all_reduce
+          bytes: 524288
+          charged_bytes: 524288
+          phases: 2
+          predicted_us: 27.46
+          err_pct: -7.99
+        - collective: all_reduce
+          bytes: 557056
+          charged_bytes: 557056
+          phases: 2
+          predicted_us: 28.35
+          err_pct: -2.814
+        - collective: all_reduce
+          bytes: 1048576
+          charged_bytes: 1048576
+          phases: 2
+          predicted_us: 41.692
+          err_pct: 1.586
+        - collective: all_reduce
+          bytes: 1114112
+          charged_bytes: 1114112
+          phases: 2
+          predicted_us: 43.47
+          err_pct: 3.04
+        - collective: all_reduce
+          bytes: 1310720
+          charged_bytes: 1310720
+          phases: 2
+          predicted_us: 48.808
+          err_pct: 2.811
+        - collective: all_reduce
+          bytes: 2097152
+          charged_bytes: 2097152
+          phases: 2
+          predicted_us: 70.154
+          err_pct: 4.232
+        - collective: all_reduce
+          bytes: 2228224
+          charged_bytes: 2228224
+          phases: 2
+          predicted_us: 73.713
+          err_pct: 4.082
+        - collective: all_reduce
+          bytes: 4194304
+          charged_bytes: 4194304
+          phases: 2
+          predicted_us: 127.083
+          err_pct: 1.774
+        - collective: all_reduce
+          bytes: 5242880
+          charged_bytes: 5242880
+          phases: 2
+          predicted_us: 155.547
+          err_pct: 0.556
+        - collective: all_reduce
+          bytes: 8388608
+          charged_bytes: 8388608
+          phases: 2
+          predicted_us: 240.938
+          err_pct: 0.144
+        - collective: all_reduce
+          bytes: 8912896
+          charged_bytes: 8912896
+          phases: 2
+          predicted_us: 255.168
+          err_pct: -1.907
+        - collective: all_reduce
+          bytes: 16777216
+          charged_bytes: 16777216
+          phases: 2
+          predicted_us: 468.646
+          err_pct: -0.525
+        - collective: all_reduce
+          bytes: 20971520
+          charged_bytes: 20971520
+          phases: 2
+          predicted_us: 582.501
+          err_pct: -0.781
+        worst_residual: *id002
+        mean_abs_residual_pct: 3.406
+        mean_abs_residual_pct_by_collective:
+          all_reduce: 3.406
+        fixed_latency_ns: 6600
+      all_gather:
+        model: 'astra-sim analytical Ring: phases * floor(latency_ns + chunk_bytes * 1e9 /
+          (bandwidth * 2^30)) + 3 * reductions * floor(chunk_bytes / local_mem_bw_gbps) +
+          (phases + 1) * endpoint_ns'
+        model_version: 2
+        assumptions:
+          npus: 2
+          topology: FullyConnected
+          hops: 1
+          dimensions: 1
+          preferred_dataset_splits: 1
+          local_mem_bw_gbps: 1597
+          local_mem_bw_unit: GB/s (decimal)
+          endpoint_ns: 10
+        objective: nonnegative relative least squares over the whole sweep with shared latency
+          fixed; continuous network term for fitting, integer ns for residuals
+        timing: graphed
+        bandwidth_gbps: 26.566668
+        bandwidth_unit: GiB/s
+        latency_ns: 6600
+        residual_pct_by_size:
+        - collective: all_gather
+          bytes: 4096
+          charged_bytes: 4096
+          phases: 1
+          predicted_us: 6.763
+          err_pct: -35.563
+        - collective: all_gather
+          bytes: 8192
+          charged_bytes: 8192
+          phases: 1
+          predicted_us: 6.907
+          err_pct: -39.468
+        - &id003
+          collective: all_gather
+          bytes: 10240
+          charged_bytes: 10240
+          phases: 1
+          predicted_us: 6.978
+          err_pct: -40.059
+        - collective: all_gather
+          bytes: 16384
+          charged_bytes: 16384
+          phases: 1
+          predicted_us: 7.194
+          err_pct: -39.726
+        - collective: all_gather
+          bytes: 32768
+          charged_bytes: 32768
+          phases: 1
+          predicted_us: 7.768
+          err_pct: -37.819
+        - collective: all_gather
+          bytes: 40960
+          charged_bytes: 40960
+          phases: 1
+          predicted_us: 8.055
+          err_pct: -36.472
+        - collective: all_gather
+          bytes: 65536
+          charged_bytes: 65536
+          phases: 1
+          predicted_us: 8.917
+          err_pct: -34.53
+        - collective: all_gather
+          bytes: 131072
+          charged_bytes: 131072
+          phases: 1
+          predicted_us: 11.214
+          err_pct: -33.073
+        - collective: all_gather
+          bytes: 139264
+          charged_bytes: 139264
+          phases: 1
+          predicted_us: 11.502
+          err_pct: -31.066
+        - collective: all_gather
+          bytes: 262144
+          charged_bytes: 262144
+          phases: 1
+          predicted_us: 15.809
+          err_pct: -16.03
+        - collective: all_gather
+          bytes: 327680
+          charged_bytes: 327680
+          phases: 1
+          predicted_us: 18.107
+          err_pct: -13.31
+        - collective: all_gather
+          bytes: 524288
+          charged_bytes: 524288
+          phases: 1
+          predicted_us: 24.999
+          err_pct: -7.153
+        - collective: all_gather
+          bytes: 557056
+          charged_bytes: 557056
+          phases: 1
+          predicted_us: 26.148
+          err_pct: -3.538
+        - collective: all_gather
+          bytes: 1048576
+          charged_bytes: 1048576
+          phases: 1
+          predicted_us: 43.378
+          err_pct: -5.25
+        - collective: all_gather
+          bytes: 1114112
+          charged_bytes: 1114112
+          phases: 1
+          predicted_us: 45.676
+          err_pct: 0.631
+        - collective: all_gather
+          bytes: 1310720
+          charged_bytes: 1310720
+          phases: 1
+          predicted_us: 52.568
+          err_pct: 1.823
+        - collective: all_gather
+          bytes: 2097152
+          charged_bytes: 2097152
+          phases: 1
+          predicted_us: 80.137
+          err_pct: 4.968
+        - collective: all_gather
+          bytes: 2228224
+          charged_bytes: 2228224
+          phases: 1
+          predicted_us: 84.732
+          err_pct: 5.311
+        - collective: all_gather
+          bytes: 4194304
+          charged_bytes: 4194304
+          phases: 1
+          predicted_us: 153.655
+          err_pct: 7.986
+        - collective: all_gather
+          bytes: 5242880
+          charged_bytes: 5242880
+          phases: 1
+          predicted_us: 190.414
+          err_pct: 6.765
+        - collective: all_gather
+          bytes: 8388608
+          charged_bytes: 8388608
+          phases: 1
+          predicted_us: 300.691
+          err_pct: 8.388
+        - collective: all_gather
+          bytes: 8912896
+          charged_bytes: 8912896
+          phases: 1
+          predicted_us: 319.07
+          err_pct: 7.523
+        - collective: all_gather
+          bytes: 16777216
+          charged_bytes: 16777216
+          phases: 1
+          predicted_us: 594.763
+          err_pct: 8.884
+        - collective: all_gather
+          bytes: 20971520
+          charged_bytes: 20971520
+          phases: 1
+          predicted_us: 741.798
+          err_pct: 8.626
+        worst_residual: *id003
+        mean_abs_residual_pct: 18.082
+        mean_abs_residual_pct_by_collective:
+          all_gather: 18.082
+        fixed_latency_ns: 6600
+      reduce_scatter:
+        model: 'astra-sim analytical Ring: phases * floor(latency_ns + chunk_bytes * 1e9 /
+          (bandwidth * 2^30)) + 3 * reductions * floor(chunk_bytes / local_mem_bw_gbps) +
+          (phases + 1) * endpoint_ns'
+        model_version: 2
+        assumptions:
+          npus: 2
+          topology: FullyConnected
+          hops: 1
+          dimensions: 1
+          preferred_dataset_splits: 1
+          local_mem_bw_gbps: 1597
+          local_mem_bw_unit: GB/s (decimal)
+          endpoint_ns: 10
+        objective: nonnegative relative least squares over the whole sweep with shared latency
+          fixed; continuous network term for fitting, integer ns for residuals
+        timing: graphed
+        bandwidth_gbps: 23.916076
+        bandwidth_unit: GiB/s
+        latency_ns: 6600
+        residual_pct_by_size:
+        - collective: reduce_scatter
+          bytes: 4096
+          charged_bytes: 4096
+          phases: 1
+          predicted_us: 6.785
+          err_pct: -30.984
+        - collective: reduce_scatter
+          bytes: 8192
+          charged_bytes: 8192
+          phases: 1
+          predicted_us: 6.954
+          err_pct: -34.113
+        - collective: reduce_scatter
+          bytes: 10240
+          charged_bytes: 10240
+          phases: 1
+          predicted_us: 7.036
+          err_pct: -34.058
+        - &id004
+          collective: reduce_scatter
+          bytes: 16384
+          charged_bytes: 16384
+          phases: 1
+          predicted_us: 7.288
+          err_pct: -35.786
+        - collective: reduce_scatter
+          bytes: 32768
+          charged_bytes: 32768
+          phases: 1
+          predicted_us: 7.956
+          err_pct: -32.099
+        - collective: reduce_scatter
+          bytes: 40960
+          charged_bytes: 40960
+          phases: 1
+          predicted_us: 8.29
+          err_pct: -34.125
+        - collective: reduce_scatter
+          bytes: 65536
+          charged_bytes: 65536
+          phases: 1
+          predicted_us: 9.295
+          err_pct: -27.072
+        - collective: reduce_scatter
+          bytes: 131072
+          charged_bytes: 131072
+          phases: 1
+          predicted_us: 11.97
+          err_pct: -23.417
+        - collective: reduce_scatter
+          bytes: 139264
+          charged_bytes: 139264
+          phases: 1
+          predicted_us: 12.304
+          err_pct: -24.073
+        - collective: reduce_scatter
+          bytes: 262144
+          charged_bytes: 262144
+          phases: 1
+          predicted_us: 17.32
+          err_pct: -17.8
+        - collective: reduce_scatter
+          bytes: 327680
+          charged_bytes: 327680
+          phases: 1
+          predicted_us: 19.995
+          err_pct: -13.462
+        - collective: reduce_scatter
+          bytes: 524288
+          charged_bytes: 524288
+          phases: 1
+          predicted_us: 28.02
+          err_pct: -4.579
+        - collective: reduce_scatter
+          bytes: 557056
+          charged_bytes: 557056
+          phases: 1
+          predicted_us: 29.356
+          err_pct: -5.703
+        - collective: reduce_scatter
+          bytes: 1048576
+          charged_bytes: 1048576
+          phases: 1
+          predicted_us: 49.42
+          err_pct: 0.302
+        - collective: reduce_scatter
+          bytes: 1114112
+          charged_bytes: 1114112
+          phases: 1
+          predicted_us: 52.095
+          err_pct: 1.101
+        - collective: reduce_scatter
+          bytes: 1310720
+          charged_bytes: 1310720
+          phases: 1
+          predicted_us: 60.121
+          err_pct: 1.698
+        - collective: reduce_scatter
+          bytes: 2097152
+          charged_bytes: 2097152
+          phases: 1
+          predicted_us: 92.224
+          err_pct: 4.313
+        - collective: reduce_scatter
+          bytes: 2228224
+          charged_bytes: 2228224
+          phases: 1
+          predicted_us: 97.574
+          err_pct: 4.681
+        - collective: reduce_scatter
+          bytes: 4194304
+          charged_bytes: 4194304
+          phases: 1
+          predicted_us: 177.829
+          err_pct: 6.708
+        - collective: reduce_scatter
+          bytes: 5242880
+          charged_bytes: 5242880
+          phases: 1
+          predicted_us: 220.63
+          err_pct: 6.25
+        - collective: reduce_scatter
+          bytes: 8388608
+          charged_bytes: 8388608
+          phases: 1
+          predicted_us: 349.039
+          err_pct: 7.546
+        - collective: reduce_scatter
+          bytes: 8912896
+          charged_bytes: 8912896
+          phases: 1
+          predicted_us: 370.442
+          err_pct: 6.559
+        - collective: reduce_scatter
+          bytes: 16777216
+          charged_bytes: 16777216
+          phases: 1
+          predicted_us: 691.461
+          err_pct: 8.819
+        - collective: reduce_scatter
+          bytes: 20971520
+          charged_bytes: 20971520
+          phases: 1
+          predicted_us: 862.67
+          err_pct: 9.68
+        worst_residual: *id004
+        mean_abs_residual_pct: 15.622
+        mean_abs_residual_pct_by_collective:
+          reduce_scatter: 15.622
+        fixed_latency_ns: 6600
+defaults:
+  # Common fallback for operations without a measured override.
+  link_bw:
+    value: 28.731784
+    source: measured
+    unit: GiB/s
+    from: allreduce+allgather+reducescatter across 2 npus, graphed
+  link_latency:
+    value: 6600
+    source: measured
+    unit: ns
+    from: allreduce+allgather+reducescatter across 2 npus, graphed
+  # Inherited with the common link when the cluster omits all link settings.
+  collective_links:
+    all_reduce:
+      link_bw:
+        value: 35.538758
+        source: measured
+        unit: GiB/s
+        from: all_reduce across 2 npus; graphed; shared latency fixed
+    all_gather:
+      link_bw:
+        value: 26.566668
+        source: measured
+        unit: GiB/s
+        from: all_gather across 2 npus; graphed; shared latency fixed
+    reduce_scatter:
+      link_bw:
+        value: 23.916076
+        source: measured
+        unit: GiB/s
+        from: reduce_scatter across 2 npus; graphed; shared latency fixed
+  npu_mem:
+    mem_size:
+      value: 95
+      source: spec
+      unit: GiB
+    mem_bw:
+      value: 1597.6
+      source: spec
+      unit: GB/s
+      from: memory_clock x bus_width, checked against the vendor figure
+    mem_latency:
+      value: 0
+      source: assumed

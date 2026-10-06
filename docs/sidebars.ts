@@ -59,9 +59,18 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Model families',
+          items: [
+            'examples/model-families/hybrid-linear-attention',
+            'examples/model-families/sparse-attention',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Advanced',
           items: [
             'examples/advanced/power-modeling',
+            'examples/advanced/speculative-decoding',
             'examples/advanced/sub-batch-interleaving',
           ],
         },
@@ -104,6 +113,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'profiler/running',
         'profiler/output-bundle',
+        'profiler/native-moe-components',
         'profiler/skew-alpha-fit',
         'profiler/adding-hardware',
         'profiler/adding-model-architecture',

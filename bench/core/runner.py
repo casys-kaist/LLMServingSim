@@ -28,10 +28,19 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 
+from bench.core import gate_stats as gate_stats_mod
 from bench.core import logger as log
 from bench.core import recorder
+
+
+def _positive_int(value: str) -> int:
+    result = int(value)
+    if result <= 0:
+        raise argparse.ArgumentTypeError('must be a positive integer')
+    return result
 
 
 def register_args(p: argparse.ArgumentParser) -> None:
@@ -66,8 +75,80 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--kv-cache-dtype", default="auto",
                    dest="kv_cache_dtype",
                    help="vLLM kv_cache_dtype.")
+    p.add_argument("--kv-cache-memory-bytes", type=_positive_int, default=None,
+                   help="Explicit per-GPU KV cache budget. Use for capacity-matched "
+                        "controls; verify resolved num_gpu_blocks in meta.json. "
+                        "None keeps vLLM's automatic memory profiling.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
+    p.add_argument("--resolve-only", action="store_true", dest="resolve_only",
+                   default=False,
+                   help="Boot the engine, write meta.json, and exit without "
+                        "replaying the dataset. What that buys is the one "
+                        "number a simulator has to match before any latency "
+                        "comparison means anything: kv_cache.num_gpu_blocks, "
+                        "which vLLM only settles at boot after subtracting "
+                        "the activation peak and CUDA context. Cheap with "
+                        "--load-format dummy (one boot, no weights, no "
+                        "replay), so a config can be checked against the "
+                        "simulator's block count in a minute. requests.jsonl "
+                        "and timeseries.csv are not written -- there is no "
+                        "run to record.")
+    p.add_argument("--skip-tokenizer-init", action="store_true",
+                   dest="skip_tokenizer_init", default=False,
+                   help="Boot vLLM without loading a tokenizer. The replay "
+                        "never needs one -- it feeds token ids directly "
+                        "(TokensPrompt) and pins the output length "
+                        "(min_tokens == max_tokens, ignore_eos), so nothing "
+                        "here tokenises input or reads generated text. What it "
+                        "buys is the ability to bench a checkpoint whose "
+                        "tokenizer is not on disk: a gated model served from "
+                        "the repo's own configs/model/<org>/<name>.json (pass "
+                        "that directory as --model, the way the profiler boots "
+                        "one), or a synthetic config with no tokenizer at all. "
+                        "Not a speed knob: forcing detokenize off separately "
+                        "measured 0.18%% of run span, i.e. noise.")
+    p.add_argument("--record-gate-stats", action="store_true",
+                   dest="record_gate_stats", default=False,
+                   help="Record the real gate's distinct-expert count per "
+                        "batch size into gate_stats.json, for the simulator's "
+                        "--expert-routing-policy CUSTOM to read back. The "
+                        "simulator otherwise derives that count from a "
+                        "*uniform* gate, which a trained gate undershoots by "
+                        "up to 13%% -- the concentration lives in the weights, "
+                        "so the closed form cannot know it. Needs the "
+                        "VLLM_MOE_ACTIVATED_LOG source patch (applied by "
+                        "scripts/docker-vllm.sh) and --enforce-eager, since "
+                        "the patch's .unique() is a data-dependent shape that "
+                        "cannot be captured into a cudagraph. Eager is no loss "
+                        "of fidelity for this: the gate's top-k output depends "
+                        "on the weights and the input, not on how the forward "
+                        "runs. MoE models only; a dense run writes nothing.")
+    p.add_argument("--enforce-eager", action="store_true",
+                   dest="enforce_eager", default=False,
+                   help="Run vLLM eager, with torch.compile and cudagraphs "
+                        "off. Not the production configuration -- leave it "
+                        "off for the headline comparison. What it buys is a "
+                        "ground truth in the same execution mode the profiler "
+                        "is forced into: layerwise_profile builds its tree "
+                        "from module events and compilation fuses the module "
+                        "boundaries away, so every profiled latency describes "
+                        "an eager engine. Recording both separates a cost-"
+                        "model error from the cudagraph speedup the simulator "
+                        "cannot see. On RTXPRO6000/Llama-3.1-8B the same "
+                        "simulator reads TTFT mean +4.9%% against the compiled "
+                        "truth and -1.0%% against the eager one; on "
+                        "DeepSeek-V3.2 cudagraphs are worth 26%% of a decode "
+                        "step.")
+    p.add_argument("--load-format", default="auto", dest="load_format",
+                   help="vLLM load_format. 'dummy' skips reading weights and "
+                        "initializes them randomly. Useful for controlled "
+                        "dense-kernel diagnostics, but not automatically "
+                        "end-to-end ground truth: verify resolved KV capacity "
+                        "and execution paths, and use real weights or explicit "
+                        "routing controls for MoE. Token IDs and output counts "
+                        "are fixed by replay; routing and scheduling need not "
+                        "be invariant. Recorded in meta.json.")
     p.add_argument("--tick-seconds", type=float, default=1.0,
                    dest="tick_seconds",
                    help="Stat logger downsample interval (timeseries.csv row spacing).")
@@ -139,27 +220,68 @@ def _load_dataset(path: Path, cap: int = 0) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Path) -> None:
+    # These paths are independent of disable_custom_all_reduce in vLLM 0.28.
+    # Set before importing vLLM and before any worker inherits the environment.
+    os.environ["VLLM_ALLREDUCE_USE_SYMM_MEM"] = "0"
+    os.environ["VLLM_ALLREDUCE_USE_FLASHINFER"] = "0"
     # Imports deferred so `validate` / `--help` works without vLLM installed.
     from vllm import AsyncEngineArgs, SamplingParams
+    from vllm.config import CompilationConfig, PassConfig
     from vllm.inputs import TokensPrompt
     from vllm.v1.engine.async_llm import AsyncLLM
 
     from bench.core.stat_logger import BenchStatLogger
 
+    gate_log = None
+    if args.record_gate_stats:
+        if not args.enforce_eager:
+            raise SystemExit(
+                "--record-gate-stats needs --enforce-eager: the source patch "
+                "calls .unique() on the router's output, whose shape is "
+                "data-dependent and cannot be captured into a cudagraph. The "
+                "gate's top-k output does not depend on the execution mode, so "
+                "the recorded curve still describes a compiled run."
+            )
+        gate_log = output_dir / "moe_activated.jsonl"
+        gate_log.unlink(missing_ok=True)
+        # Read by the patched select_experts inside the *worker* process, which
+        # inherits this environment, so it has to be set before the engine boots.
+        os.environ["VLLM_MOE_ACTIVATED_LOG"] = str(gate_log)
+
+    observation_meta = {"step_audit": {
+        "kind": "gate_observation",
+        "end_to_end_control_eligible": False,
+    }} if gate_log is not None else {}
+
+    compilation_config = CompilationConfig(pass_config=PassConfig(
+        fuse_allreduce_rms=False, fuse_gemm_comms=False,
+    ))
     engine_args = AsyncEngineArgs(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         data_parallel_size=args.data_parallel_size,
         enable_expert_parallel=args.enable_expert_parallel,
+        # Match the simulator's NCCL collective baseline explicitly.
+        disable_custom_all_reduce=True,
+        compilation_config=compilation_config,
         max_num_seqs=args.max_num_seqs,
         max_num_batched_tokens=args.max_num_batched_tokens,
         max_model_len=args.max_model_len,
         dtype=args.dtype,
         kv_cache_dtype=args.kv_cache_dtype,
+        kv_cache_memory_bytes=args.kv_cache_memory_bytes,
         seed=args.seed,
+        load_format=args.load_format,
+        skip_tokenizer_init=args.skip_tokenizer_init,
+        enforce_eager=args.enforce_eager,
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
+    # Record the explicit overrides, not a repr of the full config object.
+    engine_kwargs_for_meta["compilation_config"] = {"pass_config": {
+        name: getattr(compilation_config.pass_config, name)
+        for name in ("fuse_allreduce_rms", "fuse_gemm_comms")
+    }}
 
     with log.stage("Booting AsyncLLM"):
         with log.capture_stdio():
@@ -168,11 +290,56 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
             )
     started_at = datetime.datetime.utcnow().isoformat() + "Z"
 
+    if args.resolve_only:
+        # Nothing to replay: snapshot what the engine resolved and stop. Kept
+        # inside the try/finally-free path deliberately -- there are no request
+        # records to lose, so a failure here should surface, not be swallowed.
+        resolved_config = _resolved_config(engine)
+        kv_cache = _kv_cache_facts(engine)
+        engine.shutdown()
+        recorder.write_meta(
+            output_dir,
+            model=args.model,
+            vllm_version=_vllm_version(),
+            engine_kwargs=engine_kwargs_for_meta,
+            dataset_path=str(args.dataset),
+            dataset_hash=_hash_file(Path(args.dataset)),
+            num_requests=0,
+            started_at=started_at,
+            finished_at=datetime.datetime.utcnow().isoformat() + "Z",
+            tick_seconds=args.tick_seconds,
+            kv_cache=kv_cache,
+            hardware=_hardware_facts(),
+            resolved_config=resolved_config,
+            resolve_only=True,
+        )
+        log.success("resolved config only -> %s  (num_gpu_blocks=%s)",
+                    output_dir, kv_cache.get("num_gpu_blocks"))
+        return
+
     try:
+        # Persist boot-time capacity before any requests. An interrupted run
+        # must not lose the facts needed to explain its memory conditions.
+        try:
+            resolved_config = _resolved_config(engine)
+            kv_cache = _kv_cache_facts(engine)
+        except Exception as exc:
+            log.warning("could not snapshot the resolved vLLM config: %s", exc)
+            resolved_config, kv_cache = {}, {}
+        recorder.write_engine_start(output_dir,
+            model=args.model, started_at=started_at,
+            dataset_path=str(args.dataset), dataset_hash=_hash_file(Path(args.dataset)),
+            num_requests=len(requests),
+            engine_kwargs=engine_kwargs_for_meta, kv_cache=kv_cache,
+            resolved_config=resolved_config, **observation_meta)
+        if gate_log is not None:
+            gate_stats_mod.mark_phase(gate_log, "workload_start")
         with log.stage(f"Submitting {len(requests)} requests"):
             records = await _submit_all(
                 engine, requests, SamplingParams, TokensPrompt
             )
+        if gate_log is not None:
+            gate_stats_mod.mark_phase(gate_log, "workload_end")
     finally:
         with log.stage("Shutting AsyncLLM down"):
             engine.shutdown()
@@ -182,14 +349,6 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
     # ------------------------------------------------------------------
     # Persist outputs.
     # ------------------------------------------------------------------
-    # Collecting metadata must never be the thing that loses a completed run.
-    try:
-        resolved_config = _resolved_config(engine)
-        kv_cache = _kv_cache_facts(engine)
-    except Exception as exc:
-        log.warning("could not snapshot the resolved vLLM config: %s", exc)
-        resolved_config, kv_cache = {}, {}
-
     recorder.write_meta(
         output_dir,
         model=args.model,
@@ -208,10 +367,28 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         kv_cache=kv_cache,
         hardware=_hardware_facts(),
         resolved_config=resolved_config,
+        **observation_meta,
     )
     recorder.write_requests(output_dir, records)
     header, rows = BenchStatLogger.downsample_to_csv_rows(args.tick_seconds)
     recorder.write_timeseries(output_dir, header, rows)
+
+    if gate_log is not None:
+        payload = gate_stats_mod.write(
+            output_dir, gate_log, args.model, _num_experts(engine))
+        if payload is None:
+            log.warning(
+                "--record-gate-stats: %s holds no usable row. Either this is "
+                "a dense model, or the VLLM_MOE_ACTIVATED_LOG patch is not "
+                "installed in this vLLM (scripts/docker-vllm.sh applies it). "
+                "No gate_stats.json written -- the simulator will use its "
+                "closed form, which is the documented fallback.", gate_log)
+        else:
+            log.success(
+                "gate stats: %d calls over %d batch sizes -> %s",
+                payload["n_calls"], len(payload["curve"]),
+                output_dir / gate_stats_mod.FILENAME)
+
     log.success(
         "%d requests, %d timeseries rows -> %s",
         len(records), len(rows), output_dir,
@@ -292,7 +469,16 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
     fields = (
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
-        "max_model_len", "dtype", "kv_cache_dtype", "seed",
+        "disable_custom_all_reduce",
+        "max_model_len", "dtype", "kv_cache_dtype", "kv_cache_memory_bytes", "seed", "load_format",
+        # Recorded for the same reason load_format is: a run booted from a
+        # tokenizer-less config directory should never be mistaken for one
+        # booted from the real checkpoint.
+        "skip_tokenizer_init",
+        # Recorded because it changes what the run *is*: a compiled engine and
+        # an eager one are two different ground truths, and only the eager one
+        # is comparable with a profiled latency.
+        "enforce_eager",
     )
     return {k: getattr(engine_args, k, None) for k in fields}
 
@@ -384,6 +570,30 @@ def _resolved_config(engine) -> dict:
     return out
 
 
+def _num_experts(engine) -> int:
+    """The checkpoint's routed-expert count, whichever key it declares.
+
+    The families disagree: Mixtral and Qwen3-MoE write ``num_local_experts`` /
+    ``num_experts``, DeepSeek and GLM write ``n_routed_experts``. Recorded so a
+    reader can refuse a curve measured on a different ``E`` -- the distinct
+    count means nothing without it. 0 for a dense model, which is also what
+    makes the aggregate come back empty.
+    """
+    try:
+        cfg = engine.vllm_config.model_config.hf_config
+    except AttributeError:
+        return 0
+    for holder in (getattr(cfg, "text_config", None), cfg):
+        if holder is None:
+            continue
+        for key in ("n_routed_experts", "num_local_experts", "num_experts",
+                    "moe_num_experts"):
+            value = getattr(holder, key, None)
+            if value:
+                return int(value)
+    return 0
+
+
 def _kv_cache_facts(engine) -> dict:
     """The KV cache vLLM actually allocated.
 
@@ -414,7 +624,22 @@ def _kv_cache_facts(engine) -> dict:
 
 def _hardware_facts() -> dict:
     """Which accelerator this ran on, for matching against profiler/perf/<hw>/."""
-    facts = {}
+    facts = {"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+    facts["all_reduce_environment"] = {
+        name: os.environ.get(name) for name in (
+            "VLLM_ALLREDUCE_USE_SYMM_MEM", "VLLM_ALLREDUCE_USE_FLASHINFER",
+        )
+    }
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            facts["cpu_affinity"] = sorted(os.sched_getaffinity(0))
+        status = Path("/proc/self/status")
+        if status.exists():
+            for line in status.read_text().splitlines():
+                if line.startswith("Mems_allowed_list:"):
+                    facts["numa_mems_allowed"] = line.split(":", 1)[1].strip()
+    except OSError as exc:
+        facts["placement_error"] = f"{type(exc).__name__}: {exc}"
     try:
         import torch
         facts["torch_version"] = torch.__version__
@@ -425,6 +650,7 @@ def _hardware_facts() -> dict:
             props = torch.cuda.get_device_properties(0)
             facts["device_total_memory_bytes"] = props.total_memory
             facts["device_capability"] = f"{props.major}.{props.minor}"
+            facts["device_uuid"] = str(getattr(props, "uuid", "unknown"))
     except Exception as exc:
         facts["error"] = f"{type(exc).__name__}: {exc}"
     return facts

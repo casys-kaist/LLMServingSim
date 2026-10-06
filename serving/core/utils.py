@@ -1,9 +1,14 @@
+import math
 import os
+import sys
 from functools import lru_cache
 from time import time
 import json
 
+import yaml
+
 from .run_paths import input_path
+
 
 
 # Formatting string for a trace file's per-layer row. Kept in this
@@ -80,6 +85,15 @@ def get_config(model_name):
     The cache hands every caller the *same* dict, so callers must treat it
     as read-only. They do today: every use is a subscript, a ``.get`` or an
     ``in`` test, and nothing assigns into it or mutates it in place.
+
+    A **wrapped** checkpoint -- a vision-language model whose text tower is the
+    thing we simulate -- is flattened through ``stack.text_config`` before it
+    is handed out, so every caller sees the backbone's fields at the top level.
+    Otherwise ``config['hidden_size']`` raises on MiniMax-M3 and every helper
+    that reaches for a dimension answers for a model nobody asked about. The
+    wrapper's own ``model_type`` still wins, because that is the name the
+    catalog is keyed by; the backbone's dimensions win where they collide.
+    A flat config comes back unchanged.
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     serving_dir = os.path.dirname(base_dir)
@@ -104,8 +118,268 @@ def get_config(model_name):
             f"{', '.join(candidate_paths)}. Please add the corresponding config file."
         )
 
-    return config
+    return _stack_module().text_config(config)
 
+
+
+# ======================================================================
+# Weight dtype
+# ======================================================================
+
+def config_weight_dtype(config):
+    """The weight dtype a checkpoint declares, or None.
+
+    Must match the profiler's ``config.model_config_weight_dtype`` exactly,
+    **including the order**, because that is what decides which
+    ``perf/<hw>/<model>/<variant>/`` folder the profiler wrote and which one
+    the simulator reads. Two places deriving this differently means looking in
+    a folder that was never written.
+
+    A ``quantization_config`` wins: on a quantized checkpoint the dtype fields
+    describe the *activation* dtype, not the weights. DeepSeek-V3.2-Exp is FP8
+    block-quantized with ``torch_dtype: bfloat16``, so reading the dtype fields
+    alone calls it bf16 and looks for a bundle that does not exist.
+
+    HuggingFace also renamed the field: ``torch_dtype`` is legacy, ``dtype``
+    current (Qwen3.8 carries only the latter), so both are accepted, legacy
+    first.
+    """
+    quant = config.get("quantization_config")
+    if isinstance(quant, dict) and quant.get("quant_method"):
+        return quant["quant_method"]
+    return config.get("torch_dtype") or config.get("dtype")
+
+
+# ======================================================================
+# Multi-token prediction (the drafter)
+# ======================================================================
+
+# One fact under three names again: DeepSeek and GLM write
+# ``num_nextn_predict_layers``, MiniMax-M3 ``num_mtp_modules`` (and *also* the
+# DeepSeek name, set to 1, which is not the module count), Qwen3.5/3.8
+# ``mtp_num_hidden_layers``. Most specific spelling first, so M3's 7 wins over
+# its own vestigial 1.
+_MTP_LAYER_KEYS = ("num_mtp_modules", "mtp_num_hidden_layers",
+                   "num_nextn_predict_layers")
+
+
+def num_mtp_layers(config):
+    """Decoder layers the model's own drafter runs, or 0 if it has none.
+
+    A model with MTP modules drafts with itself; one without drafts with a
+    separate model or with n-gram, which is a serving choice rather than a
+    property of the checkpoint and is not described here.
+    """
+    for key in _MTP_LAYER_KEYS:
+        if key in config:
+            try:
+                return max(int(config[key] or 0), 0)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def config_kv_cache_dtype(config):
+    """The KV cache dtype a checkpoint declares: ``"fp8"`` or ``"auto"``.
+
+    Read from the checkpoint rather than taken as a flag, which is the
+    direction vLLM states for itself -- ``attention.py`` carries the TODO "kv
+    cache dtype should be specified in the FP8 checkpoint config and become the
+    'auto' behavior" -- and already half-implements: at
+    ``attention.py:281`` a declared ``kv_cache_scheme`` promotes the cache to
+    fp8 whenever the flag is ``auto``, which is its default.
+
+    Two spellings, because the quantizers disagree. Compressed-tensors writes
+    ``kv_cache_scheme``, a dict; ModelOpt writes ``kv_cache_quant_algo``, a
+    string (``modelopt.py:287`` and ``:300``, which maps a
+    ``type: float, num_bits: 8`` scheme onto the string form). A weight-only
+    quantized checkpoint -- DeepSeek-V3.2-Exp is one -- declares neither and
+    keeps an unquantized KV cache, so fp8 *weights* do not imply an fp8 cache.
+    """
+    quant = config.get("quantization_config")
+    if not isinstance(quant, dict):
+        return "auto"
+    if isinstance(quant.get("kv_cache_scheme"), dict):
+        return "fp8"
+    if isinstance(quant.get("kv_cache_quant_algo"), str):
+        return "fp8"
+    return "auto"
+
+
+
+# ======================================================================
+# MoE expert count
+# ======================================================================
+
+# The same fact under three names, because the families disagree: Mistral
+# writes ``num_local_experts``, HF/Qwen ``num_experts``, DeepSeek and GLM
+# ``n_routed_experts``. Every site that asked used to spell out its own subset
+# of the three, and every one of them missed the third -- so DeepSeek read as a
+# dense model in the config builder, in the trace generator's gate
+# construction, in its ALLTOALL sizing and in the memory model, four separate
+# silent wrong answers from one omission.
+_EXPERT_COUNT_KEYS = ("num_local_experts", "num_experts", "n_routed_experts")
+
+
+def num_experts(config):
+    """Routed experts this checkpoint declares, or 0 when it is dense."""
+    for key in _EXPERT_COUNT_KEYS:
+        if key in config:
+            try:
+                return int(config[key] or 0)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def is_moe(config):
+    """Whether this checkpoint has routed experts at all."""
+    return num_experts(config) > 0
+
+
+
+# ======================================================================
+# Architecture catalogs
+# ======================================================================
+#
+# ``profiler/models/<model_type>.yaml`` says what layers a decoder block emits
+# and ``profiler/core/stack.py`` says which block each layer runs. Both are
+# read by the simulator as well as the profiler, and both live here rather
+# than in the module that happens to need them first: ``trace_generator``
+# needs the layer order and ``memory_model`` needs it to weigh a block, and a
+# second loader in either would be a second thing to keep in step.
+
+def _arch_dirs():
+    """Candidate ``profiler/models`` directories, absolute.
+
+    Absolute because ``serving/__main__.py`` chdirs into ``astra-sim/`` early,
+    so anything relative resolves somewhere else by the time this runs.
+    """
+    base = os.path.dirname(os.path.abspath(__file__))
+    serving_dir = os.path.dirname(base)
+    repo_root = os.path.dirname(serving_dir)
+    return [
+        os.path.join(repo_root, "profiler", "models"),
+        os.path.join(serving_dir, "profiler", "models"),
+    ]
+
+
+def _profiler_core_module(name):
+    """Import a module from ``profiler.core`` by name.
+
+    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
+    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
+    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
+    any of this runs -- so by then ``profiler`` is not importable by name.
+    Derived from ``__file__`` for the same reason.
+
+    Only modules deliberately kept free of third-party imports may be reached
+    this way; the simulator container has no pydantic, so ``profiler.core.config``
+    is not importable here even though ``catalog_path`` and ``stack`` are.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    import importlib
+
+    return importlib.import_module(f"profiler.core.{name}")
+
+
+def _stack_module():
+    """Import ``profiler.core.stack``, which owns per-layer block resolution.
+
+    Shared with the profiler rather than reimplemented, and for the same
+    reason ``catalog_path`` is: the rules are read out of vLLM's source and
+    the two vendors disagree on the off-by-one (DeepSeek's MoE test is
+    ``layer_idx % moe_layer_freq``, Qwen3-MoE's is
+    ``(layer_idx + 1) % decoder_sparse_step``), so a second implementation
+    would be a second chance to get them backwards. The profiler uses it to
+    decide how many layers to instantiate; the simulator uses it to decide
+    which block each layer emits. They have to agree.
+    """
+    return _profiler_core_module("stack")
+
+
+def _catalog_path_module():
+    """Import ``profiler.core.catalog_path``, which owns the naming rule.
+
+    Shared rather than reimplemented: a catalog may serve several
+    ``model_type`` values through its ``model_types:`` list, and having two
+    implementations of that lookup is what broke every MoE scenario when
+    aliasing was added to the profiler's resolver alone.
+
+    The repo root has to be put on ``sys.path`` explicitly. ``sys.path[0]`` is
+    ``''`` for both ``-m`` and ``-c``, which re-resolves against the *current*
+    directory, and ``serving/__main__.py`` chdirs into ``astra-sim/`` before
+    any of this runs -- so by then ``profiler`` is not importable by name.
+    Derived from ``__file__`` for the same reason.
+    """
+    return _profiler_core_module("catalog_path")
+
+
+def _arch_yaml_path(model_type):
+    catalog_path = _catalog_path_module()
+    for arch_dir in _arch_dirs():
+        if not os.path.isdir(arch_dir):
+            continue
+        found = catalog_path.find_architecture_path(model_type, arch_dir)
+        if found is not None:
+            return found
+    # Nothing matched; return the conventional path so the caller's
+    # not-found error names the file a contributor would create.
+    return os.path.join(_arch_dirs()[0], f"{model_type}.yaml")
+
+
+def _load_architecture(model_type):
+    """Load catalog + block order from profiler/models/<model_type>.yaml."""
+    path = _arch_yaml_path(model_type)
+    if not os.path.isfile(path):
+        # Name every catalog that *is* resolvable, including the ``model_types:``
+        # each one serves -- a bare "add this file" is unactionable when the
+        # right answer is to add the name to an existing catalog's list.
+        catalog_path = _catalog_path_module()
+        listing = catalog_path.describe_available(_arch_dirs()[0])
+        raise FileNotFoundError(
+            f"Architecture yaml not found for model_type={model_type!r} at "
+            f"{path}, and no yaml declares it under 'model_types:'.\n"
+            f"Available architectures:\n{listing}"
+        )
+    with open(path, "r") as f:
+        arch = yaml.safe_load(f)
+    if "catalog" not in arch:
+        raise KeyError(f"Architecture yaml {path} must define 'catalog'.")
+    if "blocks" not in arch:
+        raise KeyError(
+            f"Architecture yaml {path} must define 'blocks' (the layer order, "
+            f"keyed by axis) alongside 'shared' (prologue and head)."
+        )
+    return arch
+
+
+@lru_cache(maxsize=None)
+def get_architecture(model_name):
+    """The architecture yaml serving ``model_name``'s ``model_type``.
+
+    Cached per model: it is read once and consulted per layer.
+    """
+    config = get_config(model_name)
+    model_type = config.get("model_type")
+    if not model_type:
+        raise KeyError(
+            f"Model config for {model_name!r} has no 'model_type'; cannot "
+            f"locate profiler/models/<model_type>.yaml"
+        )
+    return _load_architecture(model_type)
+
+
+@lru_cache(maxsize=None)
+def get_layer_stack(model_name):
+    """One ``LayerSpec`` per decoder layer, from the checkpoint's own config.
+
+    A tuple rather than a list so it stays hashable and safely cached.
+    """
+    return tuple(_stack_module().resolve_stack(get_config(model_name)))
 
 if __name__ == "__main__":
     model_name = "meta-llama/Llama-3.1-8B"

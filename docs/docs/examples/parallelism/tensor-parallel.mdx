@@ -61,13 +61,16 @@ holds.)
 ```bash
 python -m serving \
   --cluster-config 'configs/cluster/single_node_single_instance.json' \
-  --dtype bfloat16 --block-size 16 \
+  --block-size 16 \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/tp2_run.csv' \
   --log-interval 1.0
 ```
 
-`--dtype bfloat16` matches the profiled variant for `Qwen3-32B`.
+Qwen3-32B's config declares `torch_dtype: bfloat16` and no KV
+quantization, so the run reads the `bf16` variant — the one bundled
+under `profiler/perf/RTXPRO6000/Qwen/Qwen3-32B/`. There is no flag to
+change that; see **[CLI flags → Precision](/docs/reference/cli-flags)**.
 
 ## Expected output
 

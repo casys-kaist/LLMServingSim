@@ -1,0 +1,67 @@
+hardware: RTX4090
+written_by: hand
+written_at: '2026-09-07'
+note: >-
+  Written by hand, not by `python -m profiler hardware`, because this card is no
+  longer in the machine. It exists so nothing silently inherits a number nobody
+  measured: the `defaults` block carries only what a spec sheet can state, and
+  `link_bw` / `link_latency` are deliberately absent, so a cluster config on
+  RTX4090 has to name them itself and the reader can see they are the config
+  author's choice rather than a measurement. The committed
+  `bench/examples/RTX4090/Llama-3.1-8B/config.json` does exactly that.
+
+  Re-run `python -m profiler hardware --hardware RTX4090 --npus 2` on a machine
+  with two of these to fill it in properly. The perf bundle under this folder
+  was measured on the real card and stays valid.
+
+spec:
+  # From the vendor, since the device cannot be queried here. Every field a
+  # `profiler hardware` run would have read off the driver is marked so.
+  gpu_name: NVIDIA GeForce RTX 4090
+  source: vendor specification, not a device query
+  compute_capability: '8.9'
+  sm_count: 128
+  memory_total_gib: 24
+  memory_bus_width_bit: 384
+  memory_bw_gbps: 1008
+  l2_cache_mib: 72.0
+  power_limit_w: 450
+  pcie_gen_max: 4
+  pcie_width_max: 16
+
+measured:
+  at: null
+  interconnect: null
+  interconnect_unavailable: >-
+    The card is not in this machine, so no all-reduce could be run. A link has
+    two ends and neither is available; the simulator raises rather than
+    inheriting a value nobody measured.
+  npu_mem: null
+  npu_mem_unavailable: >-
+    Not measured. `mem_bw` below is the vendor figure. That is usually harmless
+    -- a profiled kernel latency already contains the card's real memory
+    behaviour, and `mem_bw` only bites on the explicitly-modelled memory paths
+    (--prefix-storage KV recall, PIM, remote memory) -- but it is a spec number,
+    not a measurement.
+
+defaults:
+  # No link entries: see measured.interconnect_unavailable. A cluster config on
+  # this hardware must set link_bw and link_latency itself.
+  npu_mem:
+    mem_size:
+      value: 24
+      source: spec
+      unit: GiB
+      note: >-
+        The nominal capacity. On the RTX PRO 6000 the measured equivalent is
+        CUDA's `mem_get_info()[1]`, which is ~1% under the marketed figure once
+        the driver's reservation is taken out; the same is true here and this
+        number does not account for it. It matters only on a run that saturates
+        the KV cache -- which the RTX4090 example does, at its ceiling, so its
+        config pins `mem_util` to a calibrated 0.833919 instead.
+    mem_bw:
+      value: 1008
+      source: spec
+    mem_latency:
+      value: 0
+      source: assumed

@@ -5,11 +5,15 @@ when constructing the ``vllm.LLM``. vLLM instantiates one Extension per
 TP-rank worker process and exposes its methods through
 ``llm.collective_rpc(method_name, args=...)``.
 
-The sole public method here is ``fire()``: it takes a serialized Shot
+The main public method here is ``fire()``: it takes a serialized Shot
 plus a catalog slice (the subset of the layer map relevant to the
 category being profiled), runs the synthetic batch through
 ``model_runner.execute_model`` under ``layerwise_profile``, and
 returns per-layer CUDA timings.
+
+``coverage()`` runs the same forward and the same matching rules but reports
+what the catalog *failed* to bind instead of what it bound -- see
+``timings.CoverageReport``.
 
 Measurement protocol per shot:
     1 warmup forward (discarded) — amortises JIT / paged-buffer setup
@@ -26,13 +30,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from profiler.core.hooks.batch import Shot, assemble_scheduler_output
+from profiler.core.hooks.batch import Shot
+from profiler.core.hooks.history import complete_forward, prepare_history
 from profiler.core.hooks.moe_hook import (
     ExpertRoute,
     force_moe_routing,
-    single_moe_layer,
+    single_moe_runner,
 )
-from profiler.core.hooks.timings import extract_samples
+from profiler.core.hooks.sampler_shim import wrap_sampler_for_profiling
+from profiler.core.hooks.timings import attribute_tree, extract_samples
 
 
 class Extension:
@@ -42,6 +48,30 @@ class Extension:
     injects ``self.model_runner`` via attribute assignment before any
     ``collective_rpc`` call.
     """
+
+    def moe_component_initialize(self, target, local_budget):
+        from .moe_components import ComponentMeasurement
+        self._moe_components = None
+        self._moe_components = ComponentMeasurement(self.model_runner, target, local_budget)
+        return self._moe_components.contract
+
+    def moe_component_measure(self, point, iterations, failure_dir=None):
+        try:
+            return self._moe_components.measure(point, iterations, failure_dir)
+        except Exception as exc:
+            import traceback
+            raise RuntimeError(f"Native MoE point {point}:\n{traceback.format_exc()}") from exc
+
+    def moe_component_release(self):
+        self._moe_components = None
+
+    def skew_initialize(self):
+        from .skew_measurement import initialize
+        return initialize(self.model_runner)
+
+    def skew_measure(self, shot_dict, catalog, iterations=3):
+        from .skew_measurement import measure
+        return measure(self.model_runner, shot_dict, catalog, iterations)
 
     def fire(
         self,
@@ -69,22 +99,14 @@ class Extension:
         shot = Shot.hydrate(shot_dict)
         iterations = max(1, int(iterations))
 
-        def _fresh_batch():
-            # Rebuild the synthetic SchedulerOutput on every forward so
-            # prior-iteration KV writes / request state don't bleed into
-            # the next measurement.
-            batch, _ = assemble_scheduler_output(shot, self.model_runner)
-            return batch
+        # vLLM 0.28's V2 model runner -- which every dense model takes --
+        # holds a sampler that is not an nn.Module, so it never becomes a
+        # profile node. Give it a module scope before anything fires.
+        wrap_sampler_for_profiling(self.model_runner)
 
-        # -- warm-up run, result discarded -----------------------------
-        # The first forward pays for JIT compilation, CUDA context
-        # setup, paged-attention buffer allocation. We also call
-        # sample_tokens to exercise the sampler path (if execute_model
-        # returns None it means the scheduler consumed everything and
-        # sample_tokens finalizes the step).
-        warmup_out = self.model_runner.execute_model(_fresh_batch())
-        if warmup_out is None:
-            self.model_runner.sample_tokens(None)
+        # Dummy KV initialization prepares the requested operating point;
+        # it is not part of the measured query latency.
+        _fresh_batch = prepare_history(self.model_runner, shot)
 
         # -- optional MoE routing forge --------------------------------
         route: ExpertRoute | None = None
@@ -93,13 +115,21 @@ class Extension:
                 raise ValueError(
                     "moe shot missing experts.activated payload"
                 )
-            moe_layer = single_moe_layer(self.model_runner)
+            moe_runner = single_moe_runner(self.model_runner)
             num_tokens = sum(new for new, _ in shot.requests)
             route = ExpertRoute.forge(
-                moe_layer,
+                moe_runner,
                 num_tokens=num_tokens,
                 activated_experts=int(shot.experts["activated"]),
             )
+
+        # -- warm-up run, result discarded -----------------------------
+        # Warm the same expert distribution as the measured forwards. A
+        # natural gate can activate a different set and leave shape-dependent
+        # expert setup in the first timed call. Use separate contexts so both
+        # warmup and timed execution must actually consume forced routing.
+        with force_moe_routing(route):
+            complete_forward(self.model_runner, _fresh_batch())
 
         # -- measured runs (N iterations, averaged) -------------------
         # Local import so that profiler/__init__.py doesn't require
@@ -116,12 +146,55 @@ class Extension:
         with force_moe_routing(route):
             with layerwise_profile() as hook:
                 for _ in range(iterations):
-                    measured_out = self.model_runner.execute_model(_fresh_batch())
-                    if measured_out is None:
-                        self.model_runner.sample_tokens(None)
+                    complete_forward(self.model_runner, _fresh_batch())
 
-        stats = hook.results.convert_stats_to_dict()
+        from .cuda_timing import from_vllm
+        from profiler.core.measurement import layerwise_measurement
+
+        measured, _ = from_vllm(hook.results)
+        stats = measured.convert_stats_to_dict()
         summary = stats["summary_stats"]
 
-        samples = extract_samples(summary, slice_)
-        return [s.as_dict() for s in samples]
+        samples = extract_samples(summary, slice_, iterations=iterations)
+        acquisition = layerwise_measurement(slice_, iterations)
+        return [dict(s.as_dict(), **acquisition) for s in samples]
+
+    def coverage(
+        self,
+        shot_dict: dict[str, Any],
+        slice_: dict[str, dict[str, Any]],
+        iterations: int = 1,
+    ) -> dict[str, Any]:
+        """Run one shot and report which of its CUDA time the catalog binds.
+
+        Same measurement protocol as :meth:`fire` (one warmup, then timed
+        forwards) and the same matching rules, but ``slice_`` here is the
+        **whole** catalog rather than one category's: coverage is a property
+        of the catalog as a whole, and a layer bound in the wrong category
+        still binds.
+
+        MoE routing is deliberately not forged. Which experts fire changes the
+        cost of the ``moe`` block, not whether anything binds it, and forging
+        would need an ``experts`` payload that has nothing to do with the
+        question being asked.
+        """
+        shot = Shot.hydrate(shot_dict)
+        iterations = max(1, int(iterations))
+
+        # vLLM 0.28's V2 model runner -- which every dense model takes --
+        # holds a sampler that is not an nn.Module, so it never becomes a
+        # profile node. Give it a module scope before anything fires.
+        wrap_sampler_for_profiling(self.model_runner)
+
+        _fresh_batch = prepare_history(self.model_runner, shot)
+
+        complete_forward(self.model_runner, _fresh_batch())
+
+        from vllm.profiler.layerwise_profile import layerwise_profile
+
+        with layerwise_profile() as hook:
+            for _ in range(iterations):
+                complete_forward(self.model_runner, _fresh_batch())
+
+        summary = hook.results.convert_stats_to_dict()["summary_stats"]
+        return attribute_tree(summary, slice_).as_dict()
