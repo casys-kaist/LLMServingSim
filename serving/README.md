@@ -4,7 +4,7 @@ LLMServingSim simulator core. Run as `python -m serving --cluster-config <...> [
 
 ## Layout
 
-```
+```text
 serving/                        Python package
 ├── __init__.py                 module map
 ├── __main__.py                 simulation entry point + main loop
@@ -19,6 +19,10 @@ serving/                        Python package
 │   ├── spec_decode.py          speculative-decoding acceptance model
 │   ├── cudagraph.py            target graph capture grid and local/DP forward shapes
 │   ├── config_builder.py       cluster config -> ASTRA-Sim input files
+│   ├── hardware_defaults.py    measured hardware defaults and override precedence
+│   ├── communication.py        collective tensor dtypes and vocabulary shards
+│   ├── moe_components.py       native deployment-matched component lookup
+│   ├── moe_execution.py        native MoE compute and collective ordering
 │   ├── power_model.py          power / energy estimation
 │   ├── pim_model.py            PIM device model
 │   ├── request.py              Request / Batch data classes
@@ -152,15 +156,20 @@ The trace generator constructs per-iteration execution traces by walking the
 ``blocks:`` and ``shared:`` sections of the architecture yaml
 (`profiler/models/<model_type>.yaml`). For a standard decoder-only model:
 
-```
-shared.prologue (embedding)
+```text
+shared.prologue (embedding[TP ALLREDUCE])
   → [attn.<type>.pre_attn  (layernorm → qkv_proj → [qk_norm] → rotary_emb → attention)
      → attn.<type>.post_attn (o_proj[ALLREDUCE] → layernorm)
      → mlp.dense (gate_up_proj → act_fn → down_proj[ALLREDUCE])
-        or mlp.moe (moe[EP all-to-all])
+        or mlp.moe (EP ALLGATHER dispatch → experts → REDUCESCATTER combine)
     ] × N_layers
-  → shared.head (final_layernorm → lm_head → sampler)
+  → shared.head (final_layernorm → lm_head[TP ALLGATHER] → sampler)
 ```
+
+Collectives apply only when their group has more than one rank. The native
+DP+EP path dispatches hidden states, top-k weights and expert IDs separately;
+TP restoration depends on the deployment. See the
+[parallelism contract](../docs/docs/simulator/parallelism-mechanics.md).
 
 `blocks:` is keyed by **axis**, and which block a given layer runs comes from
 the checkpoint's own config, not from the yaml — `layer_types` decides the
@@ -230,21 +239,25 @@ See **[configs/cluster/README.md](../configs/cluster/README.md)** for the
 rules and the RTX4090 worked example.
 
 ### `request.py`
+
 Defines the `Request` and `Batch` data classes. Tracks per-request state and latency
 metrics (TTFT, TPOT, ITL).
 
 ### `scheduler.py`
+
 Per-instance scheduler implementing vLLM-style continuous batching. Manages request queuing,
 memory-constrained batch formation, KV cache block eviction and swapping to CPU, and prefix
 cache lookup. Add custom scheduling policies here.
 
 ### `router.py`
+
 Routes incoming requests across instances in real-time based on current system state.
 Default policy `LOAD` uses vLLM-style weighted least-loaded scoring (`waiting * 4 + running`).
 Requests are routed at their arrival time during the simulation loop, not upfront.
 Handles request transfer in Prefill/Decode disaggregation mode.
 
 ### `gate_function.py`
+
 Routes tokens to MoE experts with `BALANCED` (default), `RR`, `RAND`, or
 `CUSTOM`. Block copy is a separate optimization. `route_ep()` returns
 global EP-rank vectors; each DP member reads its own slice using its position
@@ -255,6 +268,7 @@ at each synthetic source partition. It is deterministic at a fixed shape;
 RAND retains its seeded draws, while BALANCED retains its analytical counts.
 
 ### `spec_decode.py`
+
 The acceptance model behind `--num-speculative-tokens`. Which draft tokens the
 target accepts is the one thing a simulator cannot compute — it needs both
 models' distributions over real tokens — so acceptance is a **policy**, chosen
@@ -268,6 +282,7 @@ modern families range from 0.39 to 0.78, so there is nothing defensible to
 guess.
 
 ### `memory_model.py`
+
 Static sizing math plus a byte-level view over the block pools. Contains
 `calculate_sizes(parallel=)` and `get_weight` for per-layer tensor size computation — the
 `parallel` parameter is TP degree for dense layers and EP degree for MoE experts, and MoE
@@ -277,6 +292,7 @@ divided into blocks. `npu_used` / `cpu_used` are properties derived from the poo
 is exactly one ledger per tier.
 
 ### `block_pool.py`
+
 One `BlockPool` per memory tier (NPU / CPU / CXL): a doubly linked free list in eviction
 order, a `block_hash -> block` index, and a refcount per block. Port of vLLM v0.19.0's
 `vllm/v1/core/block_pool.py`. `num_free_blocks` is exact, so an allocation either succeeds or
@@ -285,6 +301,7 @@ block goes to the queue *tail* so it is reused last — which is what lets a jus
 request find its blocks again.
 
 ### `kv_cache_manager.py`
+
 `TieredKVCacheManager`: per-request NPU block tables, the tier lookup, and the transfer
 accounting. Block hashes are chained once at the NPU block size
 (`hash(parent_hash, block_tokens)`); a lower tier whose blocks are N times larger keys on
@@ -294,6 +311,7 @@ write-through is reported for energy only, matching vLLM's `OffloadingConnector`
 defers it to the next engine step on a dedicated stream.
 
 ### `trace_generator.py`
+
 Core performance estimator. Loads the profiler's per-category CSVs under
 `profiler/perf/<hardware>/<model>/<variant>/tp<N>/` plus the architecture
 yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's ``blocks:``
@@ -360,7 +378,30 @@ sub-batch interleaving. The `comm_type` field supports dimension scoping
 new model architecture, add a `profiler/models/<model_type>.yaml` with a
 matching `blocks:` / `shared:` rather than editing this file.
 
+### `cudagraph.py`
+
+Resolves target CUDA graph capture grids and local padded forward shapes,
+then synchronizes modes and token counts across each DP wave. Actual attention
+queries and non-speculative head rows remain separate from forward padding.
+
+### `communication.py`
+
+Defines communication dtype sizes and vocabulary padding before TP division.
+These tensor contracts are independent of measured bandwidth and latency.
+
+### `moe_components.py`
+
+Loads versioned native MoE component tables, validates deployment and acquisition
+contracts, and caches bounded interpolation over their measured coordinates.
+
+### `moe_execution.py`
+
+Selects matching native component tables and emits routing, ordered dispatch,
+expert work, combine and finalization. Missing coverage is distinct from corrupt
+installed data; unsupported paths retain the documented legacy fallback.
+
 ### `run_paths.py`
+
 Resolves `--run-id` and the ASTRA-Sim input layout beneath it. An omitted run
 id becomes a process-unique one, so two simulator invocations running at once
 do not share intermediate files; an explicit one is validated as a safe path
@@ -368,6 +409,7 @@ component. `RunPaths` then carries the network / system / memory config paths
 that `config_builder.py` writes and `controller.py` hands to ASTRA-Sim.
 
 ### `config_builder.py`
+
 Parses the user-provided cluster config JSON from `configs/cluster/` and generates the
 ASTRA-Sim input files under `astra-sim/inputs/runs/<run_id>/`: `network/network.yml`,
 `memory/memory_expansion.json`, and `system/system.json`.
@@ -384,25 +426,31 @@ dimensions. Computes `tp_dim`/`ep_dim` per instance for `involved_dim` scoping; 
 scoped to the DP and TP dims and never PP.
 
 ### `power_model.py`
+
 Estimates power and energy consumption per node, covering NPU, CPU, DRAM, interconnect, NIC,
 and storage.
 
 ### `controller.py`
+
 Manages the IPC protocol with the ASTRA-Sim subprocess. Writes workload graph paths to
 ASTRA-Sim stdin and parses iteration timing from stdout.
 
 ### `graph_generator.py`
-Invokes the Chakra converter to transform text-format execution traces into protobuf workload
-graphs consumed by ASTRA-Sim.
+
+Invokes Chakra in-process on trace rows to produce protobuf workload graphs
+for ASTRA-Sim. Reuses graphs for identical rows; text trace files are optional.
 
 ### `pim_model.py`
+
 Parses PIM device INI configuration files from `configs/pim/`. Derives bandwidth, latency, and
 power parameters used by the trace generator for PIM-offloaded attention.
 
 ### `utils.py`
+
 Helper functions for loading model configs, constructing workload paths, and formatting
 terminal output.
 
 ### `logger.py`
+
 Configures the LLMServingSim logger. Log level is set via `--log-level` on the
 `python -m serving` CLI.

@@ -10,9 +10,11 @@ is a directory map, not a behavior reference. For *what* each piece
 does, see the **[Simulator](/docs/simulator/architecture)** and
 **[Profiler](/docs/profiler/overview)** sections.
 
-## The five domains
+## Repository layout
 
-```
+Selected directories and entry points:
+
+```text
 LLMServingSim/
 ├── serving/      Simulator       Python, the core loop
 ├── profiler/     Profiler        Python, vLLM-based latency capture
@@ -31,19 +33,24 @@ domains for a single change, stop and reconsider the scope.
 
 Where most contributor work happens.
 
-```
+```text
 serving/
 ├── __main__.py              CLI + main loop
 └── core/
     ├── scheduler.py         vLLM-style continuous batching
-    ├── trace_generator.py   Profile lookup -> text trace
+    ├── trace_generator.py   Profile lookup -> trace rows
     ├── memory_model.py      KV / weight / CXL byte accounting
-    ├── graph_generator.py   Text trace -> Chakra protobuf
+    ├── graph_generator.py   Trace rows -> Chakra protobuf
     ├── controller.py        ASTRA-Sim subprocess IPC
     ├── router.py            Request routing across instances
     ├── gate_function.py     MoE expert routing (incl. group-limited)
     ├── spec_decode.py       Speculative-decoding acceptance model
+    ├── cudagraph.py         Target graph padding and DP shape synchronization
     ├── config_builder.py    Cluster config -> ASTRA-Sim inputs
+    ├── hardware_defaults.py Measured hardware defaults and override precedence
+    ├── communication.py     Collective tensor sizes and vocabulary shards
+    ├── moe_components.py    Native DP+EP component table lookup
+    ├── moe_execution.py     Native MoE compute/collective ordering
     ├── power_model.py       Power / energy estimation
     ├── pim_model.py         PIM device model
     ├── request.py           Request / Batch dataclasses
@@ -69,13 +76,13 @@ serving/
 
 ## Profiler (`profiler/`)
 
-```
+```text
 profiler/
-├── __main__.py              CLI dispatch (profile / slice / coverage)
+├── __main__.py              Model, coverage, skew and hardware CLI dispatch
 ├── core/                    internals (runner, engine, categories, skew_calibration)
 │   ├── catalog_path.py      model_type -> yaml resolution   (shared with serving/)
 │   └── stack.py             per-layer block resolution      (shared with serving/)
-├── models/<model_type>.yaml Architecture catalogs (one per HF model_type)
+├── models/<model_type>.yaml Architecture catalogs with declared aliases
 ├── perf/<hw>/<model>/...    Output bundles (CSV per category)
 └── profile.sh               Editable user template
 ```
@@ -91,7 +98,7 @@ results; audit imports and run regression validation.
 | Intent | Edit |
 | --- | --- |
 | Add a new hardware target | Run the profiler with `HARDWARE=` set; output lands in `profiler/perf/<hw>/`. See **[Profiler / Adding hardware](/docs/profiler/adding-hardware)** |
-| Add a new model architecture | Drop a YAML in `profiler/models/<model_type>.yaml`, then `python -m profiler coverage <model>` until it binds every kernel. See **[Profiler / Adding model architecture](/docs/profiler/adding-model-architecture)** |
+| Add a new model architecture | Drop a YAML in `profiler/models/<model_type>.yaml`, then `python -m profiler coverage <model> --hardware <hw>` until it binds every kernel. See **[Profiler / Adding model architecture](/docs/profiler/adding-model-architecture)** |
 | Teach the layer resolver a new per-layer rule | `profiler/core/stack.py` — read the rule out of vLLM's source, never guess; the vendors' conventions genuinely disagree |
 | Change the default skew calibration | `profiler/core/skew_calibration.py` |
 | Change what categories get profiled | `profiler/core/categories.py` + `profiler/core/runner.py` |
@@ -99,7 +106,7 @@ results; audit imports and run regression validation.
 
 ## Bench (`bench/`)
 
-```
+```text
 bench/
 ├── __main__.py              CLI (run / validate)
 ├── core/                    AsyncLLM driver, recorder, validator
@@ -114,10 +121,10 @@ are emitted). For day-to-day "did my change regress?" use, see
 
 ## Configs (`configs/`)
 
-```
+```text
 configs/
 ├── cluster/<name>.json      Cluster topology (the main thing)
-├── model/<org>/<name>.json  Model architecture (subset of HF config.json)
+├── model/<org>/<name>.json  Model configs consumed by profiling and simulation
 └── pim/<name>.ini           PIM device specs (DRAMSim3 format)
 ```
 
@@ -129,7 +136,7 @@ all. Field-by-field schema lives in
 
 ## Workloads (`workloads/`)
 
-```
+```text
 workloads/
 ├── *.jsonl                  Datasets (one request or session per line)
 ├── generators/              JSONL builders. One subcommand today: `sharegpt`
@@ -165,12 +172,13 @@ editing `llm_converter.py` alone has no effect until you reinstall it
 
 ## Scripts (`scripts/`)
 
-```
+```text
 scripts/
 ├── docker-sim.sh            Sim container launcher
 ├── docker-vllm.sh           vLLM container launcher (profiler / bench)
 ├── install-vllm.sh          Bare-metal vLLM install (uv venv)
-└── compile.sh               ASTRA-Sim + Chakra build
+├── compile.sh               ASTRA-Sim + Chakra build
+└── monitor_run.py           Bounded process execution and resource telemetry
 ```
 
 You'll touch these rarely. If you add a new entry point, prefer

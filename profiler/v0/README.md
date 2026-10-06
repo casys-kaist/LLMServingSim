@@ -1,4 +1,4 @@
-# llm_profile v0 (Pytorch profiler)
+# profiler/v0
 
 **Archived implementation, retained for reference.** This directory is not the
 vLLM 0.28 profiling path and its CSV/predictor formats are not current simulator
@@ -17,7 +17,8 @@ and were inputs to the legacy simulator's power model.
 
 ### 1. Environment
 
-Run inside the provided Docker container or a native PyTorch + CUDA environment:
+Run these legacy commands from `profiler/v0/`, using its own Docker setup or
+a compatible historical PyTorch + CUDA environment:
 
 ```bash
 ./docker.sh
@@ -60,17 +61,17 @@ This trains the legacy scikit-learn attention predictor. The historical
 The inference space covered by
 the predictor can be controlled via `--max-batch` and `--max-len`.
 
-## Output structure
+## Output schema
 
 Results are written to:
 
-```
+```text
 perf_models/{hardware}/{model}/tp{tp_size}/
-  layers.csv                              # Per-layer compute latency
-  attention.csv                           # Attention latency by (batch_size, seq_len)
-  predictions/
-    attn_decode_predictions.csv           # Predictor output for decode attention
-    attn_prefill_predictions.csv          # Predictor output for prefill attention
+├── layers.csv                          per-layer compute latency
+├── attention.csv                       latency by batch_size and seq_len
+└── predictions/
+    ├── attn_decode_predictions.csv     legacy decode predictor output
+    └── attn_prefill_predictions.csv    legacy prefill predictor output
 ```
 
 These are legacy outputs. The current simulator expects the per-category

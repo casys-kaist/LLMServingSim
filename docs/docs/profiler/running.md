@@ -587,8 +587,10 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
 | `--tp-refresh` | ✓ | The single TP degree to refresh. Must be a member of `--tp` |
 | `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `linear_attention`, `moe`, `mtp` |
 
-It boots one engine at that TP, fires only that category's grid, and
-rewrites `tp<N>/<group>.csv` plus `meta.yaml`. Errors out if the
+It measures only that TP/category and updates `tp<N>/<group>.csv` plus the
+relevant `meta.yaml` fields. Compatible rows resume by default; `--force`
+replaces the selected category. A whole-block MoE slice can boot a separate
+engine for each requested EP degree. It errors out if the
 architecture YAML has no entries in `catalog.<group>` — asking for
 `moe` on a dense model, for instance.
 

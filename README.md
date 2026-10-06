@@ -15,6 +15,9 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 
 ## Latest News
 
+- **[In progress]** Replacing ASTRA-Sim with an **in-house network backend** for faster simulation, improved communication-model accuracy, and broader network topology support.
+- **[In progress]** Expanding **model architecture support and validation** — DeepSeek, Kimi, MiniMax, Qwen3.8, and more.
+- [2026/10] **vLLM 0.28.0 compatibility update** — bug fixes and improved simulation accuracy, validated against the RTXPRO6000 Llama and Qwen benchmark examples. ([#76](https://github.com/casys-kaist/LLMServingSim/pull/76))
 - [2026/08] Simulation is **~11x faster** with byte-identical results — the four `bench/examples` runs go 16m 40s → 1m 26s. ([#67](https://github.com/casys-kaist/LLMServingSim/pull/67))
 - [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
 - [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on mean TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))

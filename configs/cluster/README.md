@@ -106,7 +106,8 @@ defaults directly. No per-model bandwidth or extra enable flag is required.
 The runtime fields listed above (`max_num_seqs`, `max_num_batched_tokens`, etc.) support **per-instance overrides** in the cluster config. This enables heterogeneous deployments where different instances in the same cluster use different scheduler limits. `cudagraph` is a config-only object, not a CLI override.
 
 **Precedence rule:**
-```
+
+```text
 per-instance value (from cluster config) > global CLI value (from --flag)
 ```
 
@@ -114,6 +115,7 @@ For each field, the runtime reads `instance.get("<field>", args.<field>)` — if
 
 **Unlimited semantics:**
 Setting either batching limit to `0` maps it to infinity via the `_runtime_limit` helper:
+
 - `max_num_seqs: 0` → no limit on concurrent sequences
 - `max_num_batched_tokens: 0` → **not** actually unbounded. The scheduler then takes
   `min(max_num_batched_tokens, max_position_embeddings)`, so the effective budget is the
@@ -147,6 +149,7 @@ model*. Serving two precisions of one model is two **model configs**.
 number in `(0, 1]` — a fraction, so `0.9`, never `90`.
 
 **Validation gates:**
+
 - `enable_sub_batch_interleaving: true` requires `enable_attn_offloading: true`
 - `enable_sub_batch_interleaving: true` requires `pp_size == 1`: an interleaved trace leaves
   both sub-batches mid-block at every stage edge, so a pipeline stage has no single hidden
@@ -194,8 +197,8 @@ decode instance.
 
 A cluster config mixes two kinds of statement, and only one of them is yours:
 
-| | |
-|---|---|
+| Fields | Meaning |
+| --- | --- |
 | `tp_size`, `num_npus`, `mem_util`, `dp_group`, `pd_type` | what you want to simulate |
 | `link_bw`, `link_latency`, `npu_mem.mem_size/mem_bw/mem_latency` | what the hardware actually is |
 
@@ -204,7 +207,7 @@ into `profiler/perf/<hw>/hardware.yaml`, and a config that **omits** those keys
 inherits the measured values. Every inherited value is logged with its
 provenance:
 
-```
+```text
 [HardwareDefaults] INFO  link_bw = 16.37 for RTXPRO6000 (inherited from hardware.yaml, measured)
 [HardwareDefaults] INFO  link_latency = 16100 for RTXPRO6000 (inherited from hardware.yaml, measured)
 [HardwareDefaults] INFO  npu_mem.mem_bw = 1597.6 for RTXPRO6000 (inherited from hardware.yaml, spec)
@@ -238,7 +241,8 @@ so they are inherited only when every instance shares one hardware label. A
 cluster mixing two card types has a link that is neither one's intra-node
 measurement, and it raises rather than copying one.
 
-### Parallelism rules:
+### Parallelism rules
+
 - `num_npus = tp_size * pp_size`
 - TP and EP share the same GPUs: non-MoE layers use TP (ALLREDUCE), MoE layers use EP
   (an all-to-all, emitted as ALLGATHER + REDUCESCATTER — vLLM's default backend)
@@ -253,7 +257,8 @@ measurement, and it raises rather than copying one.
   check applies and plain data parallelism works — see
   `single_node_dp_instance.json`
 
-### DP topology:
+### DP topology
+
 When `dp_group` is set, `config_builder.py` generates a multi-dimensional
 ASTRA-Sim topology, innermost dimension first: `[tp_size, dp_group_size]`, or
 `[tp_size, pp_size, dp_group_size]` when `pp_size > 1`. This mirrors vLLM's rank
@@ -296,7 +301,7 @@ TP because only `tp1` is profiled for those three — see
 | `single_node_dp_instance.json` | Single node, DP=2 x TP=2 dense model (4 GPUs) |
 | `single_node_dp_pp_instance.json` | Single node, DP=2 x PP=2 dense model (4 GPUs, `tp_size=1`). The dense counterpart to `single_node_moe_dp_pp_instance.json`, and the `dp_pp` validate scenario |
 | `rtx4090_single_instance.json` | RTX 4090 (24 GB), Llama-3.1-8B TP=1. `mem_util` calibrated to the validated bench run |
-| `rtx4090_tp2_instance.json` | Two RTX 4090s as TP=2, Llama-3.1-8B. A template, not runnable as shipped: only `tp1` is profiled for RTX4090, so it raises `FileNotFoundError` until you profile the card with `TP_DEGREES=2`. `mem_util` is left at the default because there is no validated run |
+| `rtx4090_tp2_instance.json` | Two RTX 4090s as TP=2, Llama-3.1-8B. A template, not runnable as shipped: only `tp1` is profiled for RTX4090, so profile the ordinary categories with `TP_DEGREES="1,2"` first. `mem_util` is left at the default because there is no validated run |
 | `rtx4090_multi_instance.json` | Two independent TP=1 RTX 4090 instances behind the router |
 | `single_node_moe_dp_tp_instance.json` | Single node, DP=2 x TP=2 MoE (EP=2, 4 GPUs) |
 | `single_node_moe_dp_pp_instance.json` | Single node, DP=2 x PP=2 MoE (EP=2, 4 GPUs) |

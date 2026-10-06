@@ -189,14 +189,17 @@ into a subdirectory of the bench run.
 
 ### Matched metric definitions
 
-Both sides compute the same three quantities from the same reference
-points, so `diff%` is meaningful:
+Both sides compute the same three quantities from aligned reference points.
+Here `arrival` is the dataset arrival converted from epoch seconds to the
+engine's monotonic clock domain, not raw `arrival_time` or `queued_ts`.
+Use the validator rather than subtracting mixed-clock timestamps manually;
+see [metric definitions](/docs/validation#metric-definitions).
 
 | Metric | Definition |
 | --- | --- |
-| TTFT | `first_token_ts - arrival_time` (queueing included) |
-| TPOT | `(last_token_ts - first_token_ts) / max(1, output_toks - 1)` |
-| Latency | `last_token_ts - arrival_time` |
+| TTFT | `first_token_ts - arrival` (queueing included) |
+| TPOT | `(last_token_ts - first_token_ts) / (output_toks - 1)`, only when `output_toks > 1` |
+| Latency | `last_token_ts - arrival` |
 
 The simulator's CSV exposes `arrival`, `end_time`, and a per-token ITL
 list directly; bench derives the same fields from vLLM's
@@ -212,7 +215,8 @@ matched values.
 
 ## Shell wrappers
 
-Two host-side wrappers set the flags for you. Both are meant to be
+Two shell wrappers set the flags for you. Run `bench.sh` in the vLLM GPU
+environment and `validate.sh` in the CPU simulator environment. Both can be
 edited in place or driven by environment variables.
 
 ### `bench/bench.sh`

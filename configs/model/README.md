@@ -47,7 +47,7 @@ ignore keys they don't need, so extra fields are harmless. The only
 hard requirements are `architectures`, `model_type`, and the
 dimensional fields.
 
-## Currently provided
+## Provided configurations
 
 | File | Type | Layers | Hidden | Heads | KV | MoE |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -80,6 +80,11 @@ The last four are not uniform stacks, which is the point of
 > tower is flattened to top level and `model_type` reads
 > `qwen3_5_text`. Every reader goes through `stack.text_config`, which
 > handles both.
+
+The additional `deepseek-ai/DeepSeek-V3.2-Exp-16L64E.json` is a reduced
+diagnostic configuration, not the full checkpoint in the table. Its recorded
+example does not establish full-model accuracy; see the
+[validation results](../../docs/docs/validation.md).
 
 ## Adding a new model
 

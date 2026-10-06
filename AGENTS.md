@@ -2369,8 +2369,8 @@ reserves it nor establishes permission or exclusive access.
 
 The repo has two documentation surfaces with deliberate scope:
 
-- **`README.md`** — minimal front door. About / Getting Started / Publications /
-  Citation only. Logo + link bar (Website / Documentation / Contribute /
+- **`README.md`** — minimal front door. Latest News / About / Getting Started /
+  Publications / Citation only. Logo + link bar (Website / Documentation / Contribute /
   Contact / Changelog) point everything else out to the website. **Do not
   re-add detailed content (CLI flag tables, dataset schema, profiler
   walkthroughs, validation plots, etc.) to the README** — it lives on the
@@ -2381,6 +2381,14 @@ The repo has two documentation surfaces with deliberate scope:
 
 When you add a new feature with user-visible behavior, document it on the
 website (not the README).
+
+Directory READMEs use `## Layout` for source trees and `## Output schema` for
+generated bundles. Use `text` fences, `├──` / `└──` / `│` connectors and four-column
+nesting; keep explanations outside trees and label selected inventories as such.
+Use language-tagged code fences, sentence-case section headings, and blank lines
+after headings and before lists or code blocks. Do not rewrite dependency
+READMEs for cosmetic consistency. Latest News links completed work to its PR;
+in-progress entries are roadmap statements, not supported behavior or accuracy claims.
 
 ## Commit & Pull Request Guidelines
 

@@ -67,6 +67,20 @@ arbitrary; each has bitten the project at least once.
 - **Don't commit machine-specific paths.** All paths in code and
   configs must be relative to the repo root.
 
+## README and Markdown formatting
+
+- Use `## Layout` for source-directory trees and `## Output schema` for generated
+  bundles. Label selected inventories instead of implying that they list every file.
+- Use `text` code fences and `├──`, `└──`, `│` tree connectors with four-column
+  nesting. Put longer explanations outside the diagram; Markdown emphasis and
+  links do not render inside code blocks.
+- Tag code blocks with their language, use sentence-case section headings, and
+  leave blank lines after headings and before lists or code blocks.
+- Keep the root README brief. Latest News links shipped changes to their PR;
+  in-progress roadmap items do not imply that support or validation is complete.
+- Preserve archived workflows as historical documentation. Do not reformat
+  third-party or submodule READMEs just to match the parent repository.
+
 ## Things to never do
 
 These each correspond to a real incident or strong project

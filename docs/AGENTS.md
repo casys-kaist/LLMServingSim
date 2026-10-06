@@ -170,6 +170,9 @@ step is silently a no-op if the source is set to anything else.
 
 ## Conventions
 
+- **README structure**: follow the root AGENTS.md layout/tree conventions and
+  the contributor guide's README and Markdown formatting section. Keep roadmap
+  announcements distinct from implemented and validated behavior.
 - **Language**: English only. Match the rest of the LLMServingSim repo.
 - **Code blocks**: always specify the language (` ```bash `, ` ```python `,
   ` ```yaml `). The site's Prism config preloads bash, python, json, yaml.

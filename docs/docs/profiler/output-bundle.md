@@ -7,13 +7,14 @@ title: Output bundle
 
 Each profile run produces a directory tree under
 `profiler/perf/<HARDWARE>/<MODEL>/<variant>/`. This is **the contract
-between the profiler and the simulator**: anything that lands here
-in the right format is consumable by
-`trace_generator._load_perf_db()`, regardless of how it was produced.
+between the profiler and the simulator**. Tables must match their schemas,
+model geometry and execution contract. Versioned skew and native MoE tables
+also require matching acquisition identities and reference fingerprints;
+filenames alone do not establish compatibility.
 
 ## Folder layout
 
-```
+```text
 profiler/perf/<HARDWARE>/
 ├── hardware.yaml                 # the card's spec + the measured interconnect;
 │                                 # one per hardware folder, shared by every model
@@ -25,8 +26,12 @@ profiler/perf/<HARDWARE>/
         ├── attention.csv
         ├── linear_attention.csv  # mamba / gated-DeltaNet models only
         ├── moe.csv               # MoE models only, one grid per EP degree
+        ├── mtp.csv               # one drafter pass, only with --profile-mtp
         ├── skew.csv              # skew-enabled runs only
-        └── skew_fit.csv          # skew-enabled runs only
+        ├── skew.meta.yaml        # skew plan and acquisition completion
+        ├── skew_fit.csv          # skew-enabled runs only
+        ├── moe_components.json   # native TP/DP/EP component index, opt-in
+        └── moe_components/       # contract-keyed native component bundles
 ```
 
 `<variant>` is auto-named from the dtype combination
@@ -424,9 +429,12 @@ Notable entries:
   shot-bypass headroom, and the bump is subtracted back before
   recording, so what you see here is the sweep bound.
 - `hf_overrides` — how single-GPU TP emulation is done: per-rank shapes
-  divided by the TP degree, plus `num_hidden_layers: 1` since one block
-  is enough to time a layer.
-- `load_format: dummy` — weights are never loaded; only shapes matter.
+  divided by the TP degree and a checkpoint-derived layer count. Category
+  engines retain every block type they measure; hybrid stacks are not
+  universally reduced to one layer.
+- `load_format: dummy` — checkpoint weights are not loaded. Synthetic weights
+  support shape-controlled acquisition, not equivalence to trained routing or
+  KV contents; see the measurement contracts above.
 - `model` — the tmpdir the model config was written to, so vLLM needed
   no Hub access. The path is dead after the run.
 

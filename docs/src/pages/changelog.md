@@ -10,6 +10,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Publish the vLLM 0.28.0 compatibility and validation announcement linked to
+  [#76](https://github.com/casys-kaist/LLMServingSim/pull/76), with clearly marked
+  network-backend and model-support roadmap entries. Standardize repository
+  README layout trees, code fences and section formatting; correct profiler
+  setup/resume guidance, module inventories and benchmark timing definitions.
 - Initialize assigned KV pages for ordinary, coverage and skew profiling with
   vLLM's deterministic dummy-weight initializer outside warmup and timing.
   Preserve page layout and CUDA timing; bound FP8 temporary

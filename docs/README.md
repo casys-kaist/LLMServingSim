@@ -1,6 +1,22 @@
-# Website
+# docs
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+Public documentation website built with [Docusaurus](https://docusaurus.io/).
+
+## Layout
+
+Selected source directories and build entry points:
+
+```text
+docs/
+├── docs/                   user and contributor Markdown/MDX guides
+├── src/                    site pages, components and styles
+│   └── pages/changelog.md  generated from the root CHANGELOG.md
+├── static/                 public images and deployment assets
+├── scripts/                changelog synchronization and render checks
+├── docusaurus.config.ts    site configuration
+├── sidebars.ts             explicit guide navigation
+└── package.json            development, build and validation commands
+```
 
 ## Contribution policy
 
@@ -16,7 +32,10 @@ Accuracy claims refer to the recorded bundles and workloads on the
 [validation page](docs/validation.md), not every architecture catalog or newly
 acquired profile. Keep GPU recording separate from CPU-only comparison in setup
 instructions. The root README is a short entry point; detailed contracts live
-in the guides below.
+in the guides below. Follow the shared
+[README formatting conventions](docs/contributor/conventions.md#readme-and-markdown-formatting)
+for directory trees and examples. Root Latest News entries link shipped changes
+to their PR and label future backend/model work as in progress.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,
@@ -87,7 +106,7 @@ Use Node.js 20 or newer and pnpm. The deployment workflow pins Node.js 22.
 pnpm install --frozen-lockfile
 ```
 
-## Local Development
+## Local development
 
 ```bash
 pnpm start

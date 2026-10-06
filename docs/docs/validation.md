@@ -85,6 +85,28 @@ while vLLM's `kv_cache_pct` counts only pinned ones, so the same run reads 71%
 on one side and 28% on the other. Admission uses free blocks on both, so the
 difference is cosmetic — but it is not a 2.5x discrepancy to chase.
 :::
+## Metric definitions
+
+Use `python -m bench validate` for the comparison. Its arrival timestamp is
+converted from wall-clock epoch seconds to the engine's monotonic domain using
+the run's minimum `queued_ts - arrival_time` offset. Raw timestamps from those
+two domains cannot be subtracted directly. Using `queued_ts` as the arrival
+instead would omit frontend-to-engine waiting from TTFT; legacy records use the
+validator's documented fallback when arrival information is missing.
+
+| Metric | Definition in the aligned clock domain |
+| --- | --- |
+| TTFT | `first_token_ts - arrival` |
+| TPOT | `(last_token_ts - first_token_ts) / (output_toks - 1)`, for requests with more than one output token |
+| Latency | `last_token_ts - arrival` |
+
+Report mean, median, P90, P95 and P99 for each metric. Benchmark accuracy is
+separate from simulator execution speed: `Total clocks (ns)` is the modeled
+makespan, while the log's `Total simulation time` is elapsed host time inside
+the simulator. A wrapper's wall time also includes startup and teardown.
+Compare wall times under the same CPU placement, dependencies, storage and
+logging settings; identical simulated results need not take identical host time.
+
 ## Headline numbers
 
 Mean error vs. real vLLM, per metric, on the four configurations summarized here:

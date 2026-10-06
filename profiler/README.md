@@ -49,53 +49,62 @@ query tokens as output state; V2 receives a separate prompt length and full toke
 list. vLLM still chooses request order and attention kernels. A shape-correct
 batch alone does not prove the intended prefill/decode execution path.
 
-## Directory layout
+## Layout
 
+Selected entry points and shared helpers; this is not an exhaustive file list.
+
+```text
+profiler/                          Python package: python -m profiler
+├── __init__.py                    package marker + _typeshed shim for vLLM
+├── __main__.py                    model, coverage, skew and hardware CLI dispatch
+├── core/                          orchestration and shared profiling contracts
+│   ├── runner.py                  full sweeps, slices and catalog coverage
+│   ├── config.py                  architecture, ProfileArgs and engine defaults
+│   ├── engine.py                  vLLM lifecycle and resolved engine limits
+│   ├── categories.py              per-category shot grids and measurement
+│   ├── attention_shape.py         shared attention geometry and feasibility
+│   ├── measurement.py             acquisition identity and timing protocols
+│   ├── hardware.py                device facts and NCCL link calibration
+│   ├── moe_profile.py             native DP+EP component acquisition
+│   ├── moe_deployment.py          TP/DP/EP ownership and token domains
+│   ├── moe_geometry.py            global expert placement and routing geometry
+│   ├── moe_conditioning.py        matched-work expert measurement controls
+│   ├── skew.py                    heterogeneous-decode acquisition
+│   ├── skew_calibration.py        reference-aligned fit and supported-N lookup
+│   ├── skew_plan.py               dynamic distribution coverage and feasibility
+│   ├── skew_support.py            reference-only completion of lookup support
+│   ├── writer.py                  CSV and metadata persistence
+│   ├── stack.py                   shared checkpoint-derived layer composition
+│   ├── catalog_path.py            shared model-type and catalog resolution
+│   ├── logger.py                  Rich-based logging and progress
+│   └── hooks/                     vLLM-internal API integrations (selected files)
+│       ├── extension.py           worker extension and measurement dispatch
+│       ├── batch.py               synthetic SchedulerOutput construction
+│       ├── history.py             query state and asynchronous output completion
+│       ├── dummy_cache.py         assigned-page dummy KV initialization
+│       ├── timings.py             profile-tree extraction and coverage
+│       ├── cuda_timing.py         per-call CUDA interval accounting
+│       ├── activity_ownership.py  launch-correlated kernel attribution
+│       └── moe_hook.py            whole-block forced routing
+├── models/                        architecture catalogs and model-type aliases
+│   ├── llama.yaml
+│   ├── qwen3.yaml                 Qwen3 dense and MoE
+│   ├── qwen3_5.yaml               Qwen3.5-family hybrid attention
+│   ├── deepseek_v32.yaml          DeepSeek-V3.2 and GLM-5
+│   ├── minimax_m3_vl.yaml         MiniMax-M3
+│   ├── mixtral.yaml
+│   └── phimoe.yaml
+├── power/                         nvidia-smi and IPMI power-logging helpers
+├── perf/                          hardware/model/variant profile bundles
+├── v0/                            archived profiler, not current simulator inputs
+├── profile.sh                     editable single-model template
+└── profile-all.sh                 explicit multi-model campaign template
 ```
-profiler/                     Python package — `python -m profiler ...`
-  __init__.py                 package marker + _typeshed shim for vLLM
-  __main__.py                 CLI entry (profile / slice / coverage subcommands)
-  core/                       internals
-    runner.py                 Orchestration loop (run_full / run_slice / run_coverage)
-    config.py                 Architecture + ProfileArgs + engine defaults
-    engine.py                 vLLM lifecycle (spin_up, probe_limits, spin_down)
-    categories.py             Dense / PerSequence / Attention / LinearAttention / Expert
-    skew.py                   Heterogeneous-decode skew sweep (skew.csv writer)
-    skew_calibration.py       runtime-reference fit + supported-N bucket lookup
-    skew_plan.py              dynamic distribution coverage and feasibility
-    skew_support.py           reference-only completion of lookup-cell support
-    writer.py                 CSV + meta.yaml writer (incl. skew_fit.csv spill)
-    stack.py                  per-layer block composition from the HF config  *
-    catalog_path.py           model_type -> yaml resolution                   *
-    logger.py                 Rich-based logging & progress
-    hooks/                    vLLM-internal-API touchpoints
-      extension.py            worker extension class (fire / coverage)
-      batch.py                synthetic SchedulerOutput builder
-      history.py              query request state and output completion
-      dummy_cache.py          assigned-page vLLM dummy initialization
-      timings.py              layerwise_profile tree parser + coverage accounting
-      moe_hook.py             MoERunner forced-routing patch
-  models/                     architecture catalogs (one YAML per model family)
-    llama.yaml
-    qwen3.yaml                  qwen3 + qwen3_moe
-    qwen3_5.yaml                Qwen3.5 / 3.6 / 3.8, dense + MoE (hybrid GDN)
-    deepseek_v32.yaml           DeepSeek-V3.2 + GLM-5 (MLA + token-level DSA)
-    minimax_m3_vl.yaml          MiniMax-M3 (block-level sparse attention)
-    mixtral.yaml
-    phimoe.yaml
-  power/                      nvidia-smi / IPMI power-logging helpers
-  perf/                       output root (one folder per hw/model/variant)
-  profile.sh                  editable user-run script — edit MODEL/HARDWARE/… then run
-  profile-all.sh              helper template: sweep several MODELs × TP degrees
 
-  * imported by the **simulator** too, and kept free of third-party imports for
-    it. One implementation each, because these two already drifted once and it
-    broke every MoE scenario. A change to either moves simulator results.
-
-scripts/                      shared environment / build entry points (top-level)
-  docker-vllm.sh              launches the vLLM container (mounts repo root)
-  install-vllm.sh             local (non-Docker) uv venv setup
-```
+The simulator also imports the shared stack, catalog, attention, skew and MoE
+contracts; these paths must remain usable without vLLM or GPU dependencies.
+Changes to those helpers can affect simulator results. Environment launchers
+and build entry points live separately under [scripts/](../scripts/README.md).
 
 ## Everything you can set
 
@@ -115,7 +124,7 @@ for units, residuals and the limits of grouped or ragged communication.
 carries the semantics; this is the index, so a flag missing from one list is
 visible against the other.
 
-```
+```text
 python -m profiler profile   <model> --hardware <hw> [flags]   full sweep
 python -m profiler slice     <model> --hardware <hw> --tp-refresh N --group G
 python -m profiler coverage  <model> --hardware <hw>            catalog check
@@ -152,7 +161,7 @@ The shipped RTXPRO6000 Qwen3-30B component index covers TP1/DP2/EP2. Its
 contract states measured bounds; other deployments still require their own data.
 Only the runtime subset is bundled, so use a separate output root for acquisition.
 
-The five that decide how long a run takes, in rough order of effect:
+The main contributors to acquisition time, in rough order of effect:
 
 1. `--measurement-iterations` — controls timed forwards, not all acquisition
    work: the profiler costs **372 ms per forward against 16 ms
@@ -167,7 +176,8 @@ The five that decide how long a run takes, in rough order of effect:
    and Qwen3.5's whole drafter bind there. Repeated top-level summaries are
    deduplicated by full module representation, time and invocation count;
    class-name equality alone must not discard differently shaped modules.
-1b. **Layer count, per category** — not a flag; resolved from the checkpoint.
+
+2. **Layer count, per category** — not a flag; resolved from the checkpoint.
    The same per-forward cost means op count sets the wall clock, and the
    profile tree merges same-class siblings, so a second layer of a type
    already present adds no information. Each category is shrunk to the axes it
@@ -178,10 +188,12 @@ The five that decide how long a run takes, in rough order of effect:
    they gain nothing. Fewer layers also means a larger `num_cache_tokens`, so
    more shots clear the feasibility filters -- wider coverage, and a grid not
    row-for-row comparable with a deeper run's.
-2. `--attention-chunk-factor` / `--attention-kv-factor` — coarsen the
+
+3. `--attention-chunk-factor` / `--attention-kv-factor` — coarsen the
    axes geometrically. The CLI defaults to the square root of 2; setting
    either to 2.0 is an explicit coarser-grid override.
-2b. `--attention-max-kv` — defaults to the model's own context
+
+4. `--attention-max-kv` — defaults to the model's own context
    (`max_model_len - max(decode_q_len) - 1`, not `max_model_len` itself: a
    decode occupies `kv + q` positions and needs one more to be a decode, so
    the context length verbatim gets the top point filtered). A lower cap reduces
@@ -189,13 +201,16 @@ The five that decide how long a run takes, in rough order of effect:
    axes and live KV capacity. Dense kernels may scale approximately linearly
    over a measured regime, but extrapolation beyond it is not guaranteed.
    Sparse attention and its indexer also have different KV scaling.
-3. `--attention-decode-q-lens` (`1`) — each extra value adds a separate
+
+5. `--attention-decode-q-lens` (`1`) — each extra value adds a separate
    decode-containing grid, not another doubling of the accumulated sweep.
    `q > 1` omits pure-prefill shots and can change feasibility. Prefer one
    invocation with all required values so row identity and metadata remain
    consistent; use separate output roots for independent acquisitions.
-4. `--skip-skew` — drops the whole second sweep.
-5. `--num-hidden-layers` — normally auto-resolved and best left alone, but it
+
+6. `--skip-skew` — drops the whole second sweep.
+
+7. `--num-hidden-layers` — normally auto-resolved and best left alone, but it
    is why a hybrid costs ~4x a uniform stack: every shot's forward runs all
    the layers the stack needs to expose each block type.
 
@@ -215,15 +230,16 @@ shots exist, not just the numbers in them.
 ./scripts/docker-vllm.sh
 ```
 
-The official vLLM image (`vllm/vllm-openai:v0.28.0`, selected by
-`scripts/docker-vllm.sh`) already includes every
-dependency the profiler needs: vllm, pydantic, pyyaml, rich,
-huggingface_hub. No extra pip installs.
+The launcher uses `vllm/vllm-openai:v0.28.0`, installs the shared
+`datasets`, `matplotlib` and `pandas` dependencies plus the pinned NCCL package,
+and applies the repository's vLLM patches. No manual installation is needed
+inside that container.
 
 The container mounts the **LLMServingSim repo root** as `/workspace`
-and starts there. Set your HuggingFace token in
-`scripts/docker-vllm.sh` (`-e HF_TOKEN=…`) so gated configs (Llama
-etc.) can be fetched automatically on first run.
+and starts there. Export `HF_TOKEN` in the host shell before launching if
+gated configs are needed; the launcher forwards it. Do not put credentials
+in the script. On a shared host, set `VLLM_GPUS` to only the allocated devices;
+see the [launcher instructions](../scripts/README.md).
 
 ### 2. Edit `profiler/profile.sh` for your run
 
@@ -533,26 +549,27 @@ Each `perf/<hw>/<model>/<variant>/` directory contains one `meta.yaml`
 compact sweep specs, skew fit summary) and one `tp<N>/` subfolder per
 profiled TP degree:
 
-```
+```text
 tp<N>/
-  dense.csv              layer, tokens, time_us
-  per_sequence.csv       layer, sequences, time_us
-  attention.csv          layer, prefill_chunk, prefill_key, n_decode,
-                         kv_decode, decode_q_len, time_us
-  linear_attention.csv   layer, prefill_tokens, n_decode, time_us
-                                                     (mamba / gated-DeltaNet only)
-  moe.csv                ep, tokens, activated_experts, time_us      (MoE only)
-  mtp.csv                layer, sequences, time_us      (one drafter pass;
-                                             only with --profile-mtp)
-  skew.csv               ordered requests, query roles, per-forward repetitions,
-                         protocol, family and measured t_skew_us
-  skew.meta.yaml         actual per-TP acquisition plan and completion status
-  skew_fit.csv           versioned supported-N calibration cells
-                         (layer, decode_q_len, pc_label, lev_label, n_anchor,
-                          alpha, direct_rows, pooled_rows)            (skew-enabled runs)
+├── dense.csv              layer, tokens, time_us
+├── per_sequence.csv       layer, sequences, time_us
+├── attention.csv          layer, prefill_chunk, prefill_key, n_decode,
+│                          kv_decode, decode_q_len, time_us
+├── linear_attention.csv   layer, prefill_tokens, n_decode, time_us (hybrid only)
+├── moe.csv                ep, tokens, activated_experts, time_us (whole-block MoE)
+├── mtp.csv                layer, sequences, time_us (one drafter pass; opt-in)
+├── skew.csv               ordered geometry, per-forward timings and protocol
+├── skew.meta.yaml         per-TP acquisition plan and completion status
+├── skew_fit.csv           layer/query/prefill/leverage/N calibration buckets
+├── moe_components.json    published native TP/DP/EP component index (opt-in)
+└── moe_components/        contract-keyed native measurement bundles (opt-in)
 ```
 
-Times are in microseconds.
+Times are in microseconds. Files depend on the model and selected categories;
+this overview lists key coordinates, not every CSV column. Ordinary timing rows
+also carry acquisition identities. See the [output schema](../docs/docs/profiler/output-bundle.md)
+and [native MoE contract](../docs/docs/profiler/native-moe-components.md)
+for complete fields and component-bundle contents.
 
 `prefill_key` is query-weighted across prefill chunks; profiling and serving
 share its implementation. See the [attention schema](https://llmservingsim.ai/docs/profiler/output-bundle#attentioncsv)
@@ -572,7 +589,8 @@ each step). The axes grow geometrically — `prefill_chunk` and the kv axes by
 `ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default sqrt(2)),
 `n_decode` uses a sqrt(2) factor. `decode_q_len` is the fifth axis and defaults
 to just `[1]`, because it only matters for speculative decoding and each extra
-value multiplies the whole sweep; see `ATTENTION_DECODE_Q_LENS`.
+value adds its decode-containing slice (not another pure-prefill sweep);
+see `ATTENTION_DECODE_Q_LENS`.
 
 `linear_attention.csv` has only two axes because there is no kv axis at all:
 a gated-DeltaNet state is fixed-size per sequence, so cost is independent of
@@ -595,8 +613,7 @@ Measured on Qwen3.8-27B:
 regime, so a regime-dependent kernel placed there would be charged on every
 batch.
 
-`meta.yaml` contains the resolved engine state plus three groups of sweep
-metadata:
+`meta.yaml` records resolved engine state and sweep metadata, including:
 
 - `engine_resolved.per_tp[tp]` — what the engine *settled on* at each TP
   degree, as opposed to what was asked for: `block_size`, `max_model_len`,
@@ -613,12 +630,13 @@ metadata:
 
 - `attention_grid` — the 4D attention sweep's caps (`max_kv`),
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec
-  strings for the `chunks` / `n_decode` / `kv` axes.
+  strings for the `chunks` / `n_decode` / `kv` axes, plus the separate
+  `decode_q_lens` table selections. Only an attention sweep rewrites this grid.
 - `skew_profile` — actual per-TP dynamic plans, resolved capacity and completion.
 - `skew_fit` — versioned identity, reference fingerprints, adaptive prefill
   partitions, supported N anchors, per-kernel/query defaults and table checksum.
 
-## Skew profiling & calibration
+## Skew profiling and calibration
 
 The default sweep covers bimodal, outlier, trimodal, ramp, lognormal, Pareto,
 near-uniform and uniform-spread histories; ordered, reversed, interleaved and
@@ -670,7 +688,7 @@ Validate every reported `bench/examples` statistic. Reusing broader measured
 data can improve one model and worsen another; neither sampling families nor
 the mean/max summaries establish generalization to unseen distributions.
 
-## Architecture yamls
+## Architecture catalogs
 
 `models/<model_type>.yaml` describes one vLLM model family's class
 structure — embedding, layernorm, qkv_proj, attention, etc. The file name is
@@ -691,7 +709,7 @@ catalog:
       vllm: RMSNorm
       within: LlamaDecoderLayer    # disambiguates from final_layernorm
       tp_stable: true
-    …
+    # Additional bindings omitted.
   per_sequence:
     lm_head:
       vllm: LogitsProcessor
@@ -766,7 +784,7 @@ filtered to the class under suspicion.
 Nothing in a CSV reveals a constant-factor error. What does is physics:
 `lm_head` reads the whole output embedding, so
 
-```
+```text
 vocab * hidden * dtype_bytes / mem_bw
 ```
 
@@ -796,7 +814,7 @@ assuming every kernel, query length and backend is purely bandwidth-bound.
      `../vllm/vllm/model_executor/models/<name>.py` for orientation, but
      **write the catalog from a live profile dump, not from the source** — the
      module tree and the profile tree differ both ways.
-   * Run `python -m profiler coverage <model>` until it binds every kernel,
+   * Run `python -m profiler coverage <model> --hardware <hw>` until it binds every kernel,
      *then* profile.
    * If the family varies anything per layer, teach `core/stack.py` the rule —
      read it out of vLLM's source rather than guessing, since the vendors'
@@ -833,7 +851,7 @@ to exist for the shape you want to measure.
 
 ## Verbosity
 
-```
+```text
 (default)                    INFO — TP limits, stage timings, progress.
 --silent                     WARNING — warnings only.
 --verbose                    DEBUG + vLLM stdout/stderr.
@@ -853,13 +871,16 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
     --hardware RTXPRO6000 --tp-refresh 1 --group attention
 ```
 
-Overwrites only that `tp1/attention.csv` and refreshes `meta.yaml`.
+Resumes compatible rows in `tp1/attention.csv` and refreshes the relevant
+`meta.yaml` fields. Add `--force` to replace that category's measurements;
+use a separate output root when old measurements must be preserved.
 
 `--tp-refresh N` requires `N` to be one of `--tp`'s degrees, which defaults to
 `1` — so refreshing a `tp2/` folder needs both:
 
 ```bash
-python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000     --tp 1,2 --tp-refresh 2 --group mtp --profile-mtp
+python -m profiler slice Qwen/Qwen3.8-27B --hardware RTXPRO6000 \
+    --tp 1,2 --tp-refresh 2 --group mtp --profile-mtp
 ```
 
 Otherwise it exits with `tp=2 is not in the session's tp_degrees ([1])`.

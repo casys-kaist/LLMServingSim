@@ -44,9 +44,9 @@ GPU telemetry does not reserve devices or check whether another user owns them.
 Before a long skew sweep, preview coverage with `profiler plan-skew`, verify
 exclusive GPU availability, and run the acquisition under explicit memory limits.
 
-* Export `HF_TOKEN` in your shell when gated/private resources require it;
+- Export `HF_TOKEN` in your shell when gated/private resources require it;
   `docker-vllm.sh` forwards the variable. Do not put credentials in the script.
-* All GPUs are exposed by default. Select only allocated devices with, for
+- All GPUs are exposed by default. Select only allocated devices with, for
   example, `VLLM_GPUS='"device=0,1"' ./scripts/docker-vllm.sh`.
-* `bench validate` is CPU-only and works in the simulator environment.
+- `bench validate` is CPU-only and works in the simulator environment.
   Only recording new vLLM runs requires the GPU environment.

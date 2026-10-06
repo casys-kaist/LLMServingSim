@@ -7,8 +7,8 @@ same dataset.
 
 ## Layout
 
-```
-bench/                          Python package — `python -m bench ...`
+```text
+bench/                         Python package: python -m bench
 ├── __init__.py                 package marker + module map
 ├── __main__.py                 CLI dispatch (run / validate)
 ├── core/                       internals
@@ -18,13 +18,14 @@ bench/                          Python package — `python -m bench ...`
 │   ├── validate.py             bench-vs-sim comparison entry point
 │   ├── plots.py                throughput / running-waiting / latency-CDF helpers
 │   └── logger.py               Rich-based logger + stdio capture
-├── bench.sh                    host-side ``python -m bench run`` wrapper
-├── validate.sh                 host-side ``python -m bench validate`` wrapper
+├── bench.sh                    python -m bench run wrapper
+├── validate.sh                 python -m bench validate wrapper
 ├── examples/                   canonical end-to-end runs (committed artifacts)
-│   ├── <hw>/<model>/config.json  cluster config used by the simulator side
-│   ├── <hw>/<model>/vllm/        vLLM bench artifacts (meta.json, requests.jsonl, timeseries.csv)
-│   ├── <hw>/<model>/outputs/     simulator output (sim.csv, sim.log)
-│   ├── <hw>/<model>/validation/  `bench validate` output (PNGs + summary.txt)
+│   ├── <hw>/<model>/           one recorded configuration and workload
+│   │   ├── config.json        simulator cluster config
+│   │   ├── vllm/              recorded vLLM metadata, requests and timeseries
+│   │   ├── outputs/           simulator output (sim.csv, sim.log)
+│   │   └── validation/        comparison plots and summary.txt
 │   ├── run.sh                  rerun the simulator side for any/all examples
 │   └── validate.sh             rerun the validation step for any/all examples
 └── results/                    output root for ad-hoc runs: bench/results/<run_id>/
@@ -38,7 +39,7 @@ The committed examples validate their stored profile bundles, not automatically
 a new acquisition made with the latest profiler. Check both profile acquisition
 metadata and benchmark engine settings before claiming equivalent coverage.
 
-`bench run` — strict replay of an existing dataset
+### Record a workload: `bench run`
 
 The runner reads a LLMServingSim-format JSONL (the same format
 `python -m workloads.generators` produces and `python -m serving --dataset`
@@ -114,7 +115,7 @@ There is no `--block-size`: vLLM picks the KV block size itself and records
 what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
 the simulator as `--block-size` to line the two up.
 
-`bench validate` — compare a finished bench run against simulator output
+### Compare recorded results: `bench validate`
 
 Loads the bench artifacts plus the simulator's `sim.csv` / `sim.log`
 for the same workload, computes TTFT / TPOT / end-to-end latency on
@@ -143,34 +144,28 @@ itself takes all seven directly:
 | `--title` | `vLLM vs LLMServingSim` | plot title suffix |
 | `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
-## Output schema (one bench run)
+## Output schema
 
-```
+One completed bench run and its optional validation output:
+
+```text
 bench/results/<run_id>/
-  engine_start.json    startup snapshot of resolved engine settings, KV capacity
-                       and workload identity; not a completed benchmark
-  meta.json            run metadata (model, vLLM version, engine kwargs,
-                       dataset hash, wall-clock start/end) plus what vLLM
-                       *resolved*: kv_cache (num_gpu_blocks, block_size,
-                       num_kv_tokens, gpu_memory_utilization), hardware
-                       (device name, UUID, CPU affinity, allowed NUMA nodes,
-                       total memory, CUDA/torch), and
-                       resolved_config (the whole VllmConfig, one key per
-                       sub-config). num_gpu_blocks is the KV capacity a
-                       simulator has to match; the rest of that budget is
-                       known up front, so it is the only place vLLM's
-                       activation peak shows up.
-  requests.jsonl       per-request timing — request_id, input_toks,
-                       output_toks, arrival_time, queued_ts, scheduled_ts,
-                       first_token_ts, last_token_ts
-  timeseries.csv       per-tick aggregates — t, prompt_throughput,
-                       gen_throughput, running, waiting, kv_cache_pct
-  validation/          (created by `bench validate`)
-    <prefix>_throughput.png
-    <prefix>_requests.png
-    <prefix>_latency.png
-    <prefix>_summary.txt
+├── engine_start.json   startup snapshot; not a completed benchmark by itself
+├── meta.json           run identity, engine settings, hardware and KV capacity
+├── requests.jsonl      token counts, arrival and per-request engine timestamps
+├── timeseries.csv      throughput, running/waiting requests and KV utilization
+└── validation/         created by bench validate (default filenames below)
+    ├── throughput.png
+    ├── requests.png
+    ├── latency.png
+    └── summary.txt
 ```
+
+`--prefix NAME` prepends `NAME_` to each validation filename. `meta.json`
+includes the dataset hash, vLLM version, requested engine kwargs, wall-clock
+start/end, resolved `VllmConfig`, device placement and `kv_cache` fields.
+Match `kv_cache.num_gpu_blocks` and `block_size` to the simulator; equal
+memory-utilization settings alone do not account for vLLM's activation budget.
 
 ## Latency definitions (sim ↔ bench)
 
@@ -185,15 +180,25 @@ for controlled diagnostics, not automatically equivalent end-to-end truth.
 Both sides report TTFT, TPOT, and end-to-end latency from the same
 reference points so diff% is meaningful:
 
+`arrival` below is the dataset's wall-clock arrival shifted into the engine's
+monotonic clock domain by the validator. Do not subtract raw `arrival_time`
+from an engine timestamp, or substitute `queued_ts`: the latter drops the
+frontend-to-engine delay from TTFT. See the [metric definitions](../docs/docs/validation.md#metric-definitions).
+
 | Metric | Definition |
 | --- | --- |
-| `TTFT`     | `first_token_ts - arrival_time` (incl. queueing) |
-| `TPOT`     | `(last_token_ts - first_token_ts) / max(1, output_toks - 1)` |
-| `Latency`  | `last_token_ts - arrival_time` |
+| `TTFT`     | `first_token_ts - arrival` (incl. queueing) |
+| `TPOT`     | `(last_token_ts - first_token_ts) / (output_toks - 1)`, only when `output_toks > 1` |
+| `Latency`  | `last_token_ts - arrival` |
 
 The simulator's `sim.csv` exposes `arrival`, `end_time`, and a per-token
 ITL list directly; bench computes the same fields from vLLM's
 `RequestStateStats` (`vllm/v1/metrics/stats.py`).
+
+Do not confuse these request metrics or `Total clocks (ns)` with the simulator
+log's `Total simulation time`: the latter measures host execution, not modeled
+serving latency. Compare it with the same timing boundary and CPU environment;
+the reproduction wrapper also incurs startup and teardown time.
 
 Non-speculative head rows count real requests, not CUDA graph padding; idle
 DP forwards omit logits and sampling. A scheduling-delay change need not
