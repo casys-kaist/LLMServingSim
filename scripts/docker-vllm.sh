@@ -23,33 +23,32 @@
 # pandas (the profiler's alpha fit and the simulator's tables), matplotlib
 # (bench plots) and datasets (the workload generators).
 #
-# `nvidia-nccl-cu13` is pinned because installing `datasets` pulls a newer one
-# than the image's torch declares (`torch 2.13.0+cu130 requires
-# nvidia-nccl-cu13==2.29.7`), and pip reports the conflict but installs it
-# anyway.
+# Pin `nvidia-nccl-cu13` to the requirement declared by the image's
+# torch 2.13.0+cu130: nvidia-nccl-cu13==2.29.7. The stock image can contain
+# a different installed version; keep this constraint when installing extras.
+# This package pin does not select the collective backend or force NCCL-only.
 #
 # scripts/patches/ is applied after the installs -- every .py in the directory,
-# unconditionally. Each is idempotent and a no-op on a vLLM that already carries
-# the fix. Two are corrections the container cannot run without:
+# unconditionally. Each is idempotent. The retained correctness fix is:
 #
-#   vllm_sm120_sparse_mla.py     backport of vLLM PR #51395; without it
-#                                DeepSeek-V3.2 / GLM-5 crash mid-sweep on any
-#                                Blackwell card
 #   vllm_m3_mtp_layer_name.py    separates MiniMax-M3's MTP layer-name prefix;
-#                                without it the model cannot start with
-#                                speculative decoding at all
+#                                its registered CUDA implementation still
+#                                collides with target layer names in 0.31.0
+# The SM120 sparse-MLA fix is already upstream in 0.31.0; its backport is removed.
 #
-# The other two are **instruments**, inert unless their environment variable is
-# set, and nothing in profiler/ or bench/ sets it -- they are run by hand when
-# a cost-model residual needs localising:
+# The other two are optional instruments, inert unless their environment
+# variable is set. The launcher does not enable either observer:
 #
 #   vllm_step_shape_log.py       VLLM_STEP_SHAPE_LOG -- per-step shape and
-#                                interval. Works under cudagraphs.
+#                                CPU-entry interval, not GPU step duration.
+#                                Python execute_model entry runs under graphs.
 #   vllm_moe_activated_log.py    VLLM_MOE_ACTIVATED_LOG -- the distinct-expert
-#                                count a real gate fires. Needs
+#                                count on the modular router path. Enabled by
+#                                bench --record-gate-stats, or manually. Needs
 #                                --enforce-eager: it calls .unique() inside
 #                                the router, which graph capture refuses, and
 #                                under replay the Python never runs anyway.
+#                                Monolithic routers can bypass this observer.
 
 set -euo pipefail
 
@@ -86,7 +85,7 @@ docker run --name vllm_docker \
   --shm-size=16g \
   -w /workspace \
   --entrypoint /bin/bash \
-  vllm/vllm-openai:v0.28.0 \
+  vllm/vllm-openai:v0.31.0 \
   -c "pip install datasets matplotlib pandas 'nvidia-nccl-cu13==2.29.7' \
       && for p in scripts/patches/*.py; do python3 \"\$p\"; done \
       && exec bash"

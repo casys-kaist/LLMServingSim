@@ -50,7 +50,7 @@ When updating an existing clone, synchronize its recursive submodules and
 rebuild ASTRA-Sim and Chakra together; see the
 [update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
 
-GPU profiling and new benchmarks target **vLLM 0.28.0**; simulation and comparison
+GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation and comparison
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
 skew calibration, shared-pool KV preparation, native-resolved profiling shapes,
@@ -63,7 +63,9 @@ the benchmark retains its two disabled communication-fusion passes.
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement
 with every current profiler change. Architecture support and fresh-profile
-accuracy are separate checks; the retained RTX 4090 reference uses vLLM 0.19.0.
+accuracy are separate checks. The launcher upgrade does not remeasure existing
+data: the RTXPRO6000 headline references retain vLLM 0.28.0, and the RTX 4090
+reference retains vLLM 0.19.0.
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

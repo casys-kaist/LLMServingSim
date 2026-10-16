@@ -48,6 +48,12 @@ in the guides below. Follow the shared
 for directory trees and examples. Root Latest News entries link shipped changes
 to their PR and label future backend/model work as in progress.
 
+The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
+0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained
+source patches. It separates optional observers from correctness fixes and
+keeps historical validation versions explicit; an environment upgrade is not
+model/backend certification or a remeasurement of the committed bundles.
+
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,

@@ -25,15 +25,18 @@ with `python -m bench validate` also runs in the CPU-only simulator environment.
 <Tabs groupId="install-method">
   <TabItem value="docker" label="Docker (recommended)" default>
 
-The Docker path uses the official `vllm/vllm-openai:v0.28.0` image,
+The Docker path uses the official `vllm/vllm-openai:v0.31.0` image,
 which already contains vLLM, PyTorch, and all CUDA dependencies.
 
-That tag is built against **CUDA 13.x**. On a CUDA 12.9 host, edit the
-image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.28.0-cu129`
-instead. The pin matters beyond the driver: every module under
+That tag uses **CUDA 13** and requires a compatible NVIDIA driver. A different
+CUDA image or vLLM version needs separate compatibility checks. The pin matters
+beyond the driver: every module under
 `profiler/core/hooks/` binds to a vLLM *internal* API — the MoE router,
 the model runner's KV cache groups and execution interfaces — and those move
-between releases, so a different vLLM can break profiling silently.
+between releases, so a different vLLM can break profiling silently. An image
+upgrade does not establish every model/backend's acquisition coverage or fresh
+simulation accuracy. Existing profile bundles and benchmark truths retain
+their recorded versions; see [validation](/docs/validation).
 
 On a shared machine, set `VLLM_GPUS` to keep the container off GPUs
 someone else is using. The inner quotes are part of the value:
@@ -75,14 +78,12 @@ This:
 - Sets `--shm-size=16g` (vLLM needs this for inter-process tensors)
 - Pre-installs `pandas`, `matplotlib` and `datasets` (the alpha fit,
   the bench plots, and the workload generators), and pins
-  `nvidia-nccl-cu13` — installing `datasets` otherwise pulls a newer
-  one than the image's torch declares, and pip reports the conflict
-  but installs it anyway
-- Applies the scripts in `scripts/patches/`, including the SM120 sparse-MLA
-  fix and MiniMax-M3 MTP layer-name fix. The step-shape and MoE-activation
-  logging patches install optional instrumentation, enabled only by their
-  diagnostic environment settings. Inspect each patch's version guards when
-  changing the pinned vLLM version
+  `nvidia-nccl-cu13==2.29.7` to the image's Torch 2.13.0+cu130 requirement.
+  This package pin does not force NCCL-only communication
+- Applies the MiniMax-M3 MTP layer-name fix and two optional observers in
+  `scripts/patches/`. The SM120 sparse-MLA fix is already upstream in 0.31.0,
+  so its backport has been removed. Recheck registered implementations and
+  patch anchors when changing vLLM versions
 - Drops you into `bash` at `/workspace`
 
 The container is named `vllm_docker`. Re-attach later with:
@@ -100,7 +101,22 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.28.0` and your GPU listed.
+You should see vLLM `0.31.0` and your GPU listed.
+
+### Optional diagnostics
+
+Neither observer is enabled by the launcher. `VLLM_STEP_SHAPE_LOG` records
+scheduled shapes and CPU `execute_model` entry timestamps, including when
+model work uses graphs. The intervals are not GPU step durations; its legacy
+prefill labels use a query-length heuristic that does not distinguish one-token
+prefills from decode or speculative multi-token decode from prefill.
+
+`bench --record-gate-stats` enables `VLLM_MOE_ACTIVATED_LOG` and requires
+`--enforce-eager`. This observer measures distinct experts on modular router
+paths; monolithic backends can bypass it. It adds work and synchronization, so
+do not use an enabled diagnostic run as uninstrumented latency ground truth.
+The retained MTP namespace patch is a startup fix, not certification of every
+quantized checkpoint or speculative-decoding backend.
 
   </TabItem>
   <TabItem value="bare-metal" label="Bare metal (uv venv)">
@@ -123,26 +139,17 @@ From the repo root:
 
 This:
 
-- Creates a local `uv` venv with Python 3.12
-- Installs `vllm==0.28.0` (with `VLLM_USE_PRECOMPILED=1` for the
-  prebuilt CUDA wheels)
-- Adds `datasets`, `matplotlib` and `pandas` for workload generation,
-  profile processing and bench plots
+- Creates the repository's `.venv` with Python 3.12, supported by vLLM 0.31.0
+- Installs `vllm==0.31.0` and requests CUDA 13 PyTorch packages with
+  `--torch-backend cu130`; use a uv version that supports this option
+- Resolves `datasets`, `matplotlib`, `pandas` and Torch's
+  `nvidia-nccl-cu13==2.29.7` pin in the same installation transaction
+- Applies the same namespace fix and inert-by-default observers as Docker
 
 Activate the venv before running profiler / bench:
 
 ```bash
 source .venv/bin/activate
-```
-
-Unlike the Docker launcher, the installer does not apply the repository's
-vLLM source patches. Apply them in the activated environment when using the
-same supported paths:
-
-```bash
-for patch in scripts/patches/*.py; do
-  python "$patch"
-done
 ```
 
 ### 3. Verify the install
@@ -152,18 +159,18 @@ python -c "import vllm; print(vllm.__version__)"
 nvidia-smi
 ```
 
-You should see vLLM `0.28.0` and your GPU.
+You should see vLLM `0.31.0` and your GPU.
 
 **Bare-metal caveats**
 
-**CUDA driver mismatch** is the most common failure mode. The
-`vllm==0.28.0` wheel `VLLM_USE_PRECOMPILED=1` fetches is built against
-CUDA 13.x — check your driver with `nvidia-smi` before assuming the
-prebuilt wheel fits.
+The helper targets CUDA 13. Check the installed package versions and NVIDIA
+driver compatibility before running it on a new host; Python package
+resolution alone does not verify CUDA library loading or model execution.
 
 The script requests a pinned prebuilt package; setting or removing
 `VLLM_USE_PRECOMPILED` does not make an incompatible wheel or driver compatible.
-Use a compatible driver/package combination or the matching Docker variant.
+Use a compatible driver/package combination. Docker remains the reference
+environment; bare-metal dependency resolution may differ from the image.
 
 Outside Docker you're responsible for `HF_TOKEN`,
 `~/.cache/huggingface`, and shm size yourself.

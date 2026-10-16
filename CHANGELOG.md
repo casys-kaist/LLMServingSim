@@ -7,6 +7,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Target vLLM 0.31.0 / CUDA 13 for new GPU acquisitions and benchmarks, aligning
+  Docker and bare-metal dependency pins and source patches. Remove the upstream-fixed
+  SM120 sparse-MLA backport; retain the MiniMax-M3 MTP namespace fix and optional
+  diagnostics. Existing profile and benchmark data keep their recorded versions.
 - Preserve vLLM's default communication backend selection in new benchmarks instead of
   forcing NCCL-only. Custom all-reduce can be disabled explicitly; inherited
   environment and resolved engine settings remain recorded. Keep the existing

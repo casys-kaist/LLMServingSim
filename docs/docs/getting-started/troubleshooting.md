@@ -290,20 +290,17 @@ builds a prefill backend and reads `self.impl.masked_mha_available`, an
 attribute only `SparseMLACommonImpl` sets — and that class is not in
 this impl's MRO.
 
-**Fix:** run the backport, which `scripts/docker-vllm.sh` now does
-automatically at container start:
-
-```bash
-python3 scripts/patches/vllm_sm120_sparse_mla.py
-```
-
-It applies the same one line as upstream's
-[PR #51395](https://github.com/vllm-project/vllm/pull/51395), is
-idempotent, and is a no-op on a vLLM that already has the fix. If your
-container predates that change to `docker-vllm.sh`, run it by hand.
+**Fix:** the default vLLM 0.31.0 image's registered SM120 implementation already
+inherits the sparse common implementation and sets `supports_dense_mha_prefill`
+to `False`. The obsolete repository backport of
+[PR #51395](https://github.com/vllm-project/vllm/pull/51395) has been removed.
+Recreating the container with the current launcher uses this upstream fix;
+an old 0.28.0 container must use the upstream fix or its matching historical
+repository checkout. This specific fix does not certify all sparse-MLA paths
+on the newer runtime.
 
 :::note[`profiler coverage` does not catch this one]
-Coverage fires three fixed shots. The failure needs a batch that takes
+Coverage fires three fixed shots. In the affected 0.28.0 run, the failure needed a batch that took
 the dense-MHA prefill path, which first appeared at shot 89 of 152 in
 the dense category — so a clean coverage report is not evidence that a
 full sweep will finish.

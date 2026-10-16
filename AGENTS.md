@@ -415,8 +415,9 @@ stable layer at the same degree in the same run. `layernorm` re-swept at TP=2
 reads 1.00-1.03 while `qk_norm` reads 0.52 -- without the control, a 0.52 could
 be the machine rather than the flag.
 
-The profiler Docker uses **vLLM v0.28.0** (`vllm/vllm-openai:v0.28.0`, or
-`v0.28.0-cu129` on a CUDA 12.9 host). The MoE hook forges expert routing by
+The profiler Docker targets **vLLM v0.31.0 / CUDA 13**
+(`vllm/vllm-openai:v0.31.0`). Changing the environment pin does not certify
+every catalog/backend or remeasure the historical bundles. The MoE hook forges expert routing by
 patching `_compute_routing` on the live router instance — every symbol under
 `profiler/core/hooks/` is a vLLM *internal* API and is version-specific. v0.28
 restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
@@ -2207,8 +2208,8 @@ backstop. Optional GPU monitoring identifies one physical UUID but neither
 reserves it nor establishes permission or exclusive access.
 
 - **vLLM container** (used by GPU acquisition, `python -m bench run`, and
-  `python -m workloads.generators`): `vllm/vllm-openai:v0.28.0` (or
-  `v0.28.0-cu129` on a CUDA 12.9 host)
+  `python -m workloads.generators`): `vllm/vllm-openai:v0.31.0` (CUDA 13;
+  requires a compatible NVIDIA driver)
   - Launched via `scripts/docker-vllm.sh`. Set `VLLM_GPUS` to a docker
     device spec to keep it off GPUs someone else is using; the inner
     quotes are part of the value (`VLLM_GPUS='"device=2,3"'`), and
@@ -2216,8 +2217,17 @@ reserves it nor establishes permission or exclusive access.
     is every GPU on the host
   - Mounts the **LLMServingSim repo root** as `/workspace`; container cwd
     is `/workspace`, so `python -m profiler …` etc. work directly
-  - Installs `datasets`, `matplotlib`, `pandas` and the pinned NCCL dependency,
-    and applies the repository's vLLM patches
+  - Installs `datasets`, `matplotlib`, `pandas` and Torch's declared
+    `nvidia-nccl-cu13==2.29.7` dependency. This package pin does not force
+    NCCL-only communication or change the benchmark's communication policy
+  - Applies the MiniMax-M3 MTP namespace fix and inert-by-default observers.
+    The SM120 sparse-MLA fix is upstream in 0.31.0; do not reapply its obsolete
+    backport. `VLLM_STEP_SHAPE_LOG` is an optional CPU-entry cadence diagnostic,
+    not a GPU step timer. `bench --record-gate-stats` enables the modular-router
+    observer and requires eager execution; monolithic MoE paths can bypass it
+  - `scripts/install-vllm.sh` targets Python 3.12 in the repository's `.venv`,
+    uses uv's `--torch-backend cu130`, and applies the same dependency pin and
+    patches. Check installed versions and live model/backend coverage separately
   - Export `HF_TOKEN` in the shell for gated-config auto-download; the launcher
     forwards it without embedding credentials in the script
 - **Simulator container**: `astrasim/tutorial-micro2024` + Python deps

@@ -17,7 +17,7 @@ new vLLM benchmark recordings need an NVIDIA GPU.
 | **Docker** | ✓ | ✓ (or bare-metal install) |
 | **NVIDIA GPU** |  | ✓ |
 | **NVIDIA Container Toolkit** |  | ✓ (for GPU passthrough into Docker) |
-| **CUDA driver** |  | 13.x for the default `vllm/vllm-openai:v0.28.0` image; 12.9 hosts need the `v0.28.0-cu129` tag instead |
+| **NVIDIA driver** |  | Compatible with the CUDA 13 runtime in the default `vllm/vllm-openai:v0.31.0` image |
 | **Disk** | Space for the container, backend build and run outputs | Space for the vLLM image, model-dependent weight/compile caches and profile outputs; full benchmark weights can occupy tens or hundreds of GB |
 | **RAM** | 16 GB | 32 GB+ recommended |
 

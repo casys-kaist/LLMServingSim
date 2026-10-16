@@ -37,7 +37,7 @@ separately below; it is not included in the four headline configurations.
 | --- | --- |
 | **Workload** | 300 ShareGPT-derived requests, ~10 sps Poisson arrivals |
 | **Hardware** | RTXPRO6000 and RTX 4090, single node (profile bundles in `profiler/perf/<hardware>/`) |
-| **vLLM version** | `v0.28.0` for the three RTXPRO6000 headline truths, matching the bench container pin. The retained RTX 4090 reference uses `v0.19.0` |
+| **vLLM version** | `v0.28.0` for the three RTXPRO6000 headline truths; these were not remeasured when the launcher moved to `v0.31.0`. The retained RTX 4090 reference uses `v0.19.0` |
 | **Block size** | 16 for the headline examples; 64 for the additional DeepSeek diagnostic |
 | **Engine flags** | Recorded in each example's `vllm/meta.json`; match its effective settings rather than assuming current CLI defaults |
 | **Cluster configs** | `bench/examples/<hardware>/<model>/config.json` |

@@ -35,6 +35,8 @@ bench/                         Python package: python -m bench
 
 `bench run` needs the vLLM GPU environment. `bench validate` only reads recorded
 files and runs on CPU in the simulator environment; it does not boot vLLM.
+The shared launcher targets vLLM 0.31.0 / CUDA 13. Committed reference runs
+retain the versions in their metadata; changing the launcher does not refresh them.
 The committed examples validate their stored profile bundles, not automatically
 a new acquisition made with the latest profiler. Check both profile acquisition
 metadata and benchmark engine settings before claiming equivalent coverage.

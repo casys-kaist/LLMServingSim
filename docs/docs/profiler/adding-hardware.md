@@ -7,7 +7,7 @@ title: Adding new hardware
 
 This page is the workflow for bringing up a brand-new hardware target
 that doesn't have a profile bundle in `profiler/perf/<HARDWARE>/`
-yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.28 internals.
+yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.31 internals.
 vLLM support alone does not establish that the profiler's CUDA attribution,
 cache preparation and hardware probes support another accelerator:
 
@@ -143,8 +143,8 @@ then validate before adopting new defaults.
 
 ### 1. Confirm the acquisition backend
 
-The profiler runs vLLM `0.28.0` by default
-(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Its launcher,
+The profiler targets vLLM `0.31.0` by default
+(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.31.0`). Its launcher,
 hardware probes, cache initialization and timing attribution target NVIDIA
 CUDA. A device being supported by vLLM alone does not validate this profiler.
 
@@ -156,7 +156,8 @@ CUDA. A device being supported by vLLM alone does not validate this profiler.
 
 Choose the CUDA image for the host driver and installed dependencies, not
 the GPU family name alone. The launcher defaults to the CUDA 13 image;
-the CUDA 12.9 image is `vllm/vllm-openai:v0.28.0-cu129`. See
+another image requires its own model/backend compatibility and acquisition
+checks. This upgrade does not remeasure existing bundles. See
 [vLLM installation](../getting-started/installation/vllm) for environment setup.
 
 ### 2. Edit `profile.sh`

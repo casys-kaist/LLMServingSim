@@ -258,10 +258,11 @@ shots exist, not just the numbers in them.
 ./scripts/docker-vllm.sh
 ```
 
-The launcher uses `vllm/vllm-openai:v0.28.0`, installs the shared
+The launcher uses `vllm/vllm-openai:v0.31.0` (CUDA 13), installs the shared
 `datasets`, `matplotlib` and `pandas` dependencies plus the pinned NCCL package,
 and applies the repository's vLLM patches. No manual installation is needed
-inside that container.
+inside that container. Existing bundles retain their recorded acquisition
+versions; the environment upgrade does not certify every catalog/backend.
 
 The container mounts the **LLMServingSim repo root** as `/workspace`
 and starts there. Export `HF_TOKEN` in the host shell before launching if

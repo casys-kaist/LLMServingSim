@@ -7,18 +7,14 @@ gate::
     activated = E * (1 - ((E - k) / E) ** n)
 
 which is 127.96 of 128 for a 128-token step on Qwen3-30B-A3B. A trained gate is
-not uniform -- it concentrates on popular experts -- so the real distinct count
-is lower, and the block is over-priced in proportion. Closing q30's residual
-needs ~9% fewer experts than the uniform expectation, and this is the
-measurement that says whether that is what is happening.
+not necessarily uniform, so observe its distinct-expert count on a real
+workload rather than infer it from a timing residual. Distinct count alone
+does not describe expert-load imbalance or establish a proportional latency.
 
-It cannot be measured with the profiler's synthesized batch:
-`assemble_scheduler_output` builds `prompt_token_ids = [1] * total_len`, so
-every sequence has identical inputs, the hidden states are identical, and the
-gate sends every token to the same `top_k` experts. Real weights do not help --
-the *inputs* are degenerate. (That is also why `moe.csv` forces routing rather
-than trusting the gate.) So the count has to come out of a real workload, which
-is what this does.
+The profiler's synthetic token IDs, dummy weights and forced expert assignments
+do not reproduce a trained router's workload distribution. Measure that
+distribution on the intended checkpoint and workload; this observer records
+the actual selected experts rather than inferring them from synthetic inputs.
 
 Writes one line per MoE call to `$VLLM_MOE_ACTIVATED_LOG`:
 
@@ -27,14 +23,15 @@ Writes one line per MoE call to `$VLLM_MOE_ACTIVATED_LOG`:
 **Needs `--enforce-eager`.** `.unique()` is not capturable, so a graph-enabled
 boot fails at capture with the variable set; and under replay the Python in this
 wrapper never runs at all, so a graphed step could not be observed even if
-capture succeeded. Routing does not depend on eager mode -- same gate, same
-weights, same tokens -- so the count measured eagerly is the count a graphed run
-would produce.
+capture succeeded. The observer adds GPU work, host synchronization and file
+I/O, so these runs are not uninstrumented latency measurements. Eager counts
+do not by themselves prove identical routing under another backend or graph
+regime; weights, inputs and numerical execution must also be controlled.
 
-Off unless the variable is set. `MoERunner.select_experts` is the chokepoint --
-it is what every family's MoE block calls, and it returns the `(weights, ids)`
-the expert kernel permutes over, so `ids` is exactly the set the cost depends
-on.
+Off unless the variable is set, including by `bench --record-gate-stats`.
+The actual target is `FusedMoERouter.select_experts`: the modular MoERunner path
+calls it and returns `(weights, ids)`. Monolithic paths can bypass it. A source
+patch applying successfully does not establish complete gate-stat coverage.
 
 Run:  python3 scripts/patches/vllm_moe_activated_log.py     (idempotent)
 """
@@ -99,7 +96,7 @@ def patch_file(path):
 def main():
     import vllm
 
-    # ``BaseRouter.select_experts`` on the CUDA path. Named explicitly rather
+    # ``FusedMoERouter.select_experts`` on the CUDA path. Named explicitly rather
     # than searched for: a scan also finds ``experts/cpu_moe.py``, which has a
     # module-level ``select_experts`` that no GPU run ever calls.
     target = (Path(vllm.__file__).parent / "model_executor" / "layers"
