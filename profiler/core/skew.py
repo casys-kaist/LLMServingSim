@@ -27,7 +27,7 @@ def measurement_fingerprint():
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
     for name in ("skew_measurement.py", "activity_ownership.py", "cuda_timing.py", "timings.py",
-                 "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py"):
+                 "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py"):
         value.update((hooks / name).read_bytes())
     return value.hexdigest()
 

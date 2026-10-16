@@ -92,6 +92,18 @@ Both acquisition identities include assigned-page dummy KV initialization throug
 vLLM's dummy-weight helper. Initialization is outside
 timing and is repeated per context. See [preparation and limitations](./running#--measurement-iterations--averaging-out-clock-jitter).
 
+Synthetic requests allocate disjoint physical page spans across all KV groups
+from one shared pool, reserving null block 0. Capacity checks include every
+group's allocation, not just the largest group. Initialization touches only
+assigned spans and respects the backend's block axis and kernel subdivisions.
+Typed logical cache views are checked against the engine's shape contract;
+unsupported packed layouts and state modes fail before acquisition.
+
+Allocation and initialization are included in both source fingerprints. Changing
+them requires fresh measurements even if the CSV schema is unchanged. Existing
+bundles are not rewritten or certified by this fix; use a separate output root
+or explicitly remeasure with `--force`.
+
 Both protocols preserve the prompt/output boundary of history-bearing decode
 requests, not just their query lengths and KV positions. This allows vLLM to
 select the intended prefill/decode kernels for each mixed batch.

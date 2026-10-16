@@ -22,7 +22,6 @@ Exactly the shape needed to sweep attention at arbitrary
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -286,31 +285,19 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         max_tokens=1,
     )
 
-    block_sizes = _kv_group_block_sizes(model_runner)
-    num_kv_groups = len(block_sizes)
+    from .cache_pages import allocate_shot_blocks
+    allocations = allocate_shot_blocks(shot, model_runner)
+    num_kv_groups = len(model_runner.kv_cache_config.kv_cache_groups)
 
     scheduled: list = []
     num_scheduled_tokens: dict[str, int] = {}
     total_num_scheduled_tokens = 0
 
-    # Track the next free block index per KV group. We assign blocks
-    # greedily in arrival order; since these are fresh dummy requests
-    # there's no overlap concern.
-    block_cursor = [0] * num_kv_groups
     req_ids: list[str] = []
 
     for idx, (new_tokens, history) in enumerate(shot.requests):
         req_id = f"r{idx}"
         total_len = new_tokens + history
-
-        # For each KV group, reserve enough blocks to cover total_len.
-        # We round up because partial blocks still consume one slot.
-        group_block_ids: list[list[int]] = []
-        for g, bs in enumerate(block_sizes):
-            num_blocks = math.ceil(total_len / bs) if total_len else 1
-            ids = list(range(block_cursor[g], block_cursor[g] + num_blocks))
-            block_cursor[g] += num_blocks
-            group_block_ids.append(ids)
 
         scheduled.append(
             NewRequestData(
@@ -330,7 +317,7 @@ def assemble_scheduler_output(shot: Shot, model_runner):
                 mm_features=[],
                 sampling_params=sampling_params,
                 pooling_params=None,
-                block_ids=tuple(group_block_ids),
+                block_ids=allocations[idx],
                 # This is the "KV cache already contains `history`
                 # tokens" marker. It declares geometry, not initialized
                 # storage; dummy KV initialization happens separately.

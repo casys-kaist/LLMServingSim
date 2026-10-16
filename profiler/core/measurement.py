@@ -18,7 +18,7 @@ def layerwise_measurement(catalog, iterations):
     files = [source] + [hooks/name for name in (
         'extension.py', 'cuda_timing.py', 'activity_ownership.py',
         'skew_measurement.py', 'timings.py', 'batch.py', 'moe_hook.py',
-        'sampler_shim.py', 'history.py', 'dummy_cache.py')]
+        'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py')]
     identity = dict(protocol=PROTOCOL, catalog=catalog, iterations=iterations,
                     vllm=vllm.__version__, torch=torch.__version__,
                     sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files})

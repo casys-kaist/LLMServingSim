@@ -740,6 +740,15 @@ Preserve every retained activity and its duration; never assign ownership by
 GPU timestamp containment or add CPU duration. The skew measurement fingerprint
 includes this helper, so older acquisitions cannot satisfy the new resume check.
 
+`hooks/cache_pages.py` allocates all cache groups from one shared physical
+pool, reserving null block 0. Group IDs must not overlap even when typed views
+have different logical shapes. Check the sum of all groups' physical page
+requirements against capacity. Initialize only assigned spans, respecting
+backend block axes and kernel subdivisions; preserve null and unassigned pages.
+Recurrent caches retain zero-start state. Unsupported state modes and packed
+layouts fail explicitly. Include allocation helpers in both ordinary and skew
+acquisition fingerprints; existing rows require remeasurement, not relabelling.
+
 Raw CSV rows preserve ordered requests, query roles, repetitions, protocol
 and actual time. Complete kernel sets and sufficient repetitions are required
 for resume. Failed acquisition raises after checkpointing instead of silently

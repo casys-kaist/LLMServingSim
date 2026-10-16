@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
+## [Unreleased]
+
+### Fixed
+
+- Allocate synthetic requests from the shared physical KV block pool, reserving
+  the null block and preventing cache groups from overwriting one another.
+  Initialize only assigned pages, including typed logical cache views in newer
+  engines; changed acquisition fingerprints require remeasurement.
+
 ## [v1.2.0] - 2026-10-06
 
 Version 1.2.0 expands serving simulation, profiling and validation across dense,

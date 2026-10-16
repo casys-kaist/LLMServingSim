@@ -59,6 +59,9 @@ latency: CPU scopes identify the launching module but contribute no time.
 The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
 defines per-call CUDA interval unions, acquisition identity columns and
 incompatible-resume protection; existing tables are not automatically converted.
+Synthetic requests reserve disjoint pages from the shared physical KV pool;
+null and unassigned pages remain intact. The output guide describes layout
+validation and the remeasurement requirement after allocation changes.
 Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete

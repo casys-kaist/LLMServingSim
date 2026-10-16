@@ -3,6 +3,8 @@
 vLLM-based layerwise profiler for LLMServingSim. Drives a real vLLM
 engine with synthetic batches and records per-layer CUDA kernel
 latency. Output CSVs feed the simulator's trace generator.
+Synthetic KV preparation reserves disjoint pages from vLLM's shared physical
+pool, preserves the null block and initializes only assigned pages outside timing.
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).
@@ -85,6 +87,7 @@ profiler/                          Python package: python -m profiler
 │       ├── batch.py               synthetic SchedulerOutput construction
 │       ├── history.py             query state and asynchronous output completion
 │       ├── dummy_cache.py         assigned-page dummy KV initialization
+│       ├── cache_pages.py         shared physical KV page allocation
 │       ├── timings.py             profile-tree extraction and coverage
 │       ├── cuda_timing.py         per-call CUDA interval accounting
 │       ├── activity_ownership.py  launch-correlated kernel attribution
