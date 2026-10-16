@@ -1,7 +1,7 @@
 """Prepare assigned KV pages with vLLM's dummy-weight initializer."""
 
-# Bound the temporary FP16 conversion made by vLLM for FP8 tensors. Each
-# slab is a separate initializer call, with the upstream per-tensor seed.
+# Bound source tensors for packed caches and upstream's temporary FP16 FP8
+# initialization. Each slab retains the upstream initializer's default seed.
 FP8_SLAB_BYTES = 16 * 1024**2
 
 
@@ -15,6 +15,141 @@ def _state_tensors(value):
             yield from _state_tensors(child)
     else:
         raise TypeError("Unsupported recurrent cache container")
+
+
+def _packed_attention_pages(layer, spec, num_blocks):
+    """Resolve only the audited opaque FP8 layouts; never reinterpret integers.
+
+    Format dispatch uses cache specs/backend layout, not the model identity.
+    vLLM 0.31 binds these logical [B,1,N,C] views as [B,N,C].
+    """
+    import torch
+    from vllm.v1.kv_cache_interface import MLAAttentionSpec, KVQuantMode
+
+    if not isinstance(spec, MLAAttentionSpec) or not hasattr(spec, 'cache_role'):
+        # Older typed MLA caches keep the original resolver authoritative.
+        # In particular, vLLM0.28 has no SparseCacheRole declaration.
+        return None
+    from vllm.v1.kv_cache_interface import SparseCacheRole
+    kind = None
+    shuffled = False
+    if spec.cache_dtype_str == 'fp8_ds_mla':
+        kind, width = 'fp8_ds_mla', 656
+        if (spec.kv_quant_mode != KVQuantMode.FP8_PER_TENSOR
+                or spec.head_size != 576 or spec.state_content_size_bytes != width
+                or spec.cache_role != SparseCacheRole.SPARSE):
+            raise ValueError('Unsupported fp8_ds_mla spec')
+    elif spec.cache_role == SparseCacheRole.INDEXER:
+        # This exact backend consumes FP8 D128 plus one FP32 scale/token.
+        # Other indexer formats (including V4/MXFP4) must not fall through.
+        backend = layer.get_attn_backend()
+        if (backend.get_name() != 'DEEPSEEK_V32_INDEXER'
+                or spec.head_size != 132 or spec.state_content_size_bytes != 132
+                or spec.kv_quant_mode != KVQuantMode.NONE
+                or spec.cache_dtype_str is not None):
+            raise ValueError('Unsupported packed indexer spec/backend')
+        kind, width = 'index_fp8_128', 132
+        shuffled = getattr(layer, 'uses_shuffled_layout', None)
+        if type(shuffled) is not bool:
+            raise ValueError('Packed indexer shuffle layout must be explicit')
+    else:
+        return None
+    cache = layer.kv_cache
+    if (not isinstance(cache, torch.Tensor) or cache.dtype != torch.uint8
+            or spec.dtype != torch.uint8 or cache.ndim != 3
+            or type(num_blocks) is not int or num_blocks < 2
+            or spec.num_kv_heads != 1 or spec.num_heads != 1
+            or spec.head_size_v != 0 or spec.tokens_per_state != 1
+            or spec.model_version is not None
+            or cache.shape[0] < num_blocks or cache.shape[0] % num_blocks):
+        raise ValueError('Unsupported opaque cache geometry')
+    ratio = cache.shape[0] // num_blocks
+    if (spec.block_size % ratio or cache.shape[1] != spec.block_size // ratio
+            or cache.shape[2] != width or cache.stride(2) != 1
+            or cache.stride(1) != width
+            or cache.stride(0) < cache.shape[1] * width
+            or cache.stride(0) % 4 or cache.storage_offset() % 4
+            or (ratio > 1 and cache.stride(0) != cache.shape[1] * width)
+            or (shuffled and cache.shape[1] % 16)):
+        raise ValueError('Unsupported opaque cache strides/block subdivision')
+    return cache, kind, shuffled
+
+
+def _quantize_packed_fp8(values, *, indexer):
+    """NVIDIA e4m3 + FP32 power-of-two scales from pinned native writers.
+
+    Native fused_norm_rope uses different clamp positions for main/index KV:
+    common/kernels.py:62-73 and348-376. No CPU time enters measurement.
+    """
+    import torch
+    values = values.to(torch.float32)
+    amax = values.abs().amax(dim=-1, keepdim=True)
+    scale = (amax.clamp_min(1e-4) / 448.0 if indexer
+             else (amax / 448.0).clamp_min(1e-4))
+    scale = torch.exp2(torch.ceil(torch.log2(scale)))
+    return (values / scale).to(torch.float8_e4m3fn), scale
+
+
+def _write_packed_mla(cache, values, rope):
+    """Write byte records: 512 FP8 +4 FP32 scales +64 BF16 RoPE."""
+    import torch
+    blocks, tokens, _ = cache.shape
+    if values.shape != (blocks, tokens, 512) or rope.shape != (blocks, tokens, 64):
+        raise ValueError('Wrong packed MLA source shape')
+    quant, scales = _quantize_packed_fp8(values.reshape(blocks, tokens, 4, 128), indexer=False)
+    cache[..., :512].copy_(quant.reshape(blocks, tokens, 512).view(torch.uint8))
+    cache[..., 512:528].view(torch.float32).copy_(scales.squeeze(-1))
+    cache[..., 528:656].view(torch.bfloat16).copy_(rope)
+
+
+def _write_packed_index(cache, values, shuffled):
+    """Write separate block planes, not 128B+4B interleaved token records."""
+    import torch
+    blocks, tokens, _ = cache.shape
+    if values.shape != (blocks, tokens, 128):
+        raise ValueError('Wrong packed index source shape')
+    quant, scales = _quantize_packed_fp8(values, indexer=True)
+    if shuffled:
+        # Native value_off: token//16*16*128 + token%16*16
+        #                 + dim//16*16*16 + dim%16.
+        quant = quant.reshape(blocks, tokens // 16, 16, 8, 16).transpose(2, 3).contiguous()
+    rows = cache.as_strided((blocks, tokens * 132), (cache.stride(0), 1))
+    rows[:, :tokens * 128].copy_(quant.reshape(blocks, tokens * 128).view(torch.uint8))
+    rows[:, tokens * 128:].view(torch.float32).copy_(scales.squeeze(-1))
+
+
+def _initialize_packed_cache(cache, kind, shuffled, initializer):
+    """Initialize assigned pages only from upstream uniform(-1e-3,1e-3).
+
+    FP8 logical inputs use FP16, as upstream's FP8 dummy initializer does;
+    RoPE is BF16. Pack with native scale formulas, not random scale bytes or
+    arbitrary unit scales. This is synthetic history, not a native forward.
+    """
+    import torch
+    from vllm.platforms import current_platform
+
+    # NVIDIA E4M3 is the audited format. CPU tensors are used only by tests.
+    if cache.device.type != 'cpu' and (
+            not current_platform.is_cuda()
+            or current_platform.fp8_dtype() != torch.float8_e4m3fn):
+        raise ValueError('Packed dummy history supports NVIDIA E4M3 only')
+    if kind not in ('fp8_ds_mla', 'index_fp8_128'):
+        raise ValueError('Unknown packed dummy cache format')
+    width = 512 if kind == 'fp8_ds_mla' else 128
+    source_bytes_per_block = cache.shape[1] * (width + (64 if width == 512 else 0)) * 2
+    if source_bytes_per_block > FP8_SLAB_BYTES:
+        raise ValueError('One packed cache page exceeds initialization bound')
+    step = max(1, FP8_SLAB_BYTES // source_bytes_per_block)
+    for start in range(0, cache.shape[0], step):
+        page = cache.narrow(0, start, min(step, cache.shape[0] - start))
+        values = torch.empty((*page.shape[:2], width), dtype=torch.float16, device=page.device)
+        initializer(values)
+        if kind == 'fp8_ds_mla':
+            rope = torch.empty((*page.shape[:2], 64), dtype=torch.bfloat16, device=page.device)
+            initializer(rope)
+            _write_packed_mla(page, values, rope)
+        else:
+            _write_packed_index(page, values, shuffled)
 
 
 def _attention_pages(layer, spec, cache_dtype, num_blocks, used_blocks):
@@ -101,27 +236,35 @@ def initialize_dummy_cache(runner, batch):
                 for cache in _state_tensors(layer.kv_cache):
                     if not cache.ndim or cache.shape[0] != num_blocks:
                         raise ValueError('Cannot identify recurrent cache pages')
-                    selected.append((select_pages(cache, 0, first, count, num_blocks), 0, True))
+                    selected.append((select_pages(cache, 0, first, count, num_blocks), 0, True, None))
             elif isinstance(spec, AttentionSpec):
                 if not has_history:
                     continue
-                cache_dtype = ('auto' if spec.kv_quant_mode == KVQuantMode.NONE else
-                    getattr(spec, 'cache_dtype_str', None) or runner.vllm_config.cache_config.cache_dtype)
-                # Request the full allocation only as a view; the original
-                # resolver validates the installed backend's layout/block axis.
-                full, axis = _attention_pages(layer, spec, cache_dtype, num_blocks, num_blocks)
-                selected = [(select_pages(full, axis, first, count, num_blocks), axis, False)]
+                packed = _packed_attention_pages(layer, spec, num_blocks)
+                if packed is not None:
+                    full, kind, shuffled = packed
+                    selected = [(select_pages(full, 0, first, count, num_blocks),
+                                 0, False, (kind, shuffled))]
+                else:
+                    cache_dtype = ('auto' if spec.kv_quant_mode == KVQuantMode.NONE else
+                        getattr(spec, 'cache_dtype_str', None) or runner.vllm_config.cache_config.cache_dtype)
+                    # Request the full allocation only as a view; the original
+                    # resolver validates the installed backend's layout/block axis.
+                    full, axis = _attention_pages(layer, spec, cache_dtype, num_blocks, num_blocks)
+                    selected = [(select_pages(full, axis, first, count, num_blocks), axis, False, None)]
             else:
                 raise TypeError(f'Unsupported profiling cache spec: {type(spec).__name__}')
-            for view, axis, zero in selected:
+            for view, axis, zero, packed_kind in selected:
                 key = (view.device, view.data_ptr(), view.dtype, tuple(view.shape), tuple(view.stride()))
                 if key not in seen:
                     seen.add(key)
-                    views.append((view, axis, zero))
+                    views.append((view, axis, zero, packed_kind))
     with torch.inference_mode():
-        for view, axis, zero in views:
+        for view, axis, zero, packed_kind in views:
             if zero:
                 view.zero_()
+            elif packed_kind is not None:
+                _initialize_packed_cache(view, *packed_kind, initialize_single_dummy_weight)
             elif torch.finfo(view.dtype).bits >= 16:
                 initialize_single_dummy_weight(view)
             else:

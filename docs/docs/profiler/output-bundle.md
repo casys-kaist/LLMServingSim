@@ -155,7 +155,8 @@ from one shared pool, reserving null block 0. Capacity checks include every
 group's allocation, not just the largest group. Initialization touches only
 assigned spans and respects the backend's block axis and kernel subdivisions.
 Typed logical cache views are checked against the engine's shape contract;
-unsupported packed layouts and state modes fail before acquisition.
+the packed formats below have explicit byte-layout checks. Unsupported packed
+layouts and state modes fail before acquisition.
 
 Allocation and initialization are included in both source fingerprints. Changing
 them requires fresh measurements even if the CSV schema is unchanged. Existing
@@ -165,6 +166,43 @@ or explicitly remeasure with `--force`.
 Both protocols preserve the prompt/output boundary of history-bearing decode
 requests, not just their query lengths and KV positions. This allows vLLM to
 select the intended prefill/decode kernels for each mixed batch.
+
+### Packed attention history
+
+The NVIDIA vLLM 0.31 acquisition path supports these exact opaque cache formats:
+
+| Format | Payload and scale layout |
+| --- | --- |
+| `fp8_ds_mla` | Each 656-byte token record contains 512 FP8 NoPE values, four FP32 scales (one per 128 values), then 64 BF16 RoPE values |
+| `DEEPSEEK_V32_INDEXER` | Each token contributes 128 FP8 values and one FP32 scale, stored in separate planes within its block; the explicit backend shuffle flag selects plain or 16-by-16 tiled values |
+
+The cache spec, role, dtype, dimensions, block geometry and byte strides must
+match the supported format. A `uint8` allocation alone is not enough to infer it.
+The indexer's 132 bytes per token are a storage budget, not interleaved
+128-byte-value/4-byte-scale records. Null pages, unassigned pages and per-block
+padding remain untouched, including when layer views share a backing allocation.
+
+Logical FP8 payloads are initialized as FP16 through the installed
+`initialize_single_dummy_weight`, using its unmodified distribution and per-tensor
+seed; RoPE payloads use BF16. Native NVIDIA E4M3 quantization then writes the data
+and deterministic positive power-of-two scales. For a group maximum `amax`, the
+main cache uses `2^ceil(log2(max(amax / 448, 1e-4)))`, while the index cache uses
+`2^ceil(log2(max(amax, 1e-4) / 448))`. The distinct clamp positions are intentional.
+Scale bytes are neither random dummy values nor arbitrary unit scales.
+
+Floating sources are created in bounded chunks independent of total cache size;
+FP32 conversion and quantization intermediates add a bounded multiple of that
+source storage. The source-chunk limit is not a peak-memory limit. Initialization
+is outside warmup and measured query work. No native forward or trained-weight
+KV generation is used; the result is synthetic history, not trained KV statistics
+or a guarantee of representative data-dependent sparse selection.
+
+The ordinary floating-cache path is unchanged. Older runtimes without the
+sparse-role capability retain that path; this does not enable their unsupported
+opaque formats. NVFP4, other packed layouts and ROCm/FNUZ packed acquisition
+remain unsupported. Preparation support alone does not certify model catalog
+coverage, trace composition or benchmark accuracy. Changes to this initializer
+still invalidate acquisition resume through the existing source fingerprints.
 
 ## Runtime-selected component layouts
 

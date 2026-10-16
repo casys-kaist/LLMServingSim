@@ -714,9 +714,27 @@ kernel subdivisions map back to the request's manager block IDs. Leave
 unassigned pages untouched. Reinitialize per context, outside warmup and timing,
 so preceding queries cannot become the next shot's synthetic history.
 FP8 initialization uses bounded slabs, each with the upstream per-tensor seed,
-to limit its temporary FP16 conversion. Packed payload/scale layouts without a
-supported typed view fail explicitly. Recurrent states are zero-start, not
-generated history. None of these inputs claims trained-workload KV statistics
+to limit its temporary FP16 conversion. Supported NVIDIA packed caches initialize
+floating payloads with that same helper, then quantize and pack the native format:
+`fp8_ds_mla` uses 512 FP8 values, four FP32 scales and 64 BF16 RoPE values in each
+656-byte record; `DEEPSEEK_V32_INDEXER` uses separate value/scale planes within
+each block (128 FP8 values and one FP32 scale per token), optionally shuffled in
+16-by-16 tiles. Do not treat the index cache as interleaved 132-byte token records.
+Main scales clamp `amax / 448` at `1e-4`; index scales clamp `amax` before dividing
+by 448. Both round the scale upward to a power of two. Never initialize scale bytes
+randomly, substitute unit scales or run a native forward to generate this history.
+
+Dispatch by the verified cache spec/backend contract, not the model name. Check
+dtype, head/state geometry, sparse role, explicit shuffle mode and byte strides;
+unknown packed formats remain refusals. A runtime without the sparse-role
+capability retains the original typed-cache resolver. Preserve null/unassigned
+pages and block padding, including when layer views share backing storage.
+Bound floating-source chunks independently of total cache capacity; quantization
+temporaries add a bounded multiple, so the source cap is not a peak-memory claim.
+Initialization stays outside warmup/timing and in both acquisition fingerprints;
+old rows must not be relabelled to bypass incompatible resume.
+Recurrent states are zero-start, not generated history. None of these inputs
+claims trained-workload KV statistics
 or representative data-dependent sparse selection.
 
 Token IDs use a local deterministic generator bounded by the live,

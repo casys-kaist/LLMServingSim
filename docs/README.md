@@ -98,6 +98,10 @@ multiplicative attention-grid costs; a stage ETA is not a complete-bundle
 completion estimate. The multi-model script remains an explicit campaign.
 The acquisition guides document assigned-page dummy KV initialization outside
 timed query work, its content/layout limitations and asynchronous completion.
+The [packed-history contract](docs/profiler/output-bundle.md#packed-attention-history)
+specifies the supported NVIDIA MLA/indexer byte layouts, native scale rules,
+bounded source chunks and preservation of ordinary floating-cache behavior.
+This preparation support does not certify a new model catalog, trace or accuracy.
 They also distinguish request phase from query/history geometry: native decode
 requests need a completed prompt and separate output tokens for correct ordering.
 The [hardware guide](docs/profiler/adding-hardware.md) documents standalone

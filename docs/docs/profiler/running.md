@@ -434,13 +434,18 @@ to the working directory, and `--log-level INFO`. Log levels are `DEBUG`,
 
 Shots with history initialize their assigned attention pages by calling the
 installed vLLM `initialize_single_dummy_weight`.
-For vLLM 0.28 its defaults are a uniform distribution in `[-0.001, 0.001)` and
+In vLLM 0.28 and 0.31 its defaults are a uniform distribution in `[-0.001, 0.001)` and
 seed `1234`, with a local generator per tensor; low-precision rounding can reach
 an endpoint. Initialization repeats before each context, outside warmup and CUDA
 timing, without modifying unassigned pages. FP8 views are initialized in bounded
 slabs, each using that same per-tensor seed, to bound the temporary conversion.
-Recurrent caches start from zero; packed payload/scale layouts without a supported
-typed view are rejected. This is synthetic state, not the trained model's KV
+Supported packed MLA/indexer layouts initialize floating payloads through the
+same helper and then write native-format scales and bytes; the initializer is
+never applied indiscriminately to integer storage. This preparation uses bounded
+source chunks, preserves unassigned pages and block padding, and adds no measured
+latency. See [packed attention history](./output-bundle#packed-attention-history)
+for exact layouts and exclusions. Recurrent caches start from zero; unknown packed
+layouts remain rejected. This is synthetic state, not the trained model's KV
 distribution or a guarantee of representative sparse-indexer selection.
 
 Asynchronous outputs are completed before input buffers and request IDs are
