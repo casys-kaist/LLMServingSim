@@ -62,6 +62,8 @@ incompatible-resume protection; existing tables are not automatically converted.
 Synthetic requests reserve disjoint pages from the shared physical KV pool;
 null and unassigned pages remain intact. The output guide describes layout
 validation and the remeasurement requirement after allocation changes.
+The running guide also describes preserving explicit layer-type prefixes when
+reducing a model for category-specific acquisition.
 Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete

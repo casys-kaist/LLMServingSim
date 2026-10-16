@@ -14,6 +14,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   the null block and preventing cache groups from overwriting one another.
   Initialize only assigned pages, including typed logical cache views in newer
   engines; changed acquisition fingerprints require remeasurement.
+- Preserve explicit layer-type prefixes in reduced profiling models, including
+  nested text configurations and overrides reapplied by vLLM.
 
 ## [v1.2.0] - 2026-10-06
 

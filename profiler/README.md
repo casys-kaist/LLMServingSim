@@ -5,6 +5,8 @@ engine with synthetic batches and records per-layer CUDA kernel
 latency. Output CSVs feed the simulator's trace generator.
 Synthetic KV preparation reserves disjoint pages from vLLM's shared physical
 pool, preserves the null block and initializes only assigned pages outside timing.
+Category-specific decoder reductions retain the model's explicit layer-type prefix,
+including nested text configurations.
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).

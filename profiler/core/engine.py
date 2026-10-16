@@ -303,11 +303,25 @@ def _materialize_config(
     """
     written = copy.deepcopy(model_config)
     inner = written.get("text_config")
-    if not isinstance(inner, dict):
-        return written
-    for key, value in (kwargs.get("hf_overrides") or {}).items():
-        if key in inner or key == "num_hidden_layers":
-            inner[key] = value
+    overrides = kwargs.get("hf_overrides") or {}
+    if isinstance(inner, dict):
+        for key, value in overrides.items():
+            if key in inner or key == "num_hidden_layers":
+                inner[key] = copy.deepcopy(value)
+    else:
+        inner = written
+    # Profiling a decoder prefix must retain that prefix's explicit layer
+    # types. Newer config classes validate list length against the depth.
+    depth = overrides.get("num_hidden_layers")
+    layer_types = overrides.get("layer_types", inner.get("layer_types"))
+    if depth is not None and isinstance(layer_types, list):
+        if type(depth) is not int or depth < 1 or len(layer_types) < depth:
+            raise ValueError("Profiling depth exceeds the explicit layer_types prefix")
+        inner["layer_types"] = copy.deepcopy(layer_types[:depth])
+        inner["num_hidden_layers"] = depth
+        # An explicit override is applied again after reading config.json.
+        if "layer_types" in overrides:
+            overrides["layer_types"] = copy.deepcopy(layer_types[:depth])
     return written
 
 

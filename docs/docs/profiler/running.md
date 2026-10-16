@@ -18,6 +18,17 @@ campaign with its own overrides, not a CLI-default wrapper.
 > See **[Adding new hardware](./adding-hardware)**. This page covers
 > the day-to-day "I have a config, I want to profile it" flow.
 
+## Reduced model configurations
+
+The profiler reduces decoder depth separately for each category. When a model
+provides an explicit `layer_types` list, a depth of N retains its first N entries
+in their original order, including inside a nested `text_config`. A requested
+depth that is non-integer, non-positive or longer than that list is rejected.
+The source model config is not modified. Explicit `hf_overrides.layer_types`
+values are truncated consistently because vLLM reapplies them after config load.
+This preserves the selected prefix; it does not certify catalog coverage or
+end-to-end accuracy for a new model family.
+
 ## Quick start
 
 From inside the vLLM Docker container at `/workspace`:

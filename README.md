@@ -53,7 +53,8 @@ rebuild ASTRA-Sim and Chakra together; see the
 GPU profiling and new benchmarks target **vLLM 0.28.0**; simulation and comparison
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
-skew calibration, shared-pool KV preparation and native MoE components, and the
+skew calibration, shared-pool KV preparation, category-specific model prefixes
+and native MoE components, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for NCCL-only recording.
 
 The [validation results](https://llmservingsim.ai/docs/validation) describe the

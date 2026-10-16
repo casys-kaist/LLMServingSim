@@ -318,6 +318,11 @@ tell is the per-TP `block_size` the run logs: on a hybrid it should be the
 *same* at every degree, since both pages scale together. The model's full `config.json` (read from
 `configs/model/<org>/<name>.json`, or auto-fetched from the HF Hub on first run)
 is written to a tmpdir at spin-up so vLLM never needs Hub access.
+When reducing `num_hidden_layers`, retain the first N entries of an explicit
+`layer_types` list, in flat and nested text configurations. Validate that N is a
+positive integer within that list; retain the original model config unchanged.
+If `hf_overrides` explicitly supplies `layer_types`, slice that override too:
+vLLM applies it again after reading the materialized config.
 
 Attribution: the base layerwise-profile methodology (worker-extension hook into
 vLLM's `layerwise_profile()`, single-GPU TP emulation via `hf_overrides`) is
