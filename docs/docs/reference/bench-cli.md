@@ -52,25 +52,29 @@ the bench-side counterpart of a cluster config's `tp_size` / `ep_size`
 | `--tensor-parallel-size` | int | `1` | vLLM `tensor_parallel_size` |
 | `--data-parallel-size` | int | `1` | vLLM `data_parallel_size` (DP across engines) |
 | `--enable-expert-parallel` | flag | off | vLLM `enable_expert_parallel`, for MoE models |
+| `--disable-custom-all-reduce` | flag | off | Disable vLLM custom all-reduce explicitly; other optimized or fused communication paths remain available |
 
-The communication baseline is NCCL. The runner always passes
-`disable_custom_all_reduce=True`; there is no custom-all-reduce CLI switch.
-This input is recorded in `meta.json` and `engine_start.json` under
-`engine_kwargs`, in addition to the engine's resolved parallel configuration.
-Before importing vLLM, the runner also pins
-`VLLM_ALLREDUCE_USE_FLASHINFER=0` and `VLLM_ALLREDUCE_USE_SYMM_MEM=0`.
-These independent non-NCCL paths are not controlled by the custom flag;
-Torch symmetric-memory all-reduce is enabled by default in vLLM 0.28 on
-supported devices. Effective overrides are saved in `meta.json` under
-`hardware.all_reduce_environment`. Check the backend-selection log when
-verifying a new environment.
-The runner also disables `compilation_config.pass_config.fuse_allreduce_rms`
-and `fuse_gemm_comms`, which can replace collectives with FlashInfer/AITER or
-Torch symmetric-memory fused kernels independently of those switches.
-These explicit overrides are recorded under `engine_kwargs.compilation_config`;
-ordinary compute compilation and CUDA graphs keep their usual defaults.
-Historical benchmark files retain their original metadata and are not
-retroactively NCCL-only; compare communication settings before reusing them.
+Communication backend selection defaults to vLLM's own choice, **not NCCL-only**.
+The runner preserves caller environment values. Separately, it retains
+`compilation_config.pass_config.fuse_allreduce_rms=False` and
+`fuse_gemm_comms=False`, keeping the benchmark's separate compute/communication
+decomposition. Ordinary compute compilation and CUDA graphs stay enabled.
+These two compiler switches do not disable model-native fused implementations.
+`--disable-custom-all-reduce` disables only vLLM custom all-reduce; FlashInfer,
+symmetric-memory or model-native fused paths may still run. Do not use that flag
+alone as proof of an NCCL-only recording. The `bench.sh` equivalent is
+`DISABLE_CUSTOM_ALL_REDUCE=1` (default `0`).
+
+`meta.json` and `engine_start.json` record the custom-all-reduce argument and
+the two compilation overrides under `engine_kwargs`, and resolved
+parallel/compiler settings under `resolved_config`. `meta.json` also records
+the inherited `VLLM_ALLREDUCE_USE_FLASHINFER`,
+`VLLM_ALLREDUCE_USE_SYMM_MEM` and `VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC` values
+under `hardware.all_reduce_environment`. A null value means unset: the installed
+vLLM resolves its default. These settings describe configuration, not a measured
+per-collective dispatch trace; check runtime backend selection when establishing
+a communication baseline. Historical NCCL-only examples remain unchanged and
+must not be treated as default-backend measurements.
 
 ### Scheduler and precision
 
@@ -240,6 +244,7 @@ MAX_NUM_SEQS=128 MAX_NUM_BATCHED_TOKENS=2048 \
 | `TP` | `--tensor-parallel-size` | `2` |
 | `DP` | `--data-parallel-size` | `1` |
 | `EXPERT_PARALLEL` | `--enable-expert-parallel` when `1` | `0` |
+| `DISABLE_CUSTOM_ALL_REDUCE` | `--disable-custom-all-reduce` when `1` | `0` |
 | `MAX_NUM_SEQS` | `--max-num-seqs` | `128` |
 | `MAX_NUM_BATCHED_TOKENS` | `--max-num-batched-tokens` | `2048` |
 | `MAX_MODEL_LEN` | `--max-model-len`, omitted when blank | blank |

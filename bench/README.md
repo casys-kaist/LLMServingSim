@@ -48,16 +48,20 @@ consumes). Each request's `input_tok_ids` and `output_toks` are pinned via
 vLLM run uses the same prompt token IDs and requested output lengths as the
 simulator. Generated token content and execution timing are not bit-identical.
 
-The communication baseline is NCCL: the runner explicitly sets
-`disable_custom_all_reduce=True` and records it in `engine_kwargs`, alongside
-the resolved parallel configuration. It also disables the independent Torch
-symmetric-memory and FlashInfer all-reduce paths before loading vLLM; the
-effective overrides are saved in `meta.json` under
-`hardware.all_reduce_environment`. Non-NCCL all-reduce/RMS and asynchronous
-GEMM/communication fusions are disabled through recorded compilation overrides.
-Ordinary compute compilation and CUDA graphs remain enabled by default.
-Historical artifacts retain their original
-settings; inspect their metadata before comparing them.
+Communication backend selection follows vLLM's defaults and the caller's
+environment. The runner does not force NCCL or overwrite all-reduce environment
+variables. It retains `fuse_allreduce_rms=False` and `fuse_gemm_comms=False` to
+keep the benchmark's separate compute/communication decomposition; ordinary
+compute compilation and CUDA graphs remain enabled. These compiler settings
+do not disable model-native fused implementations. `--disable-custom-all-reduce` is an
+explicit opt-in (off by default); it disables that implementation only, not
+other optimized or fused communication paths. The choice is recorded in
+`engine_kwargs` together with the two compilation overrides, environment values
+in `hardware.all_reduce_environment`, and
+resolved parallel/compiler settings in `resolved_config`. An unset environment
+value means vLLM chooses its default, not that the path is disabled.
+Historical artifacts retain their original settings; a new default run is not
+automatically equivalent to a committed NCCL-only reference.
 
 `--record-gate-stats --enforce-eager` observes routing between explicit workload
 start/end markers. A concentrated gate is valid data, not a warmup signature.
@@ -100,6 +104,7 @@ Run options (also available through `python -m bench run --help`):
 | `--tensor-parallel-size` | `1` | vLLM `tensor_parallel_size` |
 | `--data-parallel-size` | `1` | vLLM `data_parallel_size` |
 | `--enable-expert-parallel` | off | vLLM `enable_expert_parallel`, MoE only |
+| `--disable-custom-all-reduce` | off | Explicitly disable custom all-reduce; does not enforce NCCL-only |
 | `--max-num-seqs` | `128` | vLLM `max_num_seqs` |
 | `--max-num-batched-tokens` | `2048` | vLLM `max_num_batched_tokens` |
 | `--max-model-len` | model max | vLLM `max_model_len` |
@@ -121,6 +126,7 @@ what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
 the simulator as `--block-size` to line the two up.
 
 `bench.sh` is an editable run template, not a passthrough for every CLI flag.
+`DISABLE_CUSTOM_ALL_REDUCE=1` enables the same explicit opt-in; its default is `0`.
 Use the module directly for `--kv-cache-memory-bytes` or `--record-gate-stats`.
 Its default TP is `2`, while the module defaults to `1`; see the
 [wrapper variable reference](../docs/docs/reference/bench-cli.md#shell-wrappers).

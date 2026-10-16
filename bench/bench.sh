@@ -69,6 +69,9 @@ NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 EXPERT_PARALLEL="${EXPERT_PARALLEL:-0}"   # 1 to enable for MoE
+# Preserve vLLM's communication defaults unless explicitly requested.
+# Disabling custom all-reduce alone does not enforce NCCL-only.
+DISABLE_CUSTOM_ALL_REDUCE="${DISABLE_CUSTOM_ALL_REDUCE:-0}"
 
 # =============================================================================
 # EXECUTE
@@ -94,6 +97,7 @@ cmd=(python3 -m bench run
 
 [[ -n "$MAX_MODEL_LEN" ]] && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
+[[ "$DISABLE_CUSTOM_ALL_REDUCE" == "1" ]] && cmd+=(--disable-custom-all-reduce)
 [[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
 [[ "$SKIP_TOKENIZER_INIT" == "1" ]] && cmd+=(--skip-tokenizer-init)
 [[ "$ENFORCE_EAGER" == "1" ]] && cmd+=(--enforce-eager)

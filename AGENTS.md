@@ -2272,22 +2272,22 @@ in-progress entries are roadmap statements, not supported behavior or accuracy c
 
 ## Comparing against a bench run: the metric definitions
 
-The benchmark communication baseline is **NCCL-only**. `bench run` explicitly
-sets `disable_custom_all_reduce=True` and records that input in `engine_kwargs`.
-Check `resolved_config.parallel_config.disable_custom_all_reduce` and the vLLM
-backend-selection log as well. The runner pins `VLLM_ALLREDUCE_USE_SYMM_MEM=0`
-and `VLLM_ALLREDUCE_USE_FLASHINFER=0` before importing vLLM; these independent
-paths are not controlled by the custom flag. Effective overrides are recorded
-in `meta.json` under `hardware.all_reduce_environment`. Historical artifacts
-keep their recorded settings and must not be relabelled as NCCL-only without evidence.
-The runner also pins `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`:
-these compiler passes can bypass the communicator via non-NCCL fused kernels.
-Record these explicit overrides under `engine_kwargs.compilation_config`.
-Ordinary compute compilation and CUDA graphs retain their defaults. Custom
-all-reduce is excluded. Simulator-side collective link parameters may be
-calibrated from NCCL primitive measurements; they do not change the benchmark's
-communication backend. Keep each example's network parameters consistent with
-its recorded hardware environment.
+Benchmark communication backend selection defaults to **vLLM's own choice,
+not NCCL-only**. Do not force all-reduce environment values. Separately retain
+the benchmark's `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`, recording
+both under `engine_kwargs.compilation_config`: changing backend selection does
+not authorize enabling these two compiler fusions. Ordinary compute compilation
+and CUDA graphs stay enabled; model-native fused operations are not governed
+universally by these switches. `--disable-custom-all-reduce` is an explicit opt-in, off by default;
+the shell template exposes it as `DISABLE_CUSTOM_ALL_REDUCE=1`. This flag alone
+does not disable other optimized or model-native fused paths. Record the argument
+in `engine_kwargs`, inherited communicator variables (including unset values)
+in `hardware.all_reduce_environment`, and resolved parallel/compiler settings
+in `resolved_config`. Configuration is not proof of actual collective dispatch.
+Do not add source patches to force NCCL as the default. Historical NCCL-only
+examples retain their recorded settings and are not relabelled. Simulator-side
+NCCL calibration does not select the benchmark backend; keep every comparison's
+network model, recorded backend and hardware environment matched.
 
 Snapshot resolved engine settings and KV capacity before shutdown. Normal
 serving runs write `engine_start.json` before submitting requests, exclusively;

@@ -5,6 +5,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Changed
+
+- Preserve vLLM's default communication backend selection in new benchmarks instead of
+  forcing NCCL-only. Custom all-reduce can be disabled explicitly; inherited
+  environment and resolved engine settings remain recorded. Keep the existing
+  all-reduce/RMS and GEMM/communication compiler fusions disabled.
+
 ### Fixed
 
 - Allocate synthetic requests from the shared physical KV block pool, reserving

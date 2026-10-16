@@ -98,7 +98,10 @@ The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32
 and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
 and keeps each recorded reference matched to its transport calibration.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
-NCCL baseline and recorded communicator and compilation settings.
+vLLM-default backend selection, the explicit custom-all-reduce opt-out, the two
+retained disabled communication-fusion passes, and recorded inherited communicator
+and resolved compilation settings. Historical
+NCCL-only references are not relabelled when the recording defaults change.
 It also documents phase-delimited gate observations and their exclusion from
 unperturbed latency references, without discarding concentrated workload gates.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes

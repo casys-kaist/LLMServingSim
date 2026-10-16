@@ -55,7 +55,9 @@ against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
 skew calibration, shared-pool KV preparation, category-specific model prefixes
 and native MoE components, and the
-[bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for NCCL-only recording.
+[bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
+vLLM's default communication backend selection and explicit overrides;
+the benchmark retains its two disabled communication-fusion passes.
 
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement

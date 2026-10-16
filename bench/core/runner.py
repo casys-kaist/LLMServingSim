@@ -36,6 +36,14 @@ from bench.core import logger as log
 from bench.core import recorder
 
 
+# Observe caller overrides without changing vLLM's communication selection.
+_ALL_REDUCE_ENV = (
+    "VLLM_ALLREDUCE_USE_SYMM_MEM",
+    "VLLM_ALLREDUCE_USE_FLASHINFER",
+    "VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC",
+)
+
+
 def _positive_int(value: str) -> int:
     result = int(value)
     if result <= 0:
@@ -61,6 +69,12 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--enable-expert-parallel", action="store_true",
                    dest="enable_expert_parallel", default=False,
                    help="vLLM enable_expert_parallel for MoE models.")
+    p.add_argument("--disable-custom-all-reduce", action="store_true",
+                   default=False,
+                   help="Explicitly disable vLLM custom all-reduce. Off by default; "
+                        "other communication backends retain their vLLM defaults. "
+                        "The benchmark keeps its two communication fusion passes "
+                        "disabled. This flag alone does not enforce NCCL-only.")
     p.add_argument("--max-num-seqs", type=int, default=128,
                    dest="max_num_seqs",
                    help="vLLM scheduler max_num_seqs (per-engine running cap).")
@@ -220,10 +234,6 @@ def _load_dataset(path: Path, cap: int = 0) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Path) -> None:
-    # These paths are independent of disable_custom_all_reduce in vLLM 0.28.
-    # Set before importing vLLM and before any worker inherits the environment.
-    os.environ["VLLM_ALLREDUCE_USE_SYMM_MEM"] = "0"
-    os.environ["VLLM_ALLREDUCE_USE_FLASHINFER"] = "0"
     # Imports deferred so `validate` / `--help` works without vLLM installed.
     from vllm import AsyncEngineArgs, SamplingParams
     from vllm.config import CompilationConfig, PassConfig
@@ -253,6 +263,9 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         "end_to_end_control_eligible": False,
     }} if gate_log is not None else {}
 
+    # Retain the benchmark's separate compute/communication decomposition.
+    # Backend selection is independent: these two disabled compiler passes
+    # do not enforce NCCL-only or disable model-native fused operations.
     compilation_config = CompilationConfig(pass_config=PassConfig(
         fuse_allreduce_rms=False, fuse_gemm_comms=False,
     ))
@@ -261,8 +274,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         tensor_parallel_size=args.tensor_parallel_size,
         data_parallel_size=args.data_parallel_size,
         enable_expert_parallel=args.enable_expert_parallel,
-        # Match the simulator's NCCL collective baseline explicitly.
-        disable_custom_all_reduce=True,
+        disable_custom_all_reduce=args.disable_custom_all_reduce,
         compilation_config=compilation_config,
         max_num_seqs=args.max_num_seqs,
         max_num_batched_tokens=args.max_num_batched_tokens,
@@ -277,7 +289,6 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
-    # Record the explicit overrides, not a repr of the full config object.
     engine_kwargs_for_meta["compilation_config"] = {"pass_config": {
         name: getattr(compilation_config.pass_config, name)
         for name in ("fuse_allreduce_rms", "fuse_gemm_comms")
@@ -566,6 +577,10 @@ def _resolved_config(engine) -> dict:
             out[name] = sub                      # a scalar on VllmConfig itself
         else:
             fields = _config_fields(value)
+            if name == "compilation_config":
+                passes = getattr(value, "pass_config", None)
+                if passes is not None:
+                    fields["pass_config"] = _config_fields(passes)
             out[name] = fields if fields else sub
     return out
 
@@ -626,9 +641,7 @@ def _hardware_facts() -> dict:
     """Which accelerator this ran on, for matching against profiler/perf/<hw>/."""
     facts = {"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
     facts["all_reduce_environment"] = {
-        name: os.environ.get(name) for name in (
-            "VLLM_ALLREDUCE_USE_SYMM_MEM", "VLLM_ALLREDUCE_USE_FLASHINFER",
-        )
+        name: os.environ.get(name) for name in _ALL_REDUCE_ENV
     }
     try:
         if hasattr(os, "sched_getaffinity"):
