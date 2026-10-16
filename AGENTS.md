@@ -239,6 +239,10 @@ parent once, while latency extraction continues into its children. Audit
 nested bindings on the live tree, including across categories; a dense-only
 slice still must not claim work owned by an attention entry. Refresh old
 `indexer_glue` rows through dense acquisition after changing this guard.
+Phi-MoE's `block_glue` likewise excludes `PhiMoE`, `LayerNorm` and
+`PhiMoEAttention`; only the decoder's direct residual work belongs there.
+Acquisition rejects shared CUDA activity across canonical bindings. Old Phi
+glue measurements require a dense-category refresh, not a metadata restamp.
 
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`

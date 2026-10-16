@@ -60,7 +60,9 @@ The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-
 defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, acquisition identity columns and
 incompatible-resume protection; existing tables are not automatically converted.
 Coverage accounts for native kernels, copies and memsets, including work outside
-module scopes. Synthetic requests reserve disjoint pages from the shared physical
+module scopes. The architecture guide also documents child exclusions for raw
+kernel wildcards and rejection of overlapping canonical activity claims.
+Synthetic requests reserve disjoint pages from the shared physical
 KV pool; null and unassigned pages are not initialized. The output guide describes
 layout validation and the remeasurement requirement after allocation changes.
 The running guide also describes preserving explicit layer-type prefixes when

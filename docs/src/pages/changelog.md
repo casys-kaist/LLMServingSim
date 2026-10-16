@@ -21,6 +21,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Keep Phi-MoE decoder residual timings separate from already measured
+  routing, normalization and attention work; old dense rows need remeasurement.
 - Allocate synthetic requests from the shared physical KV block pool, reserving
   the null block and preventing cache groups from overwriting one another.
   Initialize only assigned pages, including typed logical cache views in newer

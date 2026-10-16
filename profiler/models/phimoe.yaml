@@ -52,17 +52,13 @@ catalog:
       within: PhiMoEForCausalLM
       tp_stable: true
     block_glue:
-      # This family's decoder forward does eager tensor work outside any
-      # module -- ``profiler coverage`` reports it as one unbound
-      # ``void at::native::...`` node under PhiMoEDecoderLayer, 2.0-2.3 us in
-      # each of the three regimes, which is the 0.6% that kept coverage at
-      # 99.4%. Mixtral's forward does not, which is why its catalog needs no
-      # equivalent. Prefix-matched as a group and summed into one trace node,
-      # the same way DeepSeek's ``indexer_glue`` and Qwen3.5's ``gdn_glue``
-      # are; guarded to the decoder layer so it can only ever pick up work
-      # that no bound module already claims.
+      # The decoder's two direct residual adds are outside its child modules.
+      # Exclude the whole child subtrees: sparse routing, normalization and
+      # attention may launch the same raw kernel families but are already
+      # owned by their module bindings, even during a dense-only acquisition.
       vllm: ["void at::native::*", "Memcpy*", "Memset*"]
       within: PhiMoEDecoderLayer
+      not_within: [PhiMoE, LayerNorm, PhiMoEAttention]
   per_sequence:
     lm_head:
       vllm: LogitsProcessor

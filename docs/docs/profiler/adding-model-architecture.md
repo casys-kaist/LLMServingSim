@@ -642,6 +642,13 @@ activities outside modules are explicitly labelled unscoped. These durations
 are not assigned to any canonical layer, so inspect them before trusting a
 catalog's completeness.
 
+Raw-kernel wildcards also need child exclusions: Phi-MoE's `block_glue`
+excludes `PhiMoE`, `LayerNorm` and `PhiMoEAttention`, so routing kernels and
+attention copies are not counted again as decoder residual work. This applies
+even when profiling only the dense category. Shared native CUDA activities
+claimed by multiple canonical entries reject acquisition before CSV storage.
+Refresh old affected rows; changing a catalog does not correct stored timings.
+
 This is the check that catches the failure mode from step 1, and it is worth
 running before you trust any new catalog. Writing the four bundled modern
 families, it found something in every one: MiniMax-M3's q-norm/rope/KV-insert

@@ -792,6 +792,10 @@ Coverage can report no gaps while latency extraction still double-counts a
 parent binding and its bound child. Audit nested matches as well. Existing
 `indexer_glue` rows need a dense-category refresh; changing the catalog does
 not repair stored CSV timings.
+Phi-MoE's `block_glue` excludes its MoE, normalization and attention child
+subtrees, retaining only direct decoder residual work. Refresh old Phi dense
+rows as well. These exclusions also apply to category slices. The collector
+rejects overlapping canonical CUDA claims within a capture before saving timings.
 
 Coverage reports what is *un*bound, so it is blind to an entry that also claims
 the **target's** nodes. That happens whenever the guard is missing or wrong —
