@@ -115,9 +115,10 @@ checkpoint carries five cache dtypes decided in four different places —
 weights, KV cache, mamba conv state, mamba recurrent state, sparse-indexer
 side cache — so all five are read from the model config.
 `memory_model.cache_dtype_bytes()` is the single table. To simulate another
-precision, profile it: the *profiler* still takes `--dtype` /
-`--kv-cache-dtype` and writes a separate bundle, and the simulator reads the
-one the checkpoint names.
+precision, profile the corresponding checkpoint configuration. The profiler's
+`--dtype` / `--kv-cache-dtype` can also write alternate bundles, but these flags
+do not select one in the simulator. On quantized checkpoints, a floating dtype
+override does not remove weight quantization.
 
 `--block-size` is the other input that is really a derived value. vLLM
 treats a block size as a floor and an alignment unit, raising it until one
@@ -204,9 +205,12 @@ and `moe.csv` (`tokens, activated_experts`). `resolve_variant(model_config)`
 names the `<variant>` folder as a **pure function of the checkpoint** — weight
 dtype from `quantization_config.quant_method` or `torch_dtype`, plus a
 `-kv<dtype>` suffix when the config declares a quantized KV cache. There is no
-dtype flag on the simulator; the profiler's `--variant` / `--dtype` /
-`--kv-cache-dtype` still write other bundles beside it, which the simulator
-never asks for.
+dtype flag on the simulator. A matching BF16/FP16 override retains a quantized
+checkpoint's label; a different activation dtype gets an `-act...` suffix.
+Alternate profiler variants are not automatically selected. See the
+[naming rules and limitations](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
+before acquiring an alternate precision; folder names alone do not establish
+the complete resolved engine configuration.
 
 `meta.yaml` next to each variant records the engine flags the profiler swept
 (notably `max_num_batched_tokens` and `max_num_seqs`); the simulator warns at
@@ -338,7 +342,7 @@ yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's ``blocks:``
 and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 
 - `resolve_variant()` / `_load_perf_db()` / `_load_architecture()` — turn
-  `(hardware, model, dtype, kv_cache_dtype)` into a loaded DB with category
+  `(hardware, model, checkpoint-derived variant)` into a loaded DB with category
   tables, the block order, and the checkpoint's per-layer block resolution.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation

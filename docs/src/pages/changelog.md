@@ -36,6 +36,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Keep quantized profiler bundle names separate from floating activation
+  overrides. Treat explicit `dtype=auto` like omission; require intentional
+  labels for ambiguous HF precision/nested overrides. Existing data is unchanged.
 - Initialize supported NVIDIA packed MLA/indexer history with vLLM dummy payloads
   and native scale/layout rules. Preserve null/unassigned pages and ordinary
   floating-cache behavior; unsupported packed formats remain rejected.

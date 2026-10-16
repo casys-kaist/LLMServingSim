@@ -839,8 +839,8 @@ class ProfileArgs:
             require 1 for TP-stable replication; skew-only work is independent.
         variant: Free-form output folder label under the model's
             directory. If omitted at the CLI, auto-derived from
-            ``dtype`` + ``kv_cache_dtype`` so that profiles with
-            different engine kwargs don't collide.
+            checkpoint precision and explicit activation/KV dtype choices.
+            HF precision or nested text-config overrides need an explicit label.
         dtype / kv_cache_dtype / max_num_batched_tokens / max_num_seqs:
             Common vLLM engine kwargs. None means "use defaults"
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
@@ -1085,27 +1085,51 @@ class ProfileArgs:
     def effective_variant(self) -> str:
         """Resolved variant — explicit override or auto-derived name.
 
-        When the user doesn't pass ``--variant``, we name the folder
-        after the engine flags that actually change kernel timings:
-        ``dtype`` and ``kv_cache_dtype``. The weight dtype defaults to
-        the model config's ``torch_dtype`` / ``dtype`` so the folder carries
-        meaningful info (no bare "default").
+        Omitted ``dtype`` and ``dtype='auto'`` retain the checkpoint's
+        established folder name. On a quantized checkpoint ``--dtype``
+        controls floating activations/unquantized modules, not quantized
+        weights. A different activation dtype gets a distinct ``-act``
+        suffix; matching BF16/FP16 keeps the checkpoint name. FP32 is not
+        considered an auto match because vLLM normally downcasts it.
+        HF precision fields and any nested ``text_config`` override need an
+        explicit ``--variant``; config-class-specific updates are not guessed.
 
         Examples (typical BF16 models like Llama 3.x):
 
             no flags                   → "bf16"          (from torch_dtype)
             --kv-cache-dtype fp8       → "bf16-kvfp8"
-            --dtype fp8                → "fp8"
-            --dtype fp8 --kv... fp8    → "fp8-kvfp8"
+            --dtype float16            → "fp16"
+            FP8 checkpoint + BF16      → "fp8"       (BF16 config)
+            FP8 checkpoint + FP16      → "fp8-actfp16" (BF16 config)
         """
         if self.variant is not None:
             return self.variant
 
-        # Weight dtype: CLI wins; otherwise probe the model config.
-        weight_dtype = self.dtype
-        if weight_dtype is None and self.model_config:
-            weight_dtype = model_config_weight_dtype(self.model_config)
-        parts = [_short_dtype(weight_dtype) if weight_dtype else "default"]
+        # Do not infer the effect of arbitrary HF config-class overrides.
+        # An explicit label remains the escape hatch for deliberate variants.
+        if self.hf_overrides and set(self.hf_overrides) & {
+                "dtype", "torch_dtype", "quantization_config", "text_config"}:
+            raise ValueError("Precision or nested HF overrides require an explicit --variant")
+
+        config = self.model_config or {}
+        checkpoint_dtype = model_config_weight_dtype(config)
+        base = _short_dtype(checkpoint_dtype) if checkpoint_dtype else "default"
+        requested = None if self.dtype is None else str(self.dtype).lower()
+        if requested not in (None, "auto"):
+            quant = config.get("quantization_config")
+            method = quant.get("quant_method") if isinstance(quant, dict) else None
+            inner = config.get("text_config")
+            nested_quant = inner.get("quantization_config") if isinstance(inner, dict) else None
+            if not method and isinstance(nested_quant, dict) and nested_quant.get("quant_method"):
+                raise ValueError("Nested-only quantization needs an explicit --variant with --dtype")
+            if method:
+                activation = _checkpoint_activation_dtype(config)
+                selected = _short_dtype(requested)
+                if activation not in ("bf16", "fp16") or selected != activation:
+                    base += f"-act{selected}"
+            else:
+                base = _short_dtype(requested)
+        parts = [base]
 
         if self.kv_cache_dtype and self.kv_cache_dtype != "auto":
             parts.append(f"kv{_short_dtype(self.kv_cache_dtype)}")
@@ -1137,6 +1161,26 @@ def _short_dtype(d: str) -> str:
     silently rewriting quantization scheme names we don't know about.
     """
     return _DTYPE_SHORT.get(str(d), str(d))
+
+
+def _checkpoint_activation_dtype(config: dict[str, Any]) -> str | None:
+    """Unambiguous declared floating dtype, root first then text backbone.
+
+    vLLM's auto resolver may use weight metadata or a platform-specific fallback
+    when this is absent/FP32; do not claim an explicit dtype matches that case.
+    Conflicting legacy/current aliases also need an intentional variant label.
+    This is naming only and never changes the engine's dtype or quantization.
+    """
+    for node in (config, config.get("text_config")):
+        if not isinstance(node, dict):
+            continue
+        values = {_short_dtype(str(node[key]).lower().removeprefix("torch."))
+                  for key in MODEL_DTYPE_KEYS if node.get(key)}
+        if len(values) > 1:
+            raise ValueError("Conflicting dtype/torch_dtype aliases require an explicit --variant")
+        if values:
+            return next(iter(values))
+    return None
 
 
 # ---------------------------------------------------------------------------

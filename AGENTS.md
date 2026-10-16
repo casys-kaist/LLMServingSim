@@ -387,8 +387,10 @@ share neither a latency curve nor an alpha (on MiniMax-M3 the same batch fits
 0.24 / 0.74 / -0.01 for `attention` / `indexer` / `sparse_attention`). A bundle
 profiled before those columns existed holds one kernel and it is `attention`.
 
-`<variant>` is auto-derived from weight + KV dtype (e.g. `bf16`, `bf16-kvfp8`,
-`fp8-kvfp8`) unless `--variant` is set. Times are in **microseconds**. Layers marked
+`<variant>` retains checkpoint-derived naming and separates explicit activation/KV
+overrides (e.g. `bf16`, `fp8-actfp16`, `fp8-kvfp8`) unless `--variant` is set.
+Ambiguous precision or nested HF overrides require an intentional label; names
+are not complete resolved-precision contracts. Times are in **microseconds**. Layers marked
 `tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1 and
 replicated into other `tp<N>/` folders by the writer.
 
@@ -1461,9 +1463,9 @@ Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as
 `../profiler/perf/...` from the `astra-sim/` working directory).
 
-Variant resolution: `trace_generator.resolve_variant(model_config)` mirrors
-the profiler's `effective_variant`, and is a **pure function of the model
-config** — it takes no dtype argument, because the simulator has no dtype
+Variant resolution: `trace_generator.resolve_variant(model_config)` selects the
+checkpoint-default folder and is a **pure function of the model config** —
+it takes no dtype argument, because the simulator has no dtype
 input. Weight dtype is `utils.config_weight_dtype` (`quantization_config`
 first, then `torch_dtype` / `dtype`), KV dtype is `utils.config_kv_cache_dtype`
 and appends a `-kv<short>` suffix when not `auto`. Runtime lookups verify the
@@ -1471,7 +1473,9 @@ resulting folder exists; a miss raises a clear `FileNotFoundError` pointing at
 the missing variant. The profiler can still *write* other variants for the same
 model (`--variant`, `--dtype`, `--kv-cache-dtype`), which is how a deliberate
 second precision is measured and kept beside the first; the simulator just
-never asks for one.
+never asks for one. Do not assume universal profiler/consumer name equality:
+nested-only quantization, FP32 auto conversion and auto-promoted KV dtypes
+retain compatibility-label limitations documented in the profiler running guide.
 
 Runtime vs. profiled warnings: on first load of a `(hardware, model, variant)`,
 the simulator compares the CLI's `--max-num-batched-tokens` and `--max-num-seqs`
@@ -1760,6 +1764,16 @@ Note the weight row is the profiler's **variant folder name**, not vLLM's
 `model_config.dtype`: vLLM calls DeepSeek-V3.2 bfloat16 and keeps fp8 in the
 quant method, while the folder has to encode the quantization or two bundles
 collide. That divergence is deliberate; the other four match vLLM exactly.
+
+Profiler `--dtype auto` uses the omitted-dtype naming path. An explicit BF16/FP16
+matching a quantized checkpoint's declared activation dtype keeps the quantization
+base; another activation dtype gets `-act<dtype>` (for example `fp8-actfp16`).
+Explicit FP32 is not an auto match: vLLM may downcast an FP32 checkpoint.
+HF precision-field or any nested `text_config` override requires `--variant`;
+ambiguous dtype aliases or nested-only quantization with explicit `--dtype`
+also require an intentional label. These names never change engine quantization.
+Serving still selects only the checkpoint-default variant. Do not rename or
+restamp old acquisitions to represent a new precision or measurement identity.
 
 To simulate a different precision, **profile it** — the profiler's flags write
 a separate bundle and the simulator reads the one the checkpoint names.

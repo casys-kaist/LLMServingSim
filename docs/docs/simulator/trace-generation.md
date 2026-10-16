@@ -62,7 +62,7 @@ profiler/perf/<hardware>/<model>/<variant>/tp<N>/{
 meta.yaml
 ```
 
-Where `<variant>` encodes the dtype combination, e.g., `bf16` or
+Where `<variant>` is the checkpoint-default label, e.g., `bf16` or
 `bf16-kvfp8` or `fp8-kvfp8`. The simulator resolves it with
 `resolve_variant(model_config)` — a pure function of the model config,
 taking no dtype argument.
@@ -137,9 +137,9 @@ time, so lookups directly yield ns.
 
 ## Variant resolution
 
-`resolve_variant(model_config)` mirrors the profiler's
-`effective_variant`, but reads only the checkpoint — there is no dtype
-flag on the simulator to read instead:
+`resolve_variant(model_config)` selects the checkpoint-default profile label.
+It does not select the profiler's explicit alternative variants: there is no
+dtype flag on the simulator to read instead:
 
 ```
 dtype           config_weight_dtype(config)
@@ -159,15 +159,19 @@ So one model config names exactly one folder:
 - DeepSeek-V3.2-Exp (`quant_method: fp8`) → `fp8`
 - a checkpoint declaring `kv_cache_scheme` → `bf16-kvfp8`
 
-The profiler can still *write* other folders for the same model — its
-`--variant`, `--dtype` and `--kv-cache-dtype` are how a deliberate
-second precision gets measured and kept beside the first. The simulator
-simply never asks for one.
+The profiler can still *write* other folders for the same model. On a quantized
+checkpoint, a different floating `--dtype` adds an `-act...` suffix without
+removing quantization; a matching BF16/FP16 dtype keeps the default name.
+`--variant` explicitly labels an intentional alternative and `--kv-cache-dtype`
+can append a KV suffix. The simulator does not automatically select these alternate
+measurements. See [profiler variant naming](/docs/profiler/running#precision-and-variant-names).
 
 If the resolved folder doesn't exist under `profiler/perf/...`, the
 simulator raises a clear `FileNotFoundError` pointing at the missing
-variant. Profile that model with the profiler's defaults, which name the
-same folder.
+variant. Check the expected folder against the acquired bundle's configuration
+and recorded engine settings. Common checkpoint defaults agree; config-specific
+automatic dtype/quantization cases have [naming limitations](/docs/profiler/running#precision-and-variant-names).
+Do not rename incompatible measurements merely to satisfy a lookup path.
 
 ## Heterogeneous-decode skew correction
 

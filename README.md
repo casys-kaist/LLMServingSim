@@ -60,6 +60,9 @@ declared TP output reductions and runtime-selected hybrid components, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
 vLLM's default communication backend selection and explicit overrides;
 the benchmark retains its two disabled communication-fusion passes.
+Profiler precision labels keep checkpoint quantization separate from floating
+activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
+before acquiring an alternate precision.
 
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement

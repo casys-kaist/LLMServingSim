@@ -44,8 +44,10 @@ HARDWARE="RTXPRO6000"
 # TP_DEGREES="1"                  # use "1,2" to sweep both degrees
 
 # --- Engine kwargs ----------------------------------------------------------
-# DTYPE is left unset so vLLM resolves the checkpoint dtype. Quantization
-# is a checkpoint setting; this flag alone does not quantize its weights.
+# DTYPE is left unset (or "auto") so vLLM resolves the checkpoint dtype.
+# It does not enable/disable checkpoint quantization. For an FP8/BF16 checkpoint,
+# bfloat16 keeps "fp8"; float16 uses "fp8-actfp16". The simulator selects only
+# the checkpoint-default variant. HF precision/text_config overrides need VARIANT.
 # KV_CACHE_DTYPE defaults to vLLM's "auto" and may be promoted by the config.
 # DTYPE="bfloat16"                 # explicit vLLM engine dtype override
 # KV_CACHE_DTYPE="fp8"             # explicit vLLM KV cache dtype override
@@ -170,11 +172,13 @@ HARDWARE="RTXPRO6000"
 # FORCE=1
 
 # --- Output naming ----------------------------------------------------------
-# When omitted, the variant folder is auto-named from the effective
-# DTYPE + KV_CACHE_DTYPE — e.g. "bf16", "bf16-kvfp8" (FP8 KV),
-# "fp8-kvfp8" (both FP8). Without DTYPE the variant uses the checkpoint's
-# quantization method, then ``torch_dtype`` / ``dtype``, so it is named without
-# setting anything. Override VARIANT only for named runs (awq, gptq, ...).
+# Omitted DTYPE or "auto" retains checkpoint-derived naming (e.g. "bf16" or
+# "fp8"); it does not prove the complete resolved engine precision. For an FP8
+# checkpoint declaring BF16 activations, DTYPE=bfloat16 keeps "fp8", while
+# DTYPE=float16 uses "fp8-actfp16". Explicit KV_CACHE_DTYPE adds a KV suffix.
+# Set VARIANT for HF precision fields or any nested text_config override,
+# ambiguous configs, or intentionally separate measurements. The simulator
+# selects its checkpoint-default label, not arbitrary alternate variants.
 # VARIANT="my_experiment"
 
 # --- Paths ------------------------------------------------------------------

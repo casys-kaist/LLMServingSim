@@ -303,20 +303,25 @@ sweep; old kernel-sum rows are not relabelled as interval-union measurements.
 | --- | --- | --- |
 | `VARIANT` | auto-derived | Override the variant folder name |
 
-When omitted, `<variant>` is auto-composed from `DTYPE` + `KV_CACHE_DTYPE`:
+When `VARIANT` is omitted, the name retains checkpoint precision and separates
+explicit activation/KV overrides. Common examples are:
 
-- `bfloat16` → `bf16`
-- `bfloat16` + `fp8` KV → `bf16-kvfp8`
-- `fp8` + `fp8` KV → `fp8-kvfp8`
+- BF16 checkpoint with unset `DTYPE` or `DTYPE=auto` → `bf16`
+- FP8 checkpoint declaring BF16 activations with `DTYPE=bfloat16` → `fp8`
+- That FP8 checkpoint with `DTYPE=float16` → `fp8-actfp16`
+- `KV_CACHE_DTYPE=fp8` additionally appends `-kvfp8`
 
-You almost never need to override this. Set explicitly only for
-named experimental runs (quantization schemes, ablations).
+Use an explicit `VARIANT` for HF precision-field or any nested `text_config`
+override, ambiguous configurations or intentionally distinct acquisitions.
+Labels do not enable quantization or select an alternate bundle in the simulator.
+See [precision and variant names](#precision-and-variant-names) for the rules
+and limitations; old data is not renamed.
 
 ## Dtype
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DTYPE` | unset | Omit the engine dtype override and let vLLM resolve the checkpoint configuration. Quantization comes from the checkpoint; the profile variant uses its quantization method or `torch_dtype` / `dtype` |
+| `DTYPE` | unset | Let vLLM resolve the floating dtype (`auto` is equivalent). Explicit values do not remove checkpoint quantization; a different activation dtype gets a distinct suffix |
 | `KV_CACHE_DTYPE` | unset (`auto` in vLLM) | Optional KV dtype override, such as `fp8`. Match the effective cache dtype to the simulator's model config; this flag does not edit that config |
 
 ## Verbosity
@@ -352,6 +357,41 @@ python -m profiler hardware --hardware <hw> [options]
 (honouring `HF_TOKEN`); explicit paths are never fetched, so a missing
 file is an error.
 
+### Precision and variant names
+
+`--dtype` selects vLLM's floating dtype; it does not enable or remove checkpoint
+quantization. Omitting it or using `--dtype auto` keeps the existing checkpoint
+variant name. For an FP8 checkpoint declaring BF16 activations:
+
+- `--dtype bfloat16` keeps `fp8`.
+- `--dtype float16` uses `fp8-actfp16`, preserving its different activation timings.
+- `--kv-cache-dtype fp8` independently appends `-kvfp8`.
+
+Explicit FP32 gets an activation suffix on quantized checkpoints, even when the
+config declares FP32, because vLLM's automatic dtype can downcast it. Missing
+activation metadata is not assumed to match an explicit dtype. `fp8` is a
+quantization method, not a supported vLLM 0.31 `--dtype` value.
+
+Use an explicit `--variant` for HF overrides of `dtype`, `torch_dtype`,
+`quantization_config` or any `text_config` (including nested shape overrides).
+That label is also required for conflicting dtype aliases or nested-only
+quantization with explicit `--dtype`; naming does not guess config-class behavior.
+Other top-level shape overrides retain their existing behavior.
+
+The simulator still selects the checkpoint-default variant automatically;
+alternate `-act...` measurements are not automatically selected. This naming
+change does not migrate existing files. Acquisition identities include profiler
+configuration code: acquire fresh data after an identity changes, rather than
+renaming or restamping old rows.
+
+Auto names are compatibility labels, not a complete resolved-precision record.
+For an unquantized FP32 checkpoint, the legacy default name remains `fp32` even
+when vLLM automatically downcasts; use a separate `--variant` for explicit FP32
+measurements. Nested-only quantization and automatically promoted KV dtypes also
+need a check of the recorded configuration and consumer-selected path. Do not
+assume every config-specific default resolves to a matching profiler/simulator
+folder solely from its label.
+
 ### Common model-command flags
 
 `profile`, `slice`, `coverage` and `plan-skew` register the flags below.
@@ -374,7 +414,7 @@ flags for any non-empty value, including `0`; unset them to disable.
 | --- | --- | --- |
 | `--hardware` | **required** | `HARDWARE` |
 | `--tp` | `1` | `TP_DEGREES` |
-| `--variant` | auto-derived from dtypes | `VARIANT` |
+| `--variant` | checkpoint label plus explicit activation/KV suffixes; see naming limits | `VARIANT` |
 | `--dtype` | unset; vLLM resolves the checkpoint dtype | `DTYPE` |
 | `--kv-cache-dtype` | `auto` | `KV_CACHE_DTYPE` |
 | `--max-num-batched-tokens` | `2048` | `MAX_NUM_BATCHED_TOKENS` |

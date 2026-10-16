@@ -197,6 +197,14 @@ python -m profiler hardware  --hardware <hw> [flags]            device/link meas
 | **verbosity** | `--log-level` (`LOG_LEVEL`), `--silent`, `--verbose` (`VERBOSITY`; choose one logging setting) |
 | **slice only** | `--tp-refresh`, `--group {dense,per_sequence,attention,linear_attention,moe,mtp}`. `--tp-refresh N` needs `N` to be in `--tp` too |
 
+Variant names retain checkpoint quantization: an FP8/BF16 checkpoint stays
+`fp8` with `--dtype bfloat16`, while `--dtype float16` uses `fp8-actfp16`.
+Omitted dtype and `auto` share the default name. HF precision or any nested
+`text_config` override needs an explicit `--variant`; the simulator still
+selects only its checkpoint-default variant. See
+[precision and naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names).
+Changed acquisition identities require fresh measurements, not renamed rows.
+
 The table covers `profile`, `slice`, `coverage` and `plan-skew`; not every
 accepted option affects every command. `plan-skew` reads saved engine limits
 and does not boot an engine. `--dp` is valid only for `profile` or
@@ -517,10 +525,12 @@ instead of being silently replaced; `FORCE=1` still requests a fresh sweep.
 VARIANT="my_experiment"             # override the auto-derived <variant> folder name.
 ```
 
-When omitted, `<variant>` is composed from the effective DTYPE + KV
-dtype — `bf16`, `bf16-kvfp8`, `fp8-kvfp8`, etc. — so you never collide
-when profiling multiple precisions. Set this explicitly only for named
-runs (quantization schemes, experiments).
+When omitted, `<variant>` keeps the established checkpoint label and adds
+suffixes for explicit activation/KV overrides, such as `fp8-actfp16-kvfp8`.
+Use an explicit `VARIANT` for HF precision or any nested `text_config` override,
+ambiguous configurations and deliberately separate acquisitions. A label alone
+does not prove the resolved engine precision; see the
+[naming limits](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names).
 
 #### Dtype
 
@@ -529,9 +539,11 @@ DTYPE="bfloat16"                    # explicit engine dtype override; normally u
 KV_CACHE_DTYPE="fp8"                # explicit KV override; normally vLLM's "auto"
 ```
 
-Without `DTYPE`, vLLM resolves the checkpoint dtype. The auto-derived variant
+Without `DTYPE` (or with `DTYPE=auto`), vLLM resolves the checkpoint dtype. The default variant
 uses its quantization method or `torch_dtype` / `dtype`; setting an engine dtype
-alone does not quantize a checkpoint. An explicit FP8 KV override adds a
+alone does not quantize or dequantize a checkpoint. Matching BF16/FP16 activation
+overrides retain the quantization name; different activations add `-act...`.
+An explicit FP8 KV override adds a
 `-kvfp8` suffix. Match it to the simulator's model config: profiler flags do
 not edit that config or the simulator's cache dtype.
 
@@ -562,10 +574,10 @@ The profiler:
 4. Sweeps dense / per-sequence / attention (and MoE if applicable)
    shot grids, writing CSVs under `perf/<HW>/<MODEL>/<variant>/tp<N>/`.
 
-`<variant>` is auto-named from the weight + KV dtype (`bf16`,
-`bf16-kvfp8`, `fp8-kvfp8`, …) so different precisions land in
-different folders without collisions. Override via `VARIANT=<name>`
-only for named runs (quantization schemes, experiments).
+`<variant>` follows the checkpoint/activation/KV naming rules above. Explicit
+activation alternatives can use names such as `fp8-actfp16`; ambiguous HF
+overrides require `VARIANT=<name>`. The simulator does not automatically select
+an alternate acquisition merely because the folder exists.
 
 ### 4. Use in simulation
 

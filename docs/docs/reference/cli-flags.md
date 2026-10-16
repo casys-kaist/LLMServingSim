@@ -67,9 +67,10 @@ because that is where each one is actually decided:
 A dtype is a property of the checkpoint, and once a model carries five of
 them a flag per dtype is both unusable and unfaithful — it describes a model
 nobody can serve. To simulate a different precision, profile it: the
-profiler's `--dtype` / `--kv-cache-dtype` / `--variant` write a separate
-`perf/.../<variant>/` bundle, and the simulator reads the one the checkpoint
-names.
+profiler can write alternate `perf/.../<variant>/` bundles, but the simulator
+reads the checkpoint-default one. A quantized checkpoint's `--dtype` changes
+floating activations, not its weight quantization; different activations get an
+`-act...` suffix. See [profiler naming](/docs/profiler/running#precision-and-variant-names).
 
 ## Speculative decoding
 

@@ -116,8 +116,9 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--variant",
         default=None,
-        help="Output folder label. Default: auto-derived from dtype "
-             "and kv_cache_dtype (e.g. 'bf16' or 'bf16-kvfp8').",
+        help="Output folder label. Default: checkpoint precision plus explicit "
+             "activation/KV dtype suffixes (e.g. 'fp8-actfp16'). Required for "
+             "HF precision or nested text_config overrides.",
     )
 
     # Engine kwargs.

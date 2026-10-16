@@ -34,10 +34,12 @@ profiler/perf/<HARDWARE>/
         └── moe_components/       # contract-keyed native component bundles
 ```
 
-`<variant>` is auto-named from the dtype combination
-(`bf16`, `bf16-kvfp8`, `fp8-kvfp8`, …): see
+`<variant>` uses the established checkpoint label plus explicit activation/KV
+suffixes (`bf16`, `fp8`, `fp8-actfp16`, `fp8-kvfp8`, …): see
 **[Running → Output naming](./running#output-naming)**. Multiple
-variants for the same hardware × model live as siblings.
+variants for the same hardware × model live as siblings. The label is not a
+complete resolved-precision record, and alternate variants are not automatically
+selected by the simulator; check the naming limitations in the running guide.
 
 `tp<N>/` exists for each TP in `TP_DEGREES`. Layers tagged
 `tp_stable: true` in the architecture YAML (layernorms, sampler) are
@@ -609,8 +611,11 @@ Notable entries:
 - `model` — the tmpdir the model config was written to, so vLLM needed
   no Hub access. The path is dead after the run.
 
-There is no `dtype` or `kv_cache_dtype` key here. The effective dtypes
-are encoded in `variant`.
+Explicit `dtype` and `kv_cache_dtype` engine arguments are retained here when
+passed. Their absence means vLLM's defaults were used, not that a particular
+dtype was resolved. A quantized model can record `dtype: bfloat16` while keeping
+FP8 weights. Check these arguments, the source config and any recorded runtime
+facts together; `variant` alone does not encode every effective dtype.
 
 ### Grid specs are compact, not enumerated
 

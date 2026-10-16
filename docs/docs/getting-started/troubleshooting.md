@@ -171,10 +171,7 @@ combination that doesn't have profile data:
 FileNotFoundError: Profile variant folder not found:
 ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B/bf16-kvfp8. The
 variant name is derived from the checkpoint (weight dtype, plus a
--kv<dtype> suffix when it declares a quantized KV cache), so the
-simulator cannot be pointed at a different one -- profile this model
-with the profiler's defaults, which name the same folder. Existing
-variants: ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B
+-kv<dtype> suffix when it declares a quantized KV cache), ...
 ```
 
 **Cause:** The `(hardware, model, variant)` triple has no profiled
@@ -185,12 +182,15 @@ see which variants you do have.
 The variant is *derived*, and there is no flag to change it: the weight
 dtype comes from `quantization_config.quant_method` or `torch_dtype`,
 and a `-kvfp8` suffix appears when the checkpoint declares a quantized
-KV cache. So the fix is always to profile the model rather than to pass
-something different — and the profiler's defaults name exactly the
-folder the simulator asks for. (The profiler's own `--variant`,
-`--dtype` and `--kv-cache-dtype` write *additional* bundles beside it,
-which is how a deliberate second precision gets measured; the simulator
-never reads those.)
+KV cache. Compare that expected label with the acquired bundle's source config
+and recorded engine settings; automatic dtype resolution has config-specific
+limitations, so labels alone do not prove compatible data. Re-profile when the
+required acquisition is missing rather than relabel incompatible rows.
+The profiler can also write intentionally
+different variants. For quantized checkpoints a matching floating dtype keeps
+the quantization name, while a different one uses `-act...`; those alternate
+measurements are not automatically selected by the simulator.
+See [profiler naming](/docs/profiler/running#precision-and-variant-names).
 
 Two neighbouring errors with different fixes:
 

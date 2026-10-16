@@ -369,9 +369,12 @@ it up automatically when the cluster config names matching values:
 }
 ```
 
-The `--dtype` and `--kv-cache-dtype` CLI flags resolve to the right
-`<variant>` folder via `resolve_variant()` (see
-**[Simulator → Trace generation](/docs/simulator/trace-generation#variant-resolution)**).
+The simulator's `resolve_variant()` derives the folder from the checkpoint;
+it has no runtime dtype-selection flags. Profiler `--dtype`,
+`--kv-cache-dtype` and `--variant` can create alternative measurements that
+are not automatically selected. See
+**[Simulator → Trace generation](/docs/simulator/trace-generation#variant-resolution)**
+and [profiler naming](/docs/profiler/running#precision-and-variant-names).
 
 ## What's next
 
