@@ -36,6 +36,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Preserve native routing weights and scaling in whole-block MoE profiling,
+  changing only the synthetic expert IDs. Keep native routing GPU work and
+  reject bypassed hooks; changed ordinary acquisition identities require remeasurement.
 - Keep quantized profiler bundle names separate from floating activation
   overrides. Treat explicit `dtype=auto` like omission; require intentional
   labels for ambiguous HF precision/nested overrides. Existing data is unchanged.

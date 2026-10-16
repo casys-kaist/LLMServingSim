@@ -432,14 +432,22 @@ restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
 and a `RoutedExperts`.
 
 Whole-block forced routing must execute the original `_compute_routing` before
-substituting precomputed expert IDs and weights: otherwise top-k GPU kernels
-disappear from a table that claims to time the whole block. Both warmup and
-timed contexts use the requested distribution and must consume the hook;
-monolithic backends that bypass it cannot silently publish that grid. Restore
-the exact previous instance override on exit, including on failure. The cyclic
-assignment controls distinct experts, not arbitrary load imbalance. Older
-forced-routing `moe.csv` grids need remeasurement; native DP+EP component
-acquisition is a separate contract.
+substituting precomputed expert IDs; return the exact native weight tensor,
+preserving its values, dtype and scaling. Do not fill uniform weights or add
+GPU weight normalization. Otherwise the whole-block timing loses native routing
+work or feeds the expert kernel a different weight distribution. Both warmup
+and timed contexts use the requested ID assignment and must consume the hook;
+monolithic backends that bypass it cannot silently publish that grid. Keep the
+surrounding routing template intact and restore the exact previous instance
+override on exit, including on failure. Require two strided native output
+tensors of shape `(tokens, top_k)` on the input device, floating weights and
+int32/int64 IDs; reject extra/shared slots rather than truncating them. These
+checks inspect metadata, not weight values. Cyclic assignments control distinct
+experts, not arbitrary load imbalance or trained-gate numerical equivalence:
+native weights are paired with synthetic IDs. The shared ordinary fingerprint
+includes this hook, so changes invalidate ordinary resumes beyond `moe.csv`;
+remeasure requested categories, never relabel or silently extend old rows.
+Native DP+EP components retain a separate contract.
 
 ### Vocab-parallel target endpoints
 

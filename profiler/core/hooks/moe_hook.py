@@ -7,15 +7,14 @@ patterns and poor grid coverage.
 
 This module provides:
 
-* ``ExpertRoute.forge``: build the ``(topk_weights, topk_ids)`` tensors
-  that would force a given number of experts to be activated over a
-  given number of tokens.
+* ``ExpertRoute.forge``: build ``topk_ids`` that force a given number of
+  experts to be activated over a given number of tokens.
 
 * ``force_moe_routing``: a context manager that swaps ``_compute_routing``
   on the live router **instance** for the duration of the block, so that
-  ``router.select_experts`` returns our forged tensors instead of whatever
-  the learned gate produces. The native routing kernels still execute; only
-  their result is replaced. The previous instance state is restored on exit.
+  ``router.select_experts`` returns our forged IDs with the native routing
+  weights unchanged. The native routing kernels still execute; only their
+  expert IDs are replaced. The previous instance state is restored on exit.
 
 vLLM v0.28 restructured MoE: the ``FusedMoE`` module this hook used to patch
 no longer exists. Models now call ``FusedMoEFactory(...)``, which returns a
@@ -49,15 +48,12 @@ class ExpertRoute:
             swapped. Held so ``force_moe_routing`` doesn't have to re-find it.
         layer_name: Identifier of the MoE layer this route targets. Carried
             for error messages only.
-        weights: Tensor of shape (num_tokens, top_k); each row is a
-            uniform ``1/top_k`` distribution over the chosen experts.
         ids: Integer tensor of shape (num_tokens, top_k) naming the
             experts each token is routed to.
     """
 
     router: object
     layer_name: str
-    weights: torch.Tensor
     ids: torch.Tensor
 
     # ------------------------------------------------------------------
@@ -71,7 +67,7 @@ class ExpertRoute:
         num_tokens: int,
         activated_experts: int,
     ) -> "ExpertRoute":
-        """Allocate ``weights`` and ``ids`` for a single MoE layer.
+        """Allocate forced expert ``ids`` for a single MoE layer.
 
         Args:
             runner: The ``MoERunner`` instance we'll patch. Used to read
@@ -109,16 +105,9 @@ class ExpertRoute:
                 f"got {tuple(ids.shape)}"
             )
 
-        weights = torch.full(
-            (num_tokens, top_k),
-            1.0 / top_k,
-            device=device,
-            dtype=torch.float32,
-        )
         return cls(
             router=router,
             layer_name=str(getattr(runner, "layer_name", "<unknown>")),
-            weights=weights,
             ids=ids,
         )
 
@@ -174,9 +163,13 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
     surrounding template intact: EPLB validation and mapping, the routing
     capture hook, and the index-dtype conversion all still run, so the
     kernel sees exactly the tensor shapes and dtypes production would give
-    it. Native routing kernels run before their selection is replaced. A
-    successful context must consume the hook; a backend that bypasses the
-    router cannot claim to have measured the requested expert distribution.
+    it. Native routing kernels run before their IDs are replaced. Their
+    weight tensor is returned unchanged, preserving slot weights, dtype and
+    any router-applied scale without reconstructing or normalizing it.
+    Only rectangular routed top-k outputs are supported; extra shared slots
+    are rejected, not truncated or reshaped. A successful context must
+    consume the hook; a backend that bypasses the router cannot claim to
+    have measured the requested expert distribution.
     """
     if route is None:
         yield
@@ -204,17 +197,42 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
                 f"Forged topk_ids shape mismatch for {route.layer_name}: "
                 f"expected {expected}, got {tuple(route.ids.shape)}"
             )
+        if route.ids.dtype not in (torch.int32, torch.int64):
+            raise ValueError(f"Unsupported forced topk_ids dtype for {route.layer_name}")
+        if route.ids.device != hidden_states.device:
+            raise ValueError(f"Forced topk_ids device mismatch for {route.layer_name}")
+        if indices_type not in (None, torch.int32, torch.int64):
+            raise ValueError(f"Unsupported requested index dtype for {route.layer_name}")
         # The table covers the whole MoE block, including native top-k /
-        # grouped-top-k kernels. Do not remove their GPU work when replacing
-        # the selected experts. No copies of the discarded outputs are needed.
-        original_compute_routing(
+        # grouped-top-k kernels. Keep their exact weight tensor and replace
+        # IDs only. The checks below read metadata, never tensor values.
+        result = original_compute_routing(
             hidden_states, router_logits, indices_type, input_ids=input_ids,
         )
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise ValueError(f"Expected native (topk_weights, topk_ids) for {route.layer_name}")
+        weights, native_ids = result
+        for name, value in (("topk_weights", weights), ("topk_ids", native_ids)):
+            if not isinstance(value, torch.Tensor) or value.layout != torch.strided:
+                raise ValueError(f"Expected strided native {name} for {route.layer_name}")
+            if tuple(value.shape) != expected:
+                raise ValueError(
+                    f"Native {name} shape mismatch for {route.layer_name}: "
+                    f"expected {expected}, got {tuple(value.shape)}; "
+                    "extra/shared routing slots are unsupported"
+                )
+            if value.device != hidden_states.device:
+                raise ValueError(f"Native {name} device mismatch for {route.layer_name}")
+        if not weights.dtype.is_floating_point or native_ids.dtype not in (torch.int32, torch.int64):
+            raise ValueError(f"Unsupported native routing dtypes for {route.layer_name}")
         ids = route.ids
+        # Preserve the established requested-index contract. BaseRouter also
+        # applies its normal EPLB mapping and final dtype conversion outside
+        # this hook; a grouped router's native inner dtype may differ.
         if indices_type is not None and ids.dtype != indices_type:
             ids = ids.to(indices_type)
         calls += 1
-        return route.weights, ids
+        return weights, ids
 
     # Bind on the instance so sibling MoE layers keep their own routing.
     router._compute_routing = forced_compute_routing

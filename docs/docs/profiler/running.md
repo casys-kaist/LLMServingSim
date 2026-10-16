@@ -504,8 +504,11 @@ figure uses the catalog's invocation normalization. Repetition reduces sampling
 noise but does not guarantee an error bound across models and hardware.
 
 For whole-block MoE shots, warmup and timed calls use the same forced expert
-distribution. Native routing kernels still run; only their selected IDs and
-weights are replaced. A backend that bypasses the routing hook is rejected.
+ID assignment. Native routing kernels still run; only the selected IDs are
+replaced. Their original weight tensor, including dtype and scaling, passes
+through without an extra GPU weight fill or normalization. This synthetic
+conditioning is not trained routing or numerical equivalence. A backend that
+bypasses the routing hook is rejected.
 See the [whole-block table contract](./output-bundle#moecsv-legacy-whole-block-moe-profiles)
 for refresh requirements and the distinction from native DP+EP components.
 

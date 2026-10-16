@@ -456,15 +456,35 @@ updating the profiler does not change stored CSV values, and the correction
 is not a universal multiplier. This normalization does not change native
 DP+EP component measurements or imply support for additional backends.
 
-To control the grid, the profiler replaces the routing result with a balanced
-cyclic assignment. It still executes native top-k/grouped-top-k GPU kernels:
-their work belongs in the whole-block timing. Warmup uses the same forced
-distribution as the timed calls. Each context must actually invoke the router;
-monolithic backends that bypass it are rejected rather than labelled with an
-unmeasured expert count. Previous instance instrumentation is restored on exit.
-Remeasure older forced-routing tables that omitted these kernels; stored values
-are not corrected automatically. The grid does not measure arbitrary per-expert
-load imbalance.
+To control the grid, the profiler replaces only expert IDs with a balanced
+cyclic assignment. Native top-k/grouped-top-k GPU kernels still execute, and
+their original routing-weight tensor passes through unchanged, including dtype,
+normalization and scaling already applied by the router. There is no additional
+GPU weight fill, copy or normalization. The surrounding routing template keeps
+its native ID conversion and mapping; previous instance instrumentation is
+restored on exit. Warmup uses the same ID assignment as the timed calls. Each
+context must actually invoke the router; monolithic backends that bypass it are
+rejected rather than labelled with an unmeasured expert count.
+
+The hook requires native weights and IDs to be strided tensors of shape
+`(tokens, top_k)` on the input device, with floating weights and int32/int64 IDs.
+Extra/shared routing slots and incompatible output shapes or dtypes are rejected,
+not truncated. These checks inspect tensor metadata without reading weight values
+or adding GPU weight work; they do not establish support for every MoE backend.
+
+This is synthetic conditioning, not a trained-gate routing sample. The preserved
+weights are paired with different expert IDs, so numerical equivalence to an
+unmodified forward is not claimed. Cyclic assignments also do not cover
+arbitrary per-expert load imbalance or guarantee latency accuracy for a backend.
+Native DP+EP components remain a separate acquisition contract.
+
+The routing hook participates in the shared ordinary measurement fingerprint,
+so a hook change invalidates ordinary-category resumes, not just `moe.csv`.
+Refresh the requested categories explicitly or use a separate output root;
+`slice --group moe --force` refreshes the whole-block MoE category only. Do not
+relabel old rows or mix incompatible acquisitions on resume. This also applies
+to older tables that omitted native routing kernels. Stored timings remain
+unchanged until an explicit refresh; a code update is not a data correction.
 
 The legacy consumer uses two-dimensional interpolation over tokens and active
 experts within an EP grid. An unprofiled EP degree falls back to the nearest

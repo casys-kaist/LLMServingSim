@@ -54,7 +54,9 @@ GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation an
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
 acquisition, assigned-page dummy history, declarative scopes and resume/bundle
-contracts, the
+contracts. Whole-block MoE sweeps condition expert IDs while preserving native
+routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
+See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording

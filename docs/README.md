@@ -126,8 +126,11 @@ an unsupported API cannot silently become a supported component contract.
 The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)
 also explains whole-block MoE invocation normalization and when existing
 hybrid-stack tables need remeasurement. Forced-routing grids retain native
-top-k GPU work, warm the requested distribution, and reject bypassed hooks;
-older grids that omitted routing kernels also require a refresh.
+top-k GPU work and the exact native routing-weight tensor, changing only expert
+IDs. Warmup uses the same synthetic assignment and bypassed hooks are rejected.
+This does not establish trained-routing numerical equivalence or arbitrary
+expert-load coverage; changed acquisition identities require remeasurement,
+not relabeling existing rows.
 The same table guide explains non-overlapping sparse-indexer glue ownership
 and the dense-category refresh needed for older DeepSeek/GLM glue rows.
 The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
