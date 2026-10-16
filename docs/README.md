@@ -65,6 +65,8 @@ latency: CPU scopes identify the launching module but contribute no time.
 The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
 defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, acquisition identity columns and
 incompatible-resume protection; existing tables are not automatically converted.
+The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
+catalog-declared TP output reductions and their activation-sized payloads.
 Coverage accounts for native kernels, copies and memsets, including work outside
 module scopes. The architecture guide also documents child exclusions for raw
 kernel wildcards and rejection of overlapping canonical activity claims.

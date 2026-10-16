@@ -25,6 +25,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Restore the missing TP AllReduce after Qwen GDN's output projection through
+  a catalog declaration. Use the full projection output at activation dtype;
+  stored profile timings and TP1 traces are unchanged.
 - Check native MoE deferred finalization through vLLM's effective boolean
   capability, retaining explicit rejection of unsupported execution modes
   across the 0.28 and 0.31 APIs.

@@ -55,7 +55,9 @@ against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
 skew calibration, shared-pool KV preparation, native-resolved profiling shapes,
 lightweight CUDA-activity collection, non-overlapping catalog bindings and
-native MoE components with effective execution-mode checks, and the
+native MoE components with effective execution-mode checks, the
+[trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
+declared TP output reductions, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
 vLLM's default communication backend selection and explicit overrides;
 the benchmark retains its two disabled communication-fusion passes.

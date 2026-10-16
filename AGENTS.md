@@ -1260,7 +1260,8 @@ each iteration. Composable helpers:
   emit for `pre_attn` / `post_attn` / `mlp`", consulting
   `blocks.sparse_attn` first and falling through to `blocks.attn`.
 - `_emit_sequence()` — walks a list of canonical names from a block, attaches
-  TP ALLREDUCE to `o_proj`/`down_proj`, swaps in PIM attention before the
+  TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
+  swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
   layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
@@ -1791,6 +1792,10 @@ ASTRA-Sim's data-size convention depends on the collective: AllReduce and
 ReduceScatter take the full pre-partition tensor; AllGather takes a local chunk.
 Ring divides the former by its rank count, not the AllGather chunk.
 - ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
+- Dense `tp_output_reduction: all_reduce` entries reduce their full projection
+  output at activation dtype, not the sharded input. For Qwen `gdn_out_proj`,
+  that is effective token rows × hidden size × activation bytes.
+  No reduction at TP1; the declaration applies only when the row is emitted.
 - MoE: **not** one size. Dispatch AllGathers take per-rank chunks, while the
   combine ReduceScatter takes a pre-scatter total. Native dispatch has three
   tensor collectives; the legacy path combines its dispatch payload. See the MoE section.

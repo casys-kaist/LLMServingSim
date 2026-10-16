@@ -41,9 +41,12 @@ When `tp_size > 1`, the trace generator attaches an ALLREDUCE
 
 - `o_proj` (attention output projection)
 - `down_proj` (MLP output projection)
+- Catalogued `tp_output_reduction: all_reduce` projections, such as GDN's `gdn_out_proj`
 
-These are the two layers where each TP rank holds a different head
-slice of the output and needs to sum across ranks.
+Each computes a partial hidden-state output that must be summed across TP ranks.
+For a declared reduction, the payload is the full projection output at activation
+dtype, not the sharded input or quantized weight size. For Qwen's `gdn_out_proj`,
+this is effective token rows × hidden size × activation bytes. TP1 emits none.
 
 The `comm_size` on each ALLREDUCE is the full output tensor size
 (not per-rank, ASTRA-Sim divides internally based on
@@ -52,7 +55,8 @@ The `comm_size` on each ALLREDUCE is the full output tensor size
 `qkv_proj`, `gate_up_proj`, etc. don't need ALLREDUCE because they
 *split* the input along the head dim, those layers' output is
 already correctly sharded for the next layer. TP's collective cost
-includes `o_proj` + `down_proj`, two ALLREDUCEs per dense decoder block.
+includes the attention output projection plus `down_proj` for an ordinary dense
+decoder block; GDN uses `gdn_out_proj` in place of `o_proj`.
 
 ### Once-per-forward vocab-parallel endpoints
 

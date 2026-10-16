@@ -323,6 +323,7 @@ share a granularity.
 | `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` name appears more than once in the model. Matching rule: the name matches **and** (`within` is unset **or** one of `within`'s alternatives appears among the node's ancestor classes). Accepts a list |
 | `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
 | `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
+| `tp_output_reduction` | optional | `all_reduce` on a `dense` row-output projection; emits a TP reduction of its full output at activation dtype |
 
 A **list** under `vllm` means "every one of these the checkpoint has", and
 covers two situations:

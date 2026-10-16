@@ -1403,6 +1403,14 @@ def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
     """Compute TP communication size. Returns (comm_size, comm_type)."""
     if ctx.tp_size <= 1:
         return 0, 'NONE'
+    entry = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {})
+    if entry.get("tp_output_reduction") == "all_reduce":
+        # RowParallelLinear reduces the full hidden-state output, not its
+        # sharded input. Activation precision is independent of weight dtype.
+        element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
+        _, _, out = calculate_sizes(ctx.model, layer_name, total_len,
+                                    parallel=ctx.tp_size, fp=element_bytes)
+        return out, 'ALLREDUCE'
     _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=ctx.fp)
     return out, collective
 
@@ -1815,7 +1823,8 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
                     ctx.perf_db["model"], ctx.perf_db["variant"],
                 )
             continue
-        if layer_name in _TP_ALLREDUCE_AFTER:
+        reduction = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {}).get("tp_output_reduction")
+        if layer_name in _TP_ALLREDUCE_AFTER or reduction == "all_reduce":
             comm_size, comm_type = _tp_comm(ctx, layer_name, bctx.total_len)
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         comm_type=_with_dim(comm_type, ctx.tp_dim), comm_size=comm_size)

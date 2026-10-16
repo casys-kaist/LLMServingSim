@@ -59,7 +59,7 @@ agentic_single 55392972911
 agentic_moe_dp_ep 51288509627
 hybrid 4781444558
 hybrid_prefix_off 4781444558
-hybrid_tp 8426676060
+hybrid_tp 8639254995
 hybrid_pp 4686922673
 sparse_mla 3576751922
 sparse_mla_dp_ep 6507210163

@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -284,6 +284,9 @@ class LayerEntry(BaseModel):
     sequence_parallel: bool | None = None
     """Whether the MoE wrapper sequence-shards its input under DP+TP."""
 
+    tp_output_reduction: Literal["all_reduce"] | None = None
+    """Ordinary TP row-parallel output reduction, after this component."""
+
     key_saturates: bool = False
     """If True, this kernel's cost stops growing once a sequence's key window
     passes the checkpoint's bound (``probe_key_saturation``), so the
@@ -519,10 +522,12 @@ class Architecture(BaseModel):
     def _check_catalog(self) -> "Architecture":
         # Canonical names must be unique across ALL catalog groups.
         seen: set[str] = set()
-        for _, name, _ in self.catalog.all_entries():
+        for kind, name, entry in self.catalog.all_entries():
             if name in seen:
                 raise ValueError(f"Layer name {name!r} appears twice in catalog")
             seen.add(name)
+            if entry.tp_output_reduction is not None and kind != "dense":
+                raise ValueError("tp_output_reduction requires a dense projection entry")
 
         # At least one softmax-attention entry, unless the architecture is
         # purely linear-attention. More than one is allowed: a sparse-attention

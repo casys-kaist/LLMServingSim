@@ -195,6 +195,7 @@ catalog:
     gdn_out_proj:
       vllm: RowParallelLinear
       within: QwenGatedDeltaNetAttention
+      tp_output_reduction: all_reduce
     gdn_glue:
       # Everything else the gated-DeltaNet block launches: the eager PyTorch
       # reshapes, copies and index_put that move its conv and recurrent state

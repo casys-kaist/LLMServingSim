@@ -2,6 +2,10 @@
 
 LLMServingSim simulator core. Run as `python -m serving --cluster-config <...> [...]`.
 
+Declared row-output projections, including Qwen's `gdn_out_proj`, carry their
+ordinary TP AllReduce at activation dtype. Stored latency rows are unchanged;
+TP1 emits no reduction. See [parallelism mechanics](../docs/docs/simulator/parallelism-mechanics.md).
+
 ## Layout
 
 ```text
@@ -349,7 +353,8 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `TraceCtx` / `BatchCtx` / `PowerAccumulator` — data classes for context passing
 - `_emit_layer()` — single-layer emission that dispatches by catalog category
 - `_emit_sequence()` — walks a list of canonical names from the yaml; attaches
-  TP ALLREDUCE to `o_proj`/`down_proj` and swaps in PIM attention before
+  TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
+  and swaps in PIM attention before
   the NPU attention kernel when offloading is enabled. Emits a one-shot warning
   when a sequence layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /

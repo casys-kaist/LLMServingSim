@@ -14,6 +14,9 @@ Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
 explicit module scopes retain CUDA kernels, copies and memsets without recording
 Python stacks, tensor shapes or memory snapshots. Geometry and finite-output
 checks run outside timing; native DP+EP components keep their eager/graph contract.
+Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
+Qwen's GDN output projection. This describes simulator communication, not a new
+profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).
