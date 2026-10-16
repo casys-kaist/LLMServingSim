@@ -261,6 +261,20 @@ separate output root or explicit `--force`; they are not silently mixed with
 new timings. See [acquisition identity](./output-bundle#cuda-activity-and-acquisition-identity).
 Fully skipped ordinary categories retain their previous measurement timestamp.
 
+For coupled component layouts, acquire every affected category before simulation.
+Qwen's packed GDN core includes the formerly separate norm, so new `dense` and
+`linear_attention` data must be acquired together. Compatible interrupted runs
+resume whole validated shots; `pending`/`writing` categories remain unusable.
+An interrupted `writing` category can resume before its first measured shot,
+including a TP2 file holding only validated TP1 replicas; this is not completion.
+Changed shared identity plus `--force` invalidates all coupled categories, even
+when only one is selected; same-identity refresh preserves valid siblings.
+Changed representation/definition requires fresh output. Historical tables remain
+readable but need coordinated explicit refresh or new output for new acquisition.
+Use one writer per variant root, including across TP/category slices, and do not
+modify a bundle while simulation reads it. See the
+[layout contract](./output-bundle#runtime-selected-component-layouts).
+
 Ordinary sweeps checkpoint accumulated rows atomically between completed
 shots, including near the start of a new acquisition. A worker failure or
 interruption leaves the last checkpoint intact; resume skips its completed
@@ -275,9 +289,9 @@ in the CSV, not a rounded display coordinate. Multi-prefill shots can produce
 fractional keys; compatible rows at those coordinates are skipped just like
 integer-key rows. This does not alter stored timings or their acquisition identity.
 
-Skew resume additionally requires a matching measurement implementation
-fingerprint, resolved block size, complete kernel set and sufficient per-forward
-repetitions. A change to timing attribution requires remeasurement even when
+Skew resume additionally requires matching source, effective catalog, full contexts
+and installed runtime versions, resolved block size, complete kernel set and
+sufficient per-forward repetitions. A change to timing attribution requires remeasurement even when
 the requested geometry is unchanged. Retained historical rows are not proof
 that the current acquisition protocol has completed. Current skew acquisition
 uses the same per-call CUDA interval union as the ordinary attention reference
@@ -640,6 +654,12 @@ engine for each requested EP degree. It errors out if the
 architecture YAML has no entries in `catalog.<group>` — asking for
 `moe` on a dense model, for instance.
 
+For [coupled layouts](./output-bundle#runtime-selected-component-layouts), a slice
+can leave sibling categories pending after an acquisition change. It does not
+certify those siblings or make the bundle usable before they finish. Use the
+same acquisition settings and output root for the remaining category refreshes;
+do not run them concurrently.
+
 `--tp` defaults to `1`, and `--tp-refresh` has to name one of its degrees, so
 refreshing a `tp2/` folder needs both — otherwise it exits with `tp=2 is not
 in the session's tp_degrees ([1])`:
@@ -680,6 +700,12 @@ launched straight from the block. The module tree still shows the classes, so
 the mistake is invisible in the source — and the symptom is a layer that looks
 free rather than a valid measurement. This coverage command uses physical TP=1;
 it does not certify another TP degree's fused path or collective placement.
+
+Layout discovery requires positive prefill/decode/mixed CUDA coverage and per-shot
+agreement. Its [fixed probes](./output-bundle#runtime-selected-component-layouts)
+must fit the engine envelope; they are not adapted to smaller configured limits.
+Small probes do not certify unmeasured shapes or deployments; see the
+[hybrid trace limits](../examples/model-families/hybrid-linear-attention#packed-core-traces).
 
 Run it whenever you write or edit a catalog, and after a vLLM upgrade. Details
 and how to act on a gap: [Adding a model

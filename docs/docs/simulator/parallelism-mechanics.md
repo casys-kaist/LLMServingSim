@@ -58,6 +58,16 @@ already correctly sharded for the next layer. TP's collective cost
 includes the attention output projection plus `down_proj` for an ordinary dense
 decoder block; GDN uses `gdn_out_proj` in place of `o_proj`.
 
+### Attention-wide sequence parallelism
+
+A MoE catalog entry can declare `attention_sequence_parallel: true` alongside
+`sequence_parallel: true`. At TP>1, PP1 with EP spanning DP instances, this path
+keeps sequence shards through attention and MoE. It needs attention-side
+AllGather/ReduceScatter, local norm/MoE rows and a final AllGather, not the
+wrapper-only MoE restore implemented by the simulator. Such deployments are
+refused before trace emission. Use TP1 for DP+EP or DP1 for ordinary TP work;
+those alternatives still require matching profile coverage and validation.
+
 ### Once-per-forward vocab-parallel endpoints
 
 Two additional collectives run outside those decoder blocks in the ordinary

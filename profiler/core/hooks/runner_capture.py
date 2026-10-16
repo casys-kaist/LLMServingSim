@@ -67,7 +67,8 @@ def verified_warmup(runner, shot, fire):
     torch.cuda.synchronize()
 
 
-def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnostic=False):
+def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnostic=False,
+            scope_contexts=None):
     """Collect native GPU activities without Python stacks or tensor shapes.
 
     Model roots come from the runner interfaces, not architecture names. This
@@ -84,7 +85,7 @@ def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnosti
         raise ValueError('Layer acquisition requires enforce_eager; graph components use their own contract')
     result = collect(roots_from_runner(runner, sampler_adapter=wrap_sampler_for_profiling),
                      iterations, lambda _index: fire(), catalog,
-                     forward_prefix=forward_prefix or FORWARD_PREFIX)
+                     forward_prefix=forward_prefix or FORWARD_PREFIX, scope_contexts=scope_contexts)
     values = result['layer_us']
     if not values or any(not math.isfinite(v) or v <= 0 for v in values.values()):
         raise ValueError('Capture contains no valid canonical GPU timings')

@@ -195,14 +195,14 @@ def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
 class LayerEntry(BaseModel):
     """One row of the catalog.
 
-    Each entry binds a canonical layer name (the YAML key) to the vLLM
-    Python class that the CUDA profiler will report, plus optional
+    Each entry binds a canonical name (the YAML key) to a vLLM class/kernel
+    selector or one exact native CPU operator scope, plus optional
     disambiguation (``within``) and TP-invariance (``tp_stable``).
     """
     # extra="forbid" catches typos in YAML early (e.g., `tp_stabe: true`).
     model_config = ConfigDict(extra="forbid")
 
-    vllm: str | list[str]
+    vllm: str | list[str] | None = None
     """Name the CUDA profiler reports for this layer, e.g.
     ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``.
 
@@ -228,11 +228,30 @@ class LayerEntry(BaseModel):
     attention is (prefill kernel, decode kernel, merge), in which case the
     matches are summed."""
 
+    operator: str | None = None
+    """One exact native CPU operator name, instead of ``vllm``.
+
+    The operator interval determines which native CUDA launches belong to
+    this component. Latency still uses CUDA activity intervals, not CPU time.
+    Its scope is transparent to descendant parent-call normalization.
+    """
+
+    @model_validator(mode="after")
+    def _check_binding_kind(self):
+        if (self.vllm is None) == (self.operator is None):
+            raise ValueError("A layer requires exactly one of vllm or operator")
+        if self.operator is not None:
+            if not self.operator or any(char in self.operator for char in "*("):
+                raise ValueError("operator must be one exact native CPU name")
+        elif not self.vllm_names() or any(not name for name in self.vllm_names()):
+            raise ValueError("vllm requires nonempty class/kernel names")
+        return self
+
     def vllm_names(self) -> list[str]:
         """``vllm`` as a list."""
         if isinstance(self.vllm, str):
             return [self.vllm]
-        return list(self.vllm)
+        return list(self.vllm or [])
 
     within: str | list[str] | None = None
     """Optional ancestor class name to disambiguate when the same ``vllm``
@@ -283,6 +302,14 @@ class LayerEntry(BaseModel):
 
     sequence_parallel: bool | None = None
     """Whether the MoE wrapper sequence-shards its input under DP+TP."""
+
+    attention_sequence_parallel: bool | None = None
+    """Whether TP+DP MoE at PP1 keeps sequence shards across attention blocks.
+
+    This requires a different trace from a wrapper-only sequence-parallel MoE.
+    Until implemented, serving refuses that deployment rather than emitting
+    attention AllReduce and a per-block MoE restore that the engine omits.
+    """
 
     tp_output_reduction: Literal["all_reduce"] | None = None
     """Ordinary TP row-parallel output reduction, after this component."""
@@ -482,6 +509,21 @@ class MtpSection(BaseModel):
     head: list[str] = Field(default_factory=list)
 
 
+class ComponentLayoutVariant(BaseModel):
+    """Observed canonical members and a one-pass block-order substitution."""
+    model_config = ConfigDict(extra="forbid")
+    observed: dict[str, list[str]]
+    replace: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ComponentLayoutGroup(BaseModel):
+    """Mutually exclusive, runtime-observed representations of one component."""
+    model_config = ConfigDict(extra="forbid")
+    historical: str
+    categories: list[str]
+    variants: dict[str, ComponentLayoutVariant]
+
+
 class Architecture(BaseModel):
     """Parsed architecture yaml.
 
@@ -513,6 +555,7 @@ class Architecture(BaseModel):
     # class as a target decoder layer and the simulator replays the target's
     # own block sequence for it.
     mtp: MtpSection | None = None
+    component_layouts: dict[str, ComponentLayoutGroup] = Field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Validation
@@ -526,6 +569,9 @@ class Architecture(BaseModel):
             if name in seen:
                 raise ValueError(f"Layer name {name!r} appears twice in catalog")
             seen.add(name)
+            if entry.attention_sequence_parallel and (
+                    kind != "moe" or entry.sequence_parallel is not True):
+                raise ValueError("attention_sequence_parallel requires a sequence-parallel MoE entry")
             if entry.tp_output_reduction is not None and kind != "dense":
                 raise ValueError("tp_output_reduction requires a dense projection entry")
 
@@ -539,21 +585,22 @@ class Architecture(BaseModel):
                 "linear_attention entry"
             )
 
-        # (vllm, within) pairs globally unique so layer matching is
+        # Binding kind/name and ancestry guards are globally unique so matching is
         # deterministic. Several profile-tree nodes may still match one entry,
         # which is fine and sometimes the point: their timings are summed,
         # because one canonical name is one trace node.
-        pairs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
+        pairs: dict[tuple, str] = {}
         for _, name, entry in self.catalog.all_entries():
             key = (
-                tuple(sorted(entry.vllm_names())),
+                "operator" if entry.operator is not None else "vllm",
+                (entry.operator,) if entry.operator is not None else tuple(sorted(entry.vllm_names())),
                 tuple(sorted(entry.within_names())),
                 tuple(sorted(entry.not_within_names())),
             )
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "
-                    f"both resolve to (vllm={entry.vllm!r}, "
+                    f"both resolve to ({key[0]}={entry.operator or entry.vllm!r}, "
                     f"within={entry.within!r})"
                 )
             pairs[key] = name
@@ -586,6 +633,8 @@ class Architecture(BaseModel):
                 f"{sorted(set(unknown))}"
             )
 
+        from profiler.core.component_layouts import validate_definitions
+        validate_definitions(self.model_dump(exclude_none=True))
         return self
 
     # ------------------------------------------------------------------

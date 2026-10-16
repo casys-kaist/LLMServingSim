@@ -1156,6 +1156,24 @@ def _catalog_has(perf_db, category, name):
 # Context builders
 # ======================================================================
 
+def _require_attention_parallelism(architecture, tp_size, pp_size, local_ep, ep_total):
+    """Refuse attention-wide SP before a trace can publish partial output.
+
+    vLLM 0.28/0.31 Qwen TP+DP MoE at PP1 keeps sequence shards across
+    blocks. A wrapper-only MoE AllGather cannot represent that execution.
+    The simulator's supported expert transport is allgather_reducescatter.
+    """
+    if tp_size <= 1 or pp_size != 1 or ep_total <= max(local_ep, 1):
+        return
+    if any(entry.get("attention_sequence_parallel", False)
+           for entry in architecture["catalog"].get("moe", {}).values()):
+        raise NotImplementedError(
+            "This TP>1 + DP>1 + EP deployment uses attention-wide sequence "
+            "parallelism: attention AllGather/ReduceScatter, local norm/MoE "
+            "rows and one final AllGather. That trace contract is not yet "
+            "implemented; use TP1 for DP+EP or DP1 for TP profiling/validation.")
+
+
 def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                      placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                      variant, kv_cache_dtype='auto',
@@ -1173,6 +1191,9 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
     tp_needed = {max(int(tp_size), 1)}
     perf_db = _load_perf_db(hardware, model, variant, tp_needed, model_type,
                             model_config=config)
+    if gate is not None:
+        _require_attention_parallelism(perf_db["architecture"], tp_size, pp_size,
+                                      local_ep, ep_total)
     warn_if_runtime_exceeds_profiled(
         perf_db, runtime_max_num_batched_tokens, runtime_max_num_seqs)
 
@@ -1795,6 +1816,28 @@ def _layer_available(perf_db, tp, layer_name):
     return False
 
 
+def _component_layout_choices(perf_db, tp):
+    """Read and verify each TP's recorded layout once, not once per layer."""
+    from profiler.core.component_layouts import read_for_trace
+    choices = perf_db.setdefault("component_layout_choices", {})
+    if tp not in choices:
+        choices[tp] = read_for_trace(
+            os.path.join(perf_db["root"], f"tp{tp}"),
+            perf_db["architecture"])
+    return choices[tp]
+
+
+def _component_layout_sequence(perf_db, tp, layers):
+    """Cache an immutable expansion by TP and the original sequence."""
+    from profiler.core.component_layouts import expand_sequence
+    key = (tp, tuple(layers))
+    cache = perf_db.setdefault("component_layout_sequences", {})
+    if key not in cache:
+        cache[key] = tuple(expand_sequence(perf_db["architecture"],
+                                          _component_layout_choices(perf_db, tp), layers))
+    return cache[key]
+
+
 def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     """Walk a flat list of canonical layer names from the architecture
     yaml, emitting each. ``attention`` triggers PIM attention before the
@@ -1804,6 +1847,8 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     (e.g., an older profile run that predates a yaml addition), the
     emission is skipped with a single warning per (variant, layer).
     """
+    if ctx.perf_db["architecture"].get("component_layouts"):
+        layers = _component_layout_sequence(ctx.perf_db, ctx.tp_size, layers)
     for layer_name in layers:
         if layer_name == "attention":
             if ctx.enable_attn_offloading:

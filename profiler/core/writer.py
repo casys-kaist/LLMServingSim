@@ -76,6 +76,8 @@ class DedupSink:
                 or any(not isinstance(v, str) or not v for v in self.measurement.values())):
             raise ValueError('Incomplete measurement identity')
         self._row_measurements = {}
+        # Replicated rows are storage, not measurements by this TP sweep.
+        self._preserved_rows = {}
         # key tuple -> (running_sum, count)
         self._bucket: dict[tuple, tuple[float, int]] = {}
         # Track fieldnames in the order we first see them so the CSV
@@ -98,6 +100,8 @@ class DedupSink:
             self._fieldnames = ordered
 
         key = tuple(d[f] for f in self.key_fields)
+        if key in self._preserved_rows:
+            raise ValueError('A measured point would overwrite a preserved replicated row')
         if self.measurement is None and self._row_measurements:
             raise ValueError('New samples need an identity when extending a versioned table')
         us = float(d["microseconds"])
@@ -115,7 +119,7 @@ class DedupSink:
     # Resume support
     # ------------------------------------------------------------------
 
-    def preload(self) -> int:
+    def preload(self, *, preserve_layers=()) -> int:
         """Seed the in-memory bucket from any existing CSV at
         ``out_path``. Returns the number of rows ingested (0 when
         the file is missing or empty).
@@ -124,6 +128,9 @@ class DedupSink:
         reports which shot identities are already covered so the
         firing loop can skip them. The flush at the end of the run
         will then contain both preserved and newly-measured rows.
+
+        ``preserve_layers`` keeps externally replicated rows verbatim, outside
+        measured shot coverage and the current acquisition identity.
         """
         if not self.out_path.exists():
             return 0
@@ -158,8 +165,9 @@ class DedupSink:
                 ordered = ['microseconds' if f == 'time_us' else f for f in field_order]
                 self._fieldnames = ordered
             for row in reader:
+                preserve = row.get("layer") in preserve_layers
                 recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
-                if self.measurement is not None and recorded != self.measurement:
+                if self.measurement is not None and not preserve and recorded != self.measurement:
                     raise ValueError(
                         f'{self.out_path} uses a different measurement method; '
                         'use a separate output root or --force to remeasure')
@@ -190,6 +198,13 @@ class DedupSink:
                 if bad:
                     continue
                 key = tuple(key_parts)
+                if preserve:
+                    if not all(recorded.values()):
+                        raise ValueError(f'Incomplete replicated measurement identity in {self.out_path}')
+                    if key in self._preserved_rows or key in self._bucket:
+                        raise ValueError(f'Duplicate replicated row in {self.out_path}')
+                    self._preserved_rows[key] = dict(row)
+                    continue
                 # Single-sample bucket entry: preserve the exact value.
                 self._bucket[key] = (us, 1)
                 if any(recorded.values()):
@@ -227,7 +242,7 @@ class DedupSink:
           * Latencies emitted with 6 sig figs (``%.6g``); coordinate
             floats retain their full precision for exact resume matching.
         """
-        if not self._bucket:
+        if not self._bucket and not self._preserved_rows:
             log.warning("nothing to write to %s", self.out_path)
             return
 
@@ -235,7 +250,10 @@ class DedupSink:
 
         # Produce rows in sort order.
         rows: list[dict[str, Any]] = []
-        for key in sorted(self._bucket.keys()):
+        for key in sorted(self._bucket.keys() | self._preserved_rows.keys()):
+            if key in self._preserved_rows:
+                rows.append(dict(self._preserved_rows[key]))
+                continue
             total_us, count = self._bucket[key]
             avg_us = total_us / count
             row = {f: v for f, v in zip(self.key_fields, key)}
@@ -263,7 +281,14 @@ class DedupSink:
                 writer = csv.DictWriter(f, fieldnames=header)
                 writer.writeheader()
                 writer.writerows(rows)
+                f.flush()
+                os.fsync(f.fileno())
             tmp.replace(self.out_path)
+            directory_fd = os.open(self.out_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -271,6 +296,7 @@ class DedupSink:
         if clear:
             self._bucket.clear()
             self._row_measurements.clear()
+            self._preserved_rows.clear()
 
     # ------------------------------------------------------------------
     # Convenience: attach a human-friendly 'layer' prefix
@@ -668,6 +694,13 @@ def persist_meta(
         "skew_fit": _calibrated_skew_fit_block(variant_root, args),
         "moe_components": prior.get("moe_components"),
     }
+    # Component acquisition updates meta.yaml before touching a coupled
+    # table. Preserve that sole record without rebuilding or certifying it.
+    from profiler.core.component_layouts import metadata_records
+    with Path(arch_path).open() as stream:
+        layout_records = metadata_records(variant_root, yaml.safe_load(stream))
+    if layout_records is not None:
+        meta["component_layouts"] = layout_records
     variant_root.mkdir(parents=True, exist_ok=True)
     out = variant_root / "meta.yaml"
     from profiler.core.skew_calibration import atomic_yaml

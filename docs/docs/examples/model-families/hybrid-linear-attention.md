@@ -118,8 +118,8 @@ what the latencies were measured at.
 
 ## The part that is easy to get wrong
 
-A GDN block runs a **different set of kernels** depending on the batch
-mix — not the same kernel at a different size. Measured on Qwen3.8-27B:
+A GDN block can run a **different set of kernels** depending on the batch mix.
+The historical Qwen3.8-27B decomposition is:
 
 | kernel | prefill | decode | mixed |
 | --- | --- | --- | --- |
@@ -137,6 +137,29 @@ pure prefill and a prefill convolution on a pure decode.
 
 `python -m profiler coverage` reports per regime, which is how that
 split was determined in the first place.
+
+### Packed-core traces
+
+An engine exposing the packed GDN operator can instead use `gdn_core`, including
+conv, recurrence and gated norm. Projections and outer glue remain separate.
+Positive runtime coverage selects the representation; new `dense` and
+`linear_attention` tables must be acquired together under the
+[layout contract](../../profiler/output-bundle#runtime-selected-component-layouts).
+Stored historical timings are not rewritten.
+
+The core's input is packed qkvz plus ba; its output is gated-normalized value rows.
+Its owned weights are conv, dt_bias, float32 A_log and the replicated norm scale.
+Other values use model activation dtype, even with fp8 linear weights. Persistent
+recurrent-state capacity remains per sequence, not per token. Invalid dimensions,
+nondivisible TP head counts and unverified quantized BA projection layouts are
+refused; fp8 acceptance here is not certification of an entire quantized model.
+
+Both historical and packed layouts attach the declared TP reduction after
+`gdn_out_proj`, using the full hidden-state output at activation dtype. This can
+change simulated communication without changing stored latency rows. The
+MoE sibling's attention-wide TP+DP sequence-parallel path remains
+[explicitly unsupported](../../simulator/parallelism-mechanics#attention-wide-sequence-parallelism);
+component coverage alone does not certify that deployment.
 
 ## Caveats
 

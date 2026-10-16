@@ -7,6 +7,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Preserve runtime ownership through common direct methods and exact native
+  operator scopes without adding CPU latency. Coordinate alternative component
+  layouts across category tables, resume interrupted starts and reject incomplete
+  acquisitions. Size the packed GDN core and reject unsupported
+  attention-wide sequence parallelism. Historical timings remain unchanged;
+  skew resume binds the effective catalog and installed runtime versions, and
+  changed acquisition identities require remeasurement.
 - Target vLLM 0.31.0 / CUDA 13 for new GPU acquisitions and benchmarks, aligning
   Docker and bare-metal dependency pins and source patches. Remove the upstream-fixed
   SM120 sparse-MLA backport; retain the MiniMax-M3 MTP namespace fix and optional

@@ -54,6 +54,7 @@ profiler/perf/<hardware>/<model>/<variant>/tp<N>/{
   dense.csv,
   per_sequence.csv,
   attention.csv,
+  linear_attention.csv, # hybrid/recurrent models only
   moe.csv,           # MoE models only
   skew.csv,          # if heterogeneous-decode sweep is on
   skew_fit.csv       # ditto, the fitted alpha table
@@ -84,6 +85,19 @@ On first load, the simulator also:
    warning that lookups will **extrapolate** rather than clamp.
 2. Validates and hydrates versioned skew calibration from `skew_fit.csv`.
    Enabled legacy fits are rejected; rebuild with `profiler refit-skew`.
+
+### Runtime-selected components
+
+For a catalog with `component_layouts`, the first use at each TP validates the
+recorded choice and every coupled category. Pending, stale or mixed acquisitions
+fail; unmarked historical tables retain their original decomposition. Expanded
+sequences are cached by TP and the original sequence, without mutating the shared
+catalog or changing latency interpolation. Keep published bundles immutable while
+the simulator reads them; see the [publication contract](../profiler/output-bundle#runtime-selected-component-layouts).
+
+The packed Qwen GDN core has its own tensor-size boundary, and declared row-output
+projections carry ordinary TP reductions. These are independent of profile timing;
+see [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces).
 
 ## Per-category lookup
 
@@ -207,7 +221,7 @@ Each model has an architecture YAML at
 has:
 
 - A `catalog:` mapping canonical layer names (e.g., `qkv_proj`,
-  `attention`, `moe`) to vLLM class names.
+  `attention`, `moe`) to classes, CUDA kernels or exact native operator scopes.
 - A `blocks:` describing what one decoder layer emits, keyed by axis, plus a
   `shared:` for what runs once per iteration:
   `shared.prologue → (attn.<type>.pre_attn → attn.<type>.post_attn →

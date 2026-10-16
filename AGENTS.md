@@ -144,7 +144,9 @@ correlations; CPU duration is never a latency input. No model-specific collector
 branches, Python stacks, tensor shapes or memory snapshots are required. Architecture is
 dispatched by the HF config's `model_type` field against YAML catalogs under
 `profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
-per-sequence / attention / linear-attention / moe) to vLLM class names.
+per-sequence / attention / linear-attention / moe) to vLLM class/kernel selectors
+or one exact native CPU operator name. Operator CPU intervals establish launch
+ownership only; their CUDA activities supply all measured latency.
 
 **Catalog naming rule.** The file is named after the `model_type` it primarily
 serves, spelled **verbatim** — including where vendors disagree: DeepSeek
@@ -694,8 +696,11 @@ missing or incompatible identities; use a separate output root or explicitly
 remeasure with `--force`. TP-stable replication preserves row identities and
 rejects mixed timing methods before replacing the destination. Fully skipped
 ordinary categories do not acquire a new measurement timestamp. Skew uses
-`kineto-scoped-dummy-kv-skew-per-forward-v7`, with the interval, request-state and
-dummy-cache helpers in its acquisition fingerprint. Native DP+EP
+`kineto-context-scoped-dummy-kv-skew-per-forward-v9`, binding its own source,
+effective serialized attention catalog, full contexts, installed Torch/vLLM
+distribution versions and timing/preparation helpers. CPU `plan-skew` uses the
+same projection without importing Torch/vLLM; absent distribution metadata hashes
+as null and cannot certify reuse of rows with known measured versions. Native DP+EP
 component contracts remain separate and retain their recorded timing method.
 
 `hooks/history.py` prepares query request state and completes asynchronous output.
@@ -728,7 +733,42 @@ leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
 remain fresh prompts. The ordinary acquisition protocol is
-`kineto-scoped-cuda-union-dummy-kv-query-v6`.
+`kineto-context-scoped-cuda-union-dummy-kv-query-v7`.
+
+### Runtime contexts and coordinated component layouts
+
+`capture_scope_contract.py` projects one schema-1 methods/operators contract from
+the whole architecture to ordinary, coverage and skew RPCs, preserving exclusions
+across category slices and including them in host/worker identities. Common
+`embed_input_ids`/`compute_logits` method scopes provide runtime ancestry for direct
+calls, not independently bindable costs or arbitrary-method instrumentation.
+Restore exact instance state; reject foreign replacement, async/generator methods
+and ambiguous normalization. Exact native `operator:` scopes own CUDA activities,
+never CPU duration; reject wildcards, launch APIs, collisions and ambiguous or
+out-of-forward/thread scopes. Contexts add no descendant normalization units:
+consume returned normalized components, not an augmented tree via an old extractor.
+
+`component_layouts.py` is a shared CPU-only contract for declared historical and
+alternative decompositions, currently over `dense`/`linear_attention`. Select a
+unique variant from positive prefill/decode/mixed CUDA coverage on every worker
+and check every acquired shot. Never infer it from model/version names or absent
+kernels. Small probes do not certify unmeasured shapes, backends or deployments.
+Discovery uses fixed `runner._COVERAGE_REGIMES`, not limits-adapted probes; small
+engine envelopes can reject discovery even when their requested grid is valid.
+
+`meta.yaml.component_layouts` (`component-layouts-v1`, per TP) is the sole authority.
+Publish `pending` before clearing, `writing` with identity, then `complete` only
+after row validation. Changed shared identity requires explicit force across
+coupled categories; changed representation/definition requires fresh output.
+Resume whole valid shots, preserve unrelated TP-stable identities, and refuse
+pending/mixed/stale/malformed data or missing complete-table regimes.
+`writing` categories may resume before their first measured shot, including when
+only valid TP1 replicas remain at TP2; validate replicas before exempting them from
+local coverage. Empty/replica-only categories cannot become `complete`. Unmarked
+historical tables keep their old sequence; alternative-only rows require metadata.
+Qwen's packed core includes its norm, so refresh dense and linear_attention together.
+Use one writer per variant root and immutable published bundles: atomic replacement
+is recovery, not locking. See the output-bundle guide for the full publication rules.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains
@@ -1212,7 +1252,7 @@ The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
 and that key is what makes it regime-aware: a gated-DeltaNet block runs a
 *different set of kernels* for a pure prefill, a pure decode and a mixed batch,
 so a kernel simply has no rows for a regime it does not fire in, and the
-simulator emits nothing for it there. Measured on Qwen3.8-27B:
+simulator emits nothing for it there. The historical Qwen3.8-27B decomposition:
 
 | kernel | prefill | decode | mixed |
 |---|---|---|---|
@@ -1228,6 +1268,14 @@ layers stay in `dense`, which is why the split is per layer rather than per
 block. Use `python -m profiler coverage` to find out which is which; it reports
 per regime.
 
+The selected packed layout replaces the GDN conv/scan/norm components with
+`gdn_core`; projections and outer glue stay separate. Its size is packed qkvz+ba
+input, gated-normalized value output, and owned conv/dt_bias/A_log/norm parameters;
+persistent state capacity remains per sequence. Use model activation dtype (A_log
+is float32), require positive TP-divisible heads, and reject unverified quantized
+BA layouts. Sequence expansion is cached by TP and original sequence without
+mutating the catalog or changing latency interpolation.
+
 The `attention` category holds **more than one kernel** on a sparse model, and
 they are not interchangeable — the lookup takes a layer name
 (`attention_by_layer`) and so does the skew alpha. MiniMax-M3 profiles
@@ -1240,9 +1288,8 @@ Names beyond this table are per-family and live in the catalogs
 (`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `mtp_*`, `*_glue`).
 **`calculate_sizes` in `memory_model.py` raises on a name it does not know**,
 so a new family needs its tensor-size formulas added there before it can be
-simulated at all. Every name in every shipped catalog has one today — 26 for
-Qwen3.5 and DeepSeek/GLM, 21 for MiniMax-M3 — which is checkable in seconds
-by calling `calculate_sizes` for every name in every shipped catalog.
+simulated at all. Check every selected canonical name with `calculate_sizes`;
+catalog presence alone does not establish a valid shape or deployment.
 
 ### Trace generator structure
 `trace_generator.py` walks the architecture yaml's `blocks:` section to emit
@@ -1261,7 +1308,7 @@ each iteration. Composable helpers:
   `blocks.sparse_attn` first and falling through to `blocks.attn`.
 - `_emit_sequence()` — walks a list of canonical names from a block, attaches
   TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
-  swaps in PIM attention before the
+  caches selected component sequences per TP, swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
   layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
@@ -1796,9 +1843,15 @@ Ring divides the former by its rank count, not the AllGather chunk.
   output at activation dtype, not the sharded input. For Qwen `gdn_out_proj`,
   that is effective token rows × hidden size × activation bytes.
   No reduction at TP1; the declaration applies only when the row is emitted.
+  Historical and packed GDN layouts both use this declaration.
 - MoE: **not** one size. Dispatch AllGathers take per-rank chunks, while the
   combine ReduceScatter takes a pre-scatter total. Native dispatch has three
   tensor collectives; the legacy path combines its dispatch payload. See the MoE section.
+
+An MoE entry's `attention_sequence_parallel: true` requires `sequence_parallel: true`.
+Serving refuses its TP>1, PP1, DP+EP-spanning deployment before trace emission:
+attention-wide sequence shards need different gathers/scatters and local row counts,
+not a wrapper-only restore. The guard is not certification of every other topology.
 
 ### Multi-dimensional topology and `involved_dim`
 For DP configurations the network topology is multi-dimensional, innermost dimension

@@ -49,9 +49,13 @@ class Extension:
         from .skew_measurement import initialize
         return initialize(self.model_runner)
 
-    def skew_measure(self, shot_dict, catalog, iterations=3):
+    def skew_measure(self, shot_dict, catalog, iterations=3, scope_contexts=None):
+        from .capture_scope_contract import normalize_contexts
+        normalize_contexts(scope_contexts, catalog)
+        if type(iterations) is not int or iterations < 1:
+            raise ValueError('A positive timed-forward count is required')
         from .skew_measurement import measure
-        return measure(self.model_runner, shot_dict, catalog, iterations)
+        return measure(self.model_runner, shot_dict, catalog, iterations, scope_contexts=scope_contexts)
 
     def fire(
         self,
@@ -59,6 +63,8 @@ class Extension:
         slice_: dict[str, dict[str, Any]],
         kind: str,
         iterations: int = 3,
+        scope_contexts: dict[str, Any] | None = None,
+        component_layout_sha256: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run one profiling shot and return per-layer timings.
 
@@ -79,6 +85,11 @@ class Extension:
         shot = Shot.hydrate(shot_dict)
         if type(iterations) is not int or iterations < 1:
             raise ValueError('A positive timed-forward count is required')
+        # Reject malformed contracts before sampler mutation, cache setup,
+        # warmup or any measured GPU work.
+        from profiler.core.measurement import layerwise_measurement
+        acquisition = layerwise_measurement(slice_, iterations, scope_contexts=scope_contexts,
+                                           component_layout_sha256=component_layout_sha256)
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -114,17 +125,15 @@ class Extension:
                             lambda: complete_forward(self.model_runner, _fresh_batch()))
 
         # -- measured runs (N iterations, averaged) -------------------
-        from profiler.core.measurement import layerwise_measurement
         with force_moe_routing(route):
             measured = capture(self.model_runner,
                                lambda: complete_forward(self.model_runner, _fresh_batch()),
-                               slice_, iterations)
+                               slice_, iterations, scope_contexts=scope_contexts)
         if kind == 'mtp':
             missing = set(slice_) - set(measured['layer_us'])
             if missing:
                 raise ValueError('MTP acquisition is incomplete; inspect callable coverage before '
                                  f'saving timings: {sorted(missing)}')
-        acquisition = layerwise_measurement(slice_, iterations)
         return [dict(layer=name, microseconds=value, **acquisition)
                 for name, value in measured["layer_us"].items()]
 
@@ -133,6 +142,7 @@ class Extension:
         shot_dict: dict[str, Any],
         slice_: dict[str, dict[str, Any]],
         iterations: int = 1,
+        scope_contexts: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one shot and report which of its CUDA time the catalog binds.
 
@@ -150,6 +160,8 @@ class Extension:
         shot = Shot.hydrate(shot_dict)
         if type(iterations) is not int or iterations < 1:
             raise ValueError('A positive timed-forward count is required')
+        from .capture_scope_contract import normalize_contexts
+        normalize_contexts(scope_contexts, slice_)
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -163,6 +175,6 @@ class Extension:
 
         measured = capture(self.model_runner,
                            lambda: complete_forward(self.model_runner, _fresh_batch()),
-                           slice_, iterations, diagnostic=True)
+                           slice_, iterations, diagnostic=True, scope_contexts=scope_contexts)
         report = coverage_report(measured)
         return report

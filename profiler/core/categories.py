@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, Iterator
+from typing import TYPE_CHECKING, ClassVar, Iterator
 
 from profiler.core.config import (
     Architecture,
@@ -30,7 +30,8 @@ from profiler.core.config import (
     ProfileArgs,
     declares_moe,
 )
-from profiler.core.engine import RuntimeLimits
+if TYPE_CHECKING:
+    from profiler.core.engine import RuntimeLimits
 from profiler.core.hooks.batch import Shot
 from profiler.core.stack import ALL_AXES, ATTENTION_AXES
 from profiler.core.attention_shape import prefill_key
@@ -245,7 +246,7 @@ def _entry_dict(
     normalization = "invocations" if entries is arch.catalog.moe else "parent"
     return {
         name: {
-            "vllm": e.vllm,
+            **({"operator": e.operator} if e.operator is not None else {"vllm": e.vllm}),
             "within": e.within,        # str, list[str] or None; see LayerEntry
             "not_within": e.not_within,
             "tp_stable": e.tp_stable,

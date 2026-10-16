@@ -60,7 +60,7 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `kineto-scoped-cuda-union-dummy-kv-query-v6`.
+New ordinary layerwise measurements use `kineto-context-scoped-cuda-union-dummy-kv-query-v7`.
 The common PyTorch/Kineto collector records explicit dynamic module scopes and
 native CUDA activities without Python stacks, tensor shapes or memory snapshots.
 For each raw module invocation, merge overlapping CUDA intervals on the same
@@ -73,9 +73,20 @@ gaps between device activities do not contribute latency. The result is
 device-active time, not whole-step elapsed time. Separate catalog components
 can still overlap, so adding their costs is not an exact global interval union.
 
+Common direct model methods and declared native operators can supply additional
+runtime ownership contexts. An `operator:` binding selects an exact native CPU
+operator event, but its cost is the union of its launch-correlated CUDA activity
+intervals, not the CPU event's duration. Method contexts are not independently
+measured operations. Both kinds are transparent to descendants' parent-call
+normalization, so adding ancestry does not create extra execution counts.
+Missing or ambiguous ownership is rejected; a static module alias is not a
+substitute for observed runtime ancestry.
+
 Ordinary category CSVs add `measurement_protocol` and `measurement_sha256` to
 the numerical columns shown in the examples below. The fingerprint binds the
-timing and shape-construction implementations, catalog, repetitions and library versions. Host and
+timing and shape-construction implementations, catalog, full-architecture scope
+contexts, repetitions and library versions. A selected component layout also
+contributes its identity and shared layout implementation. Host and
 worker identities must agree before writing. These columns are stored
 atomically with the timing rows; TP-stable replication retains them.
 Unchanged numerical columns remain readable by the simulator.
@@ -88,7 +99,11 @@ measurement provenance. TP-stable replication rejects mixed timing methods
 before replacing a destination file.
 
 Skew uses the same interval accounting with its separate per-forward
-`kineto-scoped-dummy-kv-skew-per-forward-v7` protocol. Native DP+EP component bundles retain
+`kineto-context-scoped-dummy-kv-skew-per-forward-v9` protocol. Its fingerprint binds
+the effective serialized attention catalog, full capture contexts, installed
+Torch/vLLM distribution versions and timing/preparation sources, including the
+fingerprint implementation itself. `skew.meta.yaml` retains the contexts.
+Native DP+EP component bundles retain
 their own recorded measurement contract; they are not converted by this change.
 Catalog coverage accounts for each native kernel, copy and memset exactly once,
 including work outside module scopes. Such work is reported as a gap, not assigned
@@ -130,6 +145,64 @@ or explicitly remeasure with `--force`.
 Both protocols preserve the prompt/output boundary of history-bearing decode
 requests, not just their query lengths and KV positions. This allows vLLM to
 select the intended prefill/decode kernels for each mixed batch.
+
+## Runtime-selected component layouts
+
+A catalog may declare alternative block decompositions. Qwen supports historical
+GDN conv/scan/norm components or a packed native core including the gated norm;
+projections and outer glue stay separate. Both use the same GPU-only timing rule.
+
+Positive prefill/decode/mixed CUDA coverage must select a unique variant on every
+worker; every acquired shot rechecks it across category boundaries. Model/version
+names, CPU events or absent kernels are not evidence. Small probes and acquired
+coordinates do not certify unmeasured shapes or backend transitions.
+
+Discovery currently reuses the fixed `_COVERAGE_REGIMES` in
+[`profiler/core/runner.py`](https://github.com/casys-kaist/LLMServingSim/blob/main/profiler/core/runner.py).
+The engine's token, request, context and cache limits must accommodate those
+probes; they are not reduced with the requested grid. An otherwise valid small
+engine envelope can therefore fail discovery before category acquisition.
+
+`meta.yaml.component_layouts` is the single authority: schema
+`component-layouts-v1`, with a `per_tp` record containing variant selections,
+`layout_sha256`, a shared acquisition identity and each affected category's
+state/measurement identity. The layout hash binds declarations, choices and
+affected catalog bindings, not CSV timing values. Each CSV retains its usual
+row-level measurement identity.
+
+| Category state | Meaning | Usable by simulation |
+| --- | --- | --- |
+| `pending` | Previous acquisition invalidated; no category rows certified | No |
+| `writing` | Can resume before the first measured shot or from compatible whole-shot checkpoints | No |
+| `complete` | Category finished; saved rows passed layout/identity checks | Only when every coupled category is complete and valid |
+
+Replacement makes `pending` durable before clearing measured rows. Metadata
+writers preserve the record rather than inferring completion from file presence.
+Unrelated TP-stable replicas retain their original TP1 identities; they do not
+establish measured coverage at another degree or become new samples. Replicas
+are validated before exemption from local coverage. An empty or replica-only
+`writing` category can resume, but cannot become `complete`. Readers
+reject stale layout contracts, inconsistent row identities, malformed/duplicate
+rows, mixed component sets and completed linear-attention tables missing an
+entire regime. This is not a certificate for every possible grid coordinate.
+
+Unmarked historical bundles keep their old block order and stored timings;
+alternative-only rows without metadata are refused. Validated choices and expanded
+sequences are cached per TP without mutating the shared catalog. See the
+[trace guide](../simulator/trace-generation#runtime-selected-components) for sizing
+and communication, which are separate from measured latency.
+
+For the Qwen hybrid catalog, `dense` and `linear_attention` are coupled: removing
+the separate norm cost requires acquiring its replacement inside the fused core.
+Use a fresh output bundle for a different representation or changed layout
+definition. A coordinated forced refresh of historical tables is also possible,
+but the bundle is unusable until every affected category completes. See
+[resume and force](./running#resume-vs-force) for interruption and refresh rules.
+
+Use one writer per variant bundle, even for different TP/category slices, and do
+not mutate a bundle while a simulation reads it. Atomic file replacement and
+directory synchronization provide interruption safety, not locking or a live
+multi-file transaction. These checks do not establish end-to-end model accuracy.
 
 ## `dense.csv`
 
@@ -261,6 +334,11 @@ switches to a fused-gating one, and the conv switches too. That is why this
 file, like `attention.csv`, includes a `layer` column: one block can run
 several non-interchangeable kernels on the same axes, so each gets its own
 rows, and a cell is empty when the batch shape never reaches that kernel.
+
+This describes the historical separate-kernel decomposition. A catalog with a
+[recorded component layout](#runtime-selected-component-layouts) may instead emit
+one fused-core row on these axes, with corresponding changes to its coupled
+`dense.csv`. Do not mix representations or infer a new choice from row names.
 
 The `prefill_tokens` axis is sampled **chunk-aware** — inside the first chunk,
 at every chunk boundary, and at the token just past each boundary. Cost is a

@@ -19,19 +19,37 @@ from .skew_calibration import atomic_yaml, measurement_shape
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
-PROTOCOL = "kineto-scoped-dummy-kv-skew-per-forward-v7"
+PROTOCOL = "kineto-context-scoped-dummy-kv-skew-per-forward-v9"
 
 
-def measurement_fingerprint():
-    """Changing timing attribution or batch construction requires remeasurement."""
+def measurement_fingerprint(scope_contexts=None, *, catalog):
+    """Bind raw timings to effective selectors, normalization and runtime stack."""
+    from importlib import metadata
+    from .hooks.capture_scope_contract import normalize_contexts
+    if not isinstance(catalog, dict) or not catalog:
+        raise ValueError("Skew acquisition requires a nonempty serialized attention catalog")
+    contexts = normalize_contexts(scope_contexts, catalog)
+    # Offline plan-skew must not import the GPU runtime. An unavailable
+    # distribution is explicit and cannot certify reuse of live measurements.
+    versions = {}
+    for package in ('torch', 'vllm'):
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = None
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
+    value.update(Path(__file__).read_bytes())
     for name in ('engine.py', 'config.py', 'stack.py'):
         value.update((hooks.parent / name).read_bytes())
     for name in ("skew_measurement.py", "activity_collector.py", "runner_capture.py", "cuda_timing.py", "timings.py",
                  "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
-                 "recurrent_metadata.py", "tp_shape.py"):
+                 "recurrent_metadata.py", "tp_shape.py", "method_scopes.py", "operator_scopes.py", "capture_scope_contract.py"):
         value.update((hooks / name).read_bytes())
+    identity = dict(protocol=PROTOCOL, catalog=catalog, scope_contexts=contexts,
+                    versions=versions)
+    value.update(json.dumps(identity, sort_keys=True,
+                           separators=(',', ':'), allow_nan=False).encode())
     return value.hexdigest()
 
 def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
@@ -93,12 +111,12 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
 
 
 
-def _existing_keys(path, layers, rounds, iterations, *, block_size=None):
+def _existing_keys(path, layers, rounds, iterations, *, block_size=None, scope_contexts=None):
     """A partial kernel set or an under-repeated shot is still unfinished."""
     if not path.exists():
         return set()
     grouped = {}
-    fingerprint = measurement_fingerprint()
+    fingerprint = measurement_fingerprint(scope_contexts, catalog=layers)
     for row in pd.read_csv(path, low_memory=False).fillna("").to_dict("records"):
         key = measurement_shape(row)[4]
         if row.get("case_id") and row["case_id"] != key:
@@ -128,9 +146,10 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     attention = Path(tp_root) / "attention.csv"
     if not attention.exists():
         raise FileNotFoundError("Skew calibration needs attention.csv; profile attention first")
-    catalog = {name: dict(vllm=e.vllm, within=e.within, not_within=e.not_within,
-                         tp_stable=e.tp_stable)
-               for name, e in arch.catalog.attention.items()}
+    from .hooks.capture_scope_contract import contexts_from_architecture
+    scope_contexts = contexts_from_architecture(arch)
+    from .categories import _entry_dict
+    catalog = _entry_dict(arch.catalog.attention, arch)
     from serving.core import trace_generator as tg
     table = tg._build_attention_tables_by_layer(tg._read_category_csv(str(attention), None))
     for name in catalog:
@@ -139,20 +158,21 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     if out.exists() and not args.force:
         recorded = pd.read_csv(out, low_memory=False).fillna('')
         expected = dict(measurement_protocol=PROTOCOL,
-                        measurement_sha256=measurement_fingerprint(),
+                        measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
                         block_size=limits.block_size)
         if any(k not in recorded or not (recorded[k] == v).all() for k, v in expected.items()):
             raise ValueError(
                 'Existing skew uses a different acquisition method or block size; '
                 'use a separate output root or --force to remeasure')
     prior = set() if args.force else _existing_keys(
-        out, catalog, args.skew_rounds, args.measurement_iterations, block_size=limits.block_size)
+        out, catalog, args.skew_rounds, args.measurement_iterations, block_size=limits.block_size,
+        scope_contexts=scope_contexts)
     log.info("TP=%d skew: checking reference-cell support before acquisition", tp)
     plan, extra = complete_plan(args, limits, attention, arch, prior,
                                existing_csv=None if args.force else out)
     plan.update(enabled=True, tp=tp, measurement_protocol=PROTOCOL,
-                measurement_sha256=measurement_fingerprint(),
-                completed=False, measured_cases=0)
+                measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
+                scope_contexts=scope_contexts, completed=False, measured_cases=0)
     status = Path(tp_root) / "skew.meta.yaml"
     Path(tp_root).mkdir(parents=True, exist_ok=True)
     if args.force and out.exists():
@@ -177,7 +197,7 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
             by_layer = {name: [] for name in catalog}
             for _ in range(args.skew_rounds):
                 result = llm.collective_rpc("skew_measure", args=(
-                    shot.as_dict(), catalog, args.measurement_iterations))[0]
+                    shot.as_dict(), catalog, args.measurement_iterations, scope_contexts))[0]
                 if (result.get('measurement_protocol') != PROTOCOL
                         or result.get('measurement_sha256') != plan['measurement_sha256']):
                     raise ValueError('Worker skew timings do not match the requested acquisition method')

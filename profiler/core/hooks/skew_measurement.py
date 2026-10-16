@@ -99,7 +99,7 @@ def _verified_builder_outputs(runner, requests, state_layers):
                 del builder.build
 
 
-def measure(runner, shot_dict, catalog, iterations=3):
+def measure(runner, shot_dict, catalog, iterations=3, *, scope_contexts=None):
     """Capture individual forwards through the common eager CUDA collector."""
     import torch
     from .batch import Shot
@@ -107,6 +107,9 @@ def measure(runner, shot_dict, catalog, iterations=3):
     from .runner_capture import capture, verified_warmup
     from .sampler_shim import wrap_sampler_for_profiling
     from profiler.core.skew import PROTOCOL, measurement_fingerprint
+    from .capture_scope_contract import normalize_contexts
+
+    scope_contexts = normalize_contexts(scope_contexts, catalog)
 
     if type(iterations) is not int or iterations < 1:
         raise ValueError("Positive timed-forward count required")
@@ -119,7 +122,8 @@ def measure(runner, shot_dict, catalog, iterations=3):
 
     with torch.inference_mode():
         verified_warmup(runner, shot, fire)
-        measured = capture(runner, fire, catalog, iterations, forward_prefix=MARKER)
+        measured = capture(runner, fire, catalog, iterations, forward_prefix=MARKER,
+                           scope_contexts=scope_contexts)
     forwards = measured["per_forward_layers_us"]
     aggregate = measured["layer_us"]
     deltas = {}
@@ -135,7 +139,7 @@ def measure(runner, shot_dict, catalog, iterations=3):
             raise ValueError(f"Per-forward attribution does not conserve {name}")
     audit = measured["audit"]
     return dict(per_forward_us=forwards, aggregate_us=aggregate,
-                measurement_protocol=PROTOCOL, measurement_sha256=measurement_fingerprint(),
+                measurement_protocol=PROTOCOL, measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
                 conservation_delta_us=deltas,
                 cuda_kernel_counts=audit["per_forward_activity_counts"],
                 excluded_gpu_annotations=audit["excluded_annotations"],

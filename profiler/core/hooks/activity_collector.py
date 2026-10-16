@@ -540,7 +540,7 @@ Scopes = ScopedModules
 
 def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREFIX,
             strict_coverage=False, strict_model_coverage=False, require_complete=False,
-            return_events=False):
+            return_events=False, scope_contexts=None):
     """Collect ``callback(index)`` eagerly without adding warmups or padding.
 
     ``roots`` is a mapping of existing modules, supplied by a runner adapter.
@@ -553,8 +553,12 @@ def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREF
         raise ValueError('iterations must be a positive integer')
     import torch
     from torch.autograd import DeviceType
+    from .capture_scope_contract import normalize_contexts
+    from .method_scopes import RuntimeMethodScopes
+    from .operator_scopes import extract_with_operators
+    contexts = normalize_contexts(scope_contexts, catalog)
     started = time.perf_counter()
-    scopes = Scopes(roots, forward_prefix=forward_prefix)
+    scopes = RuntimeMethodScopes(roots, methods=contexts['methods'], forward_prefix=forward_prefix)
     profiler = torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
         record_shapes=False, with_stack=False, with_modules=False,
@@ -573,15 +577,16 @@ def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREF
     cpu = [event for event in native if event.device_type() == DeviceType.CPU]
     gpu = [event for event in native if event.device_type() == DeviceType.CUDA]
     metadata = scopes.metadata()
-    result = extract(cpu, gpu, catalog, metadata, iterations,
-        forward_prefix=forward_prefix, strict_coverage=strict_coverage,
+    result = extract_with_operators(cpu, gpu, catalog, metadata, iterations,
+        contexts=contexts['operators'], forward_prefix=forward_prefix, strict_coverage=strict_coverage,
         strict_model_coverage=strict_model_coverage, require_complete=require_complete)
     finished = time.perf_counter()
     result['phases_seconds'] = dict(setup=configured-started, enter=entered-configured,
         forwards=forwarded-entered, exit=closed-forwarded, hook_cleanup=cleaned-closed,
         extract=finished-cleaned)
     result['collection_seconds'] = finished-started
-    result['metadata'] = metadata
+    result.setdefault('metadata', metadata)
+    result['scope_contexts'] = contexts
     if return_events:
         result['native_cpu_events'], result['native_gpu_events'] = cpu, gpu
     return result

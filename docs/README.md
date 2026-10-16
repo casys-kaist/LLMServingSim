@@ -64,9 +64,14 @@ Skew timing documentation separates launch-correlated kernel ownership from
 latency: CPU scopes identify the launching module but contribute no time.
 The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
 defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, acquisition identity columns and
-incompatible-resume protection; existing tables are not automatically converted.
+interrupted-start recovery and catalog/runtime-bound skew resume; existing tables
+are not automatically converted.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
 catalog-declared TP output reductions and their activation-sized payloads.
+The profiler guides distinguish runtime ownership contexts from GPU timing and
+document coupled component-layout publication. The trace and hybrid guides cover
+packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
+small acquisition probes are not full-grid or deployment certification.
 Coverage accounts for native kernels, copies and memsets, including work outside
 module scopes. The architecture guide also documents child exclusions for raw
 kernel wildcards and rejection of overlapping canonical activity claims.

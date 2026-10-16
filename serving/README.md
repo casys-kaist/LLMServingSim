@@ -6,6 +6,15 @@ Declared row-output projections, including Qwen's `gdn_out_proj`, carry their
 ordinary TP AllReduce at activation dtype. Stored latency rows are unchanged;
 TP1 emits no reduction. See [parallelism mechanics](../docs/docs/simulator/parallelism-mechanics.md).
 
+Trace generation validates runtime-selected component layouts per TP before
+expanding and caching their immutable block sequences. Pending/incompatible tables
+are refused; historical unmarked tables retain their original decomposition.
+Packed GDN sizing follows its operator boundary, with persistent state accounted
+separately. Declared row-output reductions include Qwen's `gdn_out_proj`; unsupported
+attention-wide sequence-parallel deployments fail before trace emission.
+Publish a complete bundle and keep it unchanged while readers use it. See the
+[layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
+
 ## Layout
 
 ```text
@@ -354,7 +363,7 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `_emit_layer()` — single-layer emission that dispatches by catalog category
 - `_emit_sequence()` — walks a list of canonical names from the yaml; attaches
   TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
-  and swaps in PIM attention before
+  caches selected component sequences per TP, and swaps in PIM attention before
   the NPU attention kernel when offloading is enabled. Emits a one-shot warning
   when a sequence layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /

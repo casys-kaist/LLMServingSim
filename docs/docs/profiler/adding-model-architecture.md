@@ -152,14 +152,16 @@ so it gets its own file.
 Every top-level key is validated with `extra="forbid"`, so a typo or a stray
 key fails at load time rather than silently doing nothing:
 
-- `catalog:` — binds canonical layer names to the vLLM class names the CUDA
-  profiler reports. Grouped by profile kind.
+- `catalog:` — binds canonical layer names to vLLM classes, raw CUDA kernels or
+  exact native operator scopes. Grouped by profile kind.
 - `model_types:` — optional; the extra `model_type` values this file serves
   (see [File naming](#file-naming)).
 - `blocks:` — the layer order inside a decoder layer, keyed by **axis**.
   See [Heterogeneous stacks](#heterogeneous-stacks) for what the axes are.
 - `shared:` — `prologue` and `head`, which run once per *iteration* rather
   than once per layer.
+- `component_layouts:` — optional; declares runtime-selected alternatives to
+  the historical block decomposition, with coupled acquisition categories.
 
 There used to be a second form for a uniform stack, `sequence:`, and it is
 gone. It was this one flattened — its `pre_attn` / `post_attn` were the single
@@ -319,11 +321,14 @@ share a granularity.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vllm` | ✓ | The name the CUDA profiler reports for this layer — a vLLM **leaf class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
-| `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` name appears more than once in the model. Matching rule: the name matches **and** (`within` is unset **or** one of `within`'s alternatives appears among the node's ancestor classes). Accepts a list |
+| `vllm` | Exactly one of `vllm` or `operator` | A vLLM **class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
+| `operator` | Exactly one of `vllm` or `operator` | One **exact native CPU operator name**, such as `vllm::qwen_gdn_attention_core_fused_norm_packed`. No list or wildcard. Its scope owns CUDA activities; CPU duration is never measured |
+| `within` | optional | An observed **ancestor** class or declared operator name. The name must match and, when `within` is set, at least one alternative must occur in runtime ancestry. Accepts a list |
 | `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
 | `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
 | `tp_output_reduction` | optional | `all_reduce` on a `dense` row-output projection; emits a TP reduction of its full output at activation dtype |
+| `sequence_parallel` | optional | Whether a MoE wrapper sequence-shards inputs under DP+TP |
+| `attention_sequence_parallel` | optional | Declares attention-wide sequence shards; requires `sequence_parallel: true` on a MoE entry and triggers the unsupported-deployment guard described in [parallelism mechanics](../simulator/parallelism-mechanics#attention-wide-sequence-parallelism) |
 
 A **list** under `vllm` means "every one of these the checkpoint has", and
 covers two situations:
@@ -355,7 +360,7 @@ ones as `layernorm`, and `within: LlamaForCausalLM` catches the last as
 within `LlamaAttention`) from `down_proj` (the same class within
 `LlamaMLP`).
 
-The `(vllm, within, not_within)` triple has to be **globally unique** across
+The `(binding kind, name(s), within, not_within)` combination must be **globally unique** across
 the catalog; the loader rejects duplicates by design, because otherwise one
 profiled kernel would be credited to two canonical names.
 
@@ -365,9 +370,66 @@ rope modules of the same class: `rotary_emb` scopes to
 `MultiHeadLatentAttentionWrapper` and `indexer_rope_emb` to `Indexer`, which is
 nested inside it, so the indexer's copy lands on the inner entry.
 
-There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
-`o_proj` / `down_proj` and the EP all-to-all around `moe` are attached by the
-simulator from the **cluster config**, not declared here.
+There is no general `tp_collective` / `ep_collective` field. Ordinary `o_proj` /
+`down_proj` reductions and MoE transport follow the cluster configuration.
+`tp_output_reduction` declares an additional row-output reduction, such as
+`gdn_out_proj`; it does not model arbitrary fused or sequence-parallel collectives.
+
+### Direct methods and native operator ownership
+
+Module registration does not prove that `__call__` executes. Common synchronous
+`embed_input_ids`/`compute_logits` contexts preserve actual shared-module ancestry
+for direct calls, without adding descendant normalization units. They are not
+static aliases, independently bindable method costs or arbitrary-method coverage.
+Ambiguous parent denominators are rejected.
+
+When an executed native operator is the appropriate component boundary, declare
+it explicitly in the catalog section:
+
+```yaml
+linear_attention:
+  gdn_core:
+    operator: vllm::qwen_gdn_attention_core_fused_norm_packed
+    within: QwenGatedDeltaNetAttention
+```
+
+Its CPU interval locates launches; only CUDA kernels, copies and memsets contribute
+time. Exclude already-owned descendants with `not_within`. Name-kind collisions,
+ambiguous/crossing intervals, launch APIs and out-of-forward/thread scopes fail;
+an absent operator is never synthesized. `capture_scope_contract.py` projects the
+full schema-1 methods/operators contract to ordinary, coverage and skew RPCs, so
+cross-category exclusions survive slicing. Standalone callers must pass that full
+contract explicitly; omission derives it only from their supplied catalog.
+Consume returned normalized components, not the augmented audit tree through an
+older extractor.
+
+### Declaring alternative component layouts
+
+Use `component_layouts` when the runtime changes a block's decomposition, not
+merely the spelling of an interchangeable kernel. Each named group declares:
+
+- `historical`: the variant matching the unchanged original block order.
+- `categories`: every affected category, including unchanged names whose scope
+  changed. Currently only `dense` and `linear_attention` row domains are supported.
+- `variants`: exact `observed` canonical sets for `prefill`, `decode` and `mixed`.
+  A nonhistorical variant may use `replace` mappings from historical components
+  to lists of replacements; an empty list removes an old component already
+  covered by its replacement.
+
+Substitutions are one-pass and nonrecursive. Groups must be disjoint, references
+must exist, and each rewritten block must contain the complete selected set
+without duplicate components. The historical variant does not rewrite the block.
+Never select an alternative from the vLLM version, a model-family branch or
+absent kernel names.
+
+`profiler/models/qwen3_5.yaml` supplies a coupled example: historical conv/scan/norm
+entries versus a packed GDN core including the gated norm. Runtime coverage must
+select a unique variant, followed by per-shot checks. Its new `dense` and
+`linear_attention` data must be acquired together under the
+[layout publication contract](./output-bundle#runtime-selected-component-layouts).
+Historical bundles retain their old sequence. Small probes are not full-grid,
+checkpoint or deployment certification. See [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces)
+for the independent sizing and communication contract.
 
 ### Section reference
 
@@ -386,7 +448,8 @@ simulator from the **cluster config**, not declared here.
 
 `attention` is **listed explicitly** in `pre_attn`; it is not implicit.
 Every name a section mentions has to exist in `catalog`, and every catalog
-entry the simulator emits has to appear in some section.
+entry the simulator emits has to appear in a section or in a declared selected
+component-layout substitution.
 
 Declare only the axis values the family actually has: Llama has no
 `mlp.moe`, Mixtral no `mlp.dense`, and a family with both (Qwen3,

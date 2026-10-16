@@ -17,6 +17,14 @@ checks run outside timing; native DP+EP components keep their eager/graph contra
 Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
 Qwen's GDN output projection. This describes simulator communication, not a new
 profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).
+Common direct-method and exact native operator contexts preserve runtime
+ownership across category slices without adding CPU latency or descendant
+normalization counts. Runtime-selected component layouts couple affected tables:
+Qwen's fused GDN core needs coordinated `dense` and `linear_attention` acquisition.
+Per-TP metadata rejects incomplete or incompatible publication; unmarked historical
+tables keep their original decomposition. Use one writer per variant root and keep
+published bundles immutable. See the
+[layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).
@@ -38,8 +46,9 @@ and exact returned object; no backend is exempted from the check.
 Timed skew kernels are assigned by native launch correlation and the launching
 module's CPU scope, with OS-thread mapping across profiler event namespaces.
 This changes ownership only, not GPU durations or CPU overhead. Missing or
-ambiguous launch evidence rejects the measurement. Resume checks the timing
-implementation fingerprint, so old rows are not relabelled as new acquisitions.
+ambiguous launch evidence rejects the measurement. Skew resume checks source,
+effective catalog, full contexts and installed runtime versions; old rows are not
+relabelled as new acquisitions.
 Ordinary layerwise categories and skew use per-call CUDA interval unions: streams
 on the same device share an interval union, while distinct module calls remain
 separate before averaging. CPU time and gaps are excluded. Ordinary CSV rows
@@ -81,6 +90,7 @@ profiler/                          Python package: python -m profiler
 │   ├── categories.py              per-category shot grids and measurement
 │   ├── attention_shape.py         shared attention geometry and feasibility
 │   ├── measurement.py             acquisition identity and timing protocols
+│   ├── component_layouts.py       runtime alternatives and coupled acquisition state
 │   ├── hardware.py                device facts and NCCL link calibration
 │   ├── moe_profile.py             native DP+EP component acquisition
 │   ├── moe_deployment.py          TP/DP/EP ownership and token domains
@@ -103,6 +113,9 @@ profiler/                          Python package: python -m profiler
 │       ├── cuda_timing.py         per-call CUDA interval accounting
 │       ├── activity_collector.py  scoped native CUDA collection and coverage
 │       ├── runner_capture.py      common warmup validation and capture
+│       ├── capture_scope_contract.py full-architecture ownership contexts
+│       ├── method_scopes.py       direct-method ancestry without extra execution units
+│       ├── operator_scopes.py     exact native operator launch ownership
 │       ├── recurrent_metadata.py  recurrent query/history and state-page checks
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation

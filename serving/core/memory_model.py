@@ -1163,6 +1163,34 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # prefill conv entry and the recurrence's ``dt_bias`` / ``A_log`` to the
     # prefill recurrence, with the decode entries carrying 0 -- they read the
     # same weights, and counting them twice would inflate the block.
+    elif layer_name == "gdn_core":
+        # Packed operator boundary: qkvz + ba -> gated-normalized value rows.
+        # Conv/state intermediates stay inside the scope. Persistent recurrent
+        # state capacity is counted separately per sequence, never per token.
+        dims = (gdn_k_heads, gdn_v_heads, gdn_k_dim, gdn_v_dim, gdn_conv_kernel)
+        if (type(parallel) is not int or parallel <= 0
+                or any(type(value) is not int or value <= 0 for value in dims)
+                or gdn_k_heads % parallel or gdn_v_heads % parallel):
+            raise ValueError("GDN core needs positive dimensions and TP-divisible key/value heads")
+        if type(length) is not int or length < 0:
+            raise ValueError("GDN core token count must be a nonnegative integer")
+        quantization = config.get("quantization_config") or {}
+        if quantization.get("quant_method") not in (None, "fp8"):
+            raise NotImplementedError(
+                "Quantized GDN core needs a verified BA projection sharding contract; "
+                "AWQ/GPTQ/INC can replicate BA instead of TP-sharding it")
+        from .communication import dtype_bytes
+        activation_fp = dtype_bytes(config.get("torch_dtype", config.get("dtype")), fp)
+        local_v_heads = gdn_v_heads // p
+        input_size = length * ((2 * gdn_key_dim + 2 * gdn_value_dim) // p
+                               + 2 * local_v_heads) * activation_fp
+        # These parameters are not quantized linears: conv/dt_bias/norm use
+        # model dtype; A_log explicitly uses float32. Norm scale is replicated.
+        weight_size = (gdn_conv_kernel * (gdn_conv_dim // p) * activation_fp
+                       + local_v_heads * (activation_fp + 4)
+                       + gdn_v_dim * activation_fp)
+        output_size = length * (gdn_value_dim // p) * activation_fp
+
     elif layer_name == "gdn_in_proj":
         # ``in_proj_qkvz`` (hidden -> 2*key_dim + 2*value_dim) and
         # ``in_proj_ba`` (hidden -> 2*num_v_heads), reported by the profiler as

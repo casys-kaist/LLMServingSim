@@ -38,6 +38,7 @@ from profiler.core.engine import (
     spin_up,
 )
 from profiler.core.hooks.batch import Shot
+from profiler.core.hooks.capture_scope_contract import contexts_from_architecture
 from profiler.core.hooks.timings import CoverageReport, TimingSample
 from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 from profiler.core.writer import (
@@ -73,6 +74,38 @@ def _variant_root(out_root: Path, args: ProfileArgs) -> Path:
 # Shot firing + point ingestion (shared between run_full and run_slice)
 # ---------------------------------------------------------------------------
 
+def _component_layout_context(llm, category, arch, scope_contexts):
+    """Discover representations on the live engine before writing category rows."""
+    from profiler.core import component_layouts as layouts
+    architecture = arch.model_dump(exclude_none=True)
+    groups = architecture.get("component_layouts") or {}
+    affected = {name for group in groups.values() for name in group["categories"]}
+    if category.name not in affected:
+        return None
+    whole_catalog = {}
+    for group in type(arch.catalog).model_fields:
+        whole_catalog.update(_entry_dict(getattr(arch.catalog, group), arch))
+    probes = layouts.probe_catalog(architecture, whole_catalog)
+    # Do not cache across engine boots or TP degrees. Per-shot probes below
+    # additionally reject shape-dependent changes after these three checks.
+    reports_by_rank = None
+    for regime, spec in _COVERAGE_REGIMES:
+        reports = llm.collective_rpc(
+            "coverage", args=(Shot.attention(**spec).as_dict(), probes, 1, scope_contexts))
+        if reports_by_rank is None:
+            reports_by_rank = [{} for _ in reports]
+        if not reports or len(reports) != len(reports_by_rank):
+            raise ValueError("Component-layout discovery changed its worker set")
+        for values, report in zip(reports_by_rank, reports):
+            values[regime] = report
+    selections = [layouts.select_runtime_layouts(architecture, reports)[0]
+                  for reports in reports_by_rank]
+    choices = selections[0]
+    if any(selection != choices for selection in selections):
+        raise ValueError("Component layouts differ across TP workers")
+    return architecture, choices, probes
+
+
 def _fire_one_category(
     llm,
     category: Category,
@@ -102,13 +135,39 @@ def _fire_one_category(
     if wipe is None:
         wipe = args.force
     catalog_slice = category.catalog_slice(arch)
+    from profiler.core import component_layouts as layouts
+    scope_contexts = contexts_from_architecture(arch)
+    layout_context = _component_layout_context(llm, category, arch, scope_contexts)
+    layout_sha256 = None
+    capture_catalog = catalog_slice
+    if layout_context is not None:
+        architecture, choices, probes = layout_context
+        catalog_slice = layouts.filter_catalog_slice(architecture, choices, catalog_slice)
+        capture_catalog = {**catalog_slice, **probes}
+        layout_sha256 = layouts.layout_identity(architecture, choices)
     from .measurement import layerwise_measurement
-    measurement = layerwise_measurement(catalog_slice, args.measurement_iterations)
+    measurement = layerwise_measurement(capture_catalog, args.measurement_iterations,
+        scope_contexts=scope_contexts, component_layout_sha256=layout_sha256)
+    if layout_context is not None:
+        # The shared probe catalog provides one version/source/repetition
+        # identity across coupled categories; each CSV still stamps its
+        # actual capture catalog independently.
+        acquisition = layerwise_measurement(probes, args.measurement_iterations,
+            scope_contexts=scope_contexts, component_layout_sha256=layout_sha256)
+        layouts.begin_category(out_dir, architecture, choices, category.name,
+                               measurement, acquisition, replace=wipe)
     sink = sink_for(category, out_dir, measurement=measurement)
 
     prior_keys: set[tuple] = set()
-    if not wipe:
-        preloaded = sink.preload()
+    # Copied stable rows retain their TP1 acquisition, including when the
+    # selected representation differs at this degree. They cannot certify
+    # a measured shot or be replaced by new TP2 samples.
+    replicated = set()
+    if layout_context is not None and tp > 1:
+        replicated = {name for name, entry in catalog_slice.items()
+                      if entry.get("tp_stable") and name not in probes}
+    if not wipe or replicated:
+        preloaded = sink.preload(preserve_layers=replicated)
         if preloaded:
             prior_keys = sink.prior_shot_keys()
             log.info(
@@ -138,6 +197,8 @@ def _fire_one_category(
         shots = all_shots
 
     if not shots:
+        if layout_context is not None:
+            layouts.complete_category(out_dir, architecture, category.name)
         log.info("%s: nothing to do (all shots already measured)", category.label)
         return False
 
@@ -151,8 +212,8 @@ def _fire_one_category(
         for done, shot in enumerate(shots, start=1):
             raw = llm.collective_rpc(
                 "fire",
-                args=(shot.as_dict(), catalog_slice, category.name,
-                      args.measurement_iterations),
+                args=(shot.as_dict(), capture_catalog, category.name,
+                      args.measurement_iterations, scope_contexts, layout_sha256),
             )
             # collective_rpc returns one result per worker (one per
             # TP rank). The timings are identical across ranks; take
@@ -162,12 +223,26 @@ def _fire_one_category(
                     any(d.get(k) != v for k, v in measurement.items())
                     for d in timings_dicts):
                 raise ValueError('Worker timings do not match the requested acquisition method')
+            if layout_context is not None:
+                # These two categories carry q=1 decodes only. Reuse the
+                # existing linear-category coordinate partition: its Shot
+                # constructor predates n_prefill and leaves that field zero.
+                from profiler.core.categories import _split_linear_attention_shot
+                prefill, decode = _split_linear_attention_shot(shot)
+                regime = "mixed" if prefill and decode else "prefill" if prefill else "decode"
+                for worker_rows in raw:
+                    if any(any(item.get(k) != v for k, v in measurement.items())
+                           for item in worker_rows):
+                        raise ValueError("Worker component-layout acquisition identity differs")
+                    layouts.validate_runtime_shot(architecture, choices, regime,
+                                                   {item["layer"] for item in worker_rows})
             timings = [
                 TimingSample(
                     layer=d["layer"],
                     microseconds=float(d["microseconds"]),
                 )
                 for d in timings_dicts
+                if d["layer"] in catalog_slice and d["layer"] not in replicated
             ]
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
@@ -186,6 +261,8 @@ def _fire_one_category(
                 )
 
     sink.flush()
+    if layout_context is not None:
+        layouts.complete_category(out_dir, architecture, category.name)
     log.success("%s → %s", category.label, sink.path)
     return True
 
@@ -595,12 +672,13 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
         llm, _engine_kwargs, tmpdir = spin_up(args, 1)
 
     reports: dict[str, CoverageReport] = {}
+    scope_contexts = contexts_from_architecture(arch)
     try:
         for label, spec in _COVERAGE_REGIMES:
             shot = Shot.attention(**spec)
             raw = llm.collective_rpc(
                 "coverage",
-                args=(shot.as_dict(), whole_catalog, 1),
+                args=(shot.as_dict(), whole_catalog, 1, scope_contexts),
             )[0]
             reports[label] = CoverageReport.hydrate(raw)
     finally:
