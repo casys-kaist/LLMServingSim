@@ -187,7 +187,9 @@ resumable contracts rather than `--force` replacement; expert forward counts may
 exceed `--measurement-iterations` to cover matched weight cycles. Set
 `DP_DEGREES` and optionally `MOE_ROUNDS` in `profile.sh`; leave
 `MOE_EP_DEGREES` unset because native EP is TP*DP. Supported native targets
-require DP>=2; omitting DP retains the whole-block EP path. See the
+require DP>=2; omitting DP retains the whole-block EP path.
+The deferred-finalization guard reads vLLM's effective boolean property, not
+its request flag or method; unknown capability APIs are rejected. See the
 [native MoE guide](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported backends, CUDA attribution, quality checks and runtime fallback.
 The shipped RTXPRO6000 Qwen3-30B component index covers TP1/DP2/EP2. Its

@@ -1942,6 +1942,13 @@ and sequence-parallel wrappers require per-member ceil division before gathering
 Pass the full already-padded DP vector through both wave-completion paths; its
 sum/minimum cannot reconstruct the sequence-parallel geometry.
 
+Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
+capability. `defer_moe_finalize` is a request flag in 0.28 and a request method
+in 0.31, not a stable execution-mode predicate. Reject an unknown/non-boolean
+API; never invoke the request method or silently assume finalization is local.
+The component source fingerprint changes the acquisition contract automatically;
+do not restamp old component measurements after an adapter change.
+
 The index `tp<N>/moe_components.json` selects immutable contracts containing
 rank ownership, native backend, dtypes, source fingerprints, coverage and CSV
 checksums. `moe_components` metadata is separately owned; a MoE refresh must not

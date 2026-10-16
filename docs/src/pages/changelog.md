@@ -21,6 +21,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Check native MoE deferred finalization through vLLM's effective boolean
+  capability, retaining explicit rejection of unsupported execution modes
+  across the 0.28 and 0.31 APIs.
 - Preserve native attention head dimensions during single-GPU TP emulation,
   applying user overrides and nested text shapes before sharding. Acquisition
   fingerprints now include shape construction; affected rows need remeasurement.

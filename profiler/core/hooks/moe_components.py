@@ -14,6 +14,25 @@ from ..moe_deployment import MoeTarget
 from ..moe_geometry import ExpertPlacement
 
 
+def _deferred_finalize_enabled(config):
+    """Read vLLM's effective capability, never its request flag or method.
+
+    Both supported APIs expose ``use_deferred_moe_finalize`` as a boolean
+    property. In 0.28 ``defer_moe_finalize`` is a request flag; in 0.31 it is
+    a request method, whose truthiness does not describe the running path.
+    Unknown APIs are unsafe for this component boundary and fail closed.
+    """
+    try:
+        enabled = config.use_deferred_moe_finalize
+    except AttributeError as exc:
+        raise NotImplementedError(
+            "Native MoE components require use_deferred_moe_finalize"
+        ) from exc
+    if type(enabled) is not bool:
+        raise TypeError("use_deferred_moe_finalize must be a boolean property")
+    return enabled
+
+
 class ProfileCall(torch.nn.Module):
     def __init__(self, call):
         super().__init__()
@@ -39,7 +58,7 @@ class ComponentMeasurement:
             raise NotImplementedError("Quantized MoE requires a quantization-aware component adapter")
         cfg = runner.moe_config
         if (getattr(runner, '_shared_experts', None) is not None
-                or cfg.defer_moe_finalize or cfg.skip_final_all_reduce
+                or _deferred_finalize_enabled(cfg) or cfg.skip_final_all_reduce
                 or cfg.hidden_dim != cfg.hidden_dim_unpadded
                 or getattr(runner.routed_experts, 'apply_router_weight_on_input', False)):
             raise NotImplementedError("Shared, deferred, padded-hidden or input-weighted MoE needs a separate component contract")

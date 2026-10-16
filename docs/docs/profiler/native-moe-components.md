@@ -17,9 +17,14 @@ the runtime files, not the original per-forward acquisition streams. Keep the
 original acquisition directory to resume it, or choose a separate `--out-root`
 for a new measurement.
 
-The adapter follows vLLM 0.28 internal APIs. A vLLM upgrade or a different
-expert backend requires auditing that execution contract, not merely reusing
-the same CSV column names.
+The adapter uses version-sensitive vLLM internal APIs. Deferred finalization
+is checked through `use_deferred_moe_finalize`, the effective boolean property
+in 0.28 and 0.31. The similarly named `defer_moe_finalize` is a request flag
+in 0.28 and a request method in 0.31; its truthiness is not an execution mode.
+Unknown capability APIs and actually deferred execution are rejected.
+A vLLM upgrade or a different expert backend requires auditing the whole
+execution contract, not merely reusing the same CSV column names. Source changes
+create a new acquisition identity; they do not relabel historical measurements.
 
 ## Acquire a deployment-matched table
 
