@@ -34,7 +34,7 @@ repair is needed. Recorded durations and activity coverage are preserved.
 CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
 
-`kineto-scoped-dummy-kv-skew-per-forward-v6` uses the same per-call CUDA interval unions as
+`kineto-scoped-dummy-kv-skew-per-forward-v7` uses the same per-call CUDA interval unions as
 ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
 CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints

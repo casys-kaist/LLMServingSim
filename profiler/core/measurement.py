@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 FIELDS = ('measurement_protocol', 'measurement_sha256')
-PROTOCOL = 'kineto-scoped-cuda-union-dummy-kv-query-v5'
+PROTOCOL = 'kineto-scoped-cuda-union-dummy-kv-query-v6'
 
 
 def layerwise_measurement(catalog, iterations):
@@ -15,9 +15,10 @@ def layerwise_measurement(catalog, iterations):
 
     source = Path(__file__)
     hooks = source.parent/'hooks'
-    files = [source] + [hooks/name for name in (
+    files = [source] + [source.parent/name for name in (
+        'engine.py', 'config.py', 'stack.py')] + [hooks/name for name in (
         'extension.py', 'cuda_timing.py', 'activity_collector.py', 'runner_capture.py',
-        'recurrent_metadata.py',
+        'recurrent_metadata.py', 'tp_shape.py',
         'skew_measurement.py', 'timings.py', 'batch.py', 'moe_hook.py',
         'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py')]
     identity = dict(protocol=PROTOCOL, catalog=catalog, iterations=iterations,

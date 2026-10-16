@@ -60,7 +60,7 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `kineto-scoped-cuda-union-dummy-kv-query-v5`.
+New ordinary layerwise measurements use `kineto-scoped-cuda-union-dummy-kv-query-v6`.
 The common PyTorch/Kineto collector records explicit dynamic module scopes and
 native CUDA activities without Python stacks, tensor shapes or memory snapshots.
 For each raw module invocation, merge overlapping CUDA intervals on the same
@@ -75,7 +75,7 @@ can still overlap, so adding their costs is not an exact global interval union.
 
 Ordinary category CSVs add `measurement_protocol` and `measurement_sha256` to
 the numerical columns shown in the examples below. The fingerprint binds the
-timing implementation, catalog, repetitions and library versions. Host and
+timing and shape-construction implementations, catalog, repetitions and library versions. Host and
 worker identities must agree before writing. These columns are stored
 atomically with the timing rows; TP-stable replication retains them.
 Unchanged numerical columns remain readable by the simulator.
@@ -88,7 +88,7 @@ measurement provenance. TP-stable replication rejects mixed timing methods
 before replacing a destination file.
 
 Skew uses the same interval accounting with its separate per-forward
-`kineto-scoped-dummy-kv-skew-per-forward-v6` protocol. Native DP+EP component bundles retain
+`kineto-scoped-dummy-kv-skew-per-forward-v7` protocol. Native DP+EP component bundles retain
 their own recorded measurement contract; they are not converted by this change.
 Catalog coverage accounts for each native kernel, copy and memset exactly once,
 including work outside module scopes. Such work is reported as a gap, not assigned

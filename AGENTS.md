@@ -247,6 +247,14 @@ glue measurements require a dense-category refresh, not a metadata restamp.
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
+Resolve the unsharded local configuration through installed vLLM first, after
+user overrides and decoder-prefix materialization. `hooks/tp_shape.py` preserves
+the native head width when reducing the head count would otherwise change it;
+unsupported special-width changes fail rather than guessing. Nested text
+fields and user shape overrides feed the same sharding step. Strict dimension
+divisibility remains; this does not add replicated-KV-head TP emulation.
+Both ordinary and skew source fingerprints include engine/config/stack and the
+shape adapter. Remeasure wrongly shaped rows, never restamp them as corrected.
 
 **The stack is shrunk per category, not per model.** Instrumentation, warmup
 and forward work scale with executed operations. Runtime estimates must come
@@ -685,7 +693,7 @@ missing or incompatible identities; use a separate output root or explicitly
 remeasure with `--force`. TP-stable replication preserves row identities and
 rejects mixed timing methods before replacing the destination. Fully skipped
 ordinary categories do not acquire a new measurement timestamp. Skew uses
-`kineto-scoped-dummy-kv-skew-per-forward-v6`, with the interval, request-state and
+`kineto-scoped-dummy-kv-skew-per-forward-v7`, with the interval, request-state and
 dummy-cache helpers in its acquisition fingerprint. Native DP+EP
 component contracts remain separate and retain their recorded timing method.
 
@@ -719,7 +727,7 @@ leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
 remain fresh prompts. The ordinary acquisition protocol is
-`kineto-scoped-cuda-union-dummy-kv-query-v5`.
+`kineto-scoped-cuda-union-dummy-kv-query-v6`.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains

@@ -29,6 +29,16 @@ values are truncated consistently because vLLM reapplies them after config load.
 This preserves the selected prefix; it does not certify catalog coverage or
 end-to-end accuracy for a new model family.
 
+For TP emulation, installed vLLM resolves the local unsharded configuration
+after user overrides. The profiler then shrinks declared TP dimensions while
+preserving the original attention head width. Otherwise a derived width can
+grow when the head count shrinks, as in Mixtral configurations without an
+explicit `head_dim`. Nested text fields follow the same resolution path.
+Unsupported specialized width changes and non-divisible dimensions fail before
+engine construction; this does not add replicated-KV-head emulation.
+Old affected rows must be measured again in a separate output root or with an
+explicit category refresh. Changing their metadata is not a correction.
+
 ## Quick start
 
 From inside the vLLM Docker container at `/workspace`:
@@ -83,7 +93,7 @@ See **[Cluster config → Hardware facts are inherited](../reference/cluster-con
 
 For each TP degree in `TP_DEGREES`, the profiler emulates that TP
 on a single GPU by dividing the model's per-rank shapes via
-`hf_overrides`. **You only need one GPU** to profile any TP degree.
+`hf_overrides`. **You only need one GPU** for supported TP degrees.
 
 ## Required variables
 

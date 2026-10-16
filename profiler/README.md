@@ -7,6 +7,9 @@ Synthetic KV preparation reserves disjoint pages from vLLM's shared physical
 pool, preserves the null block and initializes only assigned pages outside timing.
 Category-specific decoder reductions retain the model's explicit layer-type prefix,
 including nested text configurations.
+TP emulation resolves user overrides before sharding and preserves vLLM's
+unsharded attention head width. Shape-construction changes invalidate acquisition
+resume; old incorrectly shaped rows need remeasurement, not metadata relabelling.
 Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
 explicit module scopes retain CUDA kernels, copies and memsets without recording
 Python stacks, tensor shapes or memory snapshots. Geometry and finite-output
@@ -98,6 +101,7 @@ profiler/                          Python package: python -m profiler
 │       ├── activity_collector.py  scoped native CUDA collection and coverage
 │       ├── runner_capture.py      common warmup validation and capture
 │       ├── recurrent_metadata.py  recurrent query/history and state-page checks
+│       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
 │       └── moe_hook.py            whole-block forced routing
 ├── models/                        architecture catalogs and model-type aliases

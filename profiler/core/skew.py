@@ -19,16 +19,18 @@ from .skew_calibration import atomic_yaml, measurement_shape
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
-PROTOCOL = "kineto-scoped-dummy-kv-skew-per-forward-v6"
+PROTOCOL = "kineto-scoped-dummy-kv-skew-per-forward-v7"
 
 
 def measurement_fingerprint():
     """Changing timing attribution or batch construction requires remeasurement."""
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
+    for name in ('engine.py', 'config.py', 'stack.py'):
+        value.update((hooks.parent / name).read_bytes())
     for name in ("skew_measurement.py", "activity_collector.py", "runner_capture.py", "cuda_timing.py", "timings.py",
                  "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
-                 "recurrent_metadata.py"):
+                 "recurrent_metadata.py", "tp_shape.py"):
         value.update((hooks / name).read_bytes())
     return value.hexdigest()
 

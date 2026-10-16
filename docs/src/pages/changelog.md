@@ -21,6 +21,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Preserve native attention head dimensions during single-GPU TP emulation,
+  applying user overrides and nested text shapes before sharding. Acquisition
+  fingerprints now include shape construction; affected rows need remeasurement.
 - Keep Phi-MoE decoder residual timings separate from already measured
   routing, normalization and attention work; old dense rows need remeasurement.
 - Allocate synthetic requests from the shared physical KV block pool, reserving

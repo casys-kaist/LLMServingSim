@@ -237,36 +237,17 @@ def fuse_engine_kwargs(
     if args.hf_overrides:
         hf_overrides = _deep_merge(hf_overrides, args.hf_overrides)
 
-    # 4. TP sharding uses the model config directly. The written
-    # config.json will have SHARD_FIELDS divided by tp via hf_overrides,
-    # so vLLM's ColumnParallelLinear / RowParallelLinear see the
-    # correct per-rank shapes.
+    # 4. Resolve native config defaults and user overrides before TP sharding.
+    # Changing the head count must not change a dimension derived from it.
     if args.model_config is None:
         raise ValueError(
             "ProfileArgs.model_config is required — build it via "
             "config.read_model_config(path) in the CLI layer."
         )
 
-    sharded_overrides: dict[str, Any] = {}
-    for field_name in SHARD_FIELDS:
-        if field_name not in args.model_config:
-            log.debug(
-                "shard field %r not in model config; skipping",
-                field_name,
-            )
-            continue
-        val = args.model_config[field_name]
-        if not isinstance(val, int):
-            raise TypeError(
-                f"shard field {field_name!r} must be an int; got "
-                f"{type(val).__name__}"
-            )
-        if val % tp != 0:
-            raise ValueError(
-                f"model config field {field_name!r}={val} is not "
-                f"divisible by tp={tp}; cannot TP-shard for profiling"
-            )
-        sharded_overrides[field_name] = val // tp
+    from profiler.core.hooks.tp_shape import resolved_tp_overrides
+    sharded_overrides = resolved_tp_overrides(
+        args.model_config, hf_overrides, tp, SHARD_FIELDS, _materialize_config)
 
     # 5. Sharding wins.
     kwargs["hf_overrides"] = _deep_merge(hf_overrides, sharded_overrides)
