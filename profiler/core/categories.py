@@ -246,12 +246,13 @@ def _entry_dict(
     normalization = "invocations" if entries is arch.catalog.moe else "parent"
     return {
         name: {
-            **({"operator": e.operator} if e.operator is not None else {"vllm": e.vllm}),
+            **({"callable": e.callable.name} if e.callable is not None else
+               {"operator": e.operator} if e.operator is not None else {"vllm": e.vllm}),
             "within": e.within,        # str, list[str] or None; see LayerEntry
             "not_within": e.not_within,
             "tp_stable": e.tp_stable,
             "occurrences": occurrences.get(name, 1),
-            "normalization": normalization,
+            "normalization": e.normalization or normalization,
         }
         for name, e in entries.items()
     }

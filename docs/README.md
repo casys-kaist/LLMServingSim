@@ -69,7 +69,13 @@ are not automatically converted.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
 catalog-declared TP output reductions and their activation-sized payloads.
 The profiler guides distinguish runtime ownership contexts from GPU timing and
-document coupled component-layout publication. The trace and hybrid guides cover
+document coupled component-layout publication. The
+[architecture guide](docs/profiler/adding-model-architecture.md#declared-callable-boundaries)
+also specifies declared function/method targets, normalization and restoration;
+the coverage and output guides distinguish unavailable alternatives from positive
+CUDA coverage, separate observed invocation counts from normalization divisors,
+and require compatible acquisition identities for resume.
+The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.
 Coverage accounts for native kernels, copies and memsets, including work outside

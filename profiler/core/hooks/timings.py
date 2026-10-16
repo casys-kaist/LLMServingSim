@@ -287,6 +287,9 @@ class CoverageReport:
     """``(canonical_name, ancestor_chains)`` for entries claiming nodes in
     structurally unrelated places -- the failure ``gaps`` is blind to."""
 
+    canonical_invocations: dict[str, Any] | None = None
+    """Optional native measured-forward call/normalization audit, not latency."""
+
     @property
     def bound_us(self) -> float:
         return sum(self.bound_us_by_layer.values())
@@ -296,21 +299,28 @@ class CoverageReport:
         return self.bound_us / self.total_us if self.total_us else 0.0
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "total_us": self.total_us,
             "bound_us_by_layer": self.bound_us_by_layer,
             "gaps": [list(g) for g in self.gaps],
             "over_matches": [[n, list(c)] for n, c in self.over_matches],
         }
+        if self.canonical_invocations is not None:
+            result['canonical_invocations'] = self.canonical_invocations
+        return result
 
     @classmethod
     def hydrate(cls, raw: dict[str, Any]) -> "CoverageReport":
+        audit = raw.get('canonical_invocations')
+        if audit is not None and not isinstance(audit, dict):
+            raise ValueError('Canonical invocation audit must be a mapping')
         return cls(
             total_us=float(raw["total_us"]),
             bound_us_by_layer=dict(raw["bound_us_by_layer"]),
             gaps=[(str(a), float(b), str(c)) for a, b, c in raw["gaps"]],
             over_matches=[(str(n), [str(x) for x in c])
                           for n, c in raw.get("over_matches") or []],
+            canonical_invocations=audit,
         )
 
 

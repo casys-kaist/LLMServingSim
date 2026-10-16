@@ -35,7 +35,7 @@ def operator_contexts(catalog):
         name = spec['operator']
         if not isinstance(name, str) or not name or '*' in name or '(' in name:
             raise ValueError('Operator binding requires one exact native CPU name')
-        if 'vllm' in spec:
+        if 'vllm' in spec or 'callable' in spec:
             raise ValueError('One binding cannot claim both operator and module/kernel kinds')
         names.add(name)
     return sorted(names)
@@ -46,10 +46,15 @@ def _translate_catalog(catalog):
     result = {}
     for canonical, spec in catalog.items():
         value = dict(spec)
-        if len(set(value) & {'operator', 'vllm'}) != 1:
-            raise ValueError('A binding requires exactly one operator/module kind')
+        if len(set(value) & {'operator', 'callable', 'vllm'}) != 1:
+            raise ValueError('A binding requires exactly one operator/callable/module kind')
         if 'operator' in value:
             value['vllm'] = value.pop('operator')
+        elif 'callable' in value:
+            name = value.pop('callable')
+            if not isinstance(name, str) or not name or '*' in name or '(' in name:
+                raise ValueError('Callable binding requires one exact semantic name')
+            value['vllm'] = name
         result[canonical] = value
     return result
 
@@ -172,11 +177,30 @@ def extract_with_operators(cpu, gpu, catalog, metadata, iterations, *, contexts=
     operator_ids = {record['id'] for record in metadata['calls']
                     if record.get('scope_kind') == 'operator'}
     operator_canonicals = {name for name, spec in catalog.items() if 'operator' in spec}
+    callable_ids = {record['id'] for record in metadata['calls']
+                    if record.get('scope_kind') == 'callable'}
+    callable_canonicals = {name for name, spec in catalog.items() if 'callable' in spec}
+    # Include inactive category contexts in collision checks: a raw/module
+    # selector must not accidentally bind one merely because its own timing
+    # is being collected by a different category.
+    callable_names = {record['class_name'] for record in metadata['calls']
+                      if record['id'] in callable_ids}
+    callable_names.update(catalog[name]['callable'] for name in callable_canonicals)
+    if callable_names & {record['class_name'] for record in metadata['calls']
+                          if record['id'] not in callable_ids}:
+        raise ValueError('Callable semantic name collides with a module/operator class')
+    if callable_names & {base._strip_class_name(event.name()) for event in gpu}:
+        raise ValueError('Callable semantic name collides with a native CUDA leaf')
     for call in result['per_call']:
         if call['canonical'] is not None and ((call['id'] in operator_ids)
                                              != (call['canonical'] in operator_canonicals)):
             raise ValueError('Catalog binding kind does not match operator/module scope kind')
+        if call['canonical'] is not None and ((call['id'] in callable_ids)
+                                             != (call['canonical'] in callable_canonicals)):
+            raise ValueError('Catalog binding kind does not match callable/module scope kind')
     result['operator_audit'] = audit
     result['metadata'] = metadata
-    result['normalization_contract'] = 'method/operator contexts affect matching, not descendant parent execution units'
+    result['normalization_contract'] = 'method/operator/callable contexts affect matching, not descendant parent execution units'
+    if 'callable_audit' in metadata:
+        result['callable_audit'] = metadata['callable_audit']
     return result

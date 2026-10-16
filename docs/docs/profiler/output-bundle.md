@@ -73,19 +73,32 @@ gaps between device activities do not contribute latency. The result is
 device-active time, not whole-step elapsed time. Separate catalog components
 can still overlap, so adding their costs is not an exact global interval union.
 
-Common direct model methods and declared native operators can supply additional
-runtime ownership contexts. An `operator:` binding selects an exact native CPU
-operator event, but its cost is the union of its launch-correlated CUDA activity
-intervals, not the CPU event's duration. Method contexts are not independently
-measured operations. Both kinds are transparent to descendants' parent-call
+Common direct model methods, declared native operators and explicitly declared
+callables can supply additional runtime ownership contexts. An `operator:` binding
+selects an exact native CPU operator event, but its cost is the union of its
+launch-correlated CUDA activity
+intervals, not the CPU event's duration. A `callable:` binding uses the same CUDA
+accounting at an exact function/method boundary. Common method contexts remain
+context-only; independently measured methods require an explicit callable binding.
+All these ownership contexts are transparent to descendants' parent-call
 normalization, so adding ancestry does not create extra execution counts.
 Missing or ambiguous ownership is rejected; a static module alias is not a
 substitute for observed runtime ancestry.
 
+Catalogs may explicitly choose `normalization: parent` or `invocations`; omission
+keeps ordinary parent/occurrence normalization and whole-MoE invocation means.
+Unavailable callable targets are reported, never stored as zero measurements.
+The full architecture includes inactive alternatives, so availability and positive
+selected-layout coverage are separate checks. See the
+[callable contract](./adding-model-architecture#declared-callable-boundaries).
+
 Ordinary category CSVs add `measurement_protocol` and `measurement_sha256` to
 the numerical columns shown in the examples below. The fingerprint binds the
 timing and shape-construction implementations, catalog, full-architecture scope
-contexts, repetitions and library versions. A selected component layout also
+contexts, repetitions and library versions. Declared callable targets use the
+schema-2 context contract and add `callable_scopes.py` to the source fingerprint;
+catalogs without them retain schema 1. Shared capture-source changes still
+change acquisition identities for either schema. A selected component layout also
 contributes its identity and shared layout implementation. Host and
 worker identities must agree before writing. These columns are stored
 atomically with the timing rows; TP-stable replication retains them.
@@ -113,6 +126,13 @@ their category slice before saving. Cross-category overlaps require full-catalog
 coverage. Unscoped work requires an ownership-boundary review, not an arbitrary
 raw-kernel binding. Coverage is a device-work accounting check, not a latency
 union or proof that every declared catalog alternative executed.
+
+Coverage's `canonical_invocations` audit records physical scope calls and
+positive-CUDA calls for each explicitly measured forward, with raw-kernel activity
+counts kept separate. Each normalization group retains its actual denominator;
+do not infer physical calls from that divisor or sum divisors across groups.
+Warmup is excluded and missing canonical entries remain explicit. This metadata changes
+neither timing values nor the normalization formula.
 
 Every timed forward must contain the same positive active canonical set. Inactive
 catalog alternatives need not execute, but a component disappearing in only one

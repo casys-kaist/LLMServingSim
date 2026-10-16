@@ -95,6 +95,20 @@ def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnosti
             for row in forwards):
         raise ValueError('Timed forwards have inconsistent active canonical layers')
     audit = result['audit']
+    # Whole-architecture declarations include version/backend alternatives.
+    # Keep unresolved targets visible even when the timing-only RPC discards
+    # diagnostic metadata. A missing alternative is not itself a zero timing
+    # or proof that a positively selected component has been measured.
+    resolution = result.get('callable_audit', {}).get('resolution', ())
+    inactive = {(entry['name'], tuple(entry['reasons'])) for entry in resolution
+                if not entry['resolved'] or entry['reasons']}
+    reported = getattr(runner, '_profile_callable_alternatives', frozenset())
+    if inactive - reported:
+        logging.getLogger(__name__).warning(
+            'Unavailable callable capture alternatives (no timing is invented): %s. '
+            'Selected component layouts must establish positive CUDA coverage.',
+            '; '.join(name + ': ' + ','.join(reasons) for name, reasons in sorted(inactive - reported)))
+        runner._profile_callable_alternatives = reported | inactive
     if audit['overlapping_canonical_claims'] and not diagnostic:
         raise ValueError('Catalog assigns the same CUDA activity to multiple canonical layers; '
                          'inspect profiler coverage before saving timings')

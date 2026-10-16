@@ -19,7 +19,14 @@ Qwen's GDN output projection. This describes simulator communication, not a new
 profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).
 Common direct-method and exact native operator contexts preserve runtime
 ownership across category slices without adding CPU latency or descendant
-normalization counts. Runtime-selected component layouts couple affected tables:
+normalization counts. Catalogs may also declare exact loaded-function or live-object
+method scopes and select parent or invocation normalization. These scopes time
+correlated CUDA activity, not Python execution; unavailable targets are reported,
+never replaced with zero timings. See the
+[callable contract](../docs/docs/profiler/adding-model-architecture.md#declared-callable-boundaries).
+Coverage also reports actual calls per measured forward separately from
+positive-CUDA calls, raw CUDA activity counts and timing-normalization divisors.
+Runtime-selected component layouts couple affected tables:
 Qwen's fused GDN core needs coordinated `dense` and `linear_attention` acquisition.
 Per-TP metadata rejects incomplete or incompatible publication; unmarked historical
 tables keep their original decomposition. Use one writer per variant root and keep
@@ -116,6 +123,7 @@ profiler/                          Python package: python -m profiler
 │       ├── capture_scope_contract.py full-architecture ownership contexts
 │       ├── method_scopes.py       direct-method ancestry without extra execution units
 │       ├── operator_scopes.py     exact native operator launch ownership
+│       ├── callable_scopes.py     declared function/method ownership and restoration
 │       ├── recurrent_metadata.py  recurrent query/history and state-page checks
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
@@ -218,8 +226,9 @@ The main contributors to acquisition time, in rough order of effect:
    warmup, first-use compilation or processing. Estimate throughput with the
    current collector on a bounded subset of the intended configuration.
    A repetition count does not guarantee a measurement error bound. Ordinary
-   bindings normalize by parent calls times catalog occurrences; whole-block
-   MoE uses its own invocation count. Top-level bindings use the timed-forward
+   bindings default to parent calls times catalog occurrences; whole-block
+   MoE defaults to its own invocation count. A catalog's explicit `normalization`
+   selects either rule. Top-level parent-normalized bindings use the timed-forward
    count, retaining full parameter signatures when grouping compatible calls.
 
 2. **Layer count, per category** — not a flag; resolved from the checkpoint.

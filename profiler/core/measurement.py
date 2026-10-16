@@ -28,6 +28,8 @@ def layerwise_measurement(catalog, iterations, *, scope_contexts=None,
         'recurrent_metadata.py', 'tp_shape.py', 'method_scopes.py', 'operator_scopes.py', 'capture_scope_contract.py',
         'skew_measurement.py', 'timings.py', 'batch.py', 'moe_hook.py',
         'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py')]
+    if contexts.get('callables'):
+        files.append(hooks / 'callable_scopes.py')
     identity = dict(protocol=PROTOCOL, catalog=catalog, iterations=iterations, scope_contexts=contexts,
                     vllm=vllm.__version__, torch=torch.__version__,
                     sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files})

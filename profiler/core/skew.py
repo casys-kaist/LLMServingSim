@@ -46,6 +46,8 @@ def measurement_fingerprint(scope_contexts=None, *, catalog):
                  "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
                  "recurrent_metadata.py", "tp_shape.py", "method_scopes.py", "operator_scopes.py", "capture_scope_contract.py"):
         value.update((hooks / name).read_bytes())
+    if contexts.get('callables'):
+        value.update((hooks / 'callable_scopes.py').read_bytes())
     identity = dict(protocol=PROTOCOL, catalog=catalog, scope_contexts=contexts,
                     versions=versions)
     value.update(json.dumps(identity, sort_keys=True,

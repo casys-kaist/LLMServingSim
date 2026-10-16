@@ -148,9 +148,9 @@ def _transparent_values(result, metadata, catalog, iterations, forward=None):
                 raise ValueError('Catalog directly binds a synthetic method context; an explicit method operation contract is required')
             continue
         if index in context_ids:
-            if call.get('scope_kind') != 'operator':
+            if call.get('scope_kind') not in ('operator', 'callable'):
                 raise ValueError('Unknown transparent context kind')
-            # An operator is a measurable operation, but not a new parent
+            # An operator/callable is measurable, but not a new parent
             # execution unit for its descendants. Its own identity remains.
             virtual_path += (call['summary_name'],)
             if canonical is not None:

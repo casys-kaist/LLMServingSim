@@ -158,11 +158,14 @@ is read from the top level of the config handed to the profiler. Preserve the
 shape that the checkpoint's config class consumes: Qwen's text tower is
 flattened to `qwen3_5_text`, while MiniMax-M3 must retain its nested
 `text_config`. Do not apply one family's flattening rule to another.
-When several `model_type` values are the same implementation (GLM-5's
-`glm_moe_dsa` and DeepSeek-V3.2's `deepseek_v32` both run vLLM's `deepseek_v2`
-path), one file lists them all under `model_types:` rather than the catalog
-being duplicated or symlinked. Two files claiming one `model_type` is an error,
-not first-wins.
+When several `model_type` values share a compatible implementation, one file
+lists them under `model_types:` rather than duplicating or symlinking the catalog.
+The recorded vLLM 0.28 DeepSeek-V3.2/GLM-5 decomposition shares `deepseek_v2`;
+that is not a version-independent runtime claim. vLLM 0.31's native DeepSeek-V3.2
+path is `vllm.models.deepseek_v32.nvidia.model`. Existing aliases and stored tables
+do not certify acquisition on that path: require matching live coverage and
+execution contracts before a new sweep. Two files claiming one `model_type` is
+an error, not first-wins.
 
 **One layer-order form: `blocks:` + `shared:`.** `blocks:` is keyed by **axis**
 (`blocks.attn.<layer_types value>`, `blocks.sparse_attn.<same>` as an overlay,
@@ -737,9 +740,10 @@ remain fresh prompts. The ordinary acquisition protocol is
 
 ### Runtime contexts and coordinated component layouts
 
-`capture_scope_contract.py` projects one schema-1 methods/operators contract from
-the whole architecture to ordinary, coverage and skew RPCs, preserving exclusions
-across category slices and including them in host/worker identities. Common
+`capture_scope_contract.py` projects the whole architecture to ordinary, coverage
+and skew RPCs, preserving exclusions across category slices and including them
+in host/worker identities. Methods/operators use schema 1; explicit callable
+declarations add schema-2 `callables`, including inactive alternatives. Common
 `embed_input_ids`/`compute_logits` method scopes provide runtime ancestry for direct
 calls, not independently bindable costs or arbitrary-method instrumentation.
 Restore exact instance state; reject foreign replacement, async/generator methods
@@ -747,6 +751,34 @@ and ambiguous normalization. Exact native `operator:` scopes own CUDA activities
 never CPU duration; reject wildcards, launch APIs, collisions and ambiguous or
 out-of-forward/thread scopes. Contexts add no descendant normalization units:
 consume returned normalized components, not an augmented tree via an old extractor.
+
+Each catalog entry chooses exactly one `vllm`, `operator` or typed `callable`
+binding. A declared function resolves an exact attribute of an already loaded
+module; a declared method resolves an exact object path under an observed runtime
+owner, including subclasses. Do not import targets, dispatch by model family or
+replace kernel implementations. Callable scopes remain transparent to descendant
+normalization; their own timings are per-call CUDA unions, never CPU duration.
+An explicit `normalization` chooses `parent` or `invocations`; omission preserves
+ordinary parent and whole-MoE invocation defaults. Check that the selected unit
+matches one trace component rather than using normalization as a fitted factor.
+
+Unavailable targets remain visible in `callable_audit` and once-per-runner
+warnings. They are not zero measurements or proof of selected-layout coverage.
+Reject failing descriptors, unsupported async/generator or data-descriptor targets,
+ambiguous ownership, kind collisions and overlapping canonical claims. Restore
+exact prior attributes on exit; preserve a foreign replacement and invalidate the
+capture rather than overwriting it. Both acquisition fingerprints include the
+full declarations and conditionally hash `callable_scopes.py`; shared capture
+changes also invalidate prior identities. Preserve historical simulation inputs,
+but never relabel them to resume an incompatible acquisition.
+
+`CoverageReport.canonical_invocations` preserves actual per-measured-forward
+module/operator/callable counts, positive-CUDA call counts and raw CUDA activity
+counts separately. Normalization groups retain their exact divisors; never sum
+them into a fabricated call count. Check expected calls against the source-reviewed
+execution path, not the denominator or a coverage percentage. CPU-only calls do
+not establish CUDA coverage, and missing entries must not become zero timings.
+Warmup/preparation calls are excluded; this audit changes no latency formula.
 
 `component_layouts.py` is a shared CPU-only contract for declared historical and
 alternative decompositions, currently over `dense`/`linear_attention`. Select a

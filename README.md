@@ -53,7 +53,7 @@ rebuild ASTRA-Sim and Chakra together; see the
 GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation and comparison
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
-acquisition, resume identities and bundle contracts, the
+acquisition, declarative runtime scopes and resume/bundle contracts, the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording

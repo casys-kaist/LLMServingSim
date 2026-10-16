@@ -398,6 +398,7 @@ def extract(cpu, gpu, catalog, metadata, iterations,
         complete=not (gaps or unscoped or outside_forward or overlaps or zero or (require_complete and missing)),
         per_call=[dict(id=call['id'], parent=call['parent'], forward=call['forward'],
             class_name=call['class_name'], summary_name=call['summary_name'],
+            scope_kind=call.get('scope_kind', 'module'),
             canonical=call['canonical'], ancestors=call['ancestors'], paths=call.get('paths', []),
             direct_counts=dict(Counter(event.name() for event in call['direct'])),
             descendant_counts=dict(Counter(event.name() for event in call['descendants'])),
@@ -469,6 +470,7 @@ def _summarize(calls, raw_nodes, catalog, iterations, forward=None):
         value = group['cuda_ns'] / (1000 * denominator)
         layer_us[canonical] += value
         components.append(dict(canonical=canonical, summary_path=path, kind=group['kind'],
+                               normalization=mode, occurrences=occurrences,
                                invocations=group['invocations'], parent_calls=parent_calls,
                                denominator=denominator, total_us=group['cuda_ns']/1000, normalized_us=value))
     # Reuse the shipped normalization/deduplication implementation itself.
@@ -480,6 +482,72 @@ class CoverageError(ValueError):
     def __init__(self, message, audit):
         super().__init__(message)
         self.audit = audit
+
+
+def canonical_invocation_counts(result):
+    """Audit physical calls separately from the latency normalization units.
+
+    Only the explicitly captured timed forwards are represented. Counts come
+    from matched call records or raw CUDA leaves, never latency or a divisor.
+    Transparent contexts can change a group's normalization path/denominator
+    without changing how many physical calls actually occurred. Group-level
+    divisors therefore remain explicit and are not summed into a fake global
+    invocation count. A CPU scope with no CUDA activity counts as observed,
+    but not as a positive-CUDA call.
+    """
+    forwards = result['per_forward']
+    physical = [defaultdict(Counter) for _ in forwards]
+    positive = [defaultdict(Counter) for _ in forwards]
+    for call in result['per_call']:
+        canonical = call['canonical']
+        if canonical is None:
+            continue
+        index = call['forward']
+        if type(index) is not int or not 0 <= index < len(forwards):
+            raise ValueError('Canonical call has an invalid timed-forward index')
+        kind = call['scope_kind']
+        if kind not in ('module', 'operator', 'callable'):
+            raise ValueError('Unsupported measurable scope kind in invocation audit')
+        physical[index][canonical][kind] += 1
+        if call['union_us'] > 0:
+            positive[index][canonical][kind] += 1
+
+    requested = set(result['layer_us']) | set(result['audit']['missing_canonical'])
+    rows = []
+    for index, forward in enumerate(forwards):
+        groups = defaultdict(list)
+        for component in forward['components']:
+            groups[component['canonical']].append(component)
+        canonical_counts = {}
+        for canonical, components in sorted(groups.items()):
+            modes = {(item['normalization'], item['occurrences']) for item in components}
+            if len(modes) != 1:
+                raise ValueError('Canonical components have inconsistent normalization metadata')
+            mode, occurrences = modes.pop()
+            calls = dict(physical[index][canonical])
+            positive_calls = dict(positive[index][canonical])
+            scope_calls = sum(calls.values())
+            component_calls = sum(item['invocations'] for item in components if item['kind'] == 'module')
+            if scope_calls != component_calls:
+                raise ValueError('Canonical call records and summary invocation counts disagree')
+            raw = sum(item['invocations'] for item in components if item['kind'] == 'cuda')
+            canonical_counts[canonical] = dict(
+                scope_calls=scope_calls, scope_calls_by_kind=calls,
+                positive_cuda_scope_calls=sum(positive_calls.values()),
+                positive_cuda_scope_calls_by_kind=positive_calls,
+                raw_cuda_activities=raw, normalization=mode, occurrences=occurrences,
+                normalization_groups=[dict(
+                    kind=item['kind'], summary_path=list(item['summary_path']),
+                    normalization_path=list(item.get('normalization_path', item['summary_path'])),
+                    physical_invocations=item['invocations'], parent_calls=item['parent_calls'],
+                    denominator=item['denominator']) for item in components])
+        if set(physical[index]) - set(canonical_counts):
+            raise ValueError('Matched canonical calls are absent from the summary audit')
+        rows.append(dict(forward=index, canonical=canonical_counts,
+                         missing_canonical=sorted(requested - set(canonical_counts))))
+    return dict(schema=1, timed_forwards=len(forwards), per_forward=rows,
+        scope='explicit measured-forward scopes only; warmup excluded',
+        semantics='physical scope calls and raw CUDA activities are separate; normalization divisors are not call counts')
 
 
 def coverage_report(result):
@@ -527,12 +595,16 @@ def coverage_report(result):
     for claims, names in sorted(overlap_groups.items()):
         over_matches.append([' + '.join(claims),
                              ['shared CUDA activity: ' + name for name in sorted(names)]])
-    return dict(total_us=total/1000, bound_us_by_layer={name: value/1000 for name, value in bound.items()},
+    report = dict(total_us=total/1000, bound_us_by_layer={name: value/1000 for name, value in bound.items()},
         gaps=[[name, value/1000, ancestors] for (name, ancestors), value in
               sorted(gaps.items(), key=lambda item: -item[1])], over_matches=over_matches,
         overlapping_activities=result['audit']['overlapping_canonical_claims'],
         accounting='sum of every unique native kernel/copy/memset duration exactly once; not wall time',
         unique_cuda_activities=len(identities))
+    if 'callable_audit' in result:
+        report['callable_audit'] = result['callable_audit']
+    report['canonical_invocations'] = canonical_invocation_counts(result)
+    return report
 
 
 Scopes = ScopedModules
@@ -558,7 +630,12 @@ def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREF
     from .operator_scopes import extract_with_operators
     contexts = normalize_contexts(scope_contexts, catalog)
     started = time.perf_counter()
-    scopes = RuntimeMethodScopes(roots, methods=contexts['methods'], forward_prefix=forward_prefix)
+    if contexts.get('callables'):
+        from .callable_scopes import DeclaredCallableScopes
+        scopes = DeclaredCallableScopes(roots, declarations=contexts['callables'],
+            methods=contexts['methods'], forward_prefix=forward_prefix)
+    else:
+        scopes = RuntimeMethodScopes(roots, methods=contexts['methods'], forward_prefix=forward_prefix)
     profiler = torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
         record_shapes=False, with_stack=False, with_modules=False,

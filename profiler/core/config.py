@@ -192,6 +192,25 @@ def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
 # Catalog (loaded from architecture yaml)
 # ---------------------------------------------------------------------------
 
+class CallableScope(BaseModel):
+    """Exact runtime target; instrumentation never imports or replaces its code."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    kind: Literal["function", "method"]
+    module: str | None = None
+    attribute: str | None = None
+    owner: str | None = None
+    path: str | None = None
+    within: str | list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check_target(self):
+        from .hooks.capture_scope_contract import normalize_callable
+        normalize_callable(self.model_dump(exclude_none=True))
+        return self
+
+
 class LayerEntry(BaseModel):
     """One row of the catalog.
 
@@ -236,14 +255,24 @@ class LayerEntry(BaseModel):
     Its scope is transparent to descendant parent-call normalization.
     """
 
+    callable: CallableScope | None = None
+    """One explicitly declared imported function or live-object method.
+
+    The wrapper only establishes runtime ancestry and CUDA launch ownership.
+    An inactive alternative is reported, never populated with a zero value.
+    """
+
+    normalization: Literal["parent", "invocations"] | None = None
+    """Override the category default (parent, or invocations for whole MoE)."""
+
     @model_validator(mode="after")
     def _check_binding_kind(self):
-        if (self.vllm is None) == (self.operator is None):
-            raise ValueError("A layer requires exactly one of vllm or operator")
+        if sum(value is not None for value in (self.vllm, self.operator, self.callable)) != 1:
+            raise ValueError("A layer requires exactly one of vllm, operator or callable")
         if self.operator is not None:
             if not self.operator or any(char in self.operator for char in "*("):
                 raise ValueError("operator must be one exact native CPU name")
-        elif not self.vllm_names() or any(not name for name in self.vllm_names()):
+        elif self.vllm is not None and (not self.vllm_names() or any(not name for name in self.vllm_names())):
             raise ValueError("vllm requires nonempty class/kernel names")
         return self
 
@@ -592,7 +621,8 @@ class Architecture(BaseModel):
         pairs: dict[tuple, str] = {}
         for _, name, entry in self.catalog.all_entries():
             key = (
-                "operator" if entry.operator is not None else "vllm",
+                "callable" if entry.callable is not None else "operator" if entry.operator is not None else "vllm",
+                (entry.callable.name,) if entry.callable is not None else
                 (entry.operator,) if entry.operator is not None else tuple(sorted(entry.vllm_names())),
                 tuple(sorted(entry.within_names())),
                 tuple(sorted(entry.not_within_names())),
@@ -600,10 +630,16 @@ class Architecture(BaseModel):
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "
-                    f"both resolve to ({key[0]}={entry.operator or entry.vllm!r}, "
+                    f"both resolve to ({key[0]}={key[1]!r}, "
                     f"within={entry.within!r})"
                 )
             pairs[key] = name
+
+        # One semantic callable name has one target across category slices.
+        # This also rejects operator/callable context-name collisions before
+        # any worker can change a live callable attribute.
+        from .hooks.capture_scope_contract import contexts_from_architecture
+        contexts_from_architecture(self)
 
         # One layer-order form, and it has to be there: the trace generator
         # has nothing to walk otherwise.

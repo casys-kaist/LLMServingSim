@@ -7,8 +7,8 @@ title: Adding a model architecture
 
 The profiler dispatches on the HF config's `model_type` field. If
 your model's `model_type` already maps to a YAML under
-`profiler/models/`, you're done, just run `profile.sh`. If not, you
-need to add a YAML.
+`profiler/models/`, start with that catalog and verify live runtime coverage
+before running `profile.sh`. If not, you need to add a YAML.
 
 This page is about that case.
 
@@ -22,7 +22,7 @@ and compare against the bundled architectures:
 | `llama` | `llama.yaml` | Llama dense shapes using the catalog's vLLM classes; a different `model_type` needs an explicit verified alias or its own catalog |
 | `qwen3`, `qwen3_moe` | `qwen3.yaml` | Qwen3, dense **and** MoE (0.6B … 32B, 30B-A3B, 235B-A22B), with per-head `qk_norm` |
 | `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
-| `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); both run vLLM's `deepseek_v2` module, so one catalog serves both |
+| `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); the recorded vLLM 0.28 decomposition shares `deepseek_v2`, not a guarantee of later runtime compatibility |
 | `minimax_m3_vl` | `minimax_m3_vl.yaml` | MiniMax-M3 — block-level sparse attention (top-`k` blocks of `sparse_block_size` tokens) over GQA, non-sparse on the first few layers |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
@@ -123,11 +123,15 @@ Two consequences worth knowing before you author a config:
   shard fields would take effect — and the latter fails without an error, so you
   get a profile of a shape nobody asked for.
 
-Some `model_type` values are different checkpoints of **one** implementation:
-GLM-5 (`glm_moe_dsa`) and DeepSeek-V3.2 (`deepseek_v32`) both run vLLM's
-`deepseek_v2` path, and a wrapped checkpoint answers to both its own name and
-its text tower's. Rather than duplicate a catalog or lean on symlinks, list
-every value one file serves:
+Some `model_type` values are different checkpoints of **one compatible**
+implementation, and a wrapped checkpoint may expose both its own name and its
+text tower's. Rather than duplicate a catalog or lean on symlinks, list every
+verified value one file serves. The recorded vLLM 0.28 DeepSeek-V3.2/GLM-5 catalog
+shares the `deepseek_v2` decomposition; vLLM 0.31's native DeepSeek-V3.2 path is
+`vllm.models.deepseek_v32.nvidia.model`. A retained alias does not certify that
+new path: check matching live coverage and execution contracts before acquisition.
+
+A catalog's aliases are declared as follows:
 
 ```yaml
 model_types:
@@ -321,14 +325,18 @@ share a granularity.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vllm` | Exactly one of `vllm` or `operator` | A vLLM **class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
-| `operator` | Exactly one of `vllm` or `operator` | One **exact native CPU operator name**, such as `vllm::qwen_gdn_attention_core_fused_norm_packed`. No list or wildcard. Its scope owns CUDA activities; CPU duration is never measured |
-| `within` | optional | An observed **ancestor** class or declared operator name. The name must match and, when `within` is set, at least one alternative must occur in runtime ancestry. Accepts a list |
+| `vllm` | One binding selector | A vLLM **class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
+| `operator` | One binding selector | One **exact native CPU operator name**, such as `vllm::qwen_gdn_attention_core_fused_norm_packed`. No list or wildcard. Its scope owns CUDA activities; CPU duration is never measured |
+| `callable` | One binding selector | A typed declaration of an exact loaded function or live-object method; see [declared callable boundaries](#declared-callable-boundaries) |
+| `normalization` | optional | `parent` divides by parent calls × sequence occurrences; `invocations` divides by matched calls. Defaults to `parent`, except whole-block `moe` entries default to `invocations` |
+| `within` | optional | An observed **ancestor** class, declared operator name or callable semantic name. The name must match and, when `within` is set, at least one alternative must occur in runtime ancestry. Accepts a list |
 | `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
 | `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
 | `tp_output_reduction` | optional | `all_reduce` on a `dense` row-output projection; emits a TP reduction of its full output at activation dtype |
 | `sequence_parallel` | optional | Whether a MoE wrapper sequence-shards inputs under DP+TP |
 | `attention_sequence_parallel` | optional | Declares attention-wide sequence shards; requires `sequence_parallel: true` on a MoE entry and triggers the unsupported-deployment guard described in [parallelism mechanics](../simulator/parallelism-mechanics#attention-wide-sequence-parallelism) |
+
+Each entry requires exactly one of `vllm`, `operator` or `callable`.
 
 A **list** under `vllm` means "every one of these the checkpoint has", and
 covers two situations:
@@ -397,11 +405,88 @@ Its CPU interval locates launches; only CUDA kernels, copies and memsets contrib
 time. Exclude already-owned descendants with `not_within`. Name-kind collisions,
 ambiguous/crossing intervals, launch APIs and out-of-forward/thread scopes fail;
 an absent operator is never synthesized. `capture_scope_contract.py` projects the
-full schema-1 methods/operators contract to ordinary, coverage and skew RPCs, so
-cross-category exclusions survive slicing. Standalone callers must pass that full
-contract explicitly; omission derives it only from their supplied catalog.
+full methods/operators contract to ordinary, coverage and skew RPCs, so
+cross-category exclusions survive slicing. Declared callable targets extend that
+same contract, rather than adding a separate collector. Standalone callers must
+pass the full contract explicitly; omission derives it only from their supplied catalog.
 Consume returned normalized components, not the augmented audit tree through an
 older extractor.
+
+### Declared callable boundaries
+
+Use `callable` when a component runs through a synchronous function or direct
+method without a suitable module/native-operator boundary. The common collector
+temporarily wraps the declared target to record runtime ownership; it executes
+the original implementation with unchanged arguments and outputs. No model-family
+Python collector, replacement kernel or imported target module is needed.
+
+These are declaration shapes, not installed target names. Substitute exact names
+from the runtime implementation being profiled:
+
+```yaml
+catalog:
+  attention:
+    attention_core:
+      callable:
+        name: AttentionCoreScope
+        kind: function
+        module: package.attention_backend
+        attribute: run_attention
+        within: AttentionModule
+      normalization: parent
+```
+
+Alternatively, a method declaration selects a live module owner and follows an
+object path from that owner:
+
+```yaml
+callable:
+  name: AttentionCoreScope
+  kind: method
+  owner: AttentionModule
+  path: impl.forward_attention
+  within: DecoderLayer
+```
+
+`module` is a dotted, already loaded module name; `attribute` is one exact
+attribute in that module, not a dotted path. `owner` is one runtime class name
+(subclasses match through their MRO), and `path` is an exact dotted attribute path
+relative to each matching live owner. Target fields accept identifiers, not
+wildcards or dunder paths. A function uses only `module`/`attribute`; a method
+uses only `owner`/`path`. Unknown fields and inconsistent declarations fail early.
+
+The nested `callable.within` optionally restricts execution to an active owner
+class or a list of class alternatives; it is distinct from the entry's ordinary
+`within`/`not_within` matching filters. A method must execute under its actual
+owner, even when several owners share one backend object. The `name` identifies
+the semantic scope; use that name for descendant exclusions to prevent counting
+both a whole callable and the CUDA work inside it. Names must not collide with
+module, operator or CUDA-leaf identities.
+
+For each matched call, latency is the union of correlated CUDA kernels, copies
+and memsets, never the Python scope duration. These scopes add no parent-call
+counts for descendants. `normalization: parent` retains merged-child sums and
+sequence occurrences; `invocations` returns a matched-call mean instead. Select
+the rule that represents one trace component, not a correction fitted to a bench.
+Top-level parent normalization uses timed forwards as its parent count.
+
+Missing modules, attributes, owners, object paths or noncallable targets are
+reported as unavailable alternatives, without synthetic zero values. A resolved
+target that is not executed is also visible in `callable_audit`. The selected
+layout still needs positive CUDA coverage; target availability alone does not
+establish a valid acquisition. Descriptor failures, ambiguous ownership,
+overlapping claims and unsupported asynchronous/generator interfaces fail.
+Targets need an ordinary mutable attribute namespace, not a slot/data descriptor.
+Installation and restoration check target identity; a foreign replacement during
+capture is preserved and the capture fails.
+
+The full architecture's callable declarations travel with every category,
+including inactive alternatives and contexts owned by other categories. They
+participate in both ordinary and skew acquisition fingerprints. See
+[resume rules](./output-bundle#cuda-activity-and-acquisition-identity): changing
+the capture implementation does not convert old rows to the new identity.
+Declaring a boundary alone adds neither a model catalog nor simulator sizing or
+trace support for a new component.
 
 ### Declaring alternative component layouts
 

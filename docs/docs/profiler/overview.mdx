@@ -15,8 +15,10 @@ the simulator's `trace_generator` reads at run time, the profiler's
 output IS the simulator's input.
 
 Ordinary and skew shots use lightweight PyTorch/Kineto capture with explicit
-module scopes. Kernels, copies and memsets are retained; Python stack, tensor-shape
-and memory-snapshot recording are disabled. This changes collection overhead,
+module scopes and catalog-declared operator or callable boundaries. These identify
+GPU-work ownership, not CPU latency. Kernels, copies and memsets are retained;
+Python stack, tensor-shape and memory-snapshot recording are disabled. This changes
+collection overhead,
 not the simulator's time units or lookup rules. See the
 [acquisition contract](./output-bundle#cuda-activity-and-acquisition-identity).
 

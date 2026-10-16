@@ -10,6 +10,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Allow catalogs to declare exact function/method capture boundaries and timing
+  normalization without model-specific collector code. Derive latency only from CUDA activity,
+  report unavailable targets and actual per-forward calls separately from timing
+  divisors, and reject incompatible acquisition resumes.
 - Preserve runtime ownership through common direct methods and exact native
   operator scopes without adding CPU latency. Coordinate alternative component
   layouts across category tables, resume interrupted starts and reject incomplete

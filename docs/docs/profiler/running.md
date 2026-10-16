@@ -499,9 +499,13 @@ since `moe` is its own category — and the slack is left in on purpose:
 the multidimensional attention sweep is much larger than the dense sweep.
 :::
 
-Ordinary bindings divide by **parent calls × catalog occurrences**; whole-block
-MoE instead uses its own invocation count. Top-level bindings use the timed-forward
-count as their parent count. The collector retains individual calls before
+Ordinary bindings default to **parent calls × catalog occurrences**; whole-block
+MoE defaults to its own invocation count. A catalog's explicit `normalization`
+can select either rule. Top-level parent-normalized bindings use the timed-forward
+count as their parent count. Declared function/method scopes retain these units
+without adding descendant parent counts; see the
+[callable contract](./adding-model-architecture#declared-callable-boundaries).
+The collector retains individual calls before
 grouping compatible full parameter-signature paths. Legacy summary deduplication
 remains a compatibility rule: class-name equality and equal timings alone must
 not collapse differently shaped modules.
@@ -700,6 +704,25 @@ launched straight from the block. The module tree still shows the classes, so
 the mistake is invisible in the source — and the symptom is a layer that looks
 free rather than a valid measurement. This coverage command uses physical TP=1;
 it does not certify another TP degree's fused path or collective placement.
+
+Declared callable boundaries include a `callable_audit` in raw collector/coverage
+results: target resolution, unavailable reasons and observed invocation counts.
+The runner also warns once for each unavailable-target diagnostic, including when
+a timing-only RPC would otherwise discard the audit. An inactive alternative need
+not execute, but missing required positive CUDA measurements cannot be replaced by
+zero. Review ownership, overlap and the selected component set, not only the
+percentage of bound work. A callable declaration by itself is not model/backend
+certification; see [declared callable boundaries](./adding-model-architecture#declared-callable-boundaries).
+
+The host coverage report preserves `canonical_invocations`: per-measured-forward
+`scope_calls` by module/operator/callable kind, `positive_cuda_scope_calls`,
+separate `raw_cuda_activities`, missing canonical entries and the exact
+`normalization_groups` divisors. Inspect these against the expected execution
+sequence. A CPU-only call is observed but cannot satisfy a positive-CUDA check;
+several kernels from one call are not several module calls. Do not infer calls
+from a timing divisor or sum group divisors into a total. Warmup and preparation
+are excluded. This is an audit, not an automatic proof of model correctness or
+a change to measured latencies.
 
 Layout discovery requires positive prefill/decode/mixed CUDA coverage and per-shot
 agreement. Its [fixed probes](./output-bundle#runtime-selected-component-layouts)

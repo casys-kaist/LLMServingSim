@@ -21,10 +21,13 @@ sidebar_position: 2
 | Attention kernels in the profile | `attention` (MLA), `indexer` | `attention`, `sparse_attention`, `indexer` |
 | `model_type` | `deepseek_v32`, `glm_moe_dsa` | `minimax_m3_vl` |
 
-DeepSeek-V3.2 and GLM-5 share **one catalog** because vLLM runs both
-through `deepseek_v2.py`. Where the two checkpoints differ — GLM-5 uses
-plain `RotaryEmbedding` where DeepSeek scales rope — the catalog lists
-both class names for the entry.
+DeepSeek-V3.2 and GLM-5 share **one catalog** for their recorded vLLM 0.28
+`deepseek_v2.py` decomposition. The catalog lists both rotary-embedding classes
+used by those checkpoints. This does not assert that later vLLM versions execute
+the same modules: vLLM 0.31 uses a native DeepSeek-V3.2 path under
+`vllm.models.deepseek_v32.nvidia.model`. Stored bundles remain readable, but new
+acquisitions require matching live coverage and execution contracts; the launcher
+upgrade alone does not establish them.
 
 :::caution[The `attention` category holds more than one kernel, and they are not interchangeable]
 Every lookup is keyed by kernel name, and so is the skew alpha. On
@@ -102,8 +105,12 @@ unrestricted case spelled out, and M3 does not declare the fields.
 
 ## Profiling
 
+These are acquisition templates, not a guarantee that a historical catalog
+matches the installed runtime. Verify the selected model's coverage and component
+boundaries first; do not publish a table with missing or double-counted work.
+
 ```bash
-# DeepSeek-V3.2 / GLM-5 — defaults are fine
+# DeepSeek-V3.2 / GLM-5 — after verifying the installed runtime's catalog coverage
 MODEL="deepseek-ai/DeepSeek-V3.2-Exp" HARDWARE=RTXPRO6000 ./profiler/profile.sh
 
 # MiniMax-M3 — block size 128 is REQUIRED
