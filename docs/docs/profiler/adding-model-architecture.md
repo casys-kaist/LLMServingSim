@@ -259,7 +259,7 @@ model runs an indexer kernel alongside the attention kernel on the same axes.
 
 The entry *set* is not a style choice. A `catalog` entry exists iff the profile
 tree holds a node that carries CUDA time and no other entry claims it — and the
-tree holds a node per module that launches a kernel **of its own**. So vLLM's
+tree retains invoked modules, their descendant CUDA activities and raw kernels. So vLLM's
 implementation decides how many entries a block needs, and the same operation
 can need seven in one family and one in another.
 
@@ -636,10 +636,11 @@ unbound     34.3 us  void at::native::elementwise_kernel<128, 4, at::nat...
                                                      under: ... > QwenGatedDeltaNetAttention
 ```
 
-The command exits non-zero while any gap remains, so it works in a script. Each
-gap is reported at the shallowest node whose subtree binds nothing at all,
-which is the level you can act on: a node listed here is CUDA time the
-simulator will never see, so the layer it belongs to looks cheaper than it is.
+The command exits non-zero while any gap remains, so it works in a script.
+Gaps aggregate native activity names with their dynamic module ancestry;
+activities outside modules are explicitly labelled unscoped. These durations
+are not assigned to any canonical layer, so inspect them before trusting a
+catalog's completeness.
 
 This is the check that catches the failure mode from step 1, and it is worth
 running before you trust any new catalog. Writing the four bundled modern
@@ -655,9 +656,9 @@ To *locate* a gap rather than detect it, print the raw trees. Two dumps
 answer different questions, and a throwaway script for each is worth writing:
 the **module** tree with the KV cache group layout, which says what exists, and
 the **profile** tree with full ancestor chains, once per regime, which says
-what actually launched a kernel. The second is the authority — a module that
-launches nothing never becomes a profile node, so binding it measures
-nothing.
+what was actually invoked and which native activities it owns. The second
+is the authority: an instantiated but bypassed module has no measured call;
+calling a parent can include all its descendants, so audit overlaps as well.
 
 ### 4. Try profiling
 

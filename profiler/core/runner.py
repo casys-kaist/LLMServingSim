@@ -564,13 +564,12 @@ _COVERAGE_REGIMES: tuple[tuple[str, dict[str, int]], ...] = (
 def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport]:
     """Report how much of the model's CUDA time the catalog binds.
 
-    Boots at tp=1 only. Coverage is about which nodes exist, and TP changes
-    tensor shapes rather than the module graph -- profiling every TP would cost
-    minutes to re-answer the same question.
+    Boots at physical tp=1 only: a bounded structural smoke, not certification
+    of other TP degrees' fused paths, collective placement or complete sweeps.
 
     Returns the per-regime reports and logs them; writes no CSV. A non-empty
-    ``gaps`` list is the actionable output: each line is a node the catalog
-    binds nothing to, at the shallowest level where that is true.
+    ``gaps`` list reports unbound native kernel/copy/memset work by activity
+    name and dynamic ancestry, including explicitly unscoped runner work.
     """
     arch = load_architecture(arch_path)
 
@@ -626,7 +625,8 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
         # each, and do not fail on it.
         mtp_names = set((arch.catalog.mtp or {}))
         real = [(c, ch) for c, ch in report.over_matches
-                if not args.profile_mtp or c in mtp_names]
+                if (not args.profile_mtp or c in mtp_names
+                    or any(chain.startswith("shared CUDA activity:") for chain in ch))]
         expected = len(report.over_matches) - len(real)
         for canonical, chains in real:
             log.warning(

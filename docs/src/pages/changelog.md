@@ -14,6 +14,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   forcing NCCL-only. Custom all-reduce can be disabled explicitly; inherited
   environment and resolved engine settings remain recorded. Keep the existing
   all-reduce/RMS and GEMM/communication compiler fusions disabled.
+- Use lightweight PyTorch/Kineto collection for ordinary and skew profiling,
+  retaining per-call GPU interval accounting and existing CSV lookup semantics.
+  Native activity coverage includes copies, memsets and unscoped runner work;
+  incompatible acquisitions cannot be mixed on resume.
 
 ### Fixed
 

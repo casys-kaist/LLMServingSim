@@ -1,29 +1,8 @@
-"""vLLM worker extension.
+"""Worker-side RPCs backed by lightweight native CUDA-activity capture.
 
-Registered via ``worker_extension_cls="profiler.core.hooks.extension.Extension"``
-when constructing the ``vllm.LLM``. vLLM instantiates one Extension per
-TP-rank worker process and exposes its methods through
-``llm.collective_rpc(method_name, args=...)``.
-
-The main public method here is ``fire()``: it takes a serialized Shot
-plus a catalog slice (the subset of the layer map relevant to the
-category being profiled), runs the synthetic batch through
-``model_runner.execute_model`` under ``layerwise_profile``, and
-returns per-layer CUDA timings.
-
-``coverage()`` runs the same forward and the same matching rules but reports
-what the catalog *failed* to bind instead of what it bound -- see
-``timings.CoverageReport``.
-
-Measurement protocol per shot:
-    1 warmup forward (discarded) — amortises JIT / paged-buffer setup
-    N timed forwards inside ``layerwise_profile`` — the hook aggregates
-        ``cuda_time_us`` across invocations; ``extract_samples``
-        divides by ``invocations`` to return the per-call mean.
-
-N defaults to ``ProfileArgs.measurement_iterations`` (3). A single
-timed sample can swing 15-25%% on large GEMMs due to DVFS / boost
-jitter; averaging cuts that noise floor dramatically.
+The common collector records explicit module scopes and native CUDA activities
+without Python stacks, tensor shapes or memory snapshots. Warmup and validation
+remain outside timing; the catalog controls matching and normalization.
 """
 
 from __future__ import annotations
@@ -38,7 +17,8 @@ from profiler.core.hooks.moe_hook import (
     single_moe_runner,
 )
 from profiler.core.hooks.sampler_shim import wrap_sampler_for_profiling
-from profiler.core.hooks.timings import attribute_tree, extract_samples
+from profiler.core.hooks.runner_capture import capture, verified_warmup
+from profiler.core.hooks.activity_collector import coverage_report
 
 
 class Extension:
@@ -97,7 +77,8 @@ class Extension:
             List of ``TimingSample`` as plain dicts (pickled back to host).
         """
         shot = Shot.hydrate(shot_dict)
-        iterations = max(1, int(iterations))
+        if type(iterations) is not int or iterations < 1:
+            raise ValueError('A positive timed-forward count is required')
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -129,35 +110,23 @@ class Extension:
         # expert setup in the first timed call. Use separate contexts so both
         # warmup and timed execution must actually consume forced routing.
         with force_moe_routing(route):
-            complete_forward(self.model_runner, _fresh_batch())
+            verified_warmup(self.model_runner, shot,
+                            lambda: complete_forward(self.model_runner, _fresh_batch()))
 
         # -- measured runs (N iterations, averaged) -------------------
-        # Local import so that profiler/__init__.py doesn't require
-        # vllm.profiler to be importable at package-import time.
-        #
-        # vLLM's layerwise_profile hook accumulates ``cuda_time_us``
-        # and ``invocations`` across every forward inside its context.
-        # ``extract_samples`` divides one by the other, so running
-        # execute_model N times here yields the per-call mean — the
-        # cheap statistical fix for DVFS / boost-clock jitter that
-        # single-sample measurements don't mitigate.
-        from vllm.profiler.layerwise_profile import layerwise_profile
-
-        with force_moe_routing(route):
-            with layerwise_profile() as hook:
-                for _ in range(iterations):
-                    complete_forward(self.model_runner, _fresh_batch())
-
-        from .cuda_timing import from_vllm
         from profiler.core.measurement import layerwise_measurement
-
-        measured, _ = from_vllm(hook.results)
-        stats = measured.convert_stats_to_dict()
-        summary = stats["summary_stats"]
-
-        samples = extract_samples(summary, slice_, iterations=iterations)
+        with force_moe_routing(route):
+            measured = capture(self.model_runner,
+                               lambda: complete_forward(self.model_runner, _fresh_batch()),
+                               slice_, iterations)
+        if kind == 'mtp':
+            missing = set(slice_) - set(measured['layer_us'])
+            if missing:
+                raise ValueError('MTP acquisition is incomplete; inspect callable coverage before '
+                                 f'saving timings: {sorted(missing)}')
         acquisition = layerwise_measurement(slice_, iterations)
-        return [dict(s.as_dict(), **acquisition) for s in samples]
+        return [dict(layer=name, microseconds=value, **acquisition)
+                for name, value in measured["layer_us"].items()]
 
     def coverage(
         self,
@@ -179,7 +148,8 @@ class Extension:
         question being asked.
         """
         shot = Shot.hydrate(shot_dict)
-        iterations = max(1, int(iterations))
+        if type(iterations) is not int or iterations < 1:
+            raise ValueError('A positive timed-forward count is required')
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -188,13 +158,11 @@ class Extension:
 
         _fresh_batch = prepare_history(self.model_runner, shot)
 
-        complete_forward(self.model_runner, _fresh_batch())
+        verified_warmup(self.model_runner, shot,
+                        lambda: complete_forward(self.model_runner, _fresh_batch()))
 
-        from vllm.profiler.layerwise_profile import layerwise_profile
-
-        with layerwise_profile() as hook:
-            for _ in range(iterations):
-                complete_forward(self.model_runner, _fresh_batch())
-
-        summary = hook.results.convert_stats_to_dict()["summary_stats"]
-        return attribute_tree(summary, slice_).as_dict()
+        measured = capture(self.model_runner,
+                           lambda: complete_forward(self.model_runner, _fresh_batch()),
+                           slice_, iterations, diagnostic=True)
+        report = coverage_report(measured)
+        return report

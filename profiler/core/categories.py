@@ -173,8 +173,8 @@ class Category(ABC):
     #: these, and a category should not pay for an axis it does not measure:
     #: the profile tree merges same-class siblings, so a second layer of a type
     #: already present adds no information, only its whole op count on every
-    #: shot -- 372 ms of profiling overhead per forward at 4 layers of
-    #: DeepSeek-V3.2 against 94 ms at one. The default is every axis, and it is
+    #: shot. Estimate acquisition cost with the current collector on the
+    #: intended model and device. The default is every axis, and it is
     #: the safe answer for anything new.
     #:
     #: Axes are a **conservative proxy** for what a category needs, which is
@@ -354,7 +354,7 @@ class MtpCategory(Category):
 
     The kernels arrive for free: the drafter runs inside ``sample_tokens()``
     (``propose_draft_token_ids`` -> ``drafter.propose``), which the fire path
-    already calls inside ``layerwise_profile``. What this category adds is the
+    already calls inside the native CUDA collector. What this category adds is the
     *axis* -- without it the drafter's time would be measured once, at whatever
     batch the other categories happened to use.
 

@@ -138,8 +138,10 @@ scheduler.py → next iteration
 ## Architecture Patterns
 
 ### Profiler (`profiler/`)
-The profiler uses vLLM's built-in `layerwise_profile()` via a worker extension class to
-capture per-layer CUDA kernel timings from real vLLM execution paths. Architecture is
+The profiler uses lightweight PyTorch/Kineto capture via a worker extension class.
+Explicit dynamic module scopes own native CUDA activities through CPU launch
+correlations; CPU duration is never a latency input. No model-specific collector
+branches, Python stacks, tensor shapes or memory snapshots are required. Architecture is
 dispatched by the HF config's `model_type` field against YAML catalogs under
 `profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
 per-sequence / attention / linear-attention / moe) to vLLM class names.
@@ -190,7 +192,7 @@ the profiler resolves that itself.
 
 **How finely to divide is mostly not a choice.** An entry exists iff the
 profile tree holds a node carrying CUDA time that no other entry claims, and
-the tree holds a node per module that launches a kernel **of its own** — so
+the collector retains invoked modules and their descendant CUDA activity — so
 vLLM's implementation sets the count, and the same operation needs seven
 entries in one family and one in another. DeepSeek-V3.2's `Indexer` is an
 `nn.Module` container (`self.wq_b = ReplicatedLinear`,
@@ -242,24 +244,12 @@ Every TP degree is profiled on a **single GPU**: the engine is always booted wit
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
 
-**The stack is shrunk per category, not per model.** A shot's cost is
-overwhelmingly the profiler, and it scales with the forward's op count — so
-with the layer count. Measured on DeepSeek-V3.2, one shot (warmup + 3 timed):
+**The stack is shrunk per category, not per model.** Instrumentation, warmup
+and forward work scale with executed operations. Runtime estimates must come
+from a bounded acquisition on the intended model/backend/grid, not historical
+Python-call profiler timings.
 
-| | ms |
-|---|---|
-| shot assembly | 0.1 |
-| 3 forwards, no profiler | 49 |
-| **the `layerwise_profile` context** | **1,125** |
-| `convert_stats_to_dict()` | 2.1 |
-
-Session setup/teardown is 6.9 ms; the cost is **372 ms per forward inside the
-profiler against 16 ms outside**, linear in the forwards (0/1/3/6 forwards →
-6.9/372/1,125/2,310 ms). `with_stack=False` changes nothing — the 14x it buys
-in a raw `key_averages()` path is irrelevant here, because `layerwise_profile`
-builds its tree from `experimental_event_tree()` instead.
-
-So a category must not pay for an axis it does not measure. The profile tree
+A category must not pay for an axis it does not measure. The profile tree
 merges same-class siblings, so a second layer of a type already present adds
 **no information**, only its op count on every shot. `Category.stack_axes`
 declares the axes (`attention` / `linear_attention` → `(attn, sparse)`,
@@ -324,8 +314,8 @@ positive integer within that list; retain the original model config unchanged.
 If `hf_overrides` explicitly supplies `layer_types`, slice that override too:
 vLLM applies it again after reading the materialized config.
 
-Attribution: the base layerwise-profile methodology (worker-extension hook into
-vLLM's `layerwise_profile()`, single-GPU TP emulation via `hf_overrides`) is
+Attribution: the original layerwise-profile methodology (worker-extension hooks
+and single-GPU TP emulation via `hf_overrides`) is
 adapted from [@waneon](https://github.com/waneon). The unified 4D attention
 sweep, the heterogeneous-decode skew sweep in `profiler/core/skew.py`, and
 the offline reference-aligned skew calibration in `profiler/core/skew_calibration.py` are
@@ -464,7 +454,7 @@ that is why the flag is not a number.
 The kernels then arrive without new tooling, because the drafter runs inside
 `sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`) and the fire
 path already calls `execute_model` then `sample_tokens(None)` inside one
-`layerwise_profile` context. **`profiler coverage --profile-mtp` is how the
+native CUDA-activity context. **`profiler coverage --profile-mtp` is how the
 `mtp:` sections were written** — it names the unbound nodes with their ancestor
 paths, so the profile tree is the source, as for every other block. For the
 opposite failure — an entry that binds *too much* — dump the profile tree
@@ -485,10 +475,13 @@ Four things a catalog here must get right:
   `MiniMaxM3DecoderLayer`), so an unguarded entry claims the target's nodes
   too. DeepSeek and M3 pin `within` to their predictor classes
   (`DeepSeekMultiTokenPredictorLayer`, `MiniMaxM3MultiTokenPredictorLayer`);
-  **Qwen's wrapper (`Qwen3_5MultiTokenPredictor`, no `Layer` suffix) launches
-  no kernel of its own**, so it never becomes a profile node and its drafter's
-  nodes arrive at the *top level* — guarded by `not_within:
-  [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]` instead. Getting this wrong is
+  Historical Qwen tables used `not_within:
+  [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]` because the old Python-call tree
+  omitted their kernel-less wrapper. The scoped collector retains an invoked
+  `Qwen3_5MultiTokenPredictor` even without a direct kernel; methods bypassing
+  `Module.__call__` still need explicit ownership. Recheck every MTP binding
+  against the current runtime, rather than assuming historical top-level
+  ancestry. Getting this wrong is
   invisible in the CSV: the curve stays smooth and monotone. Qwen's `mtp_norms`
   read **1287 us at one sequence** for two RMSNorms before the guard was right.
 - **The decoder block is declared, not listed.** `mtp.prologue` / `mtp.head`
@@ -518,7 +511,11 @@ Four things a catalog here must get right:
   plain `nn.Linear` (unsharded), Qwen a `ColumnParallelLinear` (TP-sharded), M3
   a `ReplicatedLinear` (replicated).
 
-### The top-level normalization trap (vLLM 0.28)
+### Historical Python-call normalization trap (vLLM 0.28)
+The following describes the older acquisition tree. The scoped collector builds
+its own grouped tree but deliberately retains the catalog's normalization and
+full parameter-signature identity. It does not reproduce the old tree's pruning.
+
 Worth knowing well beyond MTP: it made **every latency in a 0.28-profiled
 bundle 3x too large**, not just the top-level ones. Every profile node is
 normally divided by **its parent's** invocation count to get a per-call figure, and the
@@ -593,7 +590,7 @@ built from disk. M3's 7 modules are ~103 GB otherwise. M3 additionally needs
 `scripts/patches/vllm_m3_mtp_layer_name.py` to start at all.
 
 ### A dense model's sampler is invisible on vLLM 0.28
-`layerwise_profile` builds its tree from **module** events, so a component that
+The collector's module scopes follow **module** calls, so a component that
 is not an `nn.Module` cannot become a node no matter what it launches. vLLM 0.28
 has two samplers and picks between them by model:
 
@@ -611,9 +608,9 @@ surfaced only with the first dense refresh.
 
 Two things make it hard to spot from the outside. The two runner classes share
 the name `GPUModelRunner`, so `type(runner).__name__` cannot tell them apart —
-only `__module__` can. And `profiler coverage` passes at **100%**: coverage
-reports CUDA time no entry *claims*, and this work never enters the tree at all,
-so there is nothing left unbound.
+only `__module__` can. The historical Python-call coverage passed at **100%**:
+the sampler's work never entered that tree. Native-activity coverage now retains
+it as an explicit gap unless the sampler facade gives it an owning module.
 
 `profiler/core/hooks/sampler_shim.py` wraps a non-module sampler in an
 `nn.Module` named `Sampler`, installed once per worker by `Extension.fire` and
@@ -668,7 +665,7 @@ Attention and ordinary categories use the same per-call CUDA activity union as
 skew, but retain their category-specific averaging and axes.
 
 `hooks/cuda_timing.py` forms the interval union within each raw module call,
-separately per device, before vLLM merges same-class invocations. Overlapping
+separately per device, before the collector groups compatible invocations. Overlapping
 streams on one device count once; different calls must not be pooled before
 normalization. Resolve a native activity by correlation, name and exact device
 interval, but use CPU launch scopes for ownership. Exclude annotations and
@@ -684,7 +681,7 @@ missing or incompatible identities; use a separate output root or explicitly
 remeasure with `--force`. TP-stable replication preserves row identities and
 rejects mixed timing methods before replacing the destination. Fully skipped
 ordinary categories do not acquire a new measurement timestamp. Skew uses
-`dummy-kv-skew-query-state-per-forward-v5`, with the interval, request-state and
+`kineto-scoped-dummy-kv-skew-per-forward-v6`, with the interval, request-state and
 dummy-cache helpers in its acquisition fingerprint. Native DP+EP
 component contracts remain separate and retain their recorded timing method.
 
@@ -718,7 +715,7 @@ leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
 remain fresh prompts. The ordinary acquisition protocol is
-`cuda-active-union-dummy-kv-query-v4`.
+`kineto-scoped-cuda-union-dummy-kv-query-v5`.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains
@@ -735,15 +732,22 @@ precision. Do not round only the planned key: weighted prefill coordinates
 can have more than three decimal places and would miss their stored rows.
 This identity alignment changes neither measurement protocol nor saved timings.
 
-Module-tree repair alone is insufficient: CUDA leaves can remain beside the
-module that launched them. `hooks/activity_ownership.py` connects each retained
-CUDA activity's native correlation ID to its runtime/driver launch and selects
-the innermost containing CPU module call. Match Python-call intervals to native
-OS-thread resource IDs first; logical thread IDs across event namespaces are
-not interchangeable. Missing or ambiguous ownership invalidates the shot.
-Preserve every retained activity and its duration; never assign ownership by
-GPU timestamp containment or add CPU duration. The skew measurement fingerprint
-includes this helper, so older acquisitions cannot satisfy the new resume check.
+The common `hooks/activity_collector.py` captures actual runtime module
+ancestry, including shared objects and repeated calls. Native OS-thread CPU
+scopes and launch correlations establish ownership; never use GPU timestamp
+containment. Duplicate, missing, cross-forward or ambiguous ownership fails
+closed. Ordinary shots require the same positive active canonical set in every
+forward, without requiring inactive catalog alternatives to execute. Reject
+overlapping canonical claims before storing timings. Coverage keeps a unique
+native kernel/copy/memset ledger and explicitly reports unscoped work; never
+silently label it preparation or add it to an arbitrary layer. Preserve overlap
+errors through the host CoverageReport and CLI exit status.
+
+Untimed recurrent warmup checks must bind each query/history pair to its own
+assigned state pages, including reused backend metadata. The audited ordinary
+GDN contract uses cache mode `none`; reject unknown schemas and active
+speculative/checkpoint partitions. MTP shots require every requested canonical
+entry, rather than publishing a partially observed drafter table.
 
 `hooks/cache_pages.py` allocates all cache groups from one shared physical
 pool, reserving null block 0. Group IDs must not overlap even when typed views
@@ -2390,12 +2394,12 @@ than assuming only the stack and catalog resolvers can affect simulation.
    share no common prefix, so an entry legitimately binding several kernels
    under one parent (M3's `sparse_attention`, any `*`-prefixed glue) is not
    flagged. Qwen3.5's `mtp_norms` read **1287 us for two RMSNorms** and its
-   `embedding` read **2.1x** while passing coverage at 100%. This is also the
-   only check that catches an entry that names a real class and measures
-   **nothing** —
-   the profile tree holds only modules that launch a kernel of their own, and
-   the module tree cannot tell you which those are. Every one of the four
-   modern families had at least one such entry.
+   `embedding` read **2.1x** while passing coverage at 100%. Inspect dynamic
+   invocations, native activities and unscoped gaps, not only the static module
+   inventory. Coverage does not prove every declared alternative executed:
+   an entry absent from every forward can leave no activity gap. Required-entry
+   checks, including the MTP slice check, are separate. Shared-activity overlaps
+   must never be suppressed by the target/drafter repeated-role exemption.
 
 DP/TP/PP scenarios with uneven request streams can change round pairing when
 a component cost changes. Total clocks may then move non-monotonically even

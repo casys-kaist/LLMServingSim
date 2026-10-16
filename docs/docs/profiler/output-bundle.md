@@ -60,10 +60,14 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `cuda-active-union-dummy-kv-query-v4`.
+New ordinary layerwise measurements use `kineto-scoped-cuda-union-dummy-kv-query-v5`.
+The common PyTorch/Kineto collector records explicit dynamic module scopes and
+native CUDA activities without Python stacks, tensor shapes or memory snapshots.
 For each raw module invocation, merge overlapping CUDA intervals on the same
 device, then apply the existing per-call normalization. Distinct calls remain
 separate before averaging, even when their device execution overlaps.
+Bindings to raw CUDA kernel names retain the existing sum of matching leaf
+durations; they are distinct from a module's per-call interval union.
 CPU launch scopes establish ownership only; CPU duration, GPU annotations and
 gaps between device activities do not contribute latency. The result is
 device-active time, not whole-step elapsed time. Separate catalog components
@@ -84,9 +88,28 @@ measurement provenance. TP-stable replication rejects mixed timing methods
 before replacing a destination file.
 
 Skew uses the same interval accounting with its separate per-forward
-`dummy-kv-skew-query-state-per-forward-v5` protocol. Native DP+EP component bundles retain
+`kineto-scoped-dummy-kv-skew-per-forward-v6` protocol. Native DP+EP component bundles retain
 their own recorded measurement contract; they are not converted by this change.
-Catalog coverage remains a kernel-work accounting check, not a latency union.
+Catalog coverage accounts for each native kernel, copy and memset exactly once,
+including work outside module scopes. Such work is reported as a gap, not assigned
+to a convenient layer or called CPU overhead. Overlapping canonical claims remain
+errors visible to the coverage CLI; ordinary measurements reject overlaps within
+their category slice before saving. Cross-category overlaps require full-catalog
+coverage. Unscoped work requires an ownership-boundary review, not an arbitrary
+raw-kernel binding. Coverage is a device-work accounting check, not a latency
+union or proof that every declared catalog alternative executed.
+
+Every timed forward must contain the same positive active canonical set. Inactive
+catalog alternatives need not execute, but a component disappearing in only one
+forward invalidates the shot. Warmup validates geometry and finite output outside
+timing. A failed check cannot produce a successful acquisition.
+
+Recurrent-only prefixes also verify query/history pairs and their assigned state
+pages, including metadata reused between cache groups. This guard currently
+accepts ordinary non-speculative GDN metadata with cache mode `none`; unknown
+schemas or active speculative/checkpoint partitions fail explicitly. MTP
+acquisition requires every entry in its category slice: partially captured
+drafter work cannot be saved as a complete table.
 
 Both acquisition identities include assigned-page dummy KV initialization through
 vLLM's dummy-weight helper. Initialization is outside

@@ -28,20 +28,21 @@ Every forward time is retained, per attention-category kernel. Historical
 measured controls remain diagnostic; they are not relabelled lookup estimates.
 
 Native launch correlations, not GPU timestamp containment, assign retained
-CUDA activities to CPU module calls. Python-call intervals are matched to
-native OS-thread identities before locating the innermost launching module.
-This repairs misplaced kernel leaves while preserving recorded durations and
-activity coverage. CPU scopes contribute no latency, and missing or ambiguous
+CUDA activities to explicit dynamic module scopes on their native OS thread.
+The innermost containing launch scope owns the activity; no Python-call tree
+repair is needed. Recorded durations and activity coverage are preserved.
+CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
 
-`dummy-kv-skew-query-state-per-forward-v5` uses the same per-call CUDA interval unions as
+`kineto-scoped-dummy-kv-skew-per-forward-v6` uses the same per-call CUDA interval unions as
 ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
 CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints
 must match, and older kernel-sum measurements cannot satisfy the new resume
 contract or be silently appended to a current-method sweep.
 
-Before each context, the profiler initializes assigned attention pages with
+Before each context, the profiler reserves disjoint physical pages across KV
+groups, leaving the shared pool's null block untouched, then initializes assigned attention pages with
 vLLM's deterministic dummy-weight initializer.
 Initialization is outside warmup and timing, and unassigned pages remain intact.
 Recurrent caches use zero-start state. See the [preparation contract](./running#--measurement-iterations--averaging-out-clock-jitter)

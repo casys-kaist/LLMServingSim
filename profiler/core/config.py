@@ -771,7 +771,7 @@ class ProfileArgs:
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
             ``drafter.propose``), which the fire path already calls inside
-            ``layerwise_profile``. Always at ``num_speculative_tokens=1``, so
+            the native CUDA collector. Always at ``num_speculative_tokens=1``, so
             what lands in ``mtp.csv`` is **one** drafter pass -- the unit the
             simulator multiplies by its own N.
         hf_overrides: Extra HF config overrides, merged under the
@@ -953,20 +953,9 @@ class ProfileArgs:
     """
     # Measurement averaging
     measurement_iterations: int = 3
-    """N timed forwards per shot, averaged."""
-
-    """If True, skip the step sweep (step.csv will not be written and the
-    simulator applies no cudagraph correction -- it then predicts eager
-    execution, which is 2-5% slower than production on a dense model).
-
-    On by default, unlike ``skip_skew``, because a missing correction is a
-    *known* bias rather than an unknown one: skew's fallback of alpha=0 is
-    defensible since a guessed alpha is worse than none, while here the
-    direction and rough size are established. Skippable all the same, and for
-    two real reasons -- the sweep needs a second engine boot (minutes on a
-    large model, and vLLM's graph capture allocates memory a checkpoint that
-    only just fits under ``enforce_eager`` may not have), and a per-category
-    ``slice`` refresh has no reason to pay it."""
+    """Timed forwards per ordinary shot. The collector averages GPU activity
+    using the catalog's per-call normalization; repeated forwards reduce
+    sampling noise without providing a hardware-independent error bound."""
 
     skip_skew: bool = False
     """If True, skip the skew profiling step (skew.csv will not be
@@ -997,10 +986,6 @@ class ProfileArgs:
     whose keys are already measured, so a re-run after a feasibility
     change adds only the newly-eligible cases. Applies to both the
     main loop categories (dense/per_sequence/attention/moe) and skew."""
-    """Number of timed forward passes per shot, averaged by vLLM's
-    layerwise_profile via its ``invocations`` count. A single sample
-    can swing 15-25% on large GEMMs due to DVFS / clock-state jitter;
-    N=3 cuts that jitter to ~5% at ~3x profile time."""
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -1077,7 +1062,7 @@ HOST_ENGINE_DEFAULTS: dict[str, Any] = {
     # Don't download checkpoints; we only measure kernel latency.
     "load_format": "dummy",
     # Disable CUDA graphs so every launch is an independently timeable
-    # event. layerwise_profile requires this.
+    # event. The native CUDA collector requires this.
     "enforce_eager": True,
     # Skip tokenizer init — our synthetic batches never tokenize.
     "skip_tokenizer_init": True,

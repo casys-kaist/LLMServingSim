@@ -32,7 +32,7 @@ That tag is built against **CUDA 13.x**. On a CUDA 12.9 host, edit the
 image line in `scripts/docker-vllm.sh` to `vllm/vllm-openai:v0.28.0-cu129`
 instead. The pin matters beyond the driver: every module under
 `profiler/core/hooks/` binds to a vLLM *internal* API — the MoE router,
-the model runner's KV cache groups, `layerwise_profile` — and those move
+the model runner's KV cache groups and execution interfaces — and those move
 between releases, so a different vLLM can break profiling silently.
 
 On a shared machine, set `VLLM_GPUS` to keep the container off GPUs

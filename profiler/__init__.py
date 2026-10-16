@@ -19,7 +19,8 @@ Module map:
         hooks/                  vLLM-internal-API touchpoints
             extension.py        vLLM worker extension class
             batch.py            synthetic SchedulerOutput assembly
-            timings.py          layerwise_profile tree extraction
+            activity_collector.py scoped native CUDA collection
+            timings.py          grouped timing normalization and catalog matching
             moe_hook.py         FusedMoE forced-routing patcher
     models/                     architecture yamls (one per HF model_type)
     power/                      nvidia-smi / IPMI power-logging shell helpers

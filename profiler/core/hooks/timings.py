@@ -1,7 +1,7 @@
-"""Extract canonical-layer timings from vLLM's layerwise-profile tree.
+"""Extract canonical timings from the collector\'s grouped module tree.
 
-vLLM's ``layerwise_profile()`` context manager records CUDA kernel
-events per nn.Module invocation and returns a nested tree where each
+The lightweight collector retains CUDA activity per nn.Module invocation,
+then groups compatible calls into a tree where each
 node has:
     entry["entry"]["name"]       str like "QKVParallelLinear(...)"
     entry["entry"]["cuda_time_us"]  total CUDA time across invocations
@@ -30,8 +30,8 @@ a decode kernel, and a merge), with no ``Attention`` wrapper to aggregate
 them, so the block's cost only exists as their sum. This is a no-op for a
 catalog whose entries each match one node, which is every homogeneous model.
 
-Normalization rule: vLLM merges every same-class sibling under one parent
-into a *single* node, summing ``cuda_time_us`` and counting calls in
+Normalization rule: compatible sibling calls under one parent are grouped
+into a *single* summary node, summing ``cuda_time_us`` and counting calls in
 ``invocations``. So ``invocations`` is not the number of trace nodes — it is
 ``parent_invocations x modules_of_this_class_per_parent``. Dividing by it is
 only correct when those sibling modules are interchangeable.
@@ -40,9 +40,9 @@ They are not always. Qwen3.5/3.8's gated-DeltaNet block holds two
 ``MergedColumnParallelLinear`` children, ``in_proj_qkvz`` (5120 -> 16384) and
 ``in_proj_ba`` (5120 -> 96); the profiler reports one node with
 ``invocations = 2 x layers``, and dividing by that yields the mean of a large
-GEMM and a tiny one, which describes neither. There is no discriminator to
-recover — one node is all vLLM ever emits — so the catalog models the pair as
-one canonical layer and we want their **sum**.
+GEMM and a tiny one, which describes neither. The catalog models the pair as
+one canonical layer and we want their **sum**. The collector keeps individual
+calls for auditing, while this compatibility summary retains that grouping.
 
 The denominator that gets both cases right is
 
@@ -204,9 +204,10 @@ def extract_samples(
     is one of its parts — see the module docstring.
 
     ``iterations`` is how many timed forwards ran inside the one
-    ``layerwise_profile`` context, and it is the **top level's** invocation
-    count: every node divides by its parent's invocations to get a per-call
-    figure, and the top level has no parent node to read that from. Passing 1
+    capture context, and it is the **top level's** invocation
+    count for parent-normalized bindings. Ordinary entries divide by parent
+    calls times catalog occurrences; whole-block MoE uses its own calls.
+    The top level has no parent node to read its count from. Passing 1
     where 3 forwards ran inflates every top-level binding 3x -- which is
     exactly what happened to ``embedding``, ``lm_head``, ``sampler`` and
     Qwen3.5's whole drafter under vLLM 0.28, where a top-level node is
@@ -219,17 +220,11 @@ def extract_samples(
         ancestors: list[str],
         parent_invocations: int,
     ) -> None:
-        # vLLM merges same-class siblings into one node whose ``cuda_time_us``
-        # is their sum and whose ``invocations`` counts them all. Under a
-        # parent that is itself a node it then reports that merged node
-        # **once**; at the top level, where the owning module launched no
-        # kernel of its own and so was flattened away, it reports the same
-        # merged node once **per sibling module**. Qwen3.5's drafter holds
-        # three GemmaRMSNorms under a wrapper that launches nothing, and they
-        # arrive as three identical top-level entries -- summing them charged
-        # the drafter's norms 3x. vLLM's summary key retains the full module
-        # representation, not just its class. Keep that identity here: two
-        # differently shaped linears can coincidentally take the same time.
+        # Compatibility with historical vLLM Python-call summaries, which
+        # could repeat an already-merged top-level entry per sibling or
+        # forward. The scoped collector builds groups directly and does not
+        # depend on that flattening behavior. Preserve full representation:
+        # differently shaped linears can have equal times and call counts.
         seen: set[tuple[str, float, int]] = set()
         for node in nodes:
             raw_name = str(node["entry"]["name"])
@@ -276,21 +271,12 @@ def extract_samples(
 
 @dataclass
 class CoverageReport:
-    """How much of a shot's CUDA time the catalog actually binds.
+    """Serializable catalog coverage and host-side diagnostics.
 
-    The check exists because a catalog entry can look right and measure
-    nothing. vLLM's profile tree only holds modules that launch a kernel of
-    their own, so an entry bound to a class whose work has been fused
-    elsewhere silently yields no node -- and the module tree, which is what
-    one naturally reads a catalog off, still shows the class. Every one of
-    MiniMax-M3's q-norm, Qwen3.5's q-norm/rope/gate and DeepSeek's indexer
-    rope was bound plausibly and measured zero; nothing but this told us.
-
-    Accounting: a bound node's ``cuda_time_us`` already includes its whole
-    subtree, so ``bound`` sums only bound nodes with no bound ancestor, and
-    ``total`` is the root-level sum. ``gaps`` locates the difference at the
-    shallowest node whose subtree binds nothing at all, which is the level a
-    catalog author can act on.
+    Native coverage allocates each kernel/copy/memset duration exactly once to
+    its outermost canonical claim or an explicit gap. Overlapping claims are
+    retained as over-matches. This is work accounting, not latency union or
+    step wall time. The tree helper below remains useful for tree-only audits.
     """
 
     total_us: float

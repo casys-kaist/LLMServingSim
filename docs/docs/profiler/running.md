@@ -430,9 +430,9 @@ send a mixed sparse-indexer batch down the all-prefill path. V1 and V2 request
 registration are handled separately without changing token values or KV pages.
 
 Each shot runs one discarded warm-up forward, then N timed forwards inside a
-single `layerwise_profile` context. A single sample can swing 15-25% on a large
-GEMM from DVFS and boost-clock jitter, so the default is 3 and the per-call
-figure comes from dividing by the invocation count.
+single lightweight PyTorch/Kineto context. The default is 3; the per-call
+figure uses the catalog's invocation normalization. Repetition reduces sampling
+noise but does not guarantee an error bound across models and hardware.
 
 For whole-block MoE shots, warmup and timed calls use the same forced expert
 distribution. Native routing kernels still run; only their selected IDs and
@@ -440,26 +440,16 @@ weights are replaced. A backend that bypasses the routing hook is rejected.
 See the [whole-block table contract](./output-bundle#moecsv-legacy-whole-block-moe-profiles)
 for refresh requirements and the distinction from native DP+EP components.
 
-Instrumentation is also a major part of acquisition cost, separately from
-dummy KV preparation. Measured on a 4-layer DeepSeek-V3.2, one
-shot at the default: 0.1 ms to assemble, 49 ms for the three forwards, 2.1 ms
-to convert the tree — and **1,125 ms inside the `layerwise_profile` context**.
-Session setup/teardown is only 6.9 ms of that; the rest is per-op instrumentation
-at **372 ms per forward against 16 ms outside**, linear in the forwards:
+Collection overhead is separate from KV preparation and device execution.
+The collector records CPU ownership scopes and native CUDA activities, with
+Python stacks, tensor shapes, memory snapshots and FLOP estimation disabled.
+It does not export or rebuild vLLM's Python-call tree. Module calls use indexed
+CPU-scope ownership; CPU duration never becomes a stored GPU latency.
 
-| forwards in one session | ms |
-| --- | --- |
-| 0 | 6.9 |
-| 1 | 372 |
-| 3 | 1,125 |
-| 6 | 2,310 |
-
-In this measurement, one forward takes about a third of the three-forward
-profile context; that does not imply a threefold full-sweep speedup or an error
-bound, since preparation, warmup and processing also contribute. Turning off
-the profiler's `with_stack` does **not** help in this case, despite being
-14x in a raw `key_averages()` path: `layerwise_profile` builds its tree from
-`experimental_event_tree()`, which does not pay for it.
+Measure throughput on a bounded subset of the intended model, backend and grid
+before estimating a complete sweep. First-use compilation, warmup, KV allocation,
+CSV checkpoints and the number of executed layers also contribute; a collector
+speedup is not a promise of the same full-sweep speedup.
 
 :::tip[The layer count is the same axis, and it is free]
 Op count sets the wall clock, and the profile tree merges same-class siblings —
@@ -468,7 +458,7 @@ op count on every shot. Each category is therefore shrunk to the axes it
 measures, and the profiler boots one engine per distinct depth. DeepSeek-V3.2
 and GLM-5 need 4 layers for their MLP axis (`first_k_dense_replace 3`) and
 **1** for attention, since every one of their layers has the same attention:
-1,057 → 341 ms per shot, **3.1x**, with no loss of accuracy. Qwen3.8-27B and
+fewer executed layers per shot, while preserving the requested architectural axis. Qwen3.8-27B and
 MiniMax-M3 vary on the attention axis too, so they gain nothing here.
 
 Fewer layers means a larger `num_cache_tokens`, which the feasibility filters
@@ -485,15 +475,12 @@ since `moe` is its own category — and the slack is left in on purpose:
 the multidimensional attention sweep is much larger than the dense sweep.
 :::
 
-The division is **per parent**: every node divides by its parent node's
-invocation count. The top level has no parent node, so `extract_samples` is
-given `iterations` as its count — and vLLM 0.28 additionally reports a
-top-level node once per forward (and once per sibling module) where 0.19 merged
-them into one wrapper, so identical sibling entries are deduped first. Identity
-includes the full module representation, time and invocation count: a shared
-class name and equal timing do not make differently shaped modules duplicates. Both
-matter because `embedding`, `lm_head`, `sampler` and Qwen3.5's whole drafter
-bind at the top level; without them those read `iterations x repeats` too high.
+Ordinary bindings divide by **parent calls × catalog occurrences**; whole-block
+MoE instead uses its own invocation count. Top-level bindings use the timed-forward
+count as their parent count. The collector retains individual calls before
+grouping compatible full parameter-signature paths. Legacy summary deduplication
+remains a compatibility rule: class-name equality and equal timings alone must
+not collapse differently shaped modules.
 
 :::tip[Sanity-check a fresh bundle against a bandwidth bound]
 Nothing in a profiled CSV reveals a constant-factor error — the curve stays
@@ -559,7 +546,7 @@ out N².
 Its kernels then arrive for free. The drafter runs inside
 `sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`), and
 the fire path already calls `execute_model` then `sample_tokens(None)`
-inside the same `layerwise_profile` context.
+inside the same native-activity capture context.
 
 **Run `coverage` with it first.** The drafter's kernels report as
 unbound until the catalog binds them, with their ancestor paths — which
@@ -569,13 +556,12 @@ is how the `mtp:` sections in `profiler/models/` were written:
 python -m profiler coverage <model> --hardware <hw> --profile-mtp
 ```
 
-Coverage catches an entry that binds *nothing*. It cannot catch the
-opposite — an entry that binds the **target's** layers as well, because
-the drafter's modules are the same classes as the target's and
-over-matching leaves nothing unbound. That one needs the profile tree
-itself: boot with `--profile-mtp` at the depth in question and print every
-node's class with its ancestor path, filtered to the class you suspect
-(`RMSNorm`, say).
+Coverage checks unclaimed activities and overlapping or structurally unrelated
+claims, not whether every catalog alternative executed. An entry absent from all
+forwards may leave no activity gap; MTP acquisition separately requires every
+requested MTP entry. Target and drafter roles still need a dynamic-ancestry audit:
+boot with `--profile-mtp` and inspect the call paths for the class in question
+(`RMSNorm`, say). A coverage percentage alone does not prove the decomposition.
 
 Read the ancestor chains before trusting an `mtp.csv`. Qwen3.8-27B's
 `mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms while
@@ -677,13 +663,13 @@ Catalog binds every measured kernel, in all 3 regimes.
 ```
 
 This exists because a catalog entry can name a real vLLM class and still
-measure nothing: vLLM's profile tree only contains modules that launch a kernel
-of their own, and modern models fuse q-norm, rope and the KV write into a
+measure nothing: a static module may be bypassed at runtime, and modern models
+fuse q-norm, rope and the KV write into a
 single kernel with no module wrapper, or write attention as bare Triton kernels
 launched straight from the block. The module tree still shows the classes, so
 the mistake is invisible in the source — and the symptom is a layer that looks
-free rather than an error. TP=1 only, because coverage is about which nodes
-exist and TP changes tensor shapes, not the module graph.
+free rather than a valid measurement. This coverage command uses physical TP=1;
+it does not certify another TP degree's fused path or collective placement.
 
 Run it whenever you write or edit a catalog, and after a vLLM upgrade. Details
 and how to act on a gap: [Adding a model

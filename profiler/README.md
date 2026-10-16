@@ -7,6 +7,10 @@ Synthetic KV preparation reserves disjoint pages from vLLM's shared physical
 pool, preserves the null block and initializes only assigned pages outside timing.
 Category-specific decoder reductions retain the model's explicit layer-type prefix,
 including nested text configurations.
+Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
+explicit module scopes retain CUDA kernels, copies and memsets without recording
+Python stacks, tensor shapes or memory snapshots. Geometry and finite-output
+checks run outside timing; native DP+EP components keep their eager/graph contract.
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).
@@ -89,10 +93,12 @@ profiler/                          Python package: python -m profiler
 │       ├── batch.py               synthetic SchedulerOutput construction
 │       ├── history.py             query state and asynchronous output completion
 │       ├── dummy_cache.py         assigned-page dummy KV initialization
-│       ├── cache_pages.py         shared physical KV page allocation
 │       ├── timings.py             profile-tree extraction and coverage
 │       ├── cuda_timing.py         per-call CUDA interval accounting
-│       ├── activity_ownership.py  launch-correlated kernel attribution
+│       ├── activity_collector.py  scoped native CUDA collection and coverage
+│       ├── runner_capture.py      common warmup validation and capture
+│       ├── recurrent_metadata.py  recurrent query/history and state-page checks
+│       ├── cache_pages.py         shared physical KV page allocation
 │       └── moe_hook.py            whole-block forced routing
 ├── models/                        architecture catalogs and model-type aliases
 │   ├── llama.yaml
@@ -186,19 +192,13 @@ Only the runtime subset is bundled, so use a separate output root for acquisitio
 
 The main contributors to acquisition time, in rough order of effect:
 
-1. `--measurement-iterations` — controls timed forwards, not all acquisition
-   work: the profiler costs **372 ms per forward against 16 ms
-   outside it** in a 4-layer DeepSeek-V3.2 measurement, linear in the forwards
-   (0/1/3/6 inside one session → 6.9/372/1,125/2,310 ms). Session
-   setup/teardown is only 6.9 ms in that measurement. One forward reduces
-   this timed-context cost, but total acquisition also includes preparation,
-   warmup and processing, and an error bound does not follow from the repeat
-   count. It is also the **top level's** invocation count: every profile node
-   divides by its parent's, and the top level has no parent node, so
-   `extract_samples` is handed this value. `embedding`, `lm_head`, `sampler`
-   and Qwen3.5's whole drafter bind there. Repeated top-level summaries are
-   deduplicated by full module representation, time and invocation count;
-   class-name equality alone must not discard differently shaped modules.
+1. `--measurement-iterations` — controls timed forwards, not preparation,
+   warmup, first-use compilation or processing. Estimate throughput with the
+   current collector on a bounded subset of the intended configuration.
+   A repetition count does not guarantee a measurement error bound. Ordinary
+   bindings normalize by parent calls times catalog occurrences; whole-block
+   MoE uses its own invocation count. Top-level bindings use the timed-forward
+   count, retaining full parameter signatures when grouping compatible calls.
 
 2. **Layer count, per category** — not a flag; resolved from the checkpoint.
    The same per-forward cost means op count sets the wall clock, and the
@@ -206,8 +206,7 @@ The main contributors to acquisition time, in rough order of effect:
    already present adds no information. Each category is shrunk to the axes it
    measures (`Category.stack_axes`), and `run_full` boots one engine per
    distinct depth. DeepSeek-V3.2 and GLM-5 need 4 layers for their MLP axis and
-   **1** for attention, which is the expensive sweep: 1,057 → 341 ms per shot,
-   3.1x measured. Qwen3.8-27B and MiniMax-M3 vary on the attention axis too, so
+   **1** for attention. Qwen3.8-27B and MiniMax-M3 vary on the attention axis too, so
    they gain nothing. Fewer layers also means a larger `num_cache_tokens`, so
    more shots clear the feasibility filters -- wider coverage, and a grid not
    row-for-row comparable with a deeper run's.
@@ -769,8 +768,8 @@ the degenerate case: one entry per axis.
 
 ### Checking a catalog: `python -m profiler coverage`
 
-A catalog entry can name a real vLLM class and measure **nothing**: the profile
-tree holds only modules that launch a kernel of their own, and modern models
+A catalog entry can name a real vLLM class and measure **nothing**: an existing
+module can be bypassed in the actual forward, and modern models
 fuse q-norm/rope/KV-write into one kernel with no module, or write attention as
 bare Triton kernels launched straight from the block. The module tree still
 shows the classes, so the mistake is invisible in the source.
