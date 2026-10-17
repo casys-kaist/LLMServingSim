@@ -29,6 +29,12 @@ class Extension:
     ``collective_rpc`` call.
     """
 
+    def component_runtime_admission(self, descriptor, shot_dict=None):
+        """Read and validate an explicitly declared native execution contract."""
+        from .runtime_admission import validate_descriptor, collect_runtime_facts, admit_runtime
+        validate_descriptor(descriptor)
+        return admit_runtime(descriptor, collect_runtime_facts(self.model_runner), shot=shot_dict)
+
     def moe_component_initialize(self, target, local_budget):
         from .moe_components import ComponentMeasurement
         self._moe_components = None
@@ -54,7 +60,7 @@ class Extension:
         return runtime_semantic(self.model_runner, profile_tp)
 
     def skew_measure(self, shot_dict, catalog, iterations=3, scope_contexts=None,
-                     attention_lookup_semantic=None):
+                     attention_lookup_semantic=None, component_layout_contract=None):
         from .capture_scope_contract import normalize_contexts
         normalize_contexts(scope_contexts, catalog)
         if type(iterations) is not int or iterations < 1:
@@ -63,7 +69,8 @@ class Extension:
         from .attention_lookup import verify
         attention_lookup_sha256 = verify(self.model_runner, attention_lookup_semantic)
         return measure(self.model_runner, shot_dict, catalog, iterations, scope_contexts=scope_contexts,
-                       attention_lookup_sha256=attention_lookup_sha256)
+                       attention_lookup_sha256=attention_lookup_sha256,
+                       component_layout_contract=component_layout_contract)
 
     def fire(
         self,
@@ -74,6 +81,7 @@ class Extension:
         scope_contexts: dict[str, Any] | None = None,
         component_layout_sha256: str | None = None,
         attention_lookup_semantic: dict[str, Any] | None = None,
+        component_layout_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one profiling shot and return per-layer timings.
 
@@ -103,9 +111,21 @@ class Extension:
             attention_lookup_sha256 = verify(self.model_runner, attention_lookup_semantic)
         elif attention_lookup_semantic is not None:
             raise ValueError('Attention lookup identity on another category')
+        from profiler.core import component_layouts as layouts
+        invocation_contract = layouts.prepare_invocation_contract(
+            component_layout_contract, component_layout_sha256, slice_,
+            self.model_runner.vllm_config if component_layout_contract is not None else None,
+            scope_contexts=scope_contexts)
+        runtime_sha256 = None
+        if component_layout_contract is not None and component_layout_contract.get('runtime') is not None:
+            runtime = component_layout_contract['runtime']
+            admitted = self.component_runtime_admission(runtime['descriptor'], shot_dict)
+            runtime_sha256 = admitted['runtime_sha256']
+            if runtime_sha256 != runtime['runtime_sha256']:
+                raise ValueError('Live component runtime changed before this shot')
         acquisition = layerwise_measurement(slice_, iterations, scope_contexts=scope_contexts,
-                                           component_layout_sha256=component_layout_sha256,
-                                           attention_lookup_sha256=attention_lookup_sha256)
+            component_layout_sha256=component_layout_sha256, runtime_sha256=runtime_sha256,
+            attention_lookup_sha256=attention_lookup_sha256)
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -145,6 +165,13 @@ class Extension:
             measured = capture(self.model_runner,
                                lambda: complete_forward(self.model_runner, _fresh_batch()),
                                slice_, iterations, scope_contexts=scope_contexts)
+        if invocation_contract is not None:
+            architecture, choices, expected = invocation_contract
+            from profiler.core.categories import _split_linear_attention_shot
+            prefill, decode = _split_linear_attention_shot(shot)
+            regime = "mixed" if prefill and decode else "prefill" if prefill else "decode"
+            layouts.validate_invocation_report(architecture, choices, coverage_report(measured),
+                                               expected, iterations, slice_, regime)
         if kind == 'mtp':
             missing = set(slice_) - set(measured['layer_us'])
             if missing:

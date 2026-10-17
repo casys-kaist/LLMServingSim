@@ -9,12 +9,18 @@ PROTOCOL = 'kineto-context-scoped-cuda-union-dummy-kv-query-v7'
 
 
 def layerwise_measurement(catalog, iterations, *, scope_contexts=None,
-                          component_layout_sha256=None, attention_lookup_sha256=None):
+                          component_layout_sha256=None, attention_lookup_sha256=None,
+                          runtime_sha256=None):
     """Host and worker must agree before timings can acquire this identity."""
     if component_layout_sha256 is not None and (
             not isinstance(component_layout_sha256, str) or len(component_layout_sha256) != 64
             or any(char not in '0123456789abcdef' for char in component_layout_sha256)):
         raise ValueError('Invalid component-layout identity')
+    if runtime_sha256 is not None and (
+            component_layout_sha256 is None or not isinstance(runtime_sha256, str)
+            or len(runtime_sha256) != 64
+            or any(char not in '0123456789abcdef' for char in runtime_sha256)):
+        raise ValueError('Invalid component runtime identity')
     from .hooks.capture_scope_contract import normalize_contexts
     contexts = normalize_contexts(scope_contexts, catalog)
     import torch
@@ -46,6 +52,10 @@ def layerwise_measurement(catalog, iterations, *, scope_contexts=None,
         identity['component_layout_sha256'] = component_layout_sha256
         identity['sources']['component_layouts.py'] = hashlib.sha256(
             (source.parent / 'component_layouts.py').read_bytes()).hexdigest()
+    if runtime_sha256 is not None:
+        identity['runtime_sha256'] = runtime_sha256
+        identity['sources']['runtime_admission.py'] = hashlib.sha256(
+            (hooks / 'runtime_admission.py').read_bytes()).hexdigest()
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True,
         separators=(',', ':'), allow_nan=False).encode()).hexdigest()
     return dict(measurement_protocol=measured_protocol, measurement_sha256=fingerprint)

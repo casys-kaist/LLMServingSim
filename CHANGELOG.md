@@ -7,6 +7,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Add runtime-admitted native DeepSeek-V3.2 profiling with site-aware component
+  boundaries and coordinated dense, head, attention and MoE tables. Preserve
+  historical decompositions; expose explicit duration-only trace replay with
+  native sampler output widths, rejecting unsupported serving/capacity modes.
 - Allow catalogs to declare exact function/method capture boundaries and timing
   normalization without model-specific collector code. Derive latency only from CUDA activity,
   report unavailable targets and actual per-forward calls separately from timing

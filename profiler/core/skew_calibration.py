@@ -129,6 +129,13 @@ def reference_rows(skew_csv, attention_csv, tp, architecture, key_saturation):
 
 
 def fit_csv(skew_csv, attention_csv, identity, architecture, key_saturation=None):
+    if architecture.get("component_layouts"):
+        from .component_layouts import selected_catalog_for_tp
+        folder = Path(attention_csv).parent
+        if folder != Path(skew_csv).parent or folder.name != f"tp{identity['tp']}":
+            raise ValueError("Layout-aware skew calibration requires paired tables in one TP folder")
+        _, attention = selected_catalog_for_tp(folder, architecture, "attention")
+        architecture = dict(architecture, catalog=dict(architecture["catalog"], attention=attention))
     rows = reference_rows(skew_csv, attention_csv, identity["tp"], architecture, key_saturation)
     reference = dict(attention_sha256=checksum(attention_csv), lookup_sha256=lookup_fingerprint(),
                      skew_sha256=checksum(skew_csv), key_saturation=key_saturation,

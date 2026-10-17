@@ -78,6 +78,11 @@ and require compatible acquisition identities for resume.
 The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.
+The [native DSA contract](docs/profiler/output-bundle.md#native-dsa-acquisition)
+connects site-aware components, four-category completion and live source/runtime
+admission. The trace guide limits that representation to explicit local duration
+replay, keeping its 788-byte cache facts separate from legacy capacity accounting
+and deriving sampler output width from the actual source-checked native route.
 The [trace byte reference](docs/reference/trace-format.md#minimax-m3-logical-bytes)
 defines MiniMax-M3 indexer query/cache dtypes, per-head selections and exact
 per-request history accounting, separately from physical memory traffic and

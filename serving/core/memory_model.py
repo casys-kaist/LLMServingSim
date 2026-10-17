@@ -784,7 +784,7 @@ def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
 
 # calculate the per-rank input, weight, output size of each layer
 def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2,
-                    kv_lens=None):
+                    kv_lens=None, *, component_sizes=None):
     """Calculate input, weight, and output tensor sizes for a given layer.
 
     Args:
@@ -795,6 +795,10 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
             integers, mutually exclusive with kv_len. Sparse attention caps
             each history before summing; the indexer sums them uncapped.
     """
+    if component_sizes is not None:
+        if kv_len is not None or kv_lens is not None:
+            raise ValueError("Logical component boundaries do not accept inferred cache traffic")
+        return component_sizes.sizes(layer_name, length, parallel=parallel, pim=pim)
     config = get_config(model)
     n_embd = config['hidden_size']
     n_head = config['num_attention_heads']

@@ -538,11 +538,23 @@ class MtpSection(BaseModel):
     head: list[str] = Field(default_factory=list)
 
 
+class ComponentLayoutLayer0(BaseModel):
+    """One exact target-layer-zero prefix consumed by a fused prologue."""
+    model_config = ConfigDict(extra="forbid")
+    path: list[str]
+    expected_prefix: list[str]
+    replacement_prefix: list[str]
+    consumed_by: str
+
+
 class ComponentLayoutVariant(BaseModel):
     """Observed canonical members and a one-pass block-order substitution."""
     model_config = ConfigDict(extra="forbid")
     observed: dict[str, list[str]]
     replace: dict[str, list[str]] = Field(default_factory=dict)
+    layer0: list[ComponentLayoutLayer0] | None = None
+    invocation_contract: Literal["site-scope-calls-v1"] | None = None
+    runtime_contract: Literal["native-dsa-eager-tail-v1"] | None = None
 
 
 class ComponentLayoutGroup(BaseModel):
@@ -551,6 +563,7 @@ class ComponentLayoutGroup(BaseModel):
     historical: str
     categories: list[str]
     variants: dict[str, ComponentLayoutVariant]
+    sites: list[list[str]] | None = None
 
 
 class Architecture(BaseModel):

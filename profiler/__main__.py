@@ -714,7 +714,8 @@ def main(argv: list[str] | None = None) -> int:
     # 5. Dispatch.
     if ns.cmd == "plan-skew":
         from profiler.core.skew_support import complete_plan
-        from profiler.core.skew import _existing_keys
+        from profiler.core.skew import _existing_keys, recorded_contract_for_skew
+        from profiler.core.component_layouts import selected_catalog_for_tp
         from profiler.core.config import load_architecture
         from profiler.core.categories import _entry_dict
         from profiler.core.hooks.capture_scope_contract import contexts_from_architecture
@@ -729,7 +730,6 @@ def main(argv: list[str] | None = None) -> int:
         resolved = metadata["engine_resolved"]["per_tp"]
         plans = {}
         architecture = load_architecture(arch_path)
-        catalog = _entry_dict(architecture.catalog.attention, architecture)
         scope_contexts = contexts_from_architecture(architecture)
         for tp in profile_args.tp_degrees:
             saved = resolved.get(str(tp)) or resolved.get(tp)
@@ -744,10 +744,16 @@ def main(argv: list[str] | None = None) -> int:
             lookup_record, _ = semantic_for_table(root / f"tp{tp}" / "attention.csv",
                 model_config, architecture.model_dump(exclude_none=True))
             attention_sha = lookup_record['semantic_sha256'] if lookup_record else None
+            choices, entries = selected_catalog_for_tp(root / f"tp{tp}",
+                architecture.model_dump(exclude_none=True), "attention", architecture.catalog.attention)
+            catalog = _entry_dict(entries, architecture)
+            layout_contract = recorded_contract_for_skew(root / f"tp{tp}", architecture,
+                choices, planned, logical_tp=tp, logical_ep=1, block_size=limits.block_size)
             completed = set() if planned.force else _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
                                        planned.skew_rounds, planned.measurement_iterations,
                                        block_size=limits.block_size, scope_contexts=scope_contexts,
-                                       attention_lookup_sha256=attention_sha)
+                                       attention_lookup_sha256=attention_sha,
+                                       component_layout_contract=layout_contract)
             plans[tp], _ = complete_plan(planned, limits, root / f"tp{tp}" / "attention.csv",
                 architecture, completed, existing_csv=None if planned.force else root / f"tp{tp}" / "skew.csv")
         print(json.dumps(plans, indent=2))

@@ -1,5 +1,6 @@
 import glob
 import hashlib
+import json
 import os
 from collections import OrderedDict
 from time import time
@@ -119,6 +120,7 @@ def _cache_store(key, paths):
 # checked-out tree, so editing the tree requires `pip3 install .` to take
 # effect — see AGENTS.md.
 _LLMConverter = None
+_DURATION_ONLY_SYSTEMS = set()
 
 
 def _get_llm_converter():
@@ -137,9 +139,28 @@ def _get_llm_converter():
 
 def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, save_trace_text=False, *, trace):
 
+    if trace.byte_contract is not None:
+        from .component_sizes import NATIVE_DSA
+        if trace.byte_contract != NATIVE_DSA or num_npus != 1 or enable_local_offloading:
+            raise NotImplementedError('Native logical tensor annotations require single-rank duration replay without local weight offloading')
+
     cwd = os.getcwd()
     if inputs_root is None:
         inputs_root = os.path.join(cwd, "inputs")
+
+    if trace.byte_contract is not None:
+        # Inputs are immutable for a run, as are the performance bundles.
+        # ASTRA defaults roofline off; an explicit nonzero value instead
+        # consumes num_ops/tensor_size, which this logical contract cannot price.
+        system_path = os.path.join(os.path.abspath(inputs_root), 'system', 'system.json')
+        status = os.stat(system_path)
+        system_key = (system_path, status.st_mtime_ns, status.st_size)
+        if system_key not in _DURATION_ONLY_SYSTEMS:
+            with open(system_path) as stream:
+                system = json.load(stream)
+            if system.get('roofline-enabled', 0) != 0:
+                raise NotImplementedError('Native DSA traces require duration replay; roofline traffic is not modeled')
+            _DURATION_ONLY_SYSTEMS.add(system_key)
 
     if event:
         file_name = 'event_handler'

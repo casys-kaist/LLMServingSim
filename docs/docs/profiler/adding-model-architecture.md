@@ -496,15 +496,29 @@ merely the spelling of an interchangeable kernel. Each named group declares:
 
 - `historical`: the variant matching the unchanged original block order.
 - `categories`: every affected category, including unchanged names whose scope
-  changed. Currently only `dense` and `linear_attention` row domains are supported.
+  changed. Block-wide layouts support `dense` and `linear_attention`; explicit
+  site layouts additionally support `attention`.
 - `variants`: exact `observed` canonical sets for `prefill`, `decode` and `mixed`.
   A nonhistorical variant may use `replace` mappings from historical components
   to lists of replacements; an empty list removes an old component already
   covered by its replacement.
+- `sites`: optional exact existing sequence paths under `blocks` or `shared`;
+  omission preserves the original block-wide substitution behavior.
+- A variant may declare `layer0` entries with `path`, `expected_prefix`,
+  `replacement_prefix` and `consumed_by`. Consumption is restricted to absolute
+  target layer 0, after the rewritten prefix matches and the consuming component
+  appears in the active shared prologue. This is not an MTP rewrite.
+- `invocation_contract: site-scope-calls-v1` additionally checks resolved site
+  calls and normalization against the actual acquired prefix. The optional
+  `runtime_contract: native-dsa-eager-tail-v1` invokes the explicit native DSA
+  admission adapter and requires four-category publication; it is not a generic
+  opt-out from execution checks.
 
-Substitutions are one-pass and nonrecursive. Groups must be disjoint, references
-must exist, and each rewritten block must contain the complete selected set
-without duplicate components. The historical variant does not rewrite the block.
+Substitutions are one-pass and nonrecursive. Groups must be disjoint and references
+must exist. Block-wide layouts require the complete selected set in each affected
+block without duplicates. Site layouts instead validate the declared footprint;
+repeated active components need invocation normalization. The historical variant
+does not rewrite its sequences.
 Never select an alternative from the vLLM version, a model-family branch or
 absent kernel names.
 
@@ -516,6 +530,12 @@ select a unique variant, followed by per-shot checks. Its new `dense` and
 Historical bundles retain their old sequence. Small probes are not full-grid,
 checkpoint or deployment certification. See [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces)
 for the independent sizing and communication contract.
+
+`deepseek_v32.yaml` supplies a site-aware example: its native shared endpoint
+consumes the first input norm, while a combined indexing/attention tail replaces
+the historical separate costs. Its trace-only support and required live modes
+are defined by the [native DSA contract](./output-bundle.md#native-dsa-acquisition),
+not inferred from an existing catalog alias or checkpoint family name.
 
 ### Section reference
 

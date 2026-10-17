@@ -67,7 +67,9 @@ def complete_plan(args, limits, attention_csv, arch, completed=(), existing_csv=
                     pc_cap = max(pc_cap, sum(query for query, _ in pf))
     axes = partition_axes(pc_cap)
     table = tg._build_attention_tables_by_layer(tg._read_category_csv(str(attention_csv), None))
-    entries = arch.catalog.attention
+    from .component_layouts import selected_catalog_for_tp
+    _, entries = selected_catalog_for_tp(Path(attention_csv).parent,
+        arch.model_dump(exclude_none=True), "attention", arch.catalog.attention)
     for layer in entries:
         if not set(args.attention_decode_q_lens) <= set(table.get(layer, {})):
             raise ValueError(f"Missing exact attention query slices for {layer}")

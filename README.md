@@ -71,6 +71,10 @@ activation overrides; see [variant naming](https://llmservingsim.ai/docs/profile
 before acquiring an alternate precision.
 Nested text-model overrides are materialized before native configuration loading;
 see [configuration and TP emulation](https://llmservingsim.ai/docs/profiler/running#reduced-model-configurations).
+Native DeepSeek-V3.2 acquisition has an explicit
+[four-table runtime contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-dsa-acquisition).
+Its new representation supports opt-in duration trace replay, not ordinary serving
+or KV-capacity admission; historical bundles retain their existing behavior.
 
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement

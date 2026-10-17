@@ -13,6 +13,9 @@ vLLM engine with synthetic batches and records per-layer CUDA kernel
 latencies into per-category CSV files. Those CSVs are exactly what
 the simulator's `trace_generator` reads at run time, the profiler's
 output IS the simulator's input.
+The bundle's execution contract still limits its consumers: native
+[DeepSeek-V3.2 tables](./output-bundle#native-dsa-acquisition) currently support
+explicit duration trace replay, not ordinary serving or memory-capacity admission.
 
 Ordinary and skew shots use lightweight PyTorch/Kineto capture with explicit
 module scopes and catalog-declared operator or callable boundaries. These identify

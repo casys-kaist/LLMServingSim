@@ -25,6 +25,13 @@ lookup cap from their per-TP native contract; unmarked historical tables retain
 unknown or mismatched native contracts are rejected before lookup; see the
 [bundle contract](../docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
 
+New native DeepSeek-V3.2 tables require explicit
+`generate_trace(..., duration_replay_only=True)`. This local TP1 eager replay
+preserves measured component durations and source-bound logical tensor bytes;
+ordinary serving rejects it because the native 788-byte KV layout is not the
+legacy 708-byte capacity model. This API is not a CLI capacity override or an
+accuracy claim. See the [native trace boundary](../docs/docs/simulator/trace-generation.md#native-dsa-duration-replay).
+
 ## Layout
 
 ```text
@@ -35,6 +42,7 @@ serving/                        Python package
 │   ├── scheduler.py            vLLM-style continuous batching scheduler
 │   ├── trace_generator.py      builds execution traces from profiled latencies
 │   ├── memory_model.py         memory tracking, KV cache, tensor sizes
+│   ├── component_sizes.py      admitted component-boundary bytes and replay guards
 │   ├── graph_generator.py      Chakra protobuf graph generation
 │   ├── controller.py           IPC with ASTRA-Sim subprocess
 │   ├── router.py               request routing across instances

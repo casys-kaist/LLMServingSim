@@ -74,13 +74,28 @@ def _variant_root(out_root: Path, args: ProfileArgs) -> Path:
 # Shot firing + point ingestion (shared between run_full and run_slice)
 # ---------------------------------------------------------------------------
 
-def _component_layout_context(llm, category, arch, scope_contexts):
+def _validate_layout_invocations(llm, architecture, choices, reports_by_rank, catalog):
+    """Apply an opt-in physical-call gate to every discovery rank and regime."""
+    from profiler.core import component_layouts as layouts
+    if not any(group["variants"][choices[name]].get("invocation_contract") is not None
+               for name, group in (architecture.get("component_layouts") or {}).items()):
+        return
+    config = layouts.resolved_text_config(llm.llm_engine.vllm_config)
+    expected = layouts.expected_scope_calls(architecture, choices, config)
+    for reports in reports_by_rank:
+        for regime, report in reports.items():
+            layouts.validate_invocation_report(architecture, choices, report, expected, 1, catalog, regime)
+
+
+def _component_layout_context(llm, category, arch, scope_contexts, args=None, tp=1, logical_ep=1):
     """Discover representations on the live engine before writing category rows."""
     from profiler.core import component_layouts as layouts
     architecture = arch.model_dump(exclude_none=True)
     groups = architecture.get("component_layouts") or {}
     affected = {name for group in groups.values() for name in group["categories"]}
-    if category.name not in affected:
+    runtime_possible = any(variant.get('runtime_contract') is not None
+                           for group in groups.values() for variant in group['variants'].values())
+    if category.name not in affected and not runtime_possible:
         return None
     whole_catalog = {}
     for group in type(arch.catalog).model_fields:
@@ -103,7 +118,29 @@ def _component_layout_context(llm, category, arch, scope_contexts):
     choices = selections[0]
     if any(selection != choices for selection in selections):
         raise ValueError("Component layouts differ across TP workers")
-    return architecture, choices, probes
+    _validate_layout_invocations(llm, architecture, choices, reports_by_rank, probes)
+    runtime_schema = layouts.selected_runtime_contract(architecture, choices)
+    if category.name not in affected and runtime_schema is None:
+        return None
+    runtime = None
+    if runtime_schema is not None:
+        if args is None:
+            raise ValueError('Runtime admission requires host source configuration and logical degrees')
+        # Keep the original source depth. --num-hidden-layers and per-category
+        # reductions are acquisition prefixes, not new source model identities.
+        from profiler.core.hooks.runtime_admission import profile_descriptor, admit_runtime
+        descriptor = profile_descriptor(runtime_schema, args.model_config, args.hf_overrides,
+                                        logical_tp=tp, logical_ep=logical_ep)
+        results = llm.collective_rpc('component_runtime_admission', args=(descriptor,))
+        if len(results) != len(reports_by_rank) or not results:
+            raise ValueError('Runtime admission changed the discovery worker set')
+        for result in results:
+            if admit_runtime(descriptor, result['engine_facts']) != result:
+                raise ValueError('Worker runtime admission result is inconsistent')
+        runtime = results[0]
+        if any(item['runtime_sha256'] != runtime['runtime_sha256'] for item in results):
+            raise ValueError('Workers disagree on component runtime modes')
+    return architecture, choices, probes, runtime
 
 
 def _fire_one_category(
@@ -137,14 +174,26 @@ def _fire_one_category(
     catalog_slice = category.catalog_slice(arch)
     from profiler.core import component_layouts as layouts
     scope_contexts = contexts_from_architecture(arch)
-    layout_context = _component_layout_context(llm, category, arch, scope_contexts)
+    layout_context = _component_layout_context(llm, category, arch, scope_contexts,
+                                               args, tp, limits.moe_ep)
     layout_sha256 = None
+    component_layout_contract = None
+    runtime = None
+    runtime_sha256 = None
     capture_catalog = catalog_slice
     if layout_context is not None:
-        architecture, choices, probes = layout_context
+        architecture, choices, probes, runtime = layout_context
         catalog_slice = layouts.filter_catalog_slice(architecture, choices, catalog_slice)
         capture_catalog = {**catalog_slice, **probes}
         layout_sha256 = layouts.layout_identity(architecture, choices)
+        if any(group["variants"][choices[name]].get("invocation_contract") is not None
+               for name, group in architecture["component_layouts"].items()):
+            component_layout_contract = dict(architecture=architecture, selections=choices,
+                                              layout_sha256=layout_sha256)
+        if runtime is not None:
+            runtime_sha256 = runtime['runtime_sha256']
+            component_layout_contract['runtime'] = dict(
+                descriptor=runtime['invariant_facts']['descriptor'], runtime_sha256=runtime_sha256)
     from .measurement import layerwise_measurement
     from . import attention_lookup as lookup_contract
     attention_semantic = (lookup_contract.acquire(llm, args.model_config,
@@ -152,7 +201,7 @@ def _fire_one_category(
     attention_sha = lookup_contract.digest(attention_semantic) if attention_semantic is not None else None
     measurement = layerwise_measurement(capture_catalog, args.measurement_iterations,
         scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
-        attention_lookup_sha256=attention_sha)
+        attention_lookup_sha256=attention_sha, runtime_sha256=runtime_sha256)
     all_shots = list(category.compose_shots(arch, args, limits, tp))
     if not all_shots:
         log.warning('category %s produced no shots for tp=%d; skipping', category.label, tp)
@@ -164,9 +213,10 @@ def _fire_one_category(
         # identity across coupled categories; each CSV still stamps its
         # actual capture catalog independently.
         acquisition = layerwise_measurement(probes, args.measurement_iterations,
-            scope_contexts=scope_contexts, component_layout_sha256=layout_sha256)
+            scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
+            runtime_sha256=runtime_sha256)
         layouts.begin_category(out_dir, architecture, choices, category.name,
-                               measurement, acquisition, replace=wipe)
+                               measurement, acquisition, replace=wipe, runtime=runtime)
     sink = sink_for(category, out_dir, measurement=measurement)
 
     prior_keys: set[tuple] = set()
@@ -215,10 +265,12 @@ def _fire_one_category(
     checkpoint_at = t_start + 60
     with log.progress(label, total=len(shots)) as bar:
         for done, shot in enumerate(shots, start=1):
+            rpc_args = (shot.as_dict(), capture_catalog, category.name,
+                        args.measurement_iterations, scope_contexts, layout_sha256, attention_semantic)
+            if component_layout_contract is not None:
+                rpc_args += (component_layout_contract,)
             raw = llm.collective_rpc(
-                "fire",
-                args=(shot.as_dict(), capture_catalog, category.name,
-                      args.measurement_iterations, scope_contexts, layout_sha256, attention_semantic),
+                "fire", args=rpc_args,
             )
             # collective_rpc returns one result per worker (one per
             # TP rank). The timings are identical across ranks; take
@@ -687,13 +739,30 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     reports: dict[str, CoverageReport] = {}
     scope_contexts = contexts_from_architecture(arch)
     try:
+        reports_by_rank = None
         for label, spec in _COVERAGE_REGIMES:
             shot = Shot.attention(**spec)
             raw = llm.collective_rpc(
                 "coverage",
                 args=(shot.as_dict(), whole_catalog, 1, scope_contexts),
-            )[0]
-            reports[label] = CoverageReport.hydrate(raw)
+            )
+            if reports_by_rank is None:
+                reports_by_rank = [{} for _ in raw]
+            if not raw or len(raw) != len(reports_by_rank):
+                raise ValueError("Coverage changed its worker set")
+            for values, report in zip(reports_by_rank, raw):
+                values[label] = report
+            reports[label] = CoverageReport.hydrate(raw[0])
+        architecture = arch.model_dump(exclude_none=True)
+        if any(variant.get("invocation_contract") is not None
+               for group in (architecture.get("component_layouts") or {}).values()
+               for variant in group["variants"].values()):
+            from profiler.core import component_layouts as layouts
+            selections = [layouts.select_runtime_layouts(architecture, values)[0]
+                          for values in reports_by_rank]
+            if any(choice != selections[0] for choice in selections):
+                raise ValueError("Component layouts differ across coverage workers")
+            _validate_layout_invocations(llm, architecture, selections[0], reports_by_rank, whole_catalog)
     finally:
         spin_down(llm, tmpdir)
 

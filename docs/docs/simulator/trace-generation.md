@@ -91,13 +91,40 @@ On first load, the simulator also:
 For a catalog with `component_layouts`, the first use at each TP validates the
 recorded choice and every coupled category. Pending, stale or mixed acquisitions
 fail; unmarked historical tables retain their original decomposition. Expanded
-sequences are cached by TP and the original sequence, without mutating the shared
-catalog or changing latency interpolation. Keep published bundles immutable while
+sequences are cached by TP and the original sequence or declared site/role/layer,
+without mutating the shared catalog or changing latency interpolation. Per-TP
+views share the authoritative lazy caches. Keep published bundles immutable while
 the simulator reads them; see the [publication contract](../profiler/output-bundle#runtime-selected-component-layouts).
 
 The packed Qwen GDN core has its own tensor-size boundary, and declared row-output
 projections carry ordinary TP reductions. These are independent of profile timing;
 see [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces).
+
+### Native DSA duration replay
+
+Native DeepSeek-V3.2 tables use site-aware sequences: a shared fused
+embedding/input norm consumes only the first decoder norm, later residual norms
+remain per invocation, and one uncapped attention/indexer tail replaces the
+historical pair. Load requires all four completed category tables and matching
+[runtime evidence](../profiler/output-bundle.md#native-dsa-acquisition).
+
+Only the Python trace API's explicit
+`generate_trace(..., duration_replay_only=True)` admits this representation.
+Default serving refuses it: the recorded native cache is 656+132 = 788 bytes per
+token per layer, while the historical FP8 capacity model counts 576+132 = 708.
+There is no CLI flag that silently bypasses scheduler memory admission.
+
+Replay is local TP1/PP1/EP1 without DP, P/D transfer, offloading, PIM, speculative
+decoding, prefix caching or padded eager rows. Power and roofline consumers are
+rejected. Its logical byte annotations are not memory traffic or resident weights;
+see the [byte boundary](../reference/trace-format.md#native-dsa-logical-bytes).
+Source configuration is rechecked even on a cached byte-contract hit. The actual
+native sampler route selects 4- or 8-byte returned IDs, including the final Chakra
+store; no runner is forced to match a constant width.
+
+This connects measured durations to trace/Chakra execution, not full serving
+capacity, workload accuracy or another deployment. Unmarked historical bundles
+keep their previous lookup, sizes and execution path.
 
 ## Per-category lookup
 

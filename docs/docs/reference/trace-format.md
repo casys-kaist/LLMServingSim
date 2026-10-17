@@ -97,6 +97,31 @@ contain a space.
 | `comm_size` | int | Collective message size in bytes. Usually `0` when `comm_type` is `NONE`, but **not always**: on a `PREFILL` trace, `qkv_proj` carries the per-layer P/D KV transfer here while keeping `comm_type` at `NONE` (see [below](#comm_size-without-a-collective)) |
 | `misc` | string | Misc tag (sub-batch interleaving, etc.; usually `NONE`) |
 
+### Native DSA logical bytes
+
+The runtime-admitted native DeepSeek-V3.2 representation has separate logical
+component boundaries in `serving/core/component_sizes.py`. They apply only to
+[explicit duration replay](../simulator/trace-generation.md#native-dsa-duration-replay),
+not the historical decomposition or a new capacity/traffic model.
+
+Activations, embeddings and heads use BF16; quantized matrix payloads use FP8.
+Derived MLA UK/UV tensors remain BF16, indexer WK is unquantized and indexer
+LayerNorm parameters are FP32. `weight_size` denotes logical referenced model
+tensors, not packed scale metadata or allocator residency. Persistent KV/index
+caches, slot/position metadata and temporary workspaces are excluded from these
+activation-boundary triples; no available-history byte sum is invented as a read.
+
+The shared embedding endpoint returns both residual and normalized hidden states.
+The final norm consumes their pair and returns one hidden state. The combined
+tail consumes the supported sparse-query/index-query activations and returns
+BF16 `[tokens, heads, value_dim]` output. The native 656-byte main cache and
+132-byte index cache remain explicit runtime facts, separate from legacy capacity.
+
+Input token IDs are int32. Sampled IDs use the actual source-checked native route:
+V1 returns int32 and V2 int64. The sampler row and final Chakra memory-store node
+use that recorded width, rather than assuming the input and output ID buffers
+share a dtype. CPU scope time never contributes to `comp_time`.
+
 ### MiniMax-M3 logical bytes
 
 The canonical `indexer` row uses MiniMax-M3's own layout, separately from the

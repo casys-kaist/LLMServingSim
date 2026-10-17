@@ -827,7 +827,7 @@ not establish CUDA coverage, and missing entries must not become zero timings.
 Warmup/preparation calls are excluded; this audit changes no latency formula.
 
 `component_layouts.py` is a shared CPU-only contract for declared historical and
-alternative decompositions, currently over `dense`/`linear_attention`. Select a
+alternative decompositions over `dense`, `linear_attention` and `attention`. Select a
 unique variant from positive prefill/decode/mixed CUDA coverage on every worker
 and check every acquired shot. Never infer it from model/version names or absent
 kernels. Small probes do not certify unmeasured shapes, backends or deployments.
@@ -847,6 +847,37 @@ historical tables keep their old sequence; alternative-only rows require metadat
 Qwen's packed core includes its norm, so refresh dense and linear_attention together.
 Use one writer per variant root and immutable published bundles: atomic replacement
 is recovery, not locking. See the output-bundle guide for the full publication rules.
+
+Site-scoped alternatives name existing `blocks`/`shared` paths. Apply replacements
+once; a `layer0` prefix may be consumed only at absolute target layer 0 by the
+declared active prologue endpoint after its expected prefix matches. Never remove
+an MTP or later-layer norm by analogy. `site-scope-calls-v1` checks actual canonical
+calls and timing divisors against the resolved prefix before publishing each shot.
+
+`native-dsa-eager-tail-v1` binds original source configuration and logical TP/EP
+to live vLLM 0.31 runtime facts. Keep FP8 weights and BF16 activations separate;
+do not shrink model width, emulate another TP or accept skipped/shared indexers.
+The physical acquisition is local TP1/PP1/DP1/EP1, eager decode q=1, without MTP,
+offload, sequence parallelism, dense-MHA prefill or quantized query input.
+Retain packed cache geometry and the actual unwrapped sampler class/entrypoint
+and reviewed source hashes. Sampler payload width is source-backed, not observed
+tensor data; V1 returns int32, V2 int64. Do not force a runner to fit a byte formula.
+
+Native DSA publication requires all four categories (`dense`, `per_sequence`,
+`attention`, `moe`) with matching runtime identity and per-category engine facts
+inside the existing per-TP component-layout record. Never bless old rows by adding
+these fields. The combined tail includes indexer work and must use full-context
+coordinates, not the historical sparse-attention cap. Historical representations
+and MiniMax's independent native attention contract remain unchanged.
+
+Native DSA traces require explicit `duration_replay_only=True`; default serving
+must refuse the native 656+132-byte cache until capacity integration exists.
+Logical component bytes are not traffic or allocator residency. Refuse distributed,
+P/D, offload, PIM, speculative, graph-padded, prefix-cache, power and roofline modes.
+Cache layout decisions and immutable substitutions by TP/site, sharing lazy caches
+across TP views; recheck source configuration on native byte-contract cache hits,
+including mutations of an already seen dictionary. Do not apply new restrictions
+to historical unmarked bundles.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains

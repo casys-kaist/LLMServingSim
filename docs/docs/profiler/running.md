@@ -627,6 +627,15 @@ Use a fresh variant root or explicitly remeasure incompatible attention rows;
 changing metadata cannot convert them. Native contract checks are separate
 from context coverage, capacity admission and end-to-end accuracy validation.
 
+Native DeepSeek-V3.2's combined `dsa_attention_tail` includes indexing work and
+keeps the full-context axis; do not cap its grid at `index_topk`. The admitted
+representation requires `--tp 1 --moe-ep-degrees 1`, eager BF16 activations with
+the original FP8 weight configuration, and no `--dp` or `--profile-mtp`.
+Complete dense, per-sequence, attention and whole-block MoE acquisition together
+in a fresh bundle. A short attention-only prefix cannot certify the head or MoE
+tables. See [native DSA acquisition](./output-bundle.md#native-dsa-acquisition)
+for live mode checks and the explicit duration-only consumer boundary.
+
 ### `--profile-mtp` — profiling the drafter
 
 A model that drafts with itself keeps its MTP module out of the ordinary

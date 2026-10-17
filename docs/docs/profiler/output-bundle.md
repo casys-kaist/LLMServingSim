@@ -251,8 +251,8 @@ establish measured coverage at another degree or become new samples. Replicas
 are validated before exemption from local coverage. An empty or replica-only
 `writing` category can resume, but cannot become `complete`. Readers
 reject stale layout contracts, inconsistent row identities, malformed/duplicate
-rows, mixed component sets and completed linear-attention tables missing an
-entire regime. This is not a certificate for every possible grid coordinate.
+rows, mixed component sets and completed attention/linear-attention tables missing
+an entire required regime. This is not a certificate for every grid coordinate.
 
 Unmarked historical bundles keep their old block order and stored timings;
 alternative-only rows without metadata are refused. Validated choices and expanded
@@ -271,6 +271,49 @@ Use one writer per variant bundle, even for different TP/category slices, and do
 not mutate a bundle while a simulation reads it. Atomic file replacement and
 directory synchronization provide interruption safety, not locking or a live
 multi-file transaction. These checks do not establish end-to-end model accuracy.
+
+### Native DSA acquisition
+
+`deepseek_v32.yaml` retains the historical `legacy_modules_v1` representation
+and declares `native_eager_tail_v1` for the native DeepSeek-V3.2 path. Selection
+requires actual positive CUDA coverage, site invocation counts and runtime
+admission; a catalog alias does not extend this contract to GLM-5.
+
+The native sequence replaces fused units together. Its shared embedding endpoint
+already includes the first input norm; only absolute target layer 0 consumes that
+matching norm prefix. Later norms use invocation normalization. The combined
+`dsa_attention_tail` includes sparse indexing and attention, so its history axis
+remains **uncapped** even beyond `index_topk`. Historical `attention`/`indexer`
+rows are not summed with the new tail or relabeled as it.
+
+The reviewed `native-dsa-eager-tail-v1` acquisition contract requires vLLM 0.31.0,
+original-width FP8 weights with BF16 activations, physical/logical TP1 and EP1,
+PP1/DP1, eager execution and decode query length 1. It rejects MTP, offload,
+sequence parallelism, shared/skipped indexers, dense-MHA prefill, quantized query
+input and unsupported cache geometry. Source-config fields are compared with the
+resolved native config, including supported alias/RoPE normalization. Reduced
+prefix depth is checked separately, not confused with model width or identity.
+
+The existing per-TP record additionally stores `runtime.runtime_sha256`,
+`runtime.invariant_facts` and `runtime.category_engines`. The shared invariant
+binds source geometry, runtime versions, backend/cache modes and the actual
+native runner/sampler route. The profiler's transparent sampler facade does not
+change that route. Its reviewed source determines returned ID width (V1 int32,
+V2 int64); this is source-backed metadata, not a tensor-content observation.
+Category evidence retains actual reduced depths and cache capacities separately.
+
+All four categories — `dense`, `per_sequence`, `attention`, `moe` — must complete
+with matching identities and valid whole shots, even though the changed component
+sites principally span dense and attention. Missing head/MoE rows or engine
+evidence cannot be certified by completing attention alone. Compatible interrupted
+shots resume; incompatible old rows require fresh acquisition, never a metadata
+rewrite. Skew uses the same selected attention components and runtime identity.
+
+These tables currently support only explicit
+[duration trace replay](../simulator/trace-generation.md#native-dsa-duration-replay).
+The native 656-byte main cache plus 132-byte index cache is not silently passed
+to the legacy 708-byte capacity model. This does not certify full-grid coverage,
+serving memory feasibility, distributed execution or benchmark accuracy.
 
 ## Native attention lookup contract
 

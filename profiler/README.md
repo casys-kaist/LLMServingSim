@@ -35,6 +35,13 @@ Per-TP metadata rejects incomplete or incompatible publication; unmarked histori
 tables keep their original decomposition. Use one writer per variant root and keep
 published bundles immutable. See the
 [layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
+Native DeepSeek-V3.2 uses declared sequence sites and a guarded first-layer norm
+fusion. Its admitted TP1 eager representation requires complete `dense`,
+`per_sequence`, `attention` and `moe` tables sharing a runtime identity; source
+geometry, backend modes and the actual native sampler route are checked before
+acquisition. Its combined attention/indexer tail retains full-context coordinates.
+See [native DSA acquisition](../docs/docs/profiler/output-bundle.md#native-dsa-acquisition)
+for supported modes and the separate duration-only trace boundary.
 Native MiniMax-M3 attention acquisition also records a source-checked per-TP
 lookup contract: Triton BF16, 16 selected blocks of 128 tokens, gives a 2048
 sparse-prefill cap. Unmarked historical tables retain 2176; raw coordinates
@@ -145,6 +152,7 @@ profiler/                          Python package: python -m profiler
 │       ├── callable_scopes.py     declared function/method ownership and restoration
 │       ├── recurrent_metadata.py  recurrent query/history and state-page checks
 │       ├── attention_lookup.py    inspect selected native sparse backend and storage
+│       ├── runtime_admission.py   explicit native runtime/configuration admission
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
 │       └── moe_hook.py            whole-block forced routing
@@ -667,7 +675,9 @@ for the formula and legacy single-prefill compatibility.
 the `attention` category holds **more than one kernel** on a sparse model and
 they share neither a latency curve nor a skew alpha. MiniMax-M3 profiles
 `attention` (its non-sparse layers), `sparse_attention` and `indexer`;
-DeepSeek-V3.2 / GLM-5 profile `attention` (MLA) and `indexer`. Reading a
+historical DeepSeek-V3.2 / GLM-5 tables profile `attention` (MLA) and `indexer`.
+The admitted native DeepSeek representation instead measures their combined
+`dsa_attention_tail`; it must not also charge the historical pair. Reading a
 pooled table would give a sparse layer the dense kernel's latency — 2.1x per
 layer on M3.
 
@@ -732,6 +742,9 @@ batch.
   and completed table checksum. Only matching new measurements establish this
   contract; other category refreshes preserve it. Empty skew plans publish no
   new skew provenance and preserve existing files, including with `--force`.
+- `component_layouts.per_tp[tp]` — selected representation and coupled category
+  states. Native DSA additionally retains the shared runtime identity and each
+  category's live engine evidence; table presence alone cannot certify completion.
 - `skew_fit` — versioned identity, reference fingerprints, adaptive prefill
   partitions, supported N anchors, per-kernel/query defaults and table checksum.
 
