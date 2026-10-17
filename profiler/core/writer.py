@@ -1007,6 +1007,9 @@ def _engine_resolved_block(
         model_text_config = getattr(limits, "model_text_config", None)
         if model_text_config is not None:
             resolved["model_text_config"] = model_text_config
+        preparation = getattr(limits, "dummy_weight_preparation", None)
+        if preparation is not None:
+            resolved["dummy_weight_preparation"] = preparation
         merged[str(tp)] = _stringify(resolved)
     return {"per_tp": dict(sorted(merged.items(), key=lambda kv: int(kv[0])))} if merged else None
 

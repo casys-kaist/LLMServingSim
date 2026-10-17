@@ -787,6 +787,18 @@ remain fresh prompts. The ordinary acquisition protocol is
 
 ### Runtime contexts and coordinated component layouts
 
+The worker extension installs source-checked dummy-weight preparation before
+native loading. Ordinary models call the original loader unchanged. For the
+reviewed vLLM 0.31 SM120 native MXFP4/SITU backend, initialize checkpoint-format
+expert bytes with the native quantizer in bounded row chunks; preserve native
+backend selection and postload processing. Do not substitute arbitrary uint8
+values or silently emulate unsupported TP/EP layouts. KDA's nonpersistent
+decode conv/norm buffers copy their native parameter transforms after floating
+initialization, rather than receiving independent random values. Preparation,
+postload structure and measured-forward validity are separate facts. The main
+engine persists the preparation receipt; both acquisition fingerprints cover
+the adapters. This is not a complete Kimi catalog or serving-support contract.
+
 `capture_scope_contract.py` projects the whole architecture to ordinary, coverage
 and skew RPCs, preserving exclusions across category slices and including them
 in host/worker identities. Methods/operators use schema 1; explicit callable

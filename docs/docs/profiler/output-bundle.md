@@ -177,6 +177,34 @@ Both protocols preserve the prompt/output boundary of history-bearing decode
 requests, not just their query lengths and KV positions. This allows vLLM to
 select the intended prefill/decode kernels for each mixed batch.
 
+### Dummy model weight preparation
+
+Model weights and dummy KV history are separate inputs. The profiler still uses
+vLLM's native floating-weight initialization. On the reviewed vLLM 0.31 SM120
+MXFP4/SITU path, it additionally encodes expert checkpoint bytes with the native
+MXFP4 quantizer before unchanged native postload processing. A local CUDA
+generator supplies BF16 values in `[-0.001, 0.001]`; bounded row chunks use at most
+8 MiB of source staging, not a full floating copy of every expert. CUDA and CPU
+random streams are not claimed to be identical.
+
+Native KDA's nonpersistent decode buffers are normally filled by checkpoint
+callbacks that dummy loading skips. The adapter copies the convolution layout
+and FP32 norm from the initialized native parameters, preserving their relation
+instead of randomizing the derived buffers independently. These checks and
+copies occur outside timed forwards.
+
+The packed path requires the source-checked native auto-selected
+`DEEPGEMM_MXFP4` backend, BF16 activations and unsharded TP/PP/DP/EP1 without
+MTP or offload. Unknown sources, layouts or synthetic sharding fail before
+publication. Ordinary models call the original loader unchanged; this contract
+does not add a universal quantized-weight initializer or complete model support.
+
+An authoritative main engine retains `dummy_weight_preparation` under
+`engine_resolved.per_tp`. Its completed initialization and postload-layout checks
+do not certify finite forwards, catalog coverage or benchmark accuracy. Those
+remain independent acquisition gates. Both ordinary and skew source identities
+include these adapters, so incompatible old rows require remeasurement.
+
 ### Packed attention history
 
 The NVIDIA vLLM 0.31 acquisition path supports these exact opaque cache formats:

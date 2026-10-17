@@ -21,6 +21,10 @@ Recurrent warmup checks distinguish GDN's prefill-only views from native KDA's
 complete non-speculative view without relaxing state-page or token checks.
 See the [acquisition contract](../docs/docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
 for the supported metadata paths and remeasurement requirements.
+Dummy loading prepares supported native MXFP4 expert bytes and KDA derived
+buffers before vLLM's unchanged postload processing. Ordinary models retain
+their native initialization. Preparation receipts are not forward-validation
+certificates; see [dummy weights](../docs/docs/profiler/output-bundle.md#dummy-model-weight-preparation).
 Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
 Qwen's GDN output projection. This describes simulator communication, not a new
 profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).

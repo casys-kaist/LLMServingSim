@@ -19,6 +19,10 @@ from profiler.core.hooks.moe_hook import (
 from profiler.core.hooks.sampler_shim import wrap_sampler_for_profiling
 from profiler.core.hooks.runner_capture import capture, verified_warmup
 from profiler.core.hooks.activity_collector import coverage_report
+from profiler.core.hooks.dummy_weights import install as _install_dummy_weights
+
+# vLLM resolves the worker extension before constructing/loading the model.
+_install_dummy_weights()
 
 
 class Extension:
@@ -28,6 +32,10 @@ class Extension:
     injects ``self.model_runner`` via attribute assignment before any
     ``collective_rpc`` call.
     """
+
+    def dummy_weight_preparation(self):
+        from .dummy_weights import preparation_facts
+        return preparation_facts(self.model_runner.get_model())
 
     def component_runtime_admission(self, descriptor, shot_dict=None):
         """Read and validate an explicitly declared native execution contract."""

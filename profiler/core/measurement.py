@@ -33,7 +33,8 @@ def layerwise_measurement(catalog, iterations, *, scope_contexts=None,
         'extension.py', 'cuda_timing.py', 'activity_collector.py', 'runner_capture.py',
         'recurrent_metadata.py', 'tp_shape.py', 'method_scopes.py', 'operator_scopes.py', 'capture_scope_contract.py',
         'skew_measurement.py', 'timings.py', 'batch.py', 'moe_hook.py',
-        'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py')]
+        'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py',
+        'dummy_weights.py', 'dummy_weight_layouts.py')]
     if contexts.get('callables'):
         files.append(hooks / 'callable_scopes.py')
     from .attention_lookup import protocol

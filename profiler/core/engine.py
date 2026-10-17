@@ -100,6 +100,8 @@ class RuntimeLimits:
     # Persisted for authoritative main engines so consumed overrides survive
     # deletion of the temporary local config.
     model_text_config: dict[str, Any] | None = None
+    # Initialization and postload checks, not a forward-execution certificate.
+    dummy_weight_preparation: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +346,9 @@ def spin_up(
               cleaned up.
     """
     kwargs = fuse_engine_kwargs(args, tp, stack_axes)
+    from .hooks.dummy_weights import validate_execution_scope
+    validate_execution_scope(args.model_config, tp=tp, moe_ep=moe_ep,
+                             profile_mtp=args.profile_mtp, kwargs=kwargs)
 
     # Materialize the model's config.json in a temp directory so vLLM
     # can load it directly from disk.
@@ -351,12 +356,14 @@ def spin_up(
         "spin_up requires ProfileArgs.model_config; fuse_engine_kwargs "
         "should have caught this already."
     )
-    tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
-    config_path = tmpdir / "config.json"
     materialized = _materialize_config(args.model_config, kwargs)
+    validate_execution_scope(materialized, tp=tp, moe_ep=moe_ep,
+                             profile_mtp=args.profile_mtp, kwargs=kwargs)
     if args.profile_mtp:
         materialized = _cap_mtp_modules(materialized)
     materialized = _slice_experts_for_ep(materialized, moe_ep)
+    tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
+    config_path = tmpdir / "config.json"
     config_path.write_text(json.dumps(materialized, indent=2))
     log.debug("model config written to %s", config_path)
 
@@ -374,8 +381,44 @@ def spin_up(
             "num_speculative_tokens": 1,
         }
 
-    with log.capture_stdio():
-        llm = LLM(**kwargs)
+    llm = None
+    try:
+        with log.capture_stdio():
+            llm = LLM(**kwargs)
+        receipts = llm.collective_rpc("dummy_weight_preparation", args=())
+        if not isinstance(receipts, list) or len(receipts) != 1:
+            raise ValueError("Expected one dummy-preparation worker receipt")
+        receipt = receipts[0]
+        from .hooks.dummy_weights import format_intent
+        if format_intent(materialized) and receipt is None:
+            raise ValueError("Native MXFP4 engine has no dummy-preparation receipt")
+        if receipt is not None:
+            from .hooks.dummy_weights import POLICY
+            if (not isinstance(receipt, dict) or receipt.get("policy") != POLICY
+                    or receipt.get("complete") is not True
+                    or receipt.get("forward_verified") is not False
+                    or receipt.get("postload", {}).get("structure_verified") is not True
+                    or receipt.get("postload", {}).get("forward_verified") is not False):
+                raise ValueError("Worker dummy-preparation receipt is incomplete or incompatible")
+            import hashlib
+            hook_dir = Path(__file__).parent / "hooks"
+            expected_sources = {name: hashlib.sha256((hook_dir/name).read_bytes()).hexdigest()
+                                for name in ("dummy_weights.py", "dummy_weight_layouts.py")}
+            if receipt.get("adapter_source_sha256") != expected_sources:
+                raise ValueError("Worker dummy-preparation adapter source differs from host")
+            receipt = copy.deepcopy(receipt)
+            receipt["checkpoint_quantization"] = {
+                key: copy.deepcopy(holder["quantization_config"])
+                for key, holder in (("root", args.model_config),
+                                    ("text", args.model_config.get("text_config")))
+                if isinstance(holder, dict) and "quantization_config" in holder}
+        llm._profiler_dummy_weight_preparation = receipt
+    except BaseException:
+        if llm is not None:
+            spin_down(llm, tmpdir)
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     return llm, kwargs, tmpdir
 
 
@@ -553,6 +596,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
         top_k=top_k,
         key_saturation=key_saturation,
         model_text_config=copy.deepcopy(cfg_dict),
+        dummy_weight_preparation=copy.deepcopy(getattr(llm, "_profiler_dummy_weight_preparation", None)),
     )
 
 

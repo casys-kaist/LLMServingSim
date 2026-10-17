@@ -59,6 +59,8 @@ routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler
 Recurrent warmup checks respect native metadata layouts without adding CPU time;
 the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)
 states their scope separately from model support.
+Source-checked packed-weight and derived-buffer preparation is also untimed;
+see the [dummy-weight contract](https://llmservingsim.ai/docs/profiler/output-bundle#dummy-model-weight-preparation).
 See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components,

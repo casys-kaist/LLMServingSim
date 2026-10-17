@@ -37,6 +37,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Prepare native MXFP4 dummy expert weights and KDA derived buffers before
+  unchanged vLLM postload processing. Bound staging memory, validate supported
+  source/layout contracts and record preparation separately from forward checks;
+  ordinary models retain native initialization. Changed acquisition identities
+  require remeasurement.
 - Validate native KDA recurrent metadata without requiring GDN-only prefill
   views. Preserve query/history and state-page checks, reject unsupported
   metadata modes, and require remeasurement after acquisition identity changes.

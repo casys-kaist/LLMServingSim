@@ -82,6 +82,9 @@ also specifies declared function/method targets, normalization and restoration;
 the coverage and output guides distinguish unavailable alternatives from positive
 CUDA coverage, separate observed invocation counts from normalization divisors,
 and require compatible acquisition identities for resume.
+The [dummy-weight contract](docs/profiler/output-bundle.md#dummy-model-weight-preparation)
+separates source-checked packed/derived initialization and postload layout
+observations from forward correctness or model support.
 The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.

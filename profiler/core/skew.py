@@ -161,7 +161,8 @@ def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sh
         value.update((hooks.parent / name).read_bytes())
     for name in ("skew_measurement.py", "activity_collector.py", "runner_capture.py", "cuda_timing.py", "timings.py",
                  "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
-                 "recurrent_metadata.py", "tp_shape.py", "method_scopes.py", "operator_scopes.py", "capture_scope_contract.py"):
+                 "recurrent_metadata.py", "tp_shape.py", "method_scopes.py", "operator_scopes.py", "capture_scope_contract.py",
+                 "dummy_weights.py", "dummy_weight_layouts.py"):
         value.update((hooks / name).read_bytes())
     if contexts.get('callables'):
         value.update((hooks / 'callable_scopes.py').read_bytes())
