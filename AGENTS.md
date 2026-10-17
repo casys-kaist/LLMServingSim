@@ -395,11 +395,10 @@ everything else over from the file:
   19,839,182 — and `_resolve_block_size` reads that block size whenever
   `--block-size` is omitted, which is the documented way to get the profiled
   value. Three of the four modern bundles had it.
-- `attention_grid` may only be rewritten by a run that swept attention. It now
-  records **`decode_q_lens`** as well, because the fifth axis is not derivable
-  from the other four (a `q > 1` sweep yields no pure-prefill shot, so the row
-  count cannot tell you which query lengths were fired) and a bundle holding
-  five of them while the meta records none reads as a `q=1` sweep.
+- `attention_grid` may only be rewritten by a run that swept attention. It
+  records **`decode_q_lens`** explicitly: row counts do not establish requested
+  query-length coverage, and the once-only `q=1` pure-prefill rows do not imply
+  that ordinary `q=1` decode was requested or measured.
 
 An empty `limits` argument now **preserves** `engine_resolved` rather than
 erasing it, which is how the MTP refresh could delete what the main engine
@@ -934,6 +933,13 @@ and check every acquired shot. Never infer it from model/version names or absent
 kernels. Small probes do not certify unmeasured shapes, backends or deployments.
 Discovery uses fixed `runner._COVERAGE_REGIMES`, not limits-adapted probes; small
 engine envelopes can reject discovery even when their requested grid is valid.
+Validate all fixed probes on the host before the first worker RPC. Their minimum
+envelope is 5 requests, `max_model_len >= 258` and an acquisition token buffer
+of at least 68 (the logical token budget plus `max_num_seqs`). Refuse an undersized
+envelope without resizing or skipping probes. `hooks.batch.validate_shot_limits`
+also checks ordinary synthetic request count, query-token total and per-request
+history plus query plus one output against actual engine buffers before page
+allocation or GPU work; preserve this guard for direct worker calls.
 
 `meta.yaml.component_layouts` (`component-layouts`, per TP) is the sole authority.
 Publish `pending` before clearing, `writing` with identity, then `complete` only
@@ -1353,14 +1359,43 @@ gap is noise -- and wrong for a saturating kernel, where the gap is negative
 for essentially every case, so a sparse skew sweep would have had almost every
 row dropped as `nan`.
 
+### Target graph coordinates and eager acquisition
+
+`profiler/core/sampling.py` combines geometric points with target serving graph
+coordinates through the shared `serving/core/cudagraph.py` resolver. Acquisition
+always remains eager. Explicit `--cudagraph` JSON overrides the target policy;
+otherwise prefer a scope-matching completed worker capture observation and derive
+candidates only when none matches. Label observed captures, explicit options and
+derived candidates separately. Acquisition-backend capability and a requested
+grid do not establish full-model capture. Resolve from logical scheduler limits,
+not padded acquisition buffer sizes; retain runner, query length, TP/compiler-SP
+and hardware distinctions. Explicit `NONE` disables graph anchors.
+
+Dense token grids include forward anchors; TP1 also unions the requested TP
+degrees' anchors for TP-stable replication. Target logits and sampler execute
+outside the backbone graph, so per-sequence sampling stays geometric. Attention
+and linear attention add pure-decode request anchors only for FULL-capable modes
+at the supported query length, and pure-prefill anchors only for `FULL`; mixed
+shots retain geometric axes. Keep context, block-rounded KV and scheduler
+feasibility checks. MTP adds drafter request anchors only: its table has no
+complete first-pass query/token dimension. Skew keeps independent axes.
+
+Root `per_tp[tp].sampling[category]` records the feasible plan, factors, target
+coordinates, provenance and category limitations; it does not certify completed
+measurements. Report excluded dense capture points. Native MoE records transformed
+`expert_sampling.capture_tokens` and `sampling_graph` in each target contract;
+do not place metadata in CSV columns or reinterpret eager timings as graph times.
+
 ### Attention-grid density and acquisition cost
 
-`SQRT2 = 2.0 ** 0.5` in `profiler/core/config.py` is the default factor for
-the three attention factor settings, covering four shape axes: the KV factor
-controls both prefill-key and decode-KV. The editable `profile.sh` leaves
+`--grid-factor` defaults to 2 for ordinary geometric token/request coordinates.
+Attention chunk/KV, skew and native MoE retain separate factor controls, all
+defaulting to 2; only attention request counts retain `SQRT2 = 2.0 ** 0.5`.
+The KV factor controls both prefill-key and decode-KV. The editable `profile.sh` leaves
 optional settings unset and forwards only explicit nonempty values, so the
 CLI owns its defaults. Keep every `profile` option reachable from the template,
-including `DP_DEGREES` (`--dp`), `EP_DEGREES` (`--ep`), `MOE_ROUNDS` and explicit logging; do not
+including `GRID_FACTOR`, JSON-valued `CUDAGRAPH`, `DP_DEGREES` (`--dp`),
+`EP_DEGREES` (`--ep`), `MOE_ROUNDS` and explicit logging; do not
 silently enable a TP sweep or native DP acquisition. The separate multi-model
 `profile-all.sh` remains an explicitly configured campaign, not a default-parity
 wrapper. What picks sqrt(2)
@@ -1432,11 +1467,10 @@ different kind of evidence from the one that reverted `attention_chunk_factor`
 different vLLM versions, while this is measured against the same engine in the
 same run.
 
-**For chunk and kv there is no accuracy evidence at all**, and the one A/B
-there says density did *not* help: on a 0.28-eager truth the x2 grid read
-|err| p50 2.7% against the 1.5 union's 3.4%. sqrt(2) on those axes is an
-operational choice -- future refreshes stay incremental -- not an accuracy
-one. Do not let the `n_decode` result launder a claim about them.
+Chunk and KV axes default to doubling. The request-count evidence above does
+not establish an accuracy benefit from densifying those other axes. Target
+graph anchors add relevant pure-regime coordinates without changing their
+geometric defaults or turning eager measurements into graph measurements.
 
 **Skew acquisition density is separate from fit resolution.** Its geometric
 factors retain their defaults in `ProfileArgs`; the new compiler creates N
@@ -1869,13 +1903,12 @@ up shot for shot with a re-profile.
 
 Two shapes of the grid are worth knowing when planning a run:
 
-- **The split.** `q > 1` never yields a pure-prefill shot, and `decode_q_len`
-  is part of the sink's row key, so a `q=1` sweep and a `q=N` sweep are
-  disjoint and their union is exactly the combined grid. One model's attention
-  sweep can therefore run one half per GPU and the CSVs concatenate. Pin
-  `--attention-max-kv` on both halves when doing this: the resolver reads
-  `max(decode_q_lens)`, so the halves would otherwise derive different caps and
-  sweep different kv sets.
+- **Query coverage.** Each requested query length adds decode-containing shots;
+  pure prefill is emitted once at `q=1`, even if `1` is not requested. Separate
+  sweeps can therefore overlap on prefill rows. Prefer a combined acquisition;
+  independent runs need separate output roots, an explicit common KV bound and
+  compatible identities before any merge. `decode_q_len` remains part of the row
+  key. FULL-prefill anchors union the target configurations' capture sizes.
 - **The reach.** `--attention-max-kv` defaults to the model's own context,
   `max_model_len - max(decode_q_len) - 1` — not `max_model_len`, which gets
   the top point filtered (a decode occupies `kv + q` positions and needs one
@@ -2346,8 +2379,12 @@ New plans use `--moe-grid-factor` (default 2) for input rows N, active local
 experts A and local assignments M, including feasible endpoints, envelope
 corners and balanced-total anchors. At EP1 M=N*k collapses the assignment axis.
 `expert_sampling` belongs in the root contract; CSV columns remain unchanged.
-The grid is not yet selected from serving capture sizes. New acquisition must
-not create CUDA graphs; eager timing and serving-padded coordinates are distinct.
+Target serving capture tokens G supplement the geometric token axes after
+`target.token_domains((G,) * target.dp)` maps them to local and expert rows.
+Capture sizes never determine A or M. Keep transformed anchors in
+`expert_sampling.capture_tokens` and source/target information in `sampling_graph`.
+New acquisition must not create CUDA graphs; eager timing and serving-padded
+coordinates are distinct.
 
 Serving automatically consumes matching tables for the supported modular,
 unquantized local or DP+EP path. Local components use token interpolation.

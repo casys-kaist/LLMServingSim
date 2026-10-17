@@ -113,6 +113,11 @@ HARDWARE="RTXPRO6000"
 # a smaller GPU_MEMORY_UTILIZATION.
 # PROFILE_MTP=1
 
+# --- Sampling policy --------------------------------------------------------
+# Target graph capture points guide sampling; acquisition remains eager.
+# GRID_FACTOR=2.0                # ordinary non-graph token/request spacing
+# CUDAGRAPH='{"mode":"FULL_AND_PIECEWISE","runner":"v1"}'
+
 # --- Attention grid ---------------------------------------------------------
 # Bounds the histories used to construct attention shots. Unset/empty uses
 # the engine's resolved context bound with room for the decode queries.
@@ -120,10 +125,10 @@ HARDWARE="RTXPRO6000"
 # ATTENTION_MAX_KV=16384
 # Geometric factors: smaller values (>1) make denser, more expensive grids.
 # The KV factor controls both prefill-key and decode-KV; costs multiply across
-# all four shape axes. All three factors inherit the CLI's sqrt(2) default.
+# all four shape axes. Chunk/KV default to 2; request counts default to sqrt(2).
 # Existing rows are reusable only with compatible identities and exact keys.
-# ATTENTION_CHUNK_FACTOR=1.4142135623730951
-# ATTENTION_KV_FACTOR=1.4142135623730951
+# ATTENTION_CHUNK_FACTOR=2.0
+# ATTENTION_KV_FACTOR=2.0
 # ATTENTION_N_FACTOR=1.4142135623730951
 # Query tokens per decode sequence. "1" is ordinary decoding. A
 # speculative-decoding verification step submits 1 + num_speculative_tokens
@@ -131,7 +136,7 @@ HARDWARE="RTXPRO6000"
 # kernel tile shape rather than a bigger one -- so the simulator falls back to
 # the nearest profiled value with a warning instead of interpolating. Profile
 # the values you intend to simulate: "1,5" for N=4, "1,4" for N=3. Each extra
-# value adds a decode-containing grid; q > 1 omits pure-prefill shots.
+# value adds a decode-containing grid; pure prefill is measured once at q=1.
 # ATTENTION_DECODE_Q_LENS="1,5"
 
 # --- Measurement averaging --------------------------------------------------
@@ -216,6 +221,8 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${EP_DEGREES:-}" ]]             && cmd+=(--ep "$EP_DEGREES")
 [[ -n "${MOE_ROUNDS:-}" ]]             && cmd+=(--moe-rounds "$MOE_ROUNDS")
 [[ -n "${MOE_GRID_FACTOR:-}" ]]        && cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
+[[ -n "${GRID_FACTOR:-}" ]]            && cmd+=(--grid-factor "$GRID_FACTOR")
+[[ -n "${CUDAGRAPH:-}" ]]              && cmd+=(--cudagraph "$CUDAGRAPH")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.

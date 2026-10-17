@@ -32,6 +32,11 @@ class Extension:
         from .dummy_weights import preparation_facts
         return preparation_facts(self.model_runner.get_model())
 
+    def sampling_runtime(self):
+        """Read acquisition device/backend facts without creating CUDA graphs."""
+        from .sampling_runtime import snapshot
+        return snapshot(self)
+
     def native_profile_admission(self, architecture, descriptor):
         from profiler.core.callable_profile import profile_for
         profile = profile_for(architecture)

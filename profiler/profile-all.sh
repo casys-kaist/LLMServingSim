@@ -72,6 +72,8 @@ for job in "${JOBS[@]}"; do
     [[ -n "${EP_DEGREES:-}" ]]            && cmd+=(--ep "$EP_DEGREES")
     [[ -n "${MOE_ROUNDS:-}" ]]            && cmd+=(--moe-rounds "$MOE_ROUNDS")
     # Optional globals, only when set.
+    [[ -n "${GRID_FACTOR:-}" ]]            && cmd+=(--grid-factor "$GRID_FACTOR")
+    [[ -n "${CUDAGRAPH:-}" ]]              && cmd+=(--cudagraph "$CUDAGRAPH")
     [[ -n "${TP_DEGREES:-}" ]]             && cmd+=(--tp "$TP_DEGREES")
     [[ -n "${BLOCK_SIZE:-}" ]]             && cmd+=(--block-size "$BLOCK_SIZE")
     [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")

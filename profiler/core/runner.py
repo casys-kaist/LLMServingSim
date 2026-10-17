@@ -106,9 +106,9 @@ def _component_layout_context(llm, category, arch, scope_contexts, args=None, tp
     # Do not cache across engine boots or TP degrees. Per-shot probes below
     # additionally reject shape-dependent changes after these three checks.
     reports_by_rank = None
-    for regime, spec in _COVERAGE_REGIMES:
+    for regime, shot in _coverage_shots(llm.llm_engine.vllm_config):
         reports = llm.collective_rpc(
-            "coverage", args=(Shot.attention(**spec).as_dict(), probes, 1, scope_contexts))
+            "coverage", args=(shot.as_dict(), probes, 1, scope_contexts))
         if reports_by_rank is None:
             reports_by_rank = [{} for _ in reports]
         if not reports or len(reports) != len(reports_by_rank):
@@ -208,10 +208,15 @@ def _fire_one_category(
         attention_lookup_sha256=attention_sha, runtime_sha256=runtime_sha256,
         native_profile_sha256=native_scope_token(native_scope) if native_scope is not None else None)
     measurement = measurement_token(identity)
+    from .sampling import resolve_sampling, record_category
+    from .bundle_metadata import read_bundle
+    limits.sampling_plan = resolve_sampling(args, limits, tp, meta=read_bundle(out_dir.parent),
+                                            include_stable=category.name == 'dense')
     all_shots = list(category.compose_shots(arch, args, limits, tp))
     if not all_shots:
         log.warning('category %s produced no shots for tp=%d; skipping', category.label, tp)
         return False
+    record_category(out_dir, category, args, limits.sampling_plan, all_shots)
     native_record = (CategoryRecord(out_dir, category, arch, all_shots, catalog_slice,
                       measurement, native_scope, replace=wipe, identity=identity, tp=tp)
                      if native_scope is not None else None)
@@ -307,8 +312,8 @@ def _fire_one_category(
                 raise ValueError('Worker timings do not match the requested acquisition method')
             if layout_context is not None:
                 # These two categories carry q=1 decodes only. Reuse the
-                # existing linear-category coordinate partition: its Shot
-                # constructor predates n_prefill and leaves that field zero.
+                # existing linear-category coordinate partition, including
+                # explicit one-token prefill roles.
                 from profiler.core.categories import _split_linear_attention_shot
                 prefill, decode = _split_linear_attention_shot(shot)
                 regime = "mixed" if prefill and decode else "prefill" if prefill else "decode"
@@ -689,6 +694,20 @@ _COVERAGE_REGIMES: tuple[tuple[str, dict[str, int]], ...] = (
 )
 
 
+def _coverage_shots(config):
+    """Check every discovery shape before the first direct worker call."""
+    from .hooks.batch import validate_shot_limits
+    shots = [(name, Shot.attention(**spec)) for name, spec in _COVERAGE_REGIMES]
+    for name, shot in shots:
+        try:
+            validate_shot_limits(shot, config)
+        except ValueError as exc:
+            raise ValueError(f'{name} layout/coverage probe does not fit the acquisition '
+                             f'limits: {exc}. Use max_num_seqs >= 5, max_model_len >= 258 '
+                             'and an acquisition token buffer >= 68 for these probes.') from exc
+    return shots
+
+
 def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport]:
     """Report how much of the model's CUDA time the catalog binds.
 
@@ -729,8 +748,7 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     scope_contexts = contexts_from_architecture(arch)
     try:
         reports_by_rank = None
-        for label, spec in _COVERAGE_REGIMES:
-            shot = Shot.attention(**spec)
+        for label, shot in _coverage_shots(llm.llm_engine.vllm_config):
             raw = llm.collective_rpc(
                 "coverage",
                 args=(shot.as_dict(), whole_catalog, 1, scope_contexts),

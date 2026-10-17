@@ -197,7 +197,7 @@ class Shot:
             raise ValueError(
                 "linear_attention Shot needs prefill_tokens or n_decode"
             )
-        return cls(requests=reqs)
+        return cls(requests=reqs, n_prefill=int(prefill_tokens > 0))
 
 
 
@@ -239,6 +239,30 @@ def _kv_group_block_sizes(model_runner) -> list[int]:
     return [int(bt.block_size) * int(bt.blocks_per_kv_block) for bt in block_tables]
 
 
+def validate_shot_limits(shot: Shot, config):
+    """Reject synthetic batches before allocating pages or launching GPU work.
+
+    Direct worker calls bypass the scheduler's safety checks. Use the actual
+    acquisition buffer limits here, not the smaller logical sampling budget.
+    """
+    if not shot.requests or any(type(q) is not int or type(h) is not int or q < 1 or h < 0
+                                for q, h in shot.requests):
+        raise ValueError('Profiling shots require positive query and nonnegative history lengths')
+    if type(shot.n_prefill) is not int or not 0 <= shot.n_prefill <= len(shot.requests):
+        raise ValueError('Invalid profiling prefill request count')
+    scheduler, model = config.scheduler_config, config.model_config
+    if len(shot.requests) > scheduler.max_num_seqs:
+        raise ValueError(f'Profiling shot has {len(shot.requests)} requests, exceeding '
+                         f'engine max_num_seqs={scheduler.max_num_seqs}')
+    tokens = sum(q for q, _ in shot.requests)
+    if tokens > scheduler.max_num_batched_tokens:
+        raise ValueError(f'Profiling shot has {tokens} query tokens, exceeding '
+                         f'engine max_num_batched_tokens={scheduler.max_num_batched_tokens}')
+    if max(q + h for q, h in shot.requests) + 1 > model.max_model_len:
+        raise ValueError(f'Profiling shot needs history + query + one output within '
+                         f'max_model_len={model.max_model_len}')
+
+
 def assemble_scheduler_output(shot: Shot, model_runner):
     """Build a ``SchedulerOutput`` describing the shot's synthetic batch.
 
@@ -247,6 +271,7 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         the set of request IDs we created so callers can correlate
         with ``execute_model``'s output if needed.
     """
+    validate_shot_limits(shot, model_runner.vllm_config)
     # Local imports: these symbols must come from whatever vLLM is
     # actually installed in the worker — not from a cached import at
     # host-side module load time.

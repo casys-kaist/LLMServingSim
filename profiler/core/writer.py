@@ -516,12 +516,12 @@ def _geometric_spec(values) -> Any:
 
 
 def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
-    """Compact spec of the attention sweep axes actually fired.
+    """Compact spec of the attention base axes before feasibility filtering.
 
     The knobs (max_kv / chunk_factor / kv_factor) are retained so the
     old field names still carry information; the three spec strings
-    give a human-readable view of the values ``AttentionCategory``
-    walked during profiling.
+    give a human-readable view of its geometric grid. Per-TP sampling records
+    add pure-regime graph anchors without widening the mixed Cartesian product.
     """
     from profiler.core.categories import (
         _geometric_grid, _ATTN_CHUNK_START,
@@ -548,6 +548,7 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
         "chunk_factor": args.attention_chunk_factor,
         "kv_factor": args.attention_kv_factor,
         "n_factor": args.attention_n_factor,
+        "scope": "geometric base; per_tp sampling adds pure-regime capture coordinates",
         # Which quantity the CSV's second prefill column holds. A bundle
         # without this field predates the change and carries ``kv_prefill``,
         # one sequence's context, which the simulator has to relabel before

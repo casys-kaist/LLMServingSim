@@ -71,8 +71,11 @@ to the root metadata and component CSVs, preserving global top-k and separating
 local routing, gathered expert work and applicable finalization. New measurements
 are eager only, without isolated graph capture. Expert points cover tokens,
 active local experts and local assignments; `--moe-grid-factor` defaults to
-`2` and retains feasible geometry corners. This grid does not follow serving
-CUDA capture sizes. Quantized and shared-expert paths remain unsupported for
+`2` and retains feasible geometry corners. Target serving capture sizes also
+anchor token rows after DP/SP transformation; active experts and assignments
+retain their own axes. [Sampling policy](./running#sampling-policy) distinguishes
+observed captures from derived candidates, while acquisition stays eager.
+Quantized and shared-expert paths remain unsupported for
 new component acquisition. Historical `moe.csv` reads remain available; the
 whole-block acquisition path has been removed.
 

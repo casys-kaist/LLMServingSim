@@ -195,8 +195,9 @@ TP>1 still means full EP, not tensor-sharded experts.
 New component measurements are eager only, without isolated CUDA graph capture.
 Expert sampling covers tokens N, active local experts A and local assignments M.
 `--moe-grid-factor` (`MOE_GRID_FACTOR`, default `2`) controls geometric spacing
-on all three axes, with mandatory feasible geometry corners. This grid does not
-follow serving CUDA capture sizes. Sampling and conditioning checks do not by
+on all three axes, with mandatory feasible geometry corners. Target serving
+graph points supplement token rows after DP/SP transformation; A and M retain
+their own feasible axes. Sampling and conditioning checks do not by
 themselves establish full-model accuracy.
 
 Omitted DP does not affect dense models, coverage, ordinary category slices or
@@ -210,6 +211,51 @@ Whole-block acquisition and `--moe-ep-degrees` have been removed. Historical
 Quantized, shared-expert and other unsupported native paths fail explicitly;
 no removed whole-block acquisition is substituted. See
 [Output bundle](./output-bundle) for compatibility and fallback behavior.
+
+## Sampling policy
+
+Acquisition remains eager. The sampling plan combines geometric coordinates
+with target serving graph coordinates where a category uses graph-padded work.
+Matching completed worker capture observations in the bundle take precedence
+over derived defaults. Explicit `--cudagraph` options override that selection.
+Without a matching observation, the shared serving resolver derives candidates
+from logical scheduler limits, query length, target TP/compiler SP, runner and
+available compute-capability/backend facts. An acquisition backend's capability
+is not evidence that a full serving model completed those captures.
+
+`--grid-factor` (`GRID_FACTOR`, default `2`) controls ordinary geometric
+token/request spacing. Attention, skew and native MoE keep their separate factor
+options; their defaults are also `2`, except `--attention-n-factor`, which
+retains sqrt(2). Graph anchors supplement these grids and do not replace
+feasibility checks, KV history axes or expert-work axes.
+
+| Category | Graph-coordinate coverage |
+| --- | --- |
+| Dense | Forward-token anchors; TP1 measurements for stable entries include anchors from requested TP degrees |
+| Per sequence | Geometric actual output rows; target logits and sampler run outside the backbone graph |
+| Attention and linear attention | Pure-decode request anchors for FULL-capable modes at the selected query length; pure-prefill anchors only for `FULL`; mixed axes remain geometric |
+| Native MoE | Capture tokens mapped through target DP/SP token domains into local and expert rows; active experts and assignments remain independent |
+| MTP | Drafter request anchors only; the table does not represent the complete first-pass query/token layout |
+| Skew | Existing independent geometric acquisition axes |
+
+`--cudagraph` accepts a JSON object with `mode`, `capture_sizes`,
+`max_capture_size`, `enable_sp` and `runner`. Modes are `NONE`, `PIECEWISE`,
+`FULL`, `FULL_DECODE_ONLY` and `FULL_AND_PIECEWISE`; runners are `v1` and `v2`.
+Use the effective target mode after attention-backend capability resolution.
+An explicit `NONE` requests geometric sampling without graph anchors.
+
+```bash
+python -m profiler profile <model> --hardware <hw> \
+    --grid-factor 2 \
+    --cudagraph '{"mode":"FULL_AND_PIECEWISE","runner":"v2","capture_sizes":[1,2,4,8,16,32,64]}'
+```
+
+These options describe target sampling only; they never enable acquisition
+graphs or certify graph-specific latency. Both wrappers forward `GRID_FACTOR`
+and JSON-valued `CUDAGRAPH` only when explicitly nonempty. Sampling metadata
+records observed or derived provenance, resolved coordinates and feasible
+plan size separately from measurement completion. See the
+[output metadata](./output-bundle#sampling-plans).
 
 ## Attention grid
 
@@ -231,9 +277,9 @@ just its size.
 :::
 
 :::tip[Keep query-length coverage and metadata together]
-`q > 1` omits pure-prefill shots, and `decode_q_len` is part of the row key.
-Each additional value adds a decode-containing grid; it does not double all
-previous grids. Prefer a combined acquisition:
+`decode_q_len` is part of the row key. Each additional value adds a
+decode-containing grid; pure prefill is emitted once with `q=1`, including
+when the requested decode query lengths omit `1`. Prefer a combined acquisition:
 
 ```bash
 python -m profiler slice <model> --hardware <hw> \
@@ -521,12 +567,14 @@ flags for any non-empty value, including `0`; unset them to disable.
 | `--ep` | all full-EP targets (TP*DP); optional comma-separated filter | `EP_DEGREES` |
 | `--moe-rounds` | `3` | `MOE_ROUNDS` |
 | `--moe-grid-factor` | `2.0` | `MOE_GRID_FACTOR` |
+| `--grid-factor` | `2.0` | `GRID_FACTOR` |
+| `--cudagraph` | matching observed policy, else derived candidates | `CUDAGRAPH` (JSON object) |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | resolved context minus `max(decode_q_len) + 1` | `ATTENTION_MAX_KV` |
 | `--attention-decode-q-lens` | `1` | `ATTENTION_DECODE_Q_LENS` |
-| `--attention-chunk-factor` | square root of 2 | `ATTENTION_CHUNK_FACTOR` |
-| `--attention-kv-factor` | square root of 2 | `ATTENTION_KV_FACTOR` |
+| `--attention-chunk-factor` | `2.0` | `ATTENTION_CHUNK_FACTOR` |
+| `--attention-kv-factor` | `2.0` | `ATTENTION_KV_FACTOR` |
 | `--attention-n-factor` | square root of 2 | `ATTENTION_N_FACTOR` |
 | `--measurement-iterations` | `3` | `MEASUREMENT_ITERATIONS` |
 | `--skip-skew` | off | `SKIP_SKEW=1` |
@@ -893,6 +941,13 @@ a change to measured latencies.
 Layout discovery requires positive prefill/decode/mixed CUDA coverage and per-shot
 agreement. Its [fixed probes](./output-bundle#runtime-selected-component-layouts)
 must fit the engine envelope; they are not adapted to smaller configured limits.
+Coverage and component-layout discovery require `max_num_seqs >= 5`,
+`max_model_len >= 258` and an acquisition query-token buffer of at least `68`
+(the logical token budget plus `max_num_seqs`). Every fixed probe is checked
+before the first worker call; an undersized configuration is refused without
+resizing or skipping probes. Ordinary synthetic shots also check request count,
+query-token total and per-request history plus query plus one output before
+page allocation or GPU execution.
 Small probes do not certify unmeasured shapes or deployments; see the
 [hybrid trace limits](../examples/model-families/hybrid-linear-attention#packed-core-traces).
 

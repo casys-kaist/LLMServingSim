@@ -24,6 +24,7 @@ profiler/                          Python package: python -m profiler
 │   ├── config.py                  architecture, ProfileArgs and engine defaults
 │   ├── engine.py                  vLLM lifecycle and resolved engine limits
 │   ├── categories.py              per-category shot grids and measurement
+│   ├── sampling.py                target graph anchors and geometric sampling
 │   ├── attention_shape.py         shared attention geometry and feasibility
 │   ├── measurement.py             acquisition identity and timing protocols
 │   ├── bundle_metadata.py         locked updates to the variant-root metadata document
@@ -128,6 +129,7 @@ not run profiling, replace CSVs or certify eager timings as graph timings.
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
 | **MoE parallelism** | Native DP1 components by default; `--dp` selects target degrees with EP=TP*DP; optional `--ep` filters those targets; `--moe-rounds` controls repetitions and `--moe-grid-factor` (default `2`) spaces all three expert axes |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
+| **sampling policy** | `--grid-factor` (default `2`), `--cudagraph` (target serving JSON; acquisition stays eager) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-n-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
 | **measurement** | `--measurement-iterations` |
@@ -202,9 +204,9 @@ The main contributors to acquisition time, in rough order of effect:
    more shots clear the feasibility filters -- wider coverage, and a grid not
    row-for-row comparable with a deeper run's.
 
-3. `--attention-chunk-factor` / `--attention-kv-factor` — coarsen the
-   axes geometrically. The CLI defaults to the square root of 2; setting
-   either to 2.0 is an explicit coarser-grid override.
+3. `--attention-chunk-factor` / `--attention-kv-factor` — adjust geometric
+   spacing, defaulting to doubling. Attention request counts retain sqrt(2).
+   Target graph anchors remain in applicable pure-regime shots.
 
 4. `--attention-max-kv` — defaults to the model's own context
    (`max_model_len - max(decode_q_len) - 1`, not `max_model_len` itself: a
@@ -217,7 +219,8 @@ The main contributors to acquisition time, in rough order of effect:
 
 5. `--attention-decode-q-lens` (`1`) — each extra value adds a separate
    decode-containing grid, not another doubling of the accumulated sweep.
-   `q > 1` omits pure-prefill shots and can change feasibility. Prefer one
+   Pure prefill is emitted once at `q=1`, even if only larger decode query
+   lengths are requested; each decode query length has its own feasibility. Prefer one
    invocation with all required values so row identity and metadata remain
    consistent; use separate output roots for independent acquisitions.
 
@@ -285,6 +288,36 @@ MAX_NUM_SEQS=256                    # vLLM's --max-num-seqs. Profile with MSQ > 
                                     # (e.g. profile 256 for a runtime targeting 128) so the
                                     # n = runtime_MSQ mixed corner is feasible.
 ```
+
+#### Sampling policy
+
+Ordinary token/request grids use `--grid-factor` (`GRID_FACTOR`, default `2`).
+Attention, skew and native MoE retain their own factor options; only attention
+request counts default to sqrt(2). Eager measurements include target serving
+graph coordinates where the category uses them. Matching completed worker
+captures are preferred unless `--cudagraph` (`CUDAGRAPH`) explicitly overrides
+the target. Otherwise candidates are derived from logical scheduler limits,
+query length, TP/compiler SP, runner and available hardware/backend facts.
+The recorded source distinguishes observations from assumptions.
+
+`CUDAGRAPH` is a JSON object with `mode`, `capture_sizes`, `max_capture_size`,
+`enable_sp` and `runner` keys. It configures target sampling, not acquisition
+engine graph execution. Both shell wrappers forward it and `GRID_FACTOR` only
+when explicitly nonempty. For example:
+
+```bash
+GRID_FACTOR=2.0 CUDAGRAPH='{"mode":"FULL_AND_PIECEWISE","runner":"v2"}' ./profiler/profile.sh
+```
+
+Dense token axes include forward graph anchors alongside geometric points.
+Linear attention preserves chunk-boundary points and adds applicable pure-regime
+anchors. Target logits and sampler rows remain geometric
+because they execute outside the backbone graph. Attention adds pure-decode
+request anchors only for FULL-capable modes at the selected query length and
+pure-prefill token anchors only for `FULL`; mixed shots keep their geometric
+axes. MTP adds drafter request anchors, but its table does not represent the
+complete first-pass query/token layout. Feasibility filters still apply to every
+shot. See the [sampling guide](../docs/docs/profiler/running.md#sampling-policy).
 
 #### Attention grid
 
@@ -565,6 +598,18 @@ not treated as a stable CLI.
 
 ## Measurement behavior
 
+### Acquisition bounds
+
+Synthetic shots are checked against actual engine request, query-token and
+context limits before page allocation or GPU execution. Each request must fit
+its history, query and one output token within the context bound.
+
+Coverage and component-layout discovery use fixed probes requiring at least
+5 requests, context length 258 and an acquisition token buffer of 68 (logical
+token budget plus `max_num_seqs`). All probes are validated before the first
+worker call. Smaller settings are refused; probes are never resized or skipped
+to fit the requested grid. See the [coverage guide](../docs/docs/profiler/running.md).
+
 ### CUDA timing and ownership
 
 Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
@@ -647,8 +692,9 @@ New MoE measurements separate gate/routing, experts and applicable finalization.
 They run eagerly and never capture an isolated expert CUDA graph. Expert sampling
 covers physical token rows N, active local experts A and local assignments M,
 with geometric spacing controlled by `--moe-grid-factor` (default `2`) and
-mandatory feasible geometry corners. This grid is independent of serving CUDA
-capture sizes. Conditioning and repeated measurements remain required; sampling
+mandatory feasible geometry corners. Target serving capture tokens also anchor
+the token axes after transformation through target DP/SP geometry; capture sizes
+do not determine A or M. Conditioning and repeated measurements remain required; sampling
 alone does not establish an interpolation error bound or full-model accuracy.
 
 The simulator constructs the new tables' Delaunay support at load time and uses
@@ -825,11 +871,13 @@ layer on M3.
 Attention is a single **5D** table covering pure-prefill, pure-decode and
 mixed kernel shapes (what vLLM's chunked-prefill scheduler actually produces
 each step). The axes grow geometrically — `prefill_chunk` and the kv axes by
-`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default sqrt(2)),
+`ATTENTION_CHUNK_FACTOR` and `ATTENTION_KV_FACTOR` (both default `2`),
 `n_decode` uses a sqrt(2) factor. `decode_q_len` is the fifth axis and defaults
 to just `[1]`, because it only matters for speculative decoding and each extra
 value adds its decode-containing slice (not another pure-prefill sweep);
 see `ATTENTION_DECODE_Q_LENS`.
+Applicable pure-prefill and pure-decode slices additionally include the target
+graph anchors described under [sampling policy](#sampling-policy).
 
 `linear_attention.csv` has only two axes because there is no kv axis at all:
 a gated-DeltaNet state is fixed-size per sequence, so cost is independent of
@@ -878,6 +926,9 @@ batch.
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec
   strings for the `chunks` / `n_decode` / `kv` axes, plus the separate
   `decode_q_lens` table selections. Only an attention sweep rewrites this grid.
+- `per_tp[tp].sampling` — per-category feasible shot counts, geometric factors,
+  target graph anchors and observed/derived source. These are acquisition plans,
+  not completion certificates; MTP records its request-axis limitation.
 - `skew_profile` — actual per-TP dynamic plans, resolved capacity and completion.
 - `attention_lookup.per_tp[tp]` — native attention semantics, acquisition identity
   and completed table checksum. Only matching new measurements establish this

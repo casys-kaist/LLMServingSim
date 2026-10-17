@@ -57,7 +57,11 @@ Its coverage-selection cache assumes immutable bundles during a simulation;
 missing coverage and corrupt installed data have different failure behavior.
 New acquisition defaults to DP1, measures eagerly without graph capture and uses
 configurable independent input-row, active-expert and assignment axes. Historical
-tables retain their reading semantics; capture-grid sampling is not yet automatic.
+tables retain their reading semantics. Target graph coordinates now supplement
+geometric samples after target DP/SP transformation, with active-expert and
+assignment axes retained independently. The [sampling guide](docs/profiler/running.md#sampling-policy)
+documents observed versus derived captures, eager-only acquisition, category
+limits and the optional target-only `--cudagraph` and `--grid-factor` controls.
 
 The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
 0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained

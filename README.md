@@ -61,6 +61,9 @@ Saved method and format names are descriptive.
 Serving graph observations can be imported into that metadata separately from
 eager acquisition settings; matching deployments reuse the observed runner and
 capture grid without relabelling measured times.
+New eager sweeps include target serving graph coordinates alongside geometric
+samples; the [sampling guide](https://llmservingsim.ai/docs/profiler/running#sampling-policy)
+distinguishes observed captures from derived candidates and category-specific coverage.
 Actual backend/layout checks govern admission, not source hashes or folder names.
 CSV publication checks protect resume after an interrupted replacement without
 changing measured timings.

@@ -97,6 +97,9 @@ class RuntimeLimits:
     model_text_config: dict[str, Any] | None = None
     # Initialization and postload checks, not a forward-execution certificate.
     dummy_weight_preparation: dict[str, Any] | None = None
+    # Read-only acquisition runtime facts; neither an eager graph mode nor
+    # proof that the full serving model completed graph capture.
+    sampling_runtime: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +523,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     engine_mnbt = cfg.scheduler_config.max_num_batched_tokens
     engine_msq = cfg.scheduler_config.max_num_seqs
     logical_mnbt = engine_mnbt - engine_msq
+    sampling_runtime = llm.collective_rpc('sampling_runtime')[0]
 
     return RuntimeLimits(
         max_num_batched_tokens=logical_mnbt,
@@ -533,6 +537,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
         key_saturation=key_saturation,
         model_text_config=copy.deepcopy(cfg_dict),
         dummy_weight_preparation=copy.deepcopy(getattr(llm, "_profiler_dummy_weight_preparation", None)),
+        sampling_runtime=sampling_runtime,
     )
 
 

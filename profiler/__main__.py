@@ -102,6 +102,44 @@ MODEL_CONFIG_DIR = _REPO_ROOT / "configs" / "model" # LLMServingSim's shared con
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+def _grid_factor(value: str) -> float:
+    try:
+        factor = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be finite and greater than 1") from None
+    if not math.isfinite(factor) or factor <= 1:
+        raise argparse.ArgumentTypeError("must be finite and greater than 1")
+    return factor
+
+
+def _parse_cudagraph(value: str) -> dict:
+    """Validate target graph options without resolving engine-dependent bounds."""
+    try:
+        options = json.loads(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a JSON object") from None
+    if not isinstance(options, dict):
+        raise argparse.ArgumentTypeError("must be a JSON object")
+    unknown = set(options) - {"mode", "capture_sizes", "max_capture_size", "enable_sp", "runner"}
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown cudagraph fields: {sorted(unknown)}")
+    modes = ("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE")
+    if "mode" in options and options["mode"] not in modes:
+        raise argparse.ArgumentTypeError(f"cudagraph.mode must be one of {modes}")
+    if "runner" in options and options["runner"] not in ("v1", "v2"):
+        raise argparse.ArgumentTypeError("cudagraph.runner must be 'v1' or 'v2'")
+    if "enable_sp" in options and not isinstance(options["enable_sp"], bool):
+        raise argparse.ArgumentTypeError("cudagraph.enable_sp must be boolean")
+    cap = options.get("max_capture_size")
+    if cap is not None and (type(cap) is not int or cap <= 0):
+        raise argparse.ArgumentTypeError("cudagraph.max_capture_size must be a positive integer")
+    sizes = options.get("capture_sizes")
+    if sizes is not None and (not isinstance(sizes, list) or not sizes
+                              or any(type(size) is not int or size <= 0 for size in sizes)):
+        raise argparse.ArgumentTypeError("cudagraph.capture_sizes must be a nonempty list of positive integers")
+    return options
+
+
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
     """Flags registered by profile, slice, coverage and plan-skew."""
     p.add_argument(
@@ -224,6 +262,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "count, not the token count, so the grid samples "
                         "boundaries and the points just past them.")
 
+    # Target sampling policy; acquisition remains eager.
+    p.add_argument("--grid-factor", type=_grid_factor, default=2.0,
+                   help="Geometric spacing for ordinary non-graph token/request "
+                        "sampling (finite and greater than 1; default 2). "
+                        "Attention, skew and native MoE retain their own factor options.")
+    p.add_argument("--cudagraph", type=_parse_cudagraph, default=None, metavar="JSON",
+                   help="Target serving CUDA graph sampling options as a JSON object: "
+                        "mode, capture_sizes, max_capture_size, enable_sp, runner. "
+                        "Defaults use the serving resolver. Acquisition remains eager.")
+
     # Attention grid.
     p.add_argument("--attention-max-kv", type=int, default=None,
                    help="History cap used to construct prefill/decode shots. "
@@ -245,17 +293,17 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "sequence against that sequence's own KV, which is "
                         "neither a prefill chunk of the same size nor that many "
                         "single-token decodes. Each extra value adds a separate "
-                        "decode-containing grid; q > 1 omits pure prefill.")
-    p.add_argument("--attention-chunk-factor", type=float, default=SQRT2,
+                        "decode-containing grid; pure prefill is measured once at q=1.")
+    p.add_argument("--attention-chunk-factor", type=float, default=2.0,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
-                        "sqrt(2) (default); 2.0 is doubling. Lower values "
+                        "Default 2.0 (doubling). Lower values "
                         "produce a denser grid.")
-    p.add_argument("--attention-kv-factor", type=float, default=SQRT2,
+    p.add_argument("--attention-kv-factor", type=float, default=2.0,
                    dest="attention_kv_factor",
                    help="Geometric factor for the prefill-key and kv_decode "
-                        "axes. sqrt(2) (default); 2.0 is doubling and is a "
-                        "nested grid. Resume still requires compatible "
+                        "axes. Default 2.0 (doubling). Lower values add samples. "
+                        "Resume still requires compatible "
                         "measurement identities and exact shot keys.")
     p.add_argument("--attention-n-factor", type=float, default=SQRT2,
                    dest="attention_n_factor",
@@ -458,6 +506,8 @@ def _build_profile_args(
     architecture: str,
     model_config: dict,
 ) -> ProfileArgs:
+    if not math.isfinite(ns.grid_factor) or ns.grid_factor <= 1:
+        raise ValueError("--grid-factor must be finite and greater than 1")
     if not math.isfinite(ns.moe_grid_factor) or ns.moe_grid_factor <= 1:
         raise ValueError("--moe-grid-factor must be finite and greater than 1")
     degrees = {}
@@ -501,6 +551,8 @@ def _build_profile_args(
         ep_degrees=degrees["ep"],
         moe_rounds=ns.moe_rounds,
         moe_grid_factor=ns.moe_grid_factor,
+        grid_factor=ns.grid_factor,
+        cudagraph=ns.cudagraph,
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_decode_q_lens=tuple(

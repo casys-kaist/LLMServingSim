@@ -26,7 +26,7 @@ def fingerprint(value):
 
 
 _OBSERVATION_FIELDS = {'vllm_version', 'torch_version', 'cuda_version', 'source_sha256',
-                       'sources', 'planning_source_sha256', 'model_config_sha256',
+                       'sources', 'planning_source_sha256', 'model_config_sha256', 'sampling_graph',
                        'engine_effective', 'observations'}
 
 
@@ -91,6 +91,8 @@ def points_for(contract):
     factor = contract['expert_sampling']['grid_factor']
     maximum_tokens = contract['maximum_expert_tokens']
     token_points = set(grid(maximum_tokens, factor))
+    anchors = contract['expert_sampling'].get('capture_tokens', {})
+    token_points.update(n for n in anchors.get('experts', ()) if 0 < n <= maximum_tokens)
     local_e = len(place.local_global_ids)
     # A <= min(local_E, N*k) changes slope at local_E/k. Preserve both
     # integer neighbours so interpolation does not cut off feasible work.
@@ -105,7 +107,9 @@ def points_for(contract):
         for component in target.components:
             if component == 'experts':
                 continue
-            for n in grid(local, factor):
+            local_points = set(grid(local, factor))
+            local_points.update(n for n in anchors.get('local', ()) if 0 < n <= local)
+            for n in sorted(local_points):
                 yield dict(component=component, mode=mode, tokens=n,
                            activated_experts=-1, local_assignments=-1)
         for n in sorted(token_points):
@@ -370,7 +374,9 @@ def resolve_targets(arch, args, tps):
 
 def run_components(arch_path, args, tps, variant_root):
     from . import logger as log
-    from .engine import spin_up, spin_down
+    from .engine import spin_up, spin_down, probe_limits
+    from .sampling import resolve_sampling
+    from .bundle_metadata import read_bundle
 
     arch = load_architecture(arch_path)
     targets = resolve_targets(arch, args, tps)
@@ -386,11 +392,18 @@ def run_components(arch_path, args, tps, variant_root):
     update_bundle(variant_root, record_bundle)
     llm, _, temporary = spin_up(engine_args, 1)
     try:
+        limits = probe_limits(llm, engine_args)
         for target in targets:
+            plan = resolve_sampling(args, limits, target.tp, dp=target.dp,
+                                    meta=read_bundle(variant_root))
+            domains = [target.token_domains((n,)*target.dp) for n in plan.forward_sizes]
+            capture_tokens = dict(local=sorted({d['gate_rows'] for d in domains}),
+                                  experts=sorted({d['expert_rows'] for d in domains}))
             native = llm.collective_rpc('moe_component_initialize', args=(asdict(target), budget))[0]
             contract = dict(native, model=args.model, hardware=args.hardware, variant=args.effective_variant,
                 expert_sampling=dict(axes=['tokens', 'activated_experts', 'local_assignments'],
-                                     grid_factor=args.moe_grid_factor),
+                                     grid_factor=args.moe_grid_factor, capture_tokens=capture_tokens),
+                sampling_graph=plan.metadata(),
                 protocol=dict(rounds=args.moe_rounds, iterations=args.measurement_iterations,
                               representative='median_of_forward_medians', timing='cuda_kernel_sum'))
             contract = json.loads(json.dumps(contract, default=str))

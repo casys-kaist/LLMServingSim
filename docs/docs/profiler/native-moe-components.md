@@ -136,11 +136,15 @@ with a balanced histogram over A active experts, not an exact learned router.
 
 Serving CUDA graph padding remains active. New eager timings are queried at
 the already-resolved padded rows; historical graph rows are not relabelled.
-The current acquisition grid is geometric, **not an automatic sweep of serving
-capture sizes**. If capture sizes become sampling coordinates, local rows must
-first be transformed into expert rows through the target's DP/SP geometry;
-capture sizes alone never determine A or M. Eager measurement at such coordinates
-would still not capture or replay a graph.
+The acquisition grid combines geometric points with target serving capture
+tokens G. Each G is mapped through `target.token_domains((G,) * DP)` to obtain
+local gate/finalization rows and gathered expert rows. The graph resolver handles
+compiler SP; the token-domain transformation handles model-level SP. These coordinates anchor
+the token axes; capture sizes alone never determine A or M, whose independent
+geometric axes and feasible corners are retained. Matching completed worker
+captures are preferred unless target options override them; otherwise candidate
+captures are derived and labelled as such. Eager measurement at these coordinates
+does not capture or replay a graph. See [sampling policy](./running#sampling-policy).
 
 ## Files, resume and lookup
 
@@ -164,7 +168,9 @@ The root record has `schema: moe-components` and `entries`, each containing
 `target`, a TP-relative table `path`, `contract` and `coverage`. The contract
 describes geometry, target TP/DP/EP/rank, expert ownership, dtypes, native backend
 and measurement conditioning, with acquisition observations kept as provenance.
-New contracts record `modes: [eager]` and `expert_sampling` (axis names and factor).
+New contracts record `modes: [eager]` and `expert_sampling` (axis names, factor
+and transformed `capture_tokens`). `sampling_graph` retains source and target
+graph coordinates separately from the eager measurement contract.
 Coverage records completion, completed rounds and the table checksum. Its compact
 `conditioning_summary` contains `checked_points`, `failed_points` and
 `max_relative_change`; the tolerance stays in `contract.expert_conditioning`.

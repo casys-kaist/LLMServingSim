@@ -285,6 +285,11 @@ Discovery currently reuses the fixed `_COVERAGE_REGIMES` in
 The engine's token, request, context and cache limits must accommodate those
 probes; they are not reduced with the requested grid. An otherwise valid small
 engine envelope can therefore fail discovery before category acquisition.
+The fixed probes require at least 5 requests, context length 258 and an
+acquisition query-token buffer of 68 (logical token budget plus `max_num_seqs`).
+The host validates every probe before the first worker call; it refuses an
+undersized envelope without resizing or skipping probes. Synthetic batch
+assembly also rejects request, token and context overflow before GPU work.
 
 `meta.yaml.component_layouts` is the single authority: schema
 `component-layouts`, with a `per_tp` record containing variant selections,
@@ -636,9 +641,13 @@ When enabled,
 the mean-KV estimate toward the maximum-KV estimate; alpha itself is not
 interpolated between neighboring buckets.
 
-The grid is geometric, controlled by `--attention-chunk-factor`,
+The base grid is geometric, controlled by `--attention-chunk-factor`,
 `--attention-kv-factor` and `--attention-n-factor`. Read the CLI's `--help`
 for current defaults; the editable `profile.sh` supplies explicit overrides.
+Applicable pure-regime slices also include target serving graph anchors:
+FULL-capable decode points at each selected query length, and prefill points
+only for `FULL`. Mixed shots keep their geometric axes. These remain eager
+measurements; see [sampling policy](./running#sampling-policy).
 The KV factor controls two axes. Smaller factors increase the Cartesian
 product of measurements, not just one additive set of points. Finer sampling
 does not guarantee better end-to-end accuracy; compare completed bundles using
@@ -699,7 +708,9 @@ or zero-latency row is stored. Target-specific backend selection is retained.
 New expert tables sample physical tokens N, active local experts A and local
 assignments M using `--moe-grid-factor` (default `2`) and mandatory feasible
 geometry corners. The recorded `expert_sampling` contract identifies these axes
-and their spacing. Sampling does not use serving capture sizes. The simulator
+and their spacing, plus local/expert token anchors transformed from target
+serving graph coordinates. `sampling_graph` records their source; capture
+sizes do not determine active experts or assignments. The simulator
 precomputes Delaunay support at load time and caches barycentric interpolation
 in physical coordinates, using at most four measured rows per query. It fits no
 latency predictor. Historical balanced-assignment tables retain their existing
@@ -982,11 +993,10 @@ these facts rather than treating the snapshot as full execution provenance.
 
 ### Grid specs are compact, not enumerated
 
-`attention_grid.decode_q_lens` lists the query lengths swept. It is recorded
-because it cannot be recovered from the rows: a `q > 1` sweep yields no
-pure-prefill shot, so the row count alone cannot tell you which query lengths
-fired, and a bundle holding five of them while the meta records none reads as
-a `q=1` sweep.
+`attention_grid.decode_q_lens` lists the requested decode query lengths.
+Row counts alone do not establish that coverage. Pure-prefill rows are emitted
+once at `q=1` regardless of the requested decode query lengths, so their presence
+does not establish ordinary `q=1` decode coverage.
 
 `category_provenance` records the vLLM version and timestamp **per category**.
 A bundle is not necessarily one measurement session — a `slice` refresh
@@ -1017,6 +1027,30 @@ resolved limits and completion. Older root summaries may remain historical
 records, but acquisition, refitting and lookup do not load `skew.meta.yaml`.
 Current repeat-level skew data requires complete root acquisition metadata;
 unmarked historical skew tables retain their existing behavior.
+
+### Sampling plans
+
+Root `per_tp[tp].sampling[category]` records ordinary acquisition plans: eager
+execution, geometric factor, feasible shot count and applicable target graph
+coordinates. Targets record runner, mode, query length, TP/DP, capture sizes
+and their source: `observed worker capture`, `explicit target options` or
+`derived capture candidates`. Derived plans retain assumptions and acquisition
+backend capability scope; an unmatched observation records its fallback reason.
+TP-stable forward anchors are recorded when TP1 supplies multiple TP degrees.
+Excluded dense capture coordinates are reported when runtime bounds prevent
+their measurement.
+
+Attention records its independent factors and pure-regime anchor restriction.
+Per-sequence metadata states that logits and sampler use actual output rows
+outside the graph. MTP records request anchors and the missing first-pass
+query/token dimension. Native MoE records `sampling_graph` and transformed
+`expert_sampling.capture_tokens` in each deployment contract. Skew retains its
+independent acquisition plan.
+
+A sampling plan describes requested feasible coordinates, not completed rows
+or graph capture by the acquisition engine. Completion and integrity remain
+the responsibility of each category's publication records. Sampling changes
+do not relabel historical measurements as graph timings.
 
 ### What the simulator actually reads
 

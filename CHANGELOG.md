@@ -7,6 +7,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Reject synthetic profiling shots that exceed engine request, token or context
+  bounds before GPU work; validate every fixed layout/coverage probe before
+  its first worker call and report the required acquisition envelope.
+- Include target serving CUDA graph coordinates in eager acquisition grids,
+  preferring matching completed worker captures unless explicitly overridden.
+  Record observed and derived sampling provenance separately; map native MoE
+  coordinates through target DP/SP geometry and retain independent expert axes.
+  Default geometric spacing to doubling except attention request counts, which
+  retain square-root-of-two spacing. Add `--grid-factor` and target-only
+  `--cudagraph` options; graph coordinates do not make timings graph measurements.
 - Make eager native MoE component profiling the default at DP1, with full-EP
   deployment targets selected through `--tp`, `--dp` and optional `--ep`,
   a configurable doubling grid and independent input-row,
