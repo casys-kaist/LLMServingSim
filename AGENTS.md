@@ -56,6 +56,7 @@ LLMServingSim/
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
 │   │   ├── bundle_metadata.py  # Locked variant-root metadata updates
 │   │   ├── metadata_names.py   # Shared descriptive metadata names
+│   │   ├── execution_metadata.py # Import/match observed serving graph policies
 │   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
 │   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
@@ -72,6 +73,7 @@ LLMServingSim/
 │   │   ├── runner.py           # AsyncLLM driver, captures RequestStateStats
 │   │   ├── recorder.py         # writes meta.json / requests.jsonl / timeseries.csv
 │   │   ├── kv_cache_metadata.py # qualified per-engine startup READY capacities
+│   │   ├── execution_metadata.py # Read-only completed worker graph observations
 │   │   ├── stat_logger.py      # custom vLLM StatLoggerBase that fills timeseries
 │   │   ├── validate.py         # bench-vs-sim comparison entry point
 │   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
@@ -2469,20 +2471,46 @@ through two mechanisms:
 
 **Local graph padding precedes DP synchronization; it also applies at DP=1.**
 `serving/core/cudagraph.py` resolves the target MRV1 capture grid and local
-FULL/PIECEWISE/NONE mode. Both DP completion paths and the independent-instance
+FULL/PIECEWISE/NONE mode by default, or MRV2 when selected explicitly or by a
+matching serving observation. Both DP completion paths and the independent-instance
 path share that resolver. Small prefills can use PIECEWISE graphs. The common
 DP mode is the minimum of the local modes: non-NONE broadcasts the largest
 locally padded size; NONE retains each local padded count. With an 8-token
 capture point and maximum 256, `[6, 1529]` therefore becomes `[8, 1529]`.
 Do not replace this with a threshold-only `max <= cap` rule.
+MRV2 instead returns to raw local token counts when any DP rank selects NONE;
+otherwise it redispatches using the common token maximum and decode eligibility.
+Its FULL decode candidate sizes are distinct from PIECEWISE token sizes. A first
+one-token prefill is not decode-eligible; a one-token extension over cached history
+can be. Preserve historical MRV1 behavior when no target runner was recorded.
 
 The per-instance `cudagraph` object describes deployment behavior independently
 of the profiler's eager settings. Defaults derive the grid from scheduler
 limits, speculative query length and hardware compute capability; explicit
-mode/grid/cap and compiler-SP overrides describe other targets. Use the effective
+mode/grid/cap, runner and compiler-SP overrides describe other targets. Use the effective
 mode after attention-backend resolution. LoRA keys, cascade/encoder restrictions,
-DBO, MRV2 and drafter graph dispatch are not inferred. Attention offloading is
+DBO, dynamic/variable speculative decoding and drafter graph dispatch are not inferred. Attention offloading is
 outside this GPU graph contract and uses NONE.
+
+Bench startup may record a read-only worker `execution` observation after graph
+capture, separately from the frontend's resolved configuration. Unsupported or
+incomplete observations remain unknown. Preserve complete capture lists even when
+they exceed generic diagnostic list limits. Collect every DP engine's response;
+the public load-balancing RPC may return only the first engine's result.
+`profiler import-execution` can save
+a matching observation under `meta.yaml.serving_execution`; require matching
+model configuration, device, precision and deployment scope. Resolve local
+declarations through the worker's native config class
+before binding aliases/defaults to effective model fields; do not maintain an
+offline model-specific config alias table. Keep only the matched declaration,
+not a duplicate expanded config. A custom variant label needs explicit matching
+acquisition precision. Keep one observation
+per scope, not an execution history. Explicit instance `cudagraph` settings win;
+otherwise serving uses a matching observation or derives settings with a warning
+when saved observations do not match. Versions are provenance, not execution locks.
+Acquisition metadata stays separate: importing graph settings neither changes
+latency CSVs nor certifies eager measurements as graph measurements. Reduced-stack
+diagnostics must not become full-model serving references.
 
 Padding changes model-forward rows, not requests, query/KV lists, decode counts
 or head rows. Keep those domains separate in trace lookup and completion

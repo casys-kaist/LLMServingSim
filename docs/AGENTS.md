@@ -38,6 +38,11 @@ Do not document source-file hashes or exact library versions as execution vetoes
 Keep semantic/API/backend/layout guards and table-integrity checks distinct from
 provenance. Historical timings are never upgraded by restamping metadata, and
 bounded acquisition or duration replay does not establish full serving accuracy.
+Serving graph observations belong in root `meta.yaml.serving_execution`, separate
+from acquisition settings. Preserve explicit instance overrides and document
+scope matching, unknown/incomplete observations and MRV1/MRV2 dispatch separately.
+Completed worker capture is stronger evidence than a frontend requested grid,
+but neither is a graph-specific latency measurement.
 
 ## What this is
 

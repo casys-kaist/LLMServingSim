@@ -130,7 +130,8 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
                      total memory, UUID, CPU affinity, allowed NUMA nodes,
                      CUDA / torch versions), and
                      resolved_config -- the whole VllmConfig, one key
-                     per sub-config
+                     per sub-config; execution -- effective worker graph
+                     policy after capture, or unknown with a reason
   requests.jsonl     per request: request_id, input_toks, output_toks,
                      arrival_time, queued_ts, scheduled_ts,
                      first_token_ts, last_token_ts
@@ -143,6 +144,19 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
   moe_activated.jsonl  --record-gate-stats only: phase markers and raw per-call log
                      gate_stats.json was reduced from
 ```
+
+### Serving graph metadata
+
+After startup and before request submission, a read-only worker RPC observes
+the effective graph mode and complete FULL/PIECEWISE capture grids, along with
+model, device, precision and deployment scope. All TP/PP/DP ranks must agree;
+the DP client is queried per engine to retain every response. Unsupported or
+incomplete observations remain `unknown` without failing the benchmark.
+Frontend `resolved_config.compilation_config.cudagraph_capture_sizes` also keeps
+its full list, but a requested list is not evidence of completed worker capture.
+Use [profiler import-execution](/docs/profiler/output-bundle#serving_execution)
+to explicitly attach a compatible observation to a profile bundle. It changes
+neither recorded timings nor the profiler's acquisition mode.
 
 ### KV capacity metadata
 

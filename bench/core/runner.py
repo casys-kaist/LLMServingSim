@@ -35,6 +35,7 @@ from bench.core import gate_stats as gate_stats_mod
 from bench.core import logger as log
 from bench.core import recorder
 from bench.core.kv_cache_metadata import ReadyResponseCapture
+from bench.core.execution_metadata import capture_execution
 
 
 # Observe caller overrides without changing vLLM's communication selection.
@@ -288,6 +289,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         load_format=args.load_format,
         skip_tokenizer_init=args.skip_tokenizer_init,
         enforce_eager=args.enforce_eager,
+        worker_extension_cls='bench.core.execution_metadata.ExecutionObserver',
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
@@ -310,6 +312,13 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
             engine.shutdown()
         raise
     started_at = datetime.datetime.utcnow().isoformat() + "Z"
+    try:
+        execution = await capture_execution(engine)
+    except BaseException:
+        engine.shutdown()
+        raise
+    if execution.get('status') != 'observed':
+        log.warning('Serving graph observation unavailable: %s', execution.get('reason'))
 
     if args.resolve_only:
         # Snapshot before shutdown, with the startup callback already restored.
@@ -332,6 +341,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
             kv_cache=kv_cache,
             hardware=_hardware_facts(),
             resolved_config=resolved_config,
+            execution=execution,
             resolve_only=True,
         )
         log.success("resolved config only -> %s  (num_gpu_blocks=%s)",
@@ -352,7 +362,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
             dataset_path=str(args.dataset), dataset_hash=_hash_file(Path(args.dataset)),
             num_requests=len(requests),
             engine_kwargs=engine_kwargs_for_meta, kv_cache=kv_cache,
-            resolved_config=resolved_config, **observation_meta)
+            resolved_config=resolved_config, execution=execution, **observation_meta)
         if gate_log is not None:
             gate_stats_mod.mark_phase(gate_log, "workload_start")
         with log.stage(f"Submitting {len(requests)} requests"):
@@ -388,6 +398,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         kv_cache=kv_cache,
         hardware=_hardware_facts(),
         resolved_config=resolved_config,
+        execution=execution,
         **observation_meta,
     )
     recorder.write_requests(output_dir, records)
@@ -588,6 +599,11 @@ def _resolved_config(engine) -> dict:
         else:
             fields = _config_fields(value)
             if name == "compilation_config":
+                # This is an execution axis, not a verbose diagnostic list.
+                # Preserve it even when there are more than 64 capture points.
+                sizes = getattr(value, 'cudagraph_capture_sizes', None)
+                if sizes is not None:
+                    fields['cudagraph_capture_sizes'] = list(sizes)
                 passes = getattr(value, "pass_config", None)
                 if passes is not None:
                     fields["pass_config"] = _config_fields(passes)

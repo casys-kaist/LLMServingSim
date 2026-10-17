@@ -28,6 +28,7 @@ profiler/                          Python package: python -m profiler
 │   ├── measurement.py             acquisition identity and timing protocols
 │   ├── bundle_metadata.py         locked updates to the variant-root metadata document
 │   ├── metadata_names.py          shared descriptive metadata names
+│   ├── execution_metadata.py      import/match observed serving graph policies
 │   ├── component_layouts.py       runtime alternatives and coupled acquisition state
 │   ├── context_tables.py          category/structural-context publication and receipts
 │   ├── context_lookup.py          strict category loading and exact-context interpolation
@@ -110,7 +111,13 @@ python -m profiler coverage  <model> --hardware <hw>            catalog check
 python -m profiler plan-skew <model> --hardware <hw> [flags]    saved-limit preview
 python -m profiler refit-skew <model> --hardware <hw> [flags]    offline calibration
 python -m profiler hardware  --hardware <hw> [flags]            device/link measurement
+python -m profiler import-execution <model> --hardware <hw> --bench-dir DIR
 ```
+
+`import-execution` is CPU-only and accepts `--variant`, `--out` (default
+`profiler/perf`) and `--log-level`. It imports a compatible completed worker
+observation from a new benchmark's `meta.json` into an existing bundle. It does
+not run profiling, replace CSVs or certify eager timings as graph timings.
 
 | Group | Flags |
 |-------|-------|
@@ -645,6 +652,26 @@ powers of two. Expert-count coordinates and feasibility checks are unchanged;
 new sweeps extend compatible tables without changing runtime lookup.
 
 ## Execution scope
+
+### Serving graph observations
+
+Acquisition settings and target serving settings are separate. Ordinary
+acquisition remains eager; importing a serving graph policy does not change it.
+After a benchmark has recorded an observed worker execution policy, import it:
+
+```bash
+python -m profiler import-execution meta-llama/Llama-3.1-8B \
+  --hardware RTXPRO6000 --bench-dir bench/results/<run_id>
+```
+
+The variant-root `meta.yaml.serving_execution` retains one compact observation
+per deployment scope. The model ID/configuration, device and precision must
+match the bundle. Serving uses a record only when its parallelism, scheduler,
+context, cache and speculative settings match; explicit instance `cudagraph`
+settings win. Missing or incompatible observations retain derived defaults.
+Reduced-stack diagnostics cannot be imported as full-model references, and
+unknown startup observations are not usable policies. No additional metadata
+sidecar or source/version lock is created.
 
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;

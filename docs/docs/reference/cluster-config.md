@@ -361,24 +361,35 @@ compatible with each member's scheduler limits.
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | Effective vLLM MRV1 graph mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY`, or `FULL_AND_PIECEWISE` (default assumption) |
+| `runner` | `v1` (historical default) or `v2`; selects the model runner's dispatch and DP synchronization rules |
+| `mode` | Effective graph mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY`, or `FULL_AND_PIECEWISE` (default assumption) |
 | `capture_sizes` | Optional positive token counts; deduplicated, sorted and filtered by the token budget and compiler-SP divisibility |
 | `max_capture_size` | Optional positive cap for automatic grid generation. If supplied with `capture_sizes`, it must equal the largest retained size before speculative rounding |
 | `enable_sp` | Compiler sequence parallelism, default `false`. This is **not** the MoE model's sequence-parallel dispatch wrapper |
 
-Without an explicit grid, the simulator follows vLLM 0.28's ordinary
+An explicit `cudagraph` object takes precedence. Otherwise, serving uses a
+matching worker observation imported into the profile bundle's
+`meta.yaml.serving_execution`, or derives defaults. Observations must match
+the model configuration, device, precision, parallelism, scheduler and cache
+scope. A saved but incompatible observation produces a warning, not silent reuse.
+See [importing serving observations](/docs/profiler/output-bundle#serving_execution).
+
+Without an explicit grid, the simulator follows vLLM's ordinary
 non-interactivity grid: 1/2/4, then increments of 8 below 256 and of 16 above.
 The cap depends on the instance's sequence limit, speculative query length,
 token budget and target compute capability. `hardware.yaml` identifies SM10x
 (platform cap 1024); other capabilities use 512. Unknown capability emits a
 warning and assumes 512; specify a cap or grid for a different target.
 Unlimited simulator scheduler limits do not constrain this finite graph cap.
-FULL decode grids are rounded to supported speculative query multiples.
+The sequence-limit endpoint is included when it fits. FULL decode grids are
+rounded to supported speculative query multiples. MRV2 retains separate
+FULL decode and PIECEWISE token grids; MRV1 retains its shared-grid behavior.
 
 Use the **effective worker mode** after attention-backend resolution, not just
 the requested engine mode. Explicit sizes can also describe an interactivity
 grid. Set `mode: "NONE"` for eager execution. The resolver does not automatically
-infer LoRA-specialized keys, cascade/encoder restrictions, DBO, MRV2 or drafter
+infer LoRA-specialized keys, cascade/encoder restrictions, DBO, dynamic/variable
+speculative decoding or drafter
 graph dispatch. Attention offloading uses NONE; graph replay for that simulator
 extension is not modeled. No graph-specific latency multiplier or subtraction
 is applied. See [parallelism mechanics](/docs/simulator/parallelism-mechanics)

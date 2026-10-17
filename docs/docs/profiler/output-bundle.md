@@ -852,8 +852,9 @@ new profile bundle. `per_tp[tp]` owns measurements, category publication,
 context/callable records, skew acquisition and native MoE entries. Already-central
 engine, attention-lookup, component-layout and calibration sections retain their
 existing locations and separate authority. Updates preserve unrelated records
-through the shared strict metadata reader/writer, without changing numerical
-simulation behavior. Metadata writes are serialized
+through the shared strict metadata reader/writer. Moving metadata between
+locations does not alter numerical behavior; adopting a different serving graph
+policy can alter simulated execution shapes. Metadata writes are serialized
 under an empty `.meta.lock`; this lock file is synchronization, not measurement
 metadata. It does not make concurrent acquisition into one table safe: honor each
 acquisition path's writer exclusion and do not change a bundle while it is being read.
@@ -896,6 +897,47 @@ skew_fit:
       bucket_table: tp2/skew_fit.csv
       # axes, fallbacks, measured ranges and fingerprints are compiler output
 ```
+
+### `serving_execution`
+
+Serving graph observations are separate from eager acquisition settings. The
+benchmark records completed worker startup under `meta.json.execution`; import
+it explicitly into an existing bundle:
+
+```bash
+python -m profiler import-execution Qwen/Qwen3-32B --hardware RTXPRO6000 \
+  --bench-dir bench/results/my-run
+```
+
+The root `serving_execution` list keeps one current observation per deployment
+scope, not an execution history. Each entry records the effective runner/mode,
+complete base and actual FULL/PIECEWISE capture sizes, compiler sequence
+parallelism, graph implementation, model configuration, device and precision.
+Scope includes TP/PP/DP/EP, scheduler limits, speculative token count, block size,
+maximum model length, chunked prefill and prefix caching. Runtime version and
+timestamp are provenance, not locks. The importer checks model/device/precision
+compatibility and does not accept reduced-model or perturbed diagnostic runs as
+full-model references.
+When a local model declaration is available, workers resolve it through their
+installed native configuration class before comparing it with the effective
+model. This handles renamed fields and nested RoPE parameters without an offline
+model-specific alias list. Only the compact declaration is retained after a
+match. A custom variant label requires explicit matching acquisition dtype and
+KV dtype; its name alone is not a precision contract.
+
+An explicit instance `cudagraph` object wins. Otherwise the simulator uses a
+scope-matching observation, or derives its historical defaults; an incompatible
+saved observation warns before fallback. Worker observation currently supports
+the fixed-query MRV2 contract without LoRA, DBO or context parallelism. Unsupported
+or incomplete startup, conflicting workers and partial rank coverage remain
+`unknown` and cannot be imported. Frontend requested settings alone are not proof
+of worker capture. Observing all DP engines requires collecting their individual
+responses rather than retaining only the load-balancing client's first result.
+
+Import changes no latency CSV or acquisition method. Graph-shaped axes do not
+certify eager timings as graph timings: attention capture metadata and kernel
+selection can differ even with the same real requests. This metadata supports
+dispatch modeling; matched timing validation remains separate.
 
 ### Identity and provenance
 

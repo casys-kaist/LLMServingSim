@@ -142,7 +142,11 @@ Historical multi-GPU example configs can pin their original links instead of
 inheriting the hardware folder's refreshed transport calibration.
 
 The per-instance `cudagraph` object describes target execution, independently
-of the profiler's eager engine. Local graph padding applies with or without DP;
+of the profiler's eager engine. Explicit settings take priority; otherwise a
+matching `meta.yaml.serving_execution` observation supplies the runner and grid.
+Without a matching observation, the resolver retains its MRV1 default and reports
+incompatible saved settings. Select `runner: "v2"` for MRV2 dispatch semantics.
+Local graph padding applies with or without DP;
 DP then synchronizes the selected modes and forward sizes. Real attention
 queries, KV history and head rows are not expanded into dummy requests.
 In vLLM FULL graphs, attention buffers/metadata are padded with empty request
@@ -450,6 +454,8 @@ matching `blocks:` / `shared:` rather than editing this file.
 Resolves target CUDA graph capture grids and local padded forward shapes,
 then synchronizes modes and token counts across each DP wave. Actual attention
 queries and non-speculative head rows remain separate from forward padding.
+MRV2 keeps FULL decode and PIECEWISE candidates separate and restores raw local
+token counts when a DP wave cannot use graphs; MRV1 retains local padding.
 
 ### `communication.py`
 

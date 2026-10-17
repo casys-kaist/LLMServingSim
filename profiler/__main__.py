@@ -18,6 +18,9 @@ Profiling subcommands:
 
 Offline calibration:
 
+    import-execution <model> --hardware <hw> --bench-dir DIR [--variant NAME]
+        Save a matching benchmark's observed serving graph policy in meta.yaml.
+
     plan-skew <model> --hardware <hw> [options]
         Preview heterogeneous coverage using saved engine limits and references.
 
@@ -566,6 +569,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    p_execution = sub.add_parser('import-execution',
+        help='Import observed serving graph settings from a benchmark; no GPU.')
+    p_execution.add_argument('model', help='HF model ID with a local config and existing bundle.')
+    p_execution.add_argument('--hardware', required=True)
+    p_execution.add_argument('--variant', default=None)
+    p_execution.add_argument('--bench-dir', required=True)
+    p_execution.add_argument('--out', default='profiler/perf', dest='out_root')
+    p_execution.add_argument('--log-level', default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+
     p_refit = sub.add_parser("refit-skew", help="Rebuild skew calibration from measured CSVs without a GPU.")
     p_refit.add_argument("model", help="HF model id with a local config and profile bundle.")
     p_refit.add_argument("--hardware", required=True)
@@ -657,6 +670,18 @@ def main(argv: list[str] | None = None) -> int:
     ns = parser.parse_args(argv)
 
     log.configure(_resolve_log_level(ns))
+
+    if ns.cmd == 'import-execution':
+        from profiler.core.execution_metadata import import_execution
+        from serving.core.trace_generator import resolve_variant
+        from serving.core.utils import get_config
+        config = json.loads((MODEL_CONFIG_DIR / (ns.model + '.json')).read_text())
+        root = Path(ns.out_root) / ns.hardware / ns.model / (ns.variant or resolve_variant(get_config(ns.model)))
+        record = import_execution(ns.bench_dir, root, config)
+        log.info('Recorded serving graph policy: runner=%s, mode=%s, %d capture sizes',
+                 record['graph']['runner'], record['graph']['mode'],
+                 len(record['graph']['capture_sizes']))
+        return 0
 
     if ns.cmd == "refit-skew":
         from profiler.core.skew_calibration import rebuild_bundle

@@ -10,6 +10,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Record completed worker CUDA-graph observations in new benchmarks and allow
+  explicit CPU-only import into profile metadata. Reuse matching serving policies
+  separately from eager acquisition settings; preserve explicit instance overrides
+  and retain derived defaults when observations are unavailable or incompatible.
+- Model vLLM 0.31 MRV2 decode capture candidates and DP synchronization separately
+  from historical MRV1 behavior, including non-grid-aligned request limits. These
+  are execution-shape rules, not new graph timings or benchmark accuracy claims.
 - Reorganize the profiler README around a short overview and topic-based
   measurement, execution-scope and resume sections, retaining CLI and support details.
 - Keep new profiling CSVs limited to coordinates and timings; store descriptive

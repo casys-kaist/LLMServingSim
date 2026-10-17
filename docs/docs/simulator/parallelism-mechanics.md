@@ -285,13 +285,20 @@ outstanding at once. When a wave assembles:
   selects a supported FULL or PIECEWISE graph and rounds its forward rows
   up to that graph's capture size. Small prefill/mixed batches can use
   PIECEWISE; prefill is not categorically outside the graph range.
-- **DP synchronizes modes after local dispatch.** The common mode is the
-  minimum across ranks. When it is non-NONE, all ranks use the largest
-  locally padded size. When it is NONE, each rank **retains its local
+- **DP synchronizes modes after local dispatch.** With the historical MRV1
+  contract, the common mode is the minimum across ranks. When it is non-NONE,
+  all ranks use the largest locally padded size. When it is NONE, each rank **retains its local
   padding**, not its original unpadded count. With a grid containing 8 and
   ending at 256, `[6, 1529]` executes as `[8, 1529]`, not `[6, 1529]` or
   `[1529, 1529]`. A single independent six-token batch can likewise use
   eight forward rows.
+- **MRV2 has a different NONE fallback.** If any rank selects NONE, every rank
+  returns to its raw token count: `[6, 1529]` stays `[6, 1529]`. Otherwise it
+  redispatches using the common token maximum and decode eligibility. For
+  example, `[6, 129]` can use PIECEWISE `[136, 136]`. Select `runner: "v2"`
+  explicitly or import a matching worker observation; an unrecorded runner
+  keeps MRV1 behavior. A first one-token prefill is not decode-eligible, while
+  a one-token extension over cached history can be.
 - **Padding does not create requests.** Dense/model-forward work and its
   collectives use padded rows; attention lookup retains real query and KV
   geometry, and the head uses real selected rows. Zero-length graph padding

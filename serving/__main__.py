@@ -13,6 +13,7 @@ import json
 import shutil
 from time import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 from serving.core.scheduler import *
 from serving.core.request import *
@@ -21,6 +22,8 @@ from serving.core.utils import (config_weight_dtype, config_kv_cache_dtype,
                                 num_mtp_layers, get_architecture)
 from serving.core.hardware_defaults import apply_hardware_defaults, load_hardware_yaml
 from serving.core.cudagraph import resolve_graph_config, resolve_dp_shapes
+from profiler.core.bundle_metadata import read_bundle
+from profiler.core.execution_metadata import select_execution, graph_options, precision_scope
 from serving.core.spec_decode import AcceptanceModel, published_defaults
 from serving.core.controller import *
 from serving.core.memory_model import *
@@ -56,6 +59,12 @@ def _pad_dp_round(round_batches, runtime_configs):
     batches = [batch for batch, _ in round_batches.values()]
     uniform = [bool(batch.q_list) and all(q == config.query_length for q in batch.q_list)
                for batch, config in zip(batches, configs)]
+    # V2 does not admit a first one-token prefill as a decode graph. A
+    # one-token extension over a nonempty cached prefix remains eligible.
+    uniform = [u and (config.runner != 'v2' or not batch.prefill_q_list
+                      or all(q == 1 and h > 0 for q, h in
+                             zip(batch.prefill_q_list, batch.prefill_k_list)))
+               for u, batch, config in zip(uniform, batches, configs)]
     mode, sizes = resolve_dp_shapes([b.total_len for b in batches], uniform, configs)
     for batch, size in zip(batches, sizes):
         _pad_batch_to_max(batch, size)
@@ -316,6 +325,31 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
         options = instance.get("cudagraph")
         if options is not None and not isinstance(options, dict):
             raise ValueError("cudagraph must be an object")
+        graph_source = 'instance config' if options is not None else 'derived defaults'
+        if options is None and not enable_attn_offloading:
+            model_config = get_source_config(instance['model_name'])
+            text_config = get_config(instance['model_name'])
+            bundle_root = (Path(__file__).resolve().parents[1] / 'profiler' / 'perf'
+                           / instance['hardware'] / instance['model_name']
+                           / resolve_variant(text_config))
+            dp_group = instance.get('dp_group')
+            dp_size = (sum(other.get('dp_group') == dp_group for other in instances)
+                       if dp_group is not None else 1)
+            scope = dict(tp_size=instance.get('tp_size', 1),
+                         pp_size=instance.get('pp_size', 1), dp_size=dp_size,
+                         ep_size=instance.get('ep_total', instance.get('ep_size', 1)),
+                         **{key: cfg[key] for key in (
+                             'max_num_seqs', 'max_num_batched_tokens', 'num_speculative_tokens',
+                             'block_size', 'enable_chunked_prefill', 'enable_prefix_caching')})
+            scope['max_model_len'] = text_config.get('max_position_embeddings')
+            scope.update(precision_scope(model_config, kv_cache_dtype=cfg['kv_cache_dtype']))
+            observation, reason = select_execution(read_bundle(bundle_root), scope, model_config)
+            if observation is not None:
+                options = graph_options(observation)
+                graph_source = 'observed worker capture in meta.yaml'
+            elif reason:
+                get_logger('CUDAGraph').warning('%s: %s; deriving graph settings',
+                                               instance['model_name'], reason)
         # Attention offloading/sub-batch interleaving is a simulator extension,
         # not the vLLM GPU forward whose graph keys this resolver describes.
         if enable_attn_offloading:
@@ -330,6 +364,7 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
         log.info("Instance %s graph contract: mode=%s, capture_sizes=%s, "
                  "query_length=%s, compiler_sp_multiple=%s", instance_id,
                  graph.mode, graph.capture_sizes, graph.query_length, graph.sp_multiple)
+        log.info('Instance %s graph runner=%s, source=%s', instance_id, graph.runner, graph_source)
         if capability is None and graph.mode != "NONE" and not any(
                 key in (options or {}) for key in ("capture_sizes", "max_capture_size")):
             log.warning("No compute capability for %s; assuming the non-SM10x "

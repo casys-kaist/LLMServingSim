@@ -419,6 +419,7 @@ python -m profiler slice    <model> --hardware <hw> --tp-refresh N --group G [op
 python -m profiler coverage <model> --hardware <hw> [options]
 python -m profiler plan-skew <model> --hardware <hw> [options]
 python -m profiler refit-skew <model> --hardware <hw> [options]
+python -m profiler import-execution <model> --hardware <hw> --bench-dir DIR [options]
 python -m profiler hardware --hardware <hw> [options]
 ```
 
@@ -533,13 +534,15 @@ These commands do **not** accept the common model-command flags:
 
 | Command | Accepted options | Defaults and scope |
 | --- | --- | --- |
+| `import-execution <model>` | `--hardware`, `--bench-dir`, `--variant`, `--out`, `--log-level` | Hardware and benchmark directory are required. Requires an HF-style ID with an existing local config and profile bundle. Saves a compatible completed worker graph observation without GPU work or timing-table changes |
 | `refit-skew <model>` | `--hardware`, `--variant`, `--tp`, `--out`, `--log-level` | Hardware is required; variant comes from the local checkpoint config; TP defaults to all measured degrees. Rebuilds calibration from stored CSVs, without a GPU |
 | `hardware` | `--hardware`, `--npus`, `--out`, `--log-level` | Hardware is required; `--npus` defaults to `2`. Acquires device/interconnect facts, without a model argument |
 
-Both use `--out` (not `--out-root`), defaulting to `profiler/perf` relative
+These commands use `--out` (not `--out-root`), defaulting to `profiler/perf` relative
 to the working directory, and `--log-level INFO`. Log levels are `DEBUG`,
 `INFO`, `WARNING`, `ERROR`. See [skew calibration](./skew-alpha-fit) and
-[adding hardware](./adding-hardware) for their input contracts.
+[adding hardware](./adding-hardware), and
+[serving observations](./output-bundle#serving_execution) for their input contracts.
 
 ### `--measurement-iterations` — averaging out clock jitter
 

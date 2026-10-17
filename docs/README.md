@@ -60,6 +60,10 @@ The [bench reference](docs/reference/bench-cli.md#kv-capacity-metadata) distingu
 raw client KV fields from source-qualified per-engine startup observations.
 Capacity-matching guides must preserve this distinction for DP runs and retain
 historical artifact semantics; unknown observations are not inferred budgets.
+The [serving observation contract](docs/profiler/output-bundle.md#serving_execution)
+separates completed worker graph captures from frontend requests and eager
+acquisition. Document explicit overrides, scope-matched metadata reuse and
+MRV1/MRV2 fallback rules without implying that padding certifies timing accuracy.
 
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,

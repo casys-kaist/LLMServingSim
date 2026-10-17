@@ -58,6 +58,9 @@ acquisition, typed and packed assigned-page dummy history, declarative scopes an
 contracts. New CSVs hold coordinates and timings; the variant-root `meta.yaml`
 holds methods, execution facts and compact publication summaries, including per-TP metadata.
 Saved method and format names are descriptive.
+Serving graph observations can be imported into that metadata separately from
+eager acquisition settings; matching deployments reuse the observed runner and
+capture grid without relabelling measured times.
 Actual backend/layout checks govern admission, not source hashes or folder names.
 CSV publication checks protect resume after an interrupted replacement without
 changing measured timings.

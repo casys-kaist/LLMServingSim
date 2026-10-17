@@ -15,6 +15,7 @@ bench/                         Python package: python -m bench
 │   ├── runner.py               AsyncLLM driver, captures RequestStateStats
 │   ├── recorder.py             writes meta.json / requests.jsonl / timeseries.csv
 │   ├── kv_cache_metadata.py     qualified per-engine startup READY capacities
+│   ├── execution_metadata.py   completed worker graph observations
 │   ├── stat_logger.py          custom vLLM StatLoggerBase that fills timeseries
 │   ├── validate.py             bench-vs-sim comparison entry point
 │   ├── plots.py                throughput / running-waiting / latency-CDF helpers
@@ -188,6 +189,14 @@ bench/results/<run_id>/
 `--prefix NAME` prepends `NAME_` to each validation filename. `meta.json`
 includes the dataset hash, vLLM version, requested engine kwargs, wall-clock
 start/end, resolved `VllmConfig`, device placement and `kv_cache` fields.
+New runs also retain `execution`: a read-only worker startup observation of the
+effective runner, graph mode and completed capture sizes, qualified by model,
+precision and deployment limits. Unsupported or incomplete observations remain
+`unknown`; frontend configuration alone is not evidence of completed captures.
+The observer runs before workload submission and changes no sampling or graph
+settings. Capture lists are not truncated by the generic metadata serializer.
+Use `profiler import-execution` to copy a compatible serving observation into a
+profile bundle; this does not change its measured CSVs.
 For new runs, match each simulator instance to its rank in
 `kv_cache.capacity.per_engine` only when `capacity.status` is `complete`.
 The reviewed vLLM 0.31 client sums connected DP engines in the raw
