@@ -170,6 +170,9 @@ Missing deployment coverage or an unsupported routing policy warns and retains
 the legacy EP-table path, whose DP/backend accuracy is unverified. Corrupt contracts,
 checksum mismatches and queries outside an installed table's supported geometry
 are errors rather than silently extrapolated measurements.
+Deployment selection caches both loaded tables and absent coverage for the run,
+avoiding repeated metadata reads on every MoE layer. Corrupt contracts are not
+cached as missing coverage. Restart the simulation after changing a bundle.
 
 ## Runtime communication and limits
 

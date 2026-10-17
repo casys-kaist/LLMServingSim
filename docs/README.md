@@ -53,6 +53,8 @@ to their PR and label future backend/model work as in progress.
 The [native MoE guide](docs/profiler/native-moe-components.md) distinguishes
 local DP1 from DP+EP execution, and full expert parallelism from tensor-sharded
 experts. Component support does not imply a new published benchmark result.
+Its coverage-selection cache assumes immutable bundles during a simulation;
+missing coverage and corrupt installed data have different failure behavior.
 
 The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
 0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained

@@ -72,8 +72,13 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
             try:
                 cache[key] = MoeComponentTable(root, target=vars(target), expected=expected)
             except MoeCoverageError:
-                _warn(ctx, f'TP={ctx.tp_size}, DP={dp}, EP={ctx.ep_total}, rank={rank}')
-                return False
+                # Bundles are immutable during a simulation. Cache absent
+                # coverage too; otherwise every layer rereads the same metadata.
+                # Invalid contracts still raise instead of becoming a fallback.
+                cache[key] = None
+        if cache[key] is None:
+            _warn(ctx, f'TP={ctx.tp_size}, DP={dp}, EP={ctx.ep_total}, rank={rank}')
+            return False
         tables.append(cache[key])
         domains.append(target.token_domains(counts))
     domain = domains[0]

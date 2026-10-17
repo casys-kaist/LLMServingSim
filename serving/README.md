@@ -468,6 +468,8 @@ These tensor contracts are independent of measured bandwidth and latency.
 
 Loads native MoE component tables, validates deployment and acquisition
 contracts, and caches bounded interpolation over their measured coordinates.
+Deployment selection caches absent coverage as well as loaded tables, without
+turning corrupt installed data into a fallback.
 
 ### `moe_execution.py`
 

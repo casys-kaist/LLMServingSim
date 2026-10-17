@@ -2314,6 +2314,9 @@ entirely. Preserve the alias in every conditioned eager/graph variant. DP1
 traces contain gate/routing, experts and optional TP AllReduce, no DP collectives.
 Full EP at TP>1 owns whole experts and is not plain tensor-sharded TP. Missing
 DP1 native coverage falls back without consuming a mismatched EP table.
+Cache missing deployment coverage for the lifetime of the simulation, just like
+loaded native tables: bundles are immutable during a run. Do not reread the same
+metadata on every layer. Corrupt contracts remain errors, never cached misses.
 
 Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
 capability. `defer_moe_finalize` is a request flag in 0.28 and a request method
