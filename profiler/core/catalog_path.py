@@ -19,8 +19,8 @@ level, and the recorded name is the text tower's. One architecture, one name.
 Some ``model_type`` values are different checkpoints of **one**
 implementation — GLM-5's ``glm_moe_dsa`` and DeepSeek-V3.2's ``deepseek_v32``
 both run vLLM's ``deepseek_v2`` path — so a file may list every value it serves
-under ``model_types:``. Resolution tries the filename first and only scans for
-a declaration on a miss, keeping the common path a single stat.
+under ``model_types:``. Resolution checks all declarations even when the named
+file exists, so a second catalog cannot silently claim the same model type.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def declared_model_types(path: str | os.PathLike) -> list[str]:
     """The ``model_types:`` list a yaml declares, or ``[]``.
 
     Deliberately does not validate the file: this runs over every yaml in the
-    directory during a miss, and a malformed *other* file must not stop the
+    directory during resolution, and a malformed *other* file must not stop the
     one being looked for from resolving.
     """
     try:
@@ -67,12 +67,9 @@ def find_architecture_path(model_type: str, arch_dir: str) -> str | None:
     catalog you got would otherwise depend on directory order.
     """
     candidate = os.path.join(arch_dir, f"{model_type}.yaml")
-    if os.path.isfile(candidate):
-        return candidate
-
     matches = [
         path for path in _yaml_files(arch_dir)
-        if model_type in declared_model_types(path)
+        if (path == candidate and os.path.isfile(path)) or model_type in declared_model_types(path)
     ]
     if len(matches) > 1:
         raise ValueError(

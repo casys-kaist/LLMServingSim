@@ -11,7 +11,8 @@ Backbone-only overrides are consumed after writing the nested config, avoiding
 duplicate assignments to wrapper properties. Root-only and shared root/text
 overrides stay forwarded; flat model configuration is unchanged.
 TP emulation resolves user overrides before sharding and preserves vLLM's
-unsharded attention head width. Shape-construction changes invalidate acquisition
+unsharded attention head width; separately declared `dense_intermediate_size`
+is sharded alongside the other TP dimensions. Shape-construction changes invalidate acquisition
 resume; old incorrectly shaped rows need remeasurement, not metadata relabelling.
 Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
 explicit module scopes retain CUDA kernels, copies and memsets without recording
@@ -57,8 +58,10 @@ acquisition. Its combined attention/indexer tail retains full-context coordinate
 See [native DSA acquisition](../docs/docs/profiler/output-bundle.md#native-dsa-acquisition)
 for supported modes and the separate duration-only trace boundary.
 Native MiniMax-M3 attention acquisition also records a source-checked per-TP
-lookup contract: Triton BF16, 16 selected blocks of 128 tokens, gives a 2048
-sparse-prefill cap. Unmarked historical tables retain 2176; raw coordinates
+lookup contract: Triton BF16 uses the configured selected-block count with the
+reviewed 128-token block layout. Initial/local blocks are included in that count;
+the shipped configuration gives a 2048 sparse-prefill cap.
+Unmarked historical tables retain 2176; raw coordinates
 and timings are never relabeled. See the
 [native attention contract](../docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
@@ -610,7 +613,8 @@ The profiler:
    file is absent and `MODEL` is an HF-style id, the config is
    downloaded from the hub and cached at that path automatically.
 2. Picks the matching architecture yaml under `models/` by
-   `model_type` (filename first, then declared `model_types:` aliases).
+   `model_type`, checking both filenames and declared `model_types:` aliases.
+   A matching filename cannot hide another catalog's claim to the same type.
    Fails with a clear error and an "available architectures" list if
    nothing matches.
 3. Writes the model config to a temp directory and spins vLLM up

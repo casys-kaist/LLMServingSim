@@ -55,6 +55,9 @@ from profiler.core.catalog_path import resolve_architecture_path
 # attention page had halved.
 SHARD_FIELDS: list[str] = [
     "intermediate_size",
+    # MiniMax's dense MLP reads this separate width; intermediate_size is its
+    # expert width (native minimax_m3/nvidia/model.py:743).
+    "dense_intermediate_size",
     "num_attention_heads",
     "num_key_value_heads",
     "vocab_size",

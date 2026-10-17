@@ -415,14 +415,16 @@ backend evidence, not a user-supplied cap or a reinterpretation of old data.
 The supported contract is the source-checked **vLLM 0.31.0 NVIDIA Triton** pair
 `MiniMaxM3IndexerTritonImpl` / `MiniMaxM3SparseTritonImpl`, using BF16 indexer
 and attention KV storage, max-score selection, and a contiguous int32 selection
-buffer with **16 total blocks of 128 tokens**. Initial/local blocks occupy that
-total; they do not enlarge it. Acquisition inspects the actual selected objects,
+buffer whose width equals the configured `sparse_topk_blocks`. The reviewed
+layout requires **128 tokens per block**. Initial/local blocks occupy the
+selected-block total; they do not enlarge it. Acquisition inspects the actual selected objects,
 buffer layout, model/catalog parameters and exact installed source hashes, and
 requires worker agreement. Another implementation, source revision, layout,
 storage precision or speculative path needs a separately reviewed contract; a matching
 model name or version label alone is insufficient.
 
-The resulting **2048** cap applies only to `sparse_attention` prefill lookup:
+The resulting `sparse_topk_blocks × sparse_block_size` cap (**2048** for the
+shipped configuration) applies only to `sparse_attention` prefill lookup:
 cap each request's effective key before taking the query-weighted mean. Dense
 attention and the indexer remain uncapped, as do decode-history coordinates.
 Producer rows keep their raw coordinates and measured timings, including above
@@ -438,6 +440,12 @@ accepting rows and seals the completed attention CSV. Consumers reject pending
 records, unknown schemas, missing metadata for marked rows, altered checksums,
 mixed identities, or model/catalog/TP mismatches. Completion describes the
 selected acquisition plan, not proof of a full grid or arbitrary context range.
+
+Native-marked ordinary rows recognize the current ordinary measurement protocol
+and the supported historical ordinary protocol; native skew rows retain their
+separate protocol. This compatibility check does not make acquisition identities
+interchangeable: source fingerprints, per-row identities and completion seals
+must still match. No protocol recognition rewrites or upgrades stored rows.
 
 Unmarked historical tables retain their existing lookup semantics: **2176**
 for the shipped MiniMax-M3 configuration. Do not add a contract to historical

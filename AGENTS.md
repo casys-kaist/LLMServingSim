@@ -166,7 +166,9 @@ that is not a version-independent runtime claim. vLLM 0.31's native DeepSeek-V3.
 path is `vllm.models.deepseek_v32.nvidia.model`. Existing aliases and stored tables
 do not certify acquisition on that path: require matching live coverage and
 execution contracts before a new sweep. Two files claiming one `model_type` is
-an error, not first-wins.
+an error, not first-wins, including a matching filename alongside another file's
+alias. Check all claims before choosing a catalog; a file's own alias is not
+a second claimant.
 
 **One layer-order form: `blocks:` + `shared:`.** `blocks:` is keyed by **axis**
 (`blocks.attn.<layer_types value>`, `blocks.sparse_attn.<same>` as an overlay,
@@ -253,6 +255,8 @@ glue measurements require a dense-category refresh, not a metadata restamp.
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
+Include separately declared `dense_intermediate_size` in this sharding step;
+do not leave a dense branch at full width while reducing the routed branch.
 Resolve the unsharded local configuration through installed vLLM first, after
 user overrides and decoder-prefix materialization. `hooks/tp_shape.py` preserves
 the native head width when reducing the head count would otherwise change it;
@@ -1238,11 +1242,16 @@ query reads its whole causal window.
 it retains the committed tables' historical lookup rule, including the initial
 and local block adjustment (17 x 128 = 2176). New native acquisitions instead
 use `attention_lookup.py` and `meta.yaml.attention_lookup.per_tp`: the inspected
-vLLM 0.31 Triton indexer/attend pair selects 16 total blocks of 128, giving 2048
+vLLM 0.31 Triton indexer/attend pair uses the configured selected-block count
+with the reviewed 128-token block layout (2048 tokens for the shipped config)
 for `sparse_attention` prefill lookup only. Initial/local blocks are part of that
 total, not an addition. Exact selected classes, installed source hashes, BF16
 indexer/KV storage, selection-buffer layout and model/catalog parameters must
 match; speculative acquisition and unreviewed backends/layouts are refused.
+Native-marked ordinary rows must recognize the current `measurement.PROTOCOL`
+as well as the explicitly supported historical ordinary protocol; skew keeps
+its own supported protocol. Recognition does not waive exact acquisition
+identity or completion checks and never converts historical measurements.
 The catalog's `key_saturates` says which entries are subject to the bound. That
 is a per-**kernel** property, not a per-model one: M3 is sparse only from its
 fourth layer on, and a sparse model's `indexer` scores the whole KV to make

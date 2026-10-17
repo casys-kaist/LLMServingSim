@@ -142,10 +142,10 @@ model_types:
   - qwen3_5_moe
 ```
 
-Resolution tries `<model_type>.yaml` first and only scans for a declaration on
-a miss, so the common path stays one `stat`. Two files claiming the same
-`model_type` is an error, not a silent first-wins — otherwise which catalog you
-got would depend on directory order.
+Resolution checks `<model_type>.yaml` and declared aliases together. Two files
+claiming the same `model_type` is an error even when one filename matches;
+directory order cannot choose between them. A file may list its own primary
+type under `model_types:` without becoming a second claimant.
 
 Alias only what is genuinely the same implementation. `qwen3_next` has the same
 gated-DeltaNet structure as `qwen3_5` but different classes

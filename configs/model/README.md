@@ -19,7 +19,7 @@ under `load_format=dummy`:
 | Field | Purpose |
 | --- | --- |
 | `architectures` | vLLM picks the ForCausalLM class from this list |
-| `model_type` | Shared catalog resolver tries `profiler/models/<model_type>.yaml`, then declared `model_types:` aliases |
+| `model_type` | Shared catalog resolver checks `profiler/models/<model_type>.yaml` and declared `model_types:` aliases, rejecting claims by multiple files |
 | `hidden_size`, `intermediate_size` | Linear dims |
 | `num_attention_heads`, `num_key_value_heads` | Attention shapes (GQA) |
 | `num_hidden_layers` | Layer count (simulator multiplies per-layer time by this) |
@@ -147,10 +147,11 @@ run. The profiler will feed this config to vLLM directly.
 ## Architecture support
 
 Both profiler and simulator use `profiler/core/catalog_path.py` to resolve
-the catalogs in `profiler/models/`. The resolver tries the filename first,
-then scans declared `model_types:` aliases. For example, `qwen3_moe` uses
-`qwen3.yaml`, and `glm_moe_dsa` uses `deepseek_v32.yaml`. Ambiguous alias
-matches are rejected; an unknown type reports available catalogs.
+the catalogs in `profiler/models/`. The resolver checks the filename and
+declared `model_types:` aliases together. For example, `qwen3_moe` uses
+`qwen3.yaml`, and `glm_moe_dsa` uses `deepseek_v32.yaml`. Claims by different
+files are rejected even when one filename matches; a file naming its own
+type in its alias list is not a duplicate. An unknown type reports available catalogs.
 
 The files and their declarations are the authoritative support inventory.
 Downloading a config alone does not add support: the live vLLM profile tree,

@@ -104,7 +104,8 @@ per-request history accounting, separately from physical memory traffic and
 the historical latency-lookup cap.
 The [native attention contract](docs/profiler/output-bundle.md#native-attention-lookup-contract)
 separates new per-TP MiniMax-M3 backend semantics from unchanged historical tables,
-and defines publication, resume and skew-consumer checks without deployment claims.
+derives the selected-block count from configuration and defines publication,
+protocol compatibility and skew-consumer checks without deployment claims.
 Coverage accounts for native kernels, copies and memsets, including work outside
 module scopes. The architecture guide also documents child exclusions for raw
 kernel wildcards and rejection of overlapping canonical activity claims.

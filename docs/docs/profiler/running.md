@@ -45,6 +45,8 @@ after user overrides. The profiler then shrinks declared TP dimensions while
 preserving the original attention head width. Otherwise a derived width can
 grow when the head count shrinks, as in Mixtral configurations without an
 explicit `head_dim`. Nested text fields follow the same resolution path.
+Separately declared `dense_intermediate_size` is reduced by TP as well, so
+hybrid dense/MoE stacks do not retain a full-width dense branch during emulation.
 Unsupported specialized width changes and non-divisible dimensions fail before
 engine construction; this does not add replicated-KV-head emulation.
 Old affected rows must be measured again in a separate output root or with an
@@ -61,8 +63,9 @@ From inside the vLLM Docker container at `/workspace`:
 
 The script auto-resolves the model architecture from the HF
 `config.json`'s `model_type` field, you don't specify it on the
-command line. Resolution tries `profiler/models/<model_type>.yaml`, then
-the catalogs' declared `model_types:` aliases. See
+command line. Resolution checks `profiler/models/<model_type>.yaml` and
+the catalogs' declared `model_types:` aliases. Multiple files claiming the same
+type are rejected even when one filename matches. See
 **[Adding a model architecture](./adding-model-architecture)** if it
 doesn't.
 
@@ -648,8 +651,9 @@ Profile the intended range and validate any extrapolation separately.
 
 For new MiniMax-M3 attention measurements, the inspected native backend also
 owns the [per-TP lookup contract](./output-bundle.md#native-attention-lookup-contract).
-The reviewed vLLM 0.31 Triton BF16 path uses 16 total selected blocks of 128
-tokens; initial/local blocks are included, giving a 2048 sparse-prefill cap.
+The reviewed vLLM 0.31 Triton BF16 path uses the configured selected-block count
+with 128-token blocks; initial/local blocks are included. The shipped
+configuration therefore gives a 2048 sparse-prefill cap.
 Record the full raw context range for the indexer and diagnostics; do not clip
 the acquisition grid to this cap. Historical unmarked profiles retain 2176.
 Use a fresh variant root or explicitly remeasure incompatible attention rows;

@@ -51,6 +51,11 @@ def protocol(base, semantic_sha=None):
     return base + MARKER + _sha(semantic_sha)
 
 
+def _ordinary_protocols():
+    from .measurement import PROTOCOL
+    return (PROTOCOL, 'kineto-context-scoped-cuda-union-dummy-kv-query-v7')
+
+
 def protocol_digest(value):
     if not isinstance(value, str):
         raise ValueError('Invalid attention row protocol')
@@ -59,7 +64,7 @@ def protocol_digest(value):
     if value.count(MARKER) != 1:
         raise ValueError('Unknown native attention row protocol')
     base, recorded = value.split(MARKER)
-    if base not in ('kineto-context-scoped-cuda-union-dummy-kv-query-v7',
+    if base not in (*_ordinary_protocols(),
                     'kineto-context-scoped-dummy-kv-skew-per-forward-v9'):
         raise ValueError('Unknown native attention measurement method')
     return _sha(recorded)
@@ -90,7 +95,11 @@ def validate_semantic(value, config=None, architecture=None):
     for name in ('topk_blocks', 'block_size', 'init_blocks', 'local_blocks', 'topk_width'):
         if type(source[name]) is not int or source[name] < (0 if name in ('init_blocks', 'local_blocks') else 1):
             raise ValueError('Invalid native attention dimensions')
-    if (source['topk_blocks'] != 16 or source['topk_width'] != source['topk_blocks'] or source['block_size'] != 128
+    # The Triton implementation consumes the configured top-k. Sixteen is the
+    # native SM100 MSA indexer selection condition, not a Triton layout rule
+    # (common/indexer.py:495-535). Keep the selected implementation checks above
+    # and the backend's supported block size (common/indexer.py:90-95).
+    if (source['topk_width'] != source['topk_blocks'] or source['block_size'] != 128
             or source['init_blocks'] + source['local_blocks'] > source['topk_blocks']
             or type(value['key_saturation']) is not int
             or value['key_saturation'] != source['topk_blocks'] * source['block_size']):
@@ -152,7 +161,8 @@ def records(meta):
         _sha(identity['measurement_sha256'])
         if protocol_digest(identity['measurement_protocol']) != record['semantic_sha256']:
             raise ValueError('Attention measurement does not bind its semantics')
-        if not identity['measurement_protocol'].startswith('kineto-context-scoped-cuda-union-dummy-kv-query-v7' + MARKER):
+        if identity['measurement_protocol'] not in (
+                protocol(base, record['semantic_sha256']) for base in _ordinary_protocols()):
             raise ValueError('Attention record uses another category protocol')
         if type(record['completed']) is not bool:
             raise ValueError('Invalid attention completion state')
@@ -186,10 +196,10 @@ def check_rows(path, semantic_sha=None, measurement=None):
             if semantic_sha is not None:
                 _sha(row.get('measurement_sha256'))
                 identities.add((row['measurement_protocol'], row['measurement_sha256']))
-                expected_base = ('kineto-context-scoped-dummy-kv-skew-per-forward-v9'
-                                 if path.name == 'skew.csv' else
-                                 'kineto-context-scoped-cuda-union-dummy-kv-query-v7')
-                if row['measurement_protocol'] != protocol(expected_base, semantic_sha):
+                expected_bases = (('kineto-context-scoped-dummy-kv-skew-per-forward-v9',)
+                                  if path.name == 'skew.csv' else _ordinary_protocols())
+                if row['measurement_protocol'] not in (
+                        protocol(base, semantic_sha) for base in expected_bases):
                     raise ValueError('Contracted row uses another category protocol')
         if semantic_sha is not None and count == 0:
             raise ValueError('Empty contracted attention table')

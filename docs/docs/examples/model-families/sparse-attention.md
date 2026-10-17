@@ -34,7 +34,8 @@ replay only. This does not extend native acquisition to GLM-5.
 
 MiniMax-M3's new source-checked vLLM 0.31 Triton BF16 acquisition records a
 [per-TP attention contract](../../profiler/output-bundle.md#native-attention-lookup-contract):
-16 total selected blocks of 128 give a 2048 sparse-prefill lookup cap. The
+the configured selected-block count and reviewed 128-token block layout determine
+the sparse-prefill lookup cap (2048 for the shipped configuration). The
 historical unmarked tables retain 2176. Raw producer coordinates, indexer
 history and decode lookup remain unchanged; selecting a native cap does not
 certify a full grid, distributed deployment, KV capacity or benchmark accuracy.

@@ -154,7 +154,9 @@ support for nondefault runtime indexer dtypes or whole-model TP deployments.
 Raw latency-table coordinates and stored timings are unchanged. Unmarked
 historical MiniMax tables retain their 2176 prefill-lookup cap, separately from
 the 2048-position byte cap for the shipped config. New source-checked native
-Triton BF16 acquisitions instead record a per-TP 2048 sparse-prefill lookup cap
+Triton BF16 acquisitions instead record the configured selected-block count
+times the reviewed 128-token block width as their per-TP sparse-prefill lookup cap
+(2048 for the shipped config)
 in their [attention contract](../profiler/output-bundle.md#native-attention-lookup-contract).
 This selects the consumer coordinate without clipping producer rows, dense
 attention, indexer lookup or decode-history coordinates. Neither lookup rule

@@ -74,7 +74,8 @@ the benchmark retains its two disabled communication-fusion passes. New runs
 record source-qualified per-engine KV capacities for DP comparisons rather
 than treating the frontend's aggregate block count as one engine's capacity.
 MiniMax-M3's [native attention lookup contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-attention-lookup-contract)
-binds new sparse-prefill lookups to the measured backend per TP; historical bundles retain their original semantics.
+binds new sparse-prefill lookups to the measured backend and configured selection
+width per TP; historical bundles retain their original semantics.
 Profiler precision labels keep checkpoint quantization separate from floating
 activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
 before acquiring an alternate precision.

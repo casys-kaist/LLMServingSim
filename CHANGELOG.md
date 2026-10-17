@@ -42,6 +42,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Shard separately declared dense-MLP intermediate widths during TP shape
+  emulation and reject ambiguous catalog claims even when a filename matches.
+  Previously mis-shaped measurements require remeasurement, not restamping.
 - Prepare native MXFP4 dummy expert weights and KDA derived buffers before
   unchanged vLLM postload processing. Bound staging memory, validate supported
   source/layout contracts and record preparation separately from forward checks;
@@ -58,8 +61,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   and flat-model behavior, and retain the authoritative engine's resolved text
   config in per-TP metadata. Changed acquisition identities require remeasurement.
 - Bind new MiniMax-M3 sparse-prefill lookup caps to the measured native backend
-  per TP. The source-checked vLLM 0.31 Triton BF16 contract selects 16 blocks of
-  128 tokens (2048); unmarked historical tables retain 2176. Preserve raw CSV
+  per TP. The source-checked vLLM 0.31 Triton BF16 contract uses the configured
+  selected-block count with 128-token blocks (2048 for the shipped config);
+  unmarked historical tables retain 2176. Recognize the current ordinary
+  acquisition protocol alongside supported historical ordinary/skew protocols
+  without relaxing identity checks. Preserve raw CSV
   coordinates and timings, reject incomplete or mismatched contracts, and share
   the resolver across serving, skew planning and fitting. Empty skew plans do
   not publish a new acquisition or replace existing artifacts.
