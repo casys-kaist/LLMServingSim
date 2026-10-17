@@ -154,6 +154,7 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
 
 def fuse_engine_kwargs(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+    *, native_profile=None,
 ) -> dict[str, Any]:
     """Produce the final ``**kwargs`` to pass to ``vllm.LLM()``.
 
@@ -258,9 +259,8 @@ def fuse_engine_kwargs(
     # 5. Sharding wins.
     kwargs["hf_overrides"] = _deep_merge(hf_overrides, sharded_overrides)
 
-    if args.model_config.get("model_type") == "kimi_k3":
-        # Only the text backbone is acquired; do not allocate vision weights.
-        kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}
+    if native_profile is not None:
+        kwargs = _deep_merge(kwargs, native_profile.engine_overrides())
 
     # 6. Wire the worker extension.
     kwargs["worker_extension_cls"] = "profiler.core.hooks.extension.Extension"
@@ -295,21 +295,18 @@ def _materialize_config(
     stay forwarded. Only keys the backbone already declares are touched,
     apart from the decoder depth.
     """
-    written = copy.deepcopy(model_config)
-    if model_config.get("model_type") in ("kimi_k3", "kimi_linear"):
-        from .kimi_profile import materialize_prefix
-        written = materialize_prefix(model_config, kwargs.get("hf_overrides") or {})
+    from .stack import materialize_prefix
+    written = materialize_prefix(model_config, kwargs.get("hf_overrides") or {})
     inner = written.get("text_config")
     overrides = kwargs.get("hf_overrides") or {}
-    if model_config.get("model_type") in ("kimi_k3", "kimi_linear"):
-        # Native config construction reapplies top-level overrides. Forward the
-        # already validated prefix schedule, never the original full-depth list.
-        native_text = written.get("text_config", written)
-        overrides = copy.deepcopy(overrides)
-        for key in ("linear_attn_config", "layer_types"):
-            if key in overrides and key in native_text:
-                overrides[key] = copy.deepcopy(native_text[key])
-        kwargs["hf_overrides"] = overrides
+    # Native config construction reapplies top-level overrides. Forward the
+    # already validated prefix schedule, never the original full-depth list.
+    native_text = written.get("text_config", written)
+    overrides = copy.deepcopy(overrides)
+    for key in ("linear_attn_config", "layer_types"):
+        if key in overrides and key in native_text:
+            overrides[key] = copy.deepcopy(native_text[key])
+    kwargs["hf_overrides"] = overrides
     if isinstance(inner, dict):
         for key, value in overrides.items():
             if key in inner or key == "num_hidden_layers":
@@ -341,7 +338,7 @@ def _materialize_config(
 
 def spin_up(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
-    moe_ep: int = 1,
+    moe_ep: int = 1, *, native_profile=None,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -361,7 +358,7 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
-    kwargs = fuse_engine_kwargs(args, tp, stack_axes)
+    kwargs = fuse_engine_kwargs(args, tp, stack_axes, native_profile=native_profile)
     from .hooks.dummy_weights import validate_execution_scope
     validate_execution_scope(args.model_config, tp=tp, moe_ep=moe_ep,
                              profile_mtp=args.profile_mtp, kwargs=kwargs)
@@ -416,12 +413,6 @@ def spin_up(
                     or receipt.get("postload", {}).get("structure_verified") is not True
                     or receipt.get("postload", {}).get("forward_verified") is not False):
                 raise ValueError("Worker dummy-preparation receipt is incomplete or incompatible")
-            import hashlib
-            hook_dir = Path(__file__).parent / "hooks"
-            expected_sources = {name: hashlib.sha256((hook_dir/name).read_bytes()).hexdigest()
-                                for name in ("dummy_weights.py", "dummy_weight_layouts.py")}
-            if receipt.get("adapter_source_sha256") != expected_sources:
-                raise ValueError("Worker dummy-preparation adapter source differs from host")
             receipt = copy.deepcopy(receipt)
             receipt["checkpoint_quantization"] = {
                 key: copy.deepcopy(holder["quantization_config"])

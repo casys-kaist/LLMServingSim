@@ -1,7 +1,8 @@
 """Exact isolated-callable acquisition/resume/query seam, separate from engines.
 
-This narrow API has no CLI/grid expansion, model planner, size formulas, or
-whole-model trace support. Target scopes and manifests are supplied before fire.
+The common API owns publication and exact context lookup. Source adapters may
+provide bounded native argument plans; they do not choose a profiling grid or
+claim whole-model execution. Targets and manifests are supplied before fire.
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -16,6 +17,211 @@ from .hooks.callable_context import expected_counts
 from .hooks.cuda_timing import union_ns
 
 
+NATIVE_PROFILE_SCHEMA = 'native-profile-categories-v2'
+
+
+def hybrid_residual_plan(config, tokens, *, iterations, warmups):
+    """Plan the source model's native residual calls at one explicit token count.
+
+    The existing native callable runner enforces its allocation, iteration and
+    call-count bounds. A source model that exceeds them fails before allocation;
+    its residual capacity or schedule is never reduced to fit the envelope.
+    Full-depth role coverage here is isolated-callable coverage, not a claim
+    that a full-depth model ran or that its resident-memory capacity is known.
+    """
+    from .hooks.runtime_admission import HybridResidualProfile
+    from .hooks.capture_scope_contract import normalize_contexts
+    from .hooks.callable_workload import DTYPES, MAX_BYTES
+
+    adapter = HybridResidualProfile()
+    text = adapter.original_text(config)
+    roles = adapter.roles(config)
+    if type(tokens) is not int or not 1 <= tokens <= 2**31 - 1:
+        raise ValueError('Residual callable tokens must be a positive bounded integer')
+    if text.get('dtype', config.get('dtype')) not in ('bfloat16', 'bf16'):
+        raise NotImplementedError('Native residual argument plan requires explicit BF16 source dtype')
+    hidden, depth = text['hidden_size'], text['num_hidden_layers']
+    capacity = roles[-1]['capacity']
+    fields = dict(
+        num_blocks=dict(argument='num_blocks', operation='int'),
+        block_write_idx=dict(argument='block_write_idx', operation='int'),
+        delta_present=dict(argument='delta', operation='present'),
+        output_norm_present=dict(argument='output_norm_weight', operation='present'))
+    tensor_names = ('prefix', 'delta', 'blocks', 'norm_weight', 'qk_weight', 'output_norm_weight')
+    token_tensors = frozenset(('prefix', 'delta', 'blocks'))
+    tensors = {name: dict(argument=name,
+        **(dict(token_axis=0) if name in token_tensors else {}),
+        **(dict(optional=True) if name in ('delta', 'output_norm_weight') else {}))
+        for name in tensor_names}
+    declaration = dict(name='attn_res', kind='function',
+        module='vllm.models.kimi_k3.nvidia.model', attribute='attn_res',
+        context=dict(fields=fields, tensors=tensors))
+    catalog = dict(attn_res=dict(callable='attn_res', normalization='invocations'))
+    contexts = normalize_contexts(catalog=dict(attn_res=dict(catalog['attn_res'], callable=declaration)))
+    slots = {name: dict(
+        shape=([tokens, capacity, hidden] if name == 'blocks' else
+               [tokens, hidden] if name in token_tensors else [hidden]),
+        dtype='torch.bfloat16', fill=0.0 if name == 'qk_weight' else 0.125)
+        for name in tensor_names}
+    allocated = sum(math.prod(slot['shape']) * DTYPES[slot['dtype']] for slot in slots.values())
+    if allocated > MAX_BYTES:
+        raise ValueError('Source residual argument plan exceeds the common callable allocation bound: '
+                         f'{allocated} > {MAX_BYTES} bytes')
+    calls, counts, role_contexts = [], Counter(), []
+    for role in roles:
+        absent = set()
+        if not role['delta_present']:
+            absent.add('delta')
+        if not role['output_norm_present']:
+            absent.add('output_norm_weight')
+        call = {name: None if name in absent else dict(tensor=name) for name in tensor_names}
+        call.update({name: role[name] for name in ('num_blocks', 'block_write_idx', 'eps', 'output_norm_eps')})
+        calls.append(call)
+        geometry = {}
+        for name, slot in slots.items():
+            if name in absent:
+                geometry[name] = None
+                continue
+            shape = list(slot['shape'])
+            stride = [math.prod(shape[index + 1:]) for index in range(len(shape))]
+            if name in token_tensors:
+                shape[0] = '$tokens'
+            geometry[name] = dict(shape=shape, stride=stride, dtype=slot['dtype'], storage_offset=0)
+        context = canonical(dict(schema=1, arguments={name: role[name] for name in fields}, geometry=geometry))
+        counts[context] += 1
+        role_contexts.append(context)
+    signature = ('(prefix: torch.Tensor, delta: torch.Tensor | None, blocks: torch.Tensor, '
+                 'norm_weight: torch.Tensor, qk_weight: torch.Tensor, '
+                 'output_norm_weight: torch.Tensor | None, num_blocks: int, '
+                 'block_write_idx: int, eps: float, output_norm_eps: float) -> torch.Tensor')
+    work = dict(schema=1, scope=dict(kind='hybrid-residual-isolated-attn-res-v2',
+        execution_depth=depth, capacity=capacity,
+        hidden=hidden, tp=1, pp=1, dtype='torch.bfloat16',
+        allocation_limit_bytes=MAX_BYTES),
+        source=dict(module=declaration['module'], function=declaration['attribute'],
+                    signature=signature),
+        shot_tokens=tokens, iterations=iterations, warmups=warmups, tensors=slots, calls=calls,
+        expected_contexts=[dict(layer='attn_res', context=context, context_tokens=tokens, invocations=count)
+                           for context, count in sorted(counts.items())])
+    work, contexts = normalize(work, catalog, contexts)
+    return work, catalog, contexts, role_contexts
+
+
+def profile_for(architecture):
+    """Select an explicitly declared runtime adapter, never a checkpoint name."""
+    if hasattr(architecture, 'model_dump'):
+        # Keep declared fields, not unrelated typed-model defaults. Callable
+        # context defaults are normalized below with the shared CPU helper.
+        architecture = architecture.model_dump(exclude_unset=True, exclude_none=True)
+    name = architecture.get('native_profile')
+    if name is None:
+        return None
+    if name == 'hybrid-residual-v1':
+        from .hooks.runtime_admission import HybridResidualProfile
+        return NativeProfile(name, architecture, HybridResidualProfile())
+    raise ValueError('Unknown native acquisition profile: ' + str(name))
+
+
+class NativeProfile:
+    """Common host/worker publication around a narrow source-specific adapter.
+
+    Adapters describe admitted runtime facts and contextual invocation geometry.
+    Category planning, complete-table resume, capture counts and callable table
+    transactions continue to use the same mechanisms for every architecture.
+    """
+
+    def __init__(self, name, architecture, adapter):
+        from .hooks.capture_scope_contract import normalize_callable
+        self.name = name
+        self.architecture = json.loads(canonical(architecture))
+        for entries in self.architecture['catalog'].values():
+            for entry in entries.values():
+                if entry.get('callable') is not None:
+                    entry['callable'] = normalize_callable(entry['callable'])
+        self.adapter = adapter
+
+    def validate_request(self, args, *, full=False):
+        self.adapter.validate_request(args, full=full)
+
+    def stack_axes(self, category):
+        return self.adapter.stack_axes(category)
+
+    def engine_overrides(self):
+        return self.adapter.engine_overrides()
+
+    def ordinary_catalog(self, catalog):
+        return {name: entry for name, entry in catalog.items()
+                if name not in self.adapter.context_layers}
+
+    def native_scope(self, llm, args, tp, limits):
+        # A local native profile cannot claim single-worker shape emulation as
+        # distributed execution. A later distributed adapter needs its own RPC
+        # and rank-agreement contract before these bounds can be extended.
+        if tp != 1 or limits.moe_ep != 1:
+            raise NotImplementedError('Local native profiles require TP1/EP1')
+        cfg = llm.llm_engine.vllm_config
+        descriptor = self.adapter.runtime_descriptor(args.model_config,
+            cfg.model_config.hf_text_config.num_hidden_layers,
+            dict(max_model_len=cfg.model_config.max_model_len,
+                 max_num_seqs=cfg.scheduler_config.max_num_seqs,
+                 max_num_batched_tokens=cfg.scheduler_config.max_num_batched_tokens),
+            cfg.cache_config.kv_cache_memory_bytes)
+        responses = llm.collective_rpc(self.adapter.rpc_method, args=(self.architecture, descriptor))
+        if type(responses) not in (tuple, list) or len(responses) != 1:
+            raise ValueError('Local native acquisition requires exactly one worker')
+        scope = dict(schema=NATIVE_PROFILE_SCHEMA, profile=self.name, architecture=self.architecture,
+                     descriptor=descriptor, runtime=responses[0])
+        self.validate_scope(scope)
+        return scope
+
+    def validate_scope(self, scope):
+        if (type(scope) is not dict or set(scope) != {'schema', 'profile', 'architecture',
+                'descriptor', 'runtime'} or scope['schema'] != NATIVE_PROFILE_SCHEMA
+                or scope['profile'] != self.name
+                or canonical(scope['architecture']) != canonical(self.architecture)):
+            raise ValueError('Native acquisition scope/catalog differs')
+        if canonical(self.adapter.admit_runtime(scope['descriptor'], scope['runtime']['facts'])) != canonical(scope['runtime']):
+            raise ValueError('Native runtime response differs from its source admission')
+
+    def validate_capture(self, scope, measured, catalog, iterations, warmup):
+        from .hooks.activity_collector import coverage_report
+        self.adapter.validate_capture_extra(scope, warmup)
+        calls = self.adapter.expected_calls(scope)
+        if not set(catalog) <= set(calls) or set(measured['layer_us']) != set(catalog):
+            raise ValueError('Incomplete native canonical boundary coverage')
+        report = coverage_report(measured)['canonical_invocations']
+        if report['timed_forwards'] != iterations or len(report['per_forward']) != iterations:
+            raise ValueError('Native timed-forward report differs')
+        for forward in report['per_forward']:
+            if forward['missing_canonical'] or set(forward['canonical']) != set(catalog):
+                raise ValueError('Native boundary is missing in a timed forward')
+            for name, audit in forward['canonical'].items():
+                if (not calls[name] or audit['scope_calls'] != calls[name]
+                        or audit['positive_cuda_scope_calls'] != calls[name]):
+                    raise ValueError('Native source invocation count differs: ' + name)
+
+    def acquire_contexts(self, llm, args, shots, directory, *, replace):
+        from .measurement import layerwise_identity
+        tokens = sorted({sum(q for q, _ in shot.requests) for shot in shots})
+        plans = [self.adapter.context_plan(args.model_config, token,
+                    iterations=args.measurement_iterations, warmups=1) for token in tokens]
+        works = [plan[0] for plan in plans]
+        catalog, contexts = plans[0][1:3]
+        if any(plan[1:3] != plans[0][1:3] for plan in plans):
+            raise ValueError('Callable declarations changed across planned token counts')
+        fired = acquire(llm, Path(directory) / 'callables', works, catalog, contexts, replace=replace)
+        identity = layerwise_identity(catalog, args.measurement_iterations, scope_contexts=contexts)
+        record = dict(schema=NATIVE_PROFILE_SCHEMA, profile=self.name, tokens=tokens,
+            iterations=args.measurement_iterations, warmups=1,
+            runtime_versions={key: identity[key] for key in ('torch', 'vllm')})
+        if fired:
+            from .writer import record_category_measurement
+            record_category_measurement(Path(directory) / 'callables', 'dense_context', identity,
+                                        replace=replace)
+            _atomic(Path(directory) / 'callable_categories.json', canonical(record) + '\n')
+        return fired
+
+
 def validate_response(work, response, stamp):
     """Join same-capture metadata, physical calls and CUDA ledger before saving.
 
@@ -27,8 +233,11 @@ def validate_response(work, response, stamp):
             {'schema', 'workload_sha256', 'scope_sha256', 'source', 'rows', 'evidence'}
             or type(response['schema']) is not int or response['schema'] != 1
             or response['workload_sha256'] != digest(work)
-            or response['scope_sha256'] != digest(work['scope']) or response['source'] != work['source']):
+            or response['scope_sha256'] != digest(work['scope'])):
         raise ValueError('Worker workload/source/scope identity differs')
+    if (type(response['source']) is not dict or set(response['source']) != {'module', 'function', 'signature'}
+            or any(type(value) is not str or not value for value in response['source'].values())):
+        raise ValueError('Missing callable execution metadata')
     evidence = response['evidence']
     if type(evidence) is not dict or set(evidence) != {'metadata_calls', 'per_call', 'activity_ledger', 'audit', 'device_capability'}:
         raise ValueError('Missing same-acquisition ownership evidence')
@@ -122,7 +331,7 @@ def _plan(workloads, catalog, contexts, context_measurements=None):
         stamps = {tokens: _identity(value) for tokens, value in context_measurements.items()}
     # No ordinary rows are acquired here; this stamp identifies the empty side
     # of the existing two-table transaction, not an engine measurement.
-    empty_stamp = dict(measurement_protocol='isolated-callable-empty-ordinary-v1',
+    empty_stamp = dict(measurement_protocol='isolated-callable-empty-ordinary',
                        measurement_sha256=digest({str(k): v for k, v in sorted(stamps.items())}))
     contract = dict(schema=1, workloads=[works[k] for k in sorted(works)], catalog=catalog,
                     scope_contexts=contexts, stamps={str(k): v for k, v in sorted(stamps.items())})

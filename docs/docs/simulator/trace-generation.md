@@ -128,14 +128,17 @@ keep their previous lookup, sizes and execution path.
 
 ### Native Kimi duration replay
 
-The source-admitted Kimi-K3 bundle connects its five ordinary category tables
-and full-depth AttnRes context table to the same Python trace API. Loading checks
-their completed plans, CSV hashes, capture/source identities and observed native
-tensor layouts; a catalog or a partial CSV directory alone is not sufficient.
+Catalog `native_profile` selects the shared contextual bundle loader; Kimi-K3's
+source-admitted hybrid/residual adapter connects its ordinary category tables
+and original-depth AttnRes contexts to the same Python trace API. Loading checks
+completed plans, independent catalog coverage, CSV hashes, semantic capture/runtime
+contracts and observed native tensor layouts against the original source config.
+Recorded source hashes and exact library versions are provenance, not execution locks.
+A catalog or a partial CSV directory alone is not sufficient.
 See [native acquisition](../profiler/output-bundle#native-kimi-acquisition).
 
-`generate_trace(..., duration_replay_only=True)` walks the original 93-layer
-schedule: 69 KDA layers, 24 MLA layers, one dense MLP and 92 MoE blocks. AttnRes
+`generate_trace(..., duration_replay_only=True)` walks the supplied configuration's
+decoder schedule, including its attention types and dense/routed MLP blocks. AttnRes
 is selected by original layer and pre-attention/post-attention/final role, then
 linearly interpolated only within that exact context's measured token range.
 All other components retain their category lookup. Transformer-block copying is
@@ -149,8 +152,10 @@ power or roofline calculation. Default serving refuses this bundle: the duration
 path does not provide resident-weight or hybrid-cache capacity admission, and
 there is no CLI flag bypassing that requirement.
 
-`kimi_sizes.py` supplies logical input/weight/output annotations from validated
-native layouts. Packed expert scales are included and the full expert tensor
+`ContextualProfileBundle` and `HybridResidualSizes` in `component_sizes.py` supply
+logical input/weight/output annotations from the independent config and validated
+native layouts, retaining distinct MLA and KDA dimensions. Packed expert scales
+are included and the full expert tensor
 axis is retained; active expert counts do not masquerade as resident weights.
 Derived aliases and the actual sampler ID width are accounted for. Persistent
 KV/recurrent states, routing metadata and scratch workspaces are outside these
@@ -158,6 +163,11 @@ triples. They describe component boundaries, not traffic or allocator residency.
 Chakra and ASTRA replay the measured durations without treating those annotations
 as a complete memory model. This integration is not a full-model GPU benchmark
 or an accuracy claim for distributed serving.
+
+Source-specific backend/ABI checks remain in force even though widths, depth,
+residual capacity and expert geometry are no longer fixed to one checkpoint.
+Changed publication schemas or execution semantics require fresh measurements;
+historical artifacts cannot be relabeled as admitted contextual bundles.
 
 ## Per-category lookup
 

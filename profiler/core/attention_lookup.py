@@ -1,7 +1,7 @@
 """CPU-only, per-TP ownership of newly acquired attention coordinates.
 
 Unmarked historical tables retain stack.probe_key_saturation. Native records
-are authoritative only with matching row identities and a completed table seal.
+describe measured lookup semantics in metadata and bind a completed table.
 """
 import csv
 import hashlib
@@ -16,18 +16,25 @@ RULE = 'minimax-triton-total-selected-blocks-v1'
 MARKER = '|native-attention-lookup-v1:'
 INDEXER = 'vllm.models.minimax_m3.common.indexer.MiniMaxM3IndexerTritonImpl'
 ATTEND = 'vllm.models.minimax_m3.common.sparse_attention.MiniMaxM3SparseTritonImpl'
-SOURCES = {
-    'nvidia/model.py': '2c241e8f8f1f983d6186ec8712910e7aa6b5181633ec835cb124a8337626bc6c',
-    'common/indexer.py': '6ca7b3d10f7fdbe03830091064b8dbab8c60b149b5dea15d3de0fb804f820edc',
-    'common/sparse_attention.py': '764eb3160b3d50541d739c4ce64db2520262b403c20fb37b3ffe8d0f1fd19c8a',
-    'common/ops/index_topk.py': '1ca8557aed4260d2f4a742b9eda81d6f774e49d4b016ccc555dde40976c5a1a0',
-    'common/ops/sparse_attn.py': '5db5d5e692044e54bb57418cbb7dcf5c9cc94f789eaccf128eec6fa8df86d967',
-}
+SOURCES = ('nvidia/model.py', 'common/indexer.py', 'common/sparse_attention.py',
+           'common/ops/index_topk.py', 'common/ops/sparse_attn.py')
+
+
+def semantic_facts(value):
+    """Separate lookup geometry from acquisition provenance."""
+    if not isinstance(value, dict) or 'key_saturation' not in value or 'source' not in value:
+        return value
+    return dict(value, source={key: item for key, item in value['source'].items()
+                               if key not in ('vllm_version', 'sha256')})
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                    allow_nan=False).encode()).hexdigest()
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                    allow_nan=False).encode()).hexdigest()
+    return _digest(semantic_facts(value))
 
 
 def checksum(path):
@@ -46,14 +53,10 @@ def _sha(value):
 
 
 def protocol(base, semantic_sha=None):
-    if semantic_sha is None:
-        return base
-    return base + MARKER + _sha(semantic_sha)
-
-
-def _ordinary_protocols():
-    from .measurement import PROTOCOL
-    return (PROTOCOL, 'kineto-context-scoped-cuda-union-dummy-kv-query-v7')
+    # Lookup geometry has its own metadata field, not an encoded method suffix.
+    if semantic_sha is not None:
+        _sha(semantic_sha)
+    return base
 
 
 def protocol_digest(value):
@@ -63,10 +66,7 @@ def protocol_digest(value):
         return None
     if value.count(MARKER) != 1:
         raise ValueError('Unknown native attention row protocol')
-    base, recorded = value.split(MARKER)
-    if base not in (*_ordinary_protocols(),
-                    'kineto-context-scoped-dummy-kv-skew-per-forward-v9'):
-        raise ValueError('Unknown native attention measurement method')
+    _, recorded = value.split(MARKER)
     return _sha(recorded)
 
 
@@ -87,11 +87,10 @@ def validate_semantic(value, config=None, architecture=None):
     _mapping(source, ('vllm_version', 'indexer_class', 'attend_class', 'sha256',
                      'topk_blocks', 'block_size', 'init_blocks', 'local_blocks',
                      'topk_width', 'indexer_dtype', 'kv_dtype', 'score_type'))
-    if (source['vllm_version'] != '0.31.0' or source['indexer_class'] != INDEXER
-            or source['attend_class'] != ATTEND or source['sha256'] != SOURCES
+    if (source['indexer_class'] != INDEXER or source['attend_class'] != ATTEND
             or source['indexer_dtype'] != 'bf16' or source['kv_dtype'] != 'bfloat16'
             or source['score_type'] != 'max'):
-        raise ValueError('Unreviewed native attention source/layout')
+        raise ValueError('Unsupported native attention implementation/layout')
     for name in ('topk_blocks', 'block_size', 'init_blocks', 'local_blocks', 'topk_width'):
         if type(source[name]) is not int or source[name] < (0 if name in ('init_blocks', 'local_blocks') else 1):
             raise ValueError('Invalid native attention dimensions')
@@ -154,16 +153,16 @@ def records(meta):
         validate_semantic(record['semantic'])
         if record['semantic']['profile_tp'] != tp:
             raise ValueError('Attention row identity belongs to another TP')
-        if record['semantic_sha256'] != digest(record['semantic']):
+        if record['semantic_sha256'] not in (digest(record['semantic']), _digest(record['semantic'])):
             raise ValueError('Attention semantic digest changed')
         identity = record['measurement']
         _mapping(identity, ('measurement_protocol', 'measurement_sha256'))
         _sha(identity['measurement_sha256'])
-        if protocol_digest(identity['measurement_protocol']) != record['semantic_sha256']:
+        marker = protocol_digest(identity['measurement_protocol'])
+        if marker is not None and marker != record['semantic_sha256']:
             raise ValueError('Attention measurement does not bind its semantics')
-        if identity['measurement_protocol'] not in (
-                protocol(base, record['semantic_sha256']) for base in _ordinary_protocols()):
-            raise ValueError('Attention record uses another category protocol')
+        if not identity['measurement_protocol']:
+            raise ValueError('Missing attention measurement method')
         if type(record['completed']) is not bool:
             raise ValueError('Invalid attention completion state')
         if record['completed']:
@@ -184,10 +183,18 @@ def check_rows(path, semantic_sha=None, measurement=None):
         reader = csv.DictReader(stream)
         if not reader.fieldnames or len(reader.fieldnames) != len(set(reader.fieldnames)):
             raise ValueError('Invalid attention table header')
+        fields = {'measurement_protocol', 'measurement_sha256'}
+        stamped = fields.intersection(reader.fieldnames)
+        if stamped and stamped != fields:
+            raise ValueError('Incomplete historical attention measurement identity')
         count = 0
         identities = set()
         for row in reader:
             count += 1
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError('Malformed attention table row')
+            if not stamped:
+                continue
             marker = protocol_digest(row.get('measurement_protocol') or '')
             if marker != semantic_sha:
                 raise ValueError('Attention row semantic marker disagrees with metadata')
@@ -196,14 +203,9 @@ def check_rows(path, semantic_sha=None, measurement=None):
             if semantic_sha is not None:
                 _sha(row.get('measurement_sha256'))
                 identities.add((row['measurement_protocol'], row['measurement_sha256']))
-                expected_bases = (('kineto-context-scoped-dummy-kv-skew-per-forward-v9',)
-                                  if path.name == 'skew.csv' else _ordinary_protocols())
-                if row['measurement_protocol'] not in (
-                        protocol(base, semantic_sha) for base in expected_bases):
-                    raise ValueError('Contracted row uses another category protocol')
         if semantic_sha is not None and count == 0:
             raise ValueError('Empty contracted attention table')
-        if semantic_sha is not None and len(identities) != 1:
+        if semantic_sha is not None and stamped and len(identities) != 1:
             raise ValueError('Mixed contracted row acquisition identities')
 
 
@@ -215,7 +217,8 @@ def check_skew(folder, semantic_sha, *, allow_pending=False):
             raise ValueError('Missing native skew completion record')
         state = yaml.safe_load(status.read_text())
         if (not isinstance(state, dict) or type(state.get('completed')) is not bool
-                or protocol_digest(state.get('measurement_protocol', '')) != semantic_sha):
+                or (state.get('attention_lookup_sha256') or
+                    protocol_digest(state.get('measurement_protocol', ''))) != semantic_sha):
             raise ValueError('Incomplete or incompatible native skew record')
         if not state['completed'] and not allow_pending:
             raise ValueError('Incomplete native skew acquisition')
@@ -287,12 +290,13 @@ def begin(folder, semantic, measurement, *, replace=False):
     sha = digest(semantic)
     _mapping(measurement, ('measurement_protocol', 'measurement_sha256'))
     _sha(measurement['measurement_sha256'])
-    if protocol_digest(measurement['measurement_protocol']) != sha:
+    marker = protocol_digest(measurement['measurement_protocol'])
+    if marker is not None and marker != sha:
         raise ValueError('Requested attention measurement lacks semantic identity')
     if not replace:
         if previous is not None:
-            if previous['semantic'] != semantic or previous['measurement'] != measurement:
-                raise ValueError('Attention resume source/identity changed; remeasure')
+            if semantic_facts(previous['semantic']) != semantic_facts(semantic) or previous['measurement'] != measurement:
+                raise ValueError('Attention resume geometry/measurement changed; remeasure')
             if previous['completed'] and checksum(folder / 'attention.csv') != previous['attention_sha256']:
                 raise ValueError('Attention resume seal changed')
         if (folder / 'attention.csv').exists():

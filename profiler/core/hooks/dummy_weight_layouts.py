@@ -1,13 +1,12 @@
-"""Source-exact nonpersistent derived dummy buffers, outside all timing.
+"""Layout-checked nonpersistent derived dummy buffers, outside all timing.
 
 Native dummy loading skips nonpersistent buffers; checkpoint callbacks normally
-derive these from conv/o_norm parameters. Reproduce their TP1 copies, not random
+derive these from conv/o_norm parameters. Reproduce their rank-local copies, not random
 independent buffers or a backend substitution. CPU tests compare native callbacks.
 """
 import torch
 
 CLASS = "vllm.models.kimi_k3.nvidia.kda.KimiK3DeltaAttention"
-NATIVE_SOURCE_SHA = "54c9939f1c11128fcdfa3cf8eaabec4e66471ec3183b5642b6509e09b5b8f8d6"
 
 
 def plans(model):
@@ -16,7 +15,13 @@ def plans(model):
         if type(layer).__module__ + "." + type(layer).__name__ != CLASS:
             continue
         backend = getattr(layer,"kda_decode_backend",None)
-        if backend not in ("triton","native","flashinfer") or layer.tp_size != 1:
+        # Native loaders shard by the supplied degree (kda.py:436-477), not
+        # a fixed TP list. This validates local copies, not backend support.
+        if (backend not in ("triton","native","flashinfer")
+                or type(layer.tp_size) is not int or layer.tp_size <= 0
+                or layer.num_heads % layer.tp_size
+                or layer.local_num_heads * layer.tp_size != layer.num_heads
+                or layer.local_projection_size * layer.tp_size != layer.projection_size):
             raise ValueError("Unreviewed KDA decode backend/TP for derived dummy buffers")
         conv = getattr(layer,"decode_conv1d_weight",None)
         norm = getattr(layer,"decode_norm_weight",None)
@@ -77,5 +82,5 @@ def facts(preflight_plans):
             derived_buffers_required=True,source_copy_equal=True,finite=True,
             conv_shape=list(layer.decode_conv1d_weight.shape),
             norm_shape=list(layer.decode_norm_weight.shape),
-            native_source_sha256=NATIVE_SOURCE_SHA))
+            transformation="conv_rank_local_transpose_norm_fp32_copy"))
     return records

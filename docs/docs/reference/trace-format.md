@@ -104,7 +104,11 @@ component boundaries in `serving/core/component_sizes.py`. They apply only to
 [explicit duration replay](../simulator/trace-generation.md#native-dsa-duration-replay),
 not the historical decomposition or a new capacity/traffic model.
 
-Activations, embeddings and heads use BF16; quantized matrix payloads use FP8.
+Activations, embeddings and heads use BF16. Matrix payloads follow the admitted
+source configuration: one byte per FP8 value or two per unquantized BF16 value,
+including routed/shared expert matrices. A missing quantization declaration does
+not silently use FP8 byte widths. This sizing rule does not independently admit
+another model, runtime or backend.
 Derived MLA UK/UV tensors remain BF16, indexer WK is unquantized and indexer
 LayerNorm parameters are FP32. `weight_size` denotes logical referenced model
 tensors, not packed scale metadata or allocator residency. Persistent KV/index

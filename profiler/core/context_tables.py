@@ -1,4 +1,4 @@
-"""Atomic exact-context dense tables. No interpolation or inferred query geometry."""
+"""Atomic category publications and exact-context dense acquisition tables."""
 
 import csv
 import hashlib
@@ -7,13 +7,116 @@ import json
 import math
 import os
 from pathlib import Path
+from dataclasses import asdict
 
 from .hooks.callable_context import expected_counts, validate_context_text
-from .measurement import FIELDS
+from .measurement import FIELDS, measurement_token, measurement_compatibility, semantic_identity
 
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+CATEGORY_SCHEMA = 'category-acquisition-v1'
+
+
+def read_contract(path):
+    """Read canonical JSON; duplicate keys and non-finite values are refused."""
+    raw = Path(path).read_text()
+    value = json.loads(raw)
+    if raw != canonical(value) + '\n':
+        raise ValueError('Acquisition contract is not canonical JSON')
+    return value
+
+
+def category_record_path(directory, category):
+    if (type(category) is not str or not category or
+            any(char not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for char in category)):
+        raise ValueError('Invalid acquisition category name')
+    return Path(directory) / ('category_' + category + '.json')
+
+
+class CategoryRecord:
+    """Complete category publication and all-layer shot resume for any catalog.
+
+    The category supplies the point schema and shot grouping. The caller supplies
+    its complete acquisition identity, including any source-admitted runtime or
+    attention semantics; this writer neither selects a model nor admits one.
+    """
+
+    def __init__(self, directory, category, arch, shots, catalog, measurement, scope, *,
+                 replace, identity, tp=1):
+        from .hooks.timings import TimingSample
+        from .writer import sink_for
+        self.directory = Path(directory)
+        self.category = category
+        self.path = category_record_path(directory, category.name)
+        fields = sink_for(category, directory, measurement).key_fields
+        self.groups = {}
+        for shot in shots:
+            keys = {tuple(asdict(point)[field] for field in fields)
+                    for point in category.extract_points(shot,
+                        [TimingSample(name, 1.0) for name in catalog], arch, tp)}
+            if not keys:
+                raise ValueError('Category shot has no planned coordinates')
+            self.groups.setdefault(category.shot_key(shot), set()).update(keys)
+        self.keys = set().union(*self.groups.values()) if self.groups else set()
+        if not self.keys:
+            raise ValueError('Category has no planned coordinates')
+        expected = measurement_token(identity)
+        if _identity(measurement) != expected:
+            raise ValueError('Category identity differs from its acquisition contract')
+        self.contract = dict(schema=CATEGORY_SCHEMA, category=category.name, scope=scope,
+            identity=identity, measurement=measurement, key_fields=fields,
+            expected_keys=sorted(self.keys))
+        csv_path = self.directory / category.sink_filename
+        if self.path.exists() and not replace:
+            old = read_contract(self.path)
+            old_contract = old.get('contract', {})
+            current = json.loads(canonical(self.contract))
+            old_comparison = semantic_identity(old_contract)
+            new_comparison = semantic_identity(current)
+            if old_comparison != new_comparison:
+                raise ValueError('Category plan/runtime changed; use fresh output or explicit --force')
+            self.contract = old_contract
+            if old.get('status') not in ('writing', 'complete'):
+                raise ValueError('Invalid category publication status')
+            if old['status'] == 'complete' and old.get('csv_sha256') != hashlib.sha256(
+                    csv_path.read_bytes()).hexdigest():
+                raise ValueError('Completed category CSV changed after publication')
+        elif csv_path.exists() and not replace:
+            raise ValueError('Existing timings lack an acquisition contract')
+        if csv_path.exists() and not replace:
+            # Validate before the ordinary sink collapses duplicate keys or
+            # ignores extra cells. A partial file may omit planned rows, but
+            # malformed retained rows must never be republished as clean data.
+            from .context_lookup import validate_category_rows
+            validate_category_rows(csv_path, self.contract, require_complete=False)
+        self.write('writing')
+
+    def write(self, status, **fields):
+        _atomic(self.path, canonical(dict(contract=self.contract, status=status, **fields)) + '\n')
+
+    def resume_keys(self, sink):
+        actual = set(sink._bucket)
+        if actual - self.keys:
+            raise ValueError('Category table contains unplanned coordinates')
+        complete = {shot for shot, keys in self.groups.items() if keys <= actual}
+        for shot, keys in self.groups.items():
+            if shot not in complete:
+                for key in keys:
+                    sink._bucket.pop(key, None)
+                    sink._row_measurements.pop(key, None)
+        return complete
+
+    def complete(self, sink):
+        if set(sink._bucket) != self.keys:
+            raise ValueError('Planned category is incomplete')
+        # Check disk as well as memory before publishing its digest. A stale
+        # flush cannot turn an incomplete file into a complete acquisition.
+        from .context_lookup import validate_category_rows
+        validate_category_rows(sink.out_path, self.contract)
+        self.write('complete', csv_sha256=hashlib.sha256(sink.out_path.read_bytes()).hexdigest())
 
 
 def normalize_manifest(value):
@@ -88,8 +191,7 @@ class ContextDenseTable:
     whole shot instead of averaging a partial previous acquisition into it.
     """
 
-    columns = ['layer', 'tokens', 'context', 'context_tokens', 'time_us',
-               *FIELDS, 'context_manifest_sha256']
+    columns = ['layer', 'tokens', 'context', 'context_tokens', 'time_us']
 
     def __init__(self, directory, manifest, ordinary_measurement, context_measurements):
         self.directory = Path(directory)
@@ -145,7 +247,8 @@ class ContextDenseTable:
         if self.path.exists():
             with self.path.open(newline='') as stream:
                 reader = csv.DictReader(stream)
-                if reader.fieldnames != self.columns:
+                historical = reader.fieldnames == [*self.columns, *FIELDS, 'context_manifest_sha256']
+                if reader.fieldnames != self.columns and not historical:
                     raise ValueError('Invalid contextual CSV columns')
                 for row in reader:
                     if None in row or any(value is None for value in row.values()):
@@ -155,7 +258,7 @@ class ContextDenseTable:
                     key = (tokens, row['layer'], row['context'], actual)
                     if key[1:] not in self._planned(tokens) or key in self.rows:
                         raise ValueError('Unexpected or duplicate contextual row')
-                    if ({f: row[f] for f in FIELDS} != self.context_measurements[tokens]
+                    if historical and ({f: row[f] for f in FIELDS} != self.context_measurements[tokens]
                             or row['context_manifest_sha256'] != self.sha256):
                         raise ValueError('Context row acquisition or manifest identity differs')
                     self.rows[key] = _positive_time(row['time_us'])
@@ -163,7 +266,8 @@ class ContextDenseTable:
         if ordinary_path.exists():
             with ordinary_path.open(newline='') as stream:
                 reader = csv.DictReader(stream)
-                if reader.fieldnames != ['layer', 'tokens', 'time_us', *FIELDS]:
+                historical = reader.fieldnames == ['layer', 'tokens', 'time_us', *FIELDS]
+                if reader.fieldnames != ['layer', 'tokens', 'time_us'] and not historical:
                     raise ValueError('Invalid ordinary CSV in context acquisition')
                 for row in reader:
                     if None in row or any(value is None for value in row.values()):
@@ -173,7 +277,7 @@ class ContextDenseTable:
                     if (tokens not in self.shots or row['layer'] not in self.shots[tokens]['ordinary_layers']
                             or key in self.ordinary_keys):
                         raise ValueError('Unexpected or duplicate ordinary row')
-                    if {f: row[f] for f in FIELDS} != self.ordinary_measurement:
+                    if historical and {f: row[f] for f in FIELDS} != self.ordinary_measurement:
                         raise ValueError('Ordinary acquisition identity differs')
                     _positive_time(row['time_us'])
                     self.ordinary_keys.add(key)
@@ -261,14 +365,13 @@ class ContextDenseTable:
         else:
             # A context-only catalog still replaces stale ordinary rows under
             # an explicit force acquisition, without changing legacy sinks.
-            _atomic(self.directory / 'dense.csv', ','.join(['layer', 'tokens', 'time_us', *FIELDS]) + '\r\n')
+            _atomic(self.directory / 'dense.csv', 'layer,tokens,time_us\r\n')
         stream = io.StringIO(newline='')
         writer = csv.DictWriter(stream, fieldnames=self.columns)
         writer.writeheader()
         for (tokens, layer, context, actual), value in sorted(self.rows.items()):
             writer.writerow(dict(layer=layer, tokens=tokens, context=context, context_tokens=actual,
-                time_us=format(value, '.6g'), **self.context_measurements[tokens],
-                context_manifest_sha256=self.sha256))
+                time_us=format(value, '.6g')))
         _atomic(self.path, stream.getvalue())
         _atomic(self.receipts_path, canonical(dict(context_manifest_sha256=self.sha256,
             shots={str(key[0]): self.receipts[key[0]] for key in sorted(self.complete_keys())})) + '\n')

@@ -46,7 +46,8 @@ from profiler.core.writer import (
     replicate_tp_stable,
     sink_for,
 )
-from profiler.core import kimi_acquisition as kimi
+from profiler.core.callable_profile import profile_for, digest
+from profiler.core.context_tables import CategoryRecord
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +175,12 @@ def _fire_one_category(
         wipe = args.force
     catalog_slice = category.catalog_slice(arch)
     native_scope = None
-    if kimi.applies(args.model_config):
-        native_scope = kimi.native_scope(llm, args, tp, limits, arch.model_dump(exclude_none=True))
+    profile = profile_for(arch)
+    if profile is not None:
+        native_scope = profile.native_scope(llm, args, tp, limits)
         # Full-depth residual roles are isolated native calls, not the pooled
         # prefix-engine calls. All other entries retain ordinary category axes.
-        catalog_slice = {name: entry for name, entry in catalog_slice.items() if name != 'attn_res'}
+        catalog_slice = profile.ordinary_catalog(catalog_slice)
     from profiler.core import component_layouts as layouts
     scope_contexts = contexts_from_architecture(arch)
     layout_context = _component_layout_context(llm, category, arch, scope_contexts,
@@ -201,22 +203,23 @@ def _fire_one_category(
             runtime_sha256 = runtime['runtime_sha256']
             component_layout_contract['runtime'] = dict(
                 descriptor=runtime['invariant_facts']['descriptor'], runtime_sha256=runtime_sha256)
-    from .measurement import layerwise_measurement
+    from .measurement import layerwise_identity, layerwise_measurement, measurement_token, native_scope_token
     from . import attention_lookup as lookup_contract
     attention_semantic = (lookup_contract.acquire(llm, args.model_config,
                           arch.model_dump(exclude_none=True), tp) if category.name == 'attention' else None)
     attention_sha = lookup_contract.digest(attention_semantic) if attention_semantic is not None else None
-    measurement = layerwise_measurement(capture_catalog, args.measurement_iterations,
+    identity = layerwise_identity(capture_catalog, args.measurement_iterations,
         scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
         attention_lookup_sha256=attention_sha, runtime_sha256=runtime_sha256,
-        native_profile_sha256=kimi.digest(native_scope) if native_scope is not None else None)
+        native_profile_sha256=native_scope_token(native_scope) if native_scope is not None else None)
+    measurement = measurement_token(identity)
     all_shots = list(category.compose_shots(arch, args, limits, tp))
     if not all_shots:
         log.warning('category %s produced no shots for tp=%d; skipping', category.label, tp)
         return False
-    native_record = (kimi.CategoryRecord(out_dir, category, arch, all_shots, catalog_slice,
-                      measurement, native_scope, replace=wipe, iterations=args.measurement_iterations,
-                      scope_contexts=scope_contexts) if native_scope is not None else None)
+    native_record = (CategoryRecord(out_dir, category, arch, all_shots, catalog_slice,
+                      measurement, native_scope, replace=wipe, identity=identity, tp=tp)
+                     if native_scope is not None else None)
     if attention_semantic is not None:
         lookup_contract.begin(out_dir, attention_semantic, measurement, replace=wipe)
     if layout_context is not None:
@@ -266,7 +269,7 @@ def _fire_one_category(
         if native_record is not None:
             native_record.complete(sink)
             if category.name == 'dense':
-                return kimi.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
+                return profile.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
         if attention_semantic is not None:
             lookup_contract.complete(out_dir)
         if layout_context is not None:
@@ -288,7 +291,7 @@ def _fire_one_category(
                 rpc_args += (component_layout_contract,)
             if native_scope is not None:
                 if component_layout_contract is not None:
-                    raise ValueError('Kimi uses its own admitted native category contract')
+                    raise ValueError('Local native profiles require their own admitted category contract')
                 rpc_args += (None, native_scope)
             raw = llm.collective_rpc(
                 "fire", args=rpc_args,
@@ -330,6 +333,9 @@ def _fire_one_category(
             ]
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
+            if done == 1:
+                from .writer import record_category_measurement
+                record_category_measurement(out_dir, category.name, identity, replace=wipe)
             bar.advance(1)
             if done == 1 or done % 100 == 0 or time.monotonic() >= checkpoint_at:
                 # Retain the complete accumulator, including duplicate counts:
@@ -348,7 +354,7 @@ def _fire_one_category(
     if native_record is not None:
         native_record.complete(sink)
         if category.name == 'dense':
-            kimi.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
+            profile.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
     if attention_semantic is not None:
         lookup_contract.complete(out_dir)
     if layout_context is not None:
@@ -368,7 +374,9 @@ def run_full(
 ) -> None:
     """Profile every (tp, category) pair for this architecture × model."""
     arch = load_architecture(arch_path)
-    kimi.validate_request(args, full=True)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args, full=True)
     variant_root = _variant_root(out_root, args)
 
     if args.only_skew:
@@ -428,7 +436,7 @@ def run_full(
             if category.name == "moe" and 1 not in moe_eps:
                 continue  # every requested EP slice needs its own engine
             depth = minimal_layer_count_for(
-                args.model_config or {}, kimi.stack_axes(args.model_config, category))
+                args.model_config or {}, profile.stack_axes(category) if profile else category.stack_axes)
             by_depth.setdefault(depth, []).append(category)
         # Deepest first: its engine also answers probe_limits for the meta and
         # for `--attention-max-kv`, which has to describe the stack the
@@ -444,11 +452,11 @@ def run_full(
         tp_root.mkdir(parents=True, exist_ok=True)
 
         for depth in depths:
-            axes = kimi.stack_axes(args.model_config, by_depth[depth][0])
+            axes = profile.stack_axes(by_depth[depth][0]) if profile else by_depth[depth][0].stack_axes
             stage = (f"TP={tp}  booting vLLM engine"
                      + (f" ({depth} layer(s))" if len(depths) > 1 else ""))
             with log.stage(stage):
-                llm, engine_kwargs, tmpdir = spin_up(main_args, tp, axes)
+                llm, engine_kwargs, tmpdir = spin_up(main_args, tp, axes, native_profile=profile)
                 limits = probe_limits(llm, main_args)
             if depth == depths[0]:
                 # The deepest engine is the one whose shapes describe the stack
@@ -512,7 +520,7 @@ def run_full(
                 with log.stage(f"TP={tp}  booting vLLM engine at EP={ep} "
                                f"for the MoE slice"):
                     llm, _, tmpdir = spin_up(args, tp, moe_category.stack_axes,
-                                             moe_ep=ep)
+                                             moe_ep=ep, native_profile=profile)
                     ep_limits = dataclasses.replace(
                         probe_limits(llm, args), moe_ep=ep)
                 log.info(
@@ -544,7 +552,7 @@ def run_full(
                          "declares no 'mtp' catalog group; nothing to do", tp)
             else:
                 with log.stage(f"TP={tp}  booting vLLM engine with the drafter"):
-                    llm, _, tmpdir = spin_up(args, tp)
+                    llm, _, tmpdir = spin_up(args, tp, native_profile=profile)
                     mtp_limits = probe_limits(llm, args)
                 try:
                     if _fire_one_category(
@@ -603,7 +611,9 @@ def run_slice(
 ) -> None:
     """Re-profile one (tp, category) pair without redoing everything."""
     arch = load_architecture(arch_path)
-    kimi.validate_request(args)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args)
     variant_root = _variant_root(out_root, args)
 
     if group not in CATEGORY_BY_NAME:
@@ -640,7 +650,7 @@ def run_slice(
     # together would need: the attention sweep does not care which MLP a layer
     # runs, and each extra layer costs the profiler its whole op count on every
     # shot. DeepSeek-V3.2 and GLM-5 go from 4 layers to 1 here.
-    axes = kimi.stack_axes(args.model_config, category)
+    axes = profile.stack_axes(category) if profile else category.stack_axes
     depth = minimal_layer_count_for(args.model_config or {}, axes)
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)
@@ -658,7 +668,7 @@ def run_slice(
             stage += f" at EP={ep}"
         with log.stage(stage):
             llm, engine_kwargs, tmpdir = spin_up(
-                args, tp, axes, moe_ep=ep)
+                args, tp, axes, moe_ep=ep, native_profile=profile)
             limits = dataclasses.replace(probe_limits(llm, args), moe_ep=ep)
             args = dataclasses.replace(
                 args, attention_max_kv=resolve_attention_max_kv(args, limits),
@@ -741,7 +751,9 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     name and dynamic ancestry, including explicitly unscoped runner work.
     """
     arch = load_architecture(arch_path)
-    kimi.validate_request(args)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args)
 
     # The whole catalog as one slice. Coverage is a property of the catalog,
     # not of a category, and a layer filed under the wrong category still
@@ -762,7 +774,7 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     )
 
     with log.stage("TP=1  booting vLLM engine"):
-        llm, _engine_kwargs, tmpdir = spin_up(args, 1)
+        llm, _engine_kwargs, tmpdir = spin_up(args, 1, native_profile=profile)
 
     reports: dict[str, CoverageReport] = {}
     scope_contexts = contexts_from_architecture(arch)

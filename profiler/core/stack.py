@@ -30,6 +30,8 @@ two implementations of this would drift.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
+import math
 from typing import Any
 
 # Attention-type value used when a config gives no basis to differentiate.
@@ -42,6 +44,88 @@ MLP_MOE = "moe"
 # Duplicated deliberately rather than imported: config.py pulls in pydantic,
 # and this module stays importable from the simulator container.
 _EXPERT_COUNT_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
+
+
+def materialize_prefix(config, overrides):
+    """Materialize backbone overrides and validate schedules before truncation.
+
+    Returns a new config without mutating either input. For a wrapper, only
+    fields its text config owns (and explicit decoder/schedule fields) move
+    into that text config; the engine still owns forwarding/consuming overrides.
+    It must forward an explicitly overridden layer_types/linear_attn_config
+    from this returned config, so native config loading cannot undo clipping.
+    """
+    kimi = config.get("model_type") in ("kimi_k3", "kimi_linear")
+    if kimi and "text_config" in overrides:
+        raise ValueError("Backbone overrides must be explicit top-level fields")
+    result = copy.deepcopy(config)
+    inner = result.get("text_config", result)
+    if not isinstance(inner, dict):
+        raise ValueError("text_config must be a mapping")
+    source_depth = inner.get("num_hidden_layers")
+    for name, value in overrides.items():
+        if (inner is result and name != "text_config") or name in inner or name in ("num_hidden_layers", "linear_attn_config",
+                                     "layer_types", "full_attention_interval"):
+            inner[name] = copy.deepcopy(value)
+    depth = overrides.get("num_hidden_layers", source_depth)
+    if depth is None:
+        return result
+    if type(depth) is not int or depth <= 0:
+        raise ValueError("Profiling depth must be a positive integer")
+    if type(source_depth) is not int or source_depth <= 0:
+        source_depth = depth
+    if kimi and depth > source_depth:
+        raise ValueError("Kimi prefix must be within the original decoder depth")
+    # Keep the whole effective source schedule visible before clipping it.
+    # Uniform non-Kimi configs retain their previous ability to change depth;
+    # an indexed schedule must cover both the source and requested depths.
+    validation = copy.deepcopy(result)
+    validation.get("text_config", validation)["num_hidden_layers"] = max(source_depth, depth)
+    resolve_stack(validation)
+    inner["num_hidden_layers"] = depth
+    if kimi and inner.get("linear_attn_config") is not None:
+        for name in ("kda_layers", "full_attn_layers"):
+            inner["linear_attn_config"][name] = [
+                index for index in inner["linear_attn_config"][name] if index <= depth]
+    if isinstance(inner.get("layer_types"), list):
+        inner["layer_types"] = inner["layer_types"][:depth]
+    return result
+
+
+def attn_res_roles(config, *, depth=None):
+    """Kimi's local source roles, independent of a checkpoint or device.
+
+    vLLM 0.31 kimi_k3/nvidia/model.py:962-1060,1163-1166,1373-1386.
+    This describes PP1, without sequence parallelism; it does not certify that
+    the runtime can execute any particular dimensions, dtype or backend.
+    """
+    if config.get("model_type") not in ("kimi_k3", "kimi_linear"):
+        raise ValueError("AttnRes roles require the Kimi source rule")
+    inner = config.get("text_config", config)
+    stack = resolve_stack(config, prefix_layers=depth)
+    depth = len(stack)
+    width, hidden = inner.get("attn_res_block_size"), inner.get("hidden_size")
+    if type(width) is not int or width <= 0 or type(hidden) is not int or hidden <= 0:
+        raise ValueError("AttnRes block size and hidden size must be positive integers")
+    eps = inner.get("rms_norm_eps")
+    if isinstance(eps, bool) or not isinstance(eps, (int, float)) or not math.isfinite(eps) or eps <= 0:
+        raise ValueError("AttnRes normalization epsilon must be positive and finite")
+    capacity = (depth + width - 1) // width
+    common = dict(capacity=capacity, hidden=hidden, eps=eps)
+    result = []
+    for index in range(depth):
+        boundary = index % width == 0
+        previous = (index + width - 1) // width
+        result.append(dict(layer=index, role="pre_attn", num_blocks=previous,
+            block_write_idx=index // width if boundary else -1,
+            delta_present=index != 0, output_norm_present=True,
+            output_norm_eps=eps, **common))
+        result.append(dict(layer=index, role="post_attn", num_blocks=previous + int(boundary),
+            block_write_idx=-1, delta_present=not boundary, output_norm_present=True,
+            output_norm_eps=eps, **common))
+    result.append(dict(layer=None, role="final", num_blocks=capacity, block_write_idx=-1,
+        delta_present=True, output_norm_present=False, output_norm_eps=0.0, **common))
+    return result
 
 
 @dataclass(frozen=True)
@@ -190,10 +274,20 @@ def _attn_types(cfg: dict[str, Any], n: int) -> list[str]:
     if cfg.get("model_type") in ("kimi_k3", "kimi_linear"):
         return _kimi_attn_types(cfg, n)
     declared = cfg.get("layer_types")
-    if isinstance(declared, list) and declared:
+    if isinstance(declared, list):
         # A config may declare more entries than the (possibly shrunk) layer
         # count; index into it exactly as vLLM does.
-        return [str(declared[i % len(declared)]) for i in range(n)]
+        if len(declared) < n:
+            raise ValueError("layer_types must cover the original decoder depth")
+        values = [str(declared[i]) for i in range(n)]
+        # Native DSA config classes use a cache-dispatch label. Sparse indexer
+        # selection is a separate axis in our catalog, not an attention block
+        # name (transformers configuration_glm_moe_dsa.py:157-159 and
+        # configuration_deepseek_v32.py:137-139).
+        if cfg.get('model_type') in ('deepseek_v32', 'glm_moe_dsa'):
+            values = [FULL_ATTENTION if value == 'deepseek_sparse_attention' else value
+                      for value in values]
+        return values
 
     interval = cfg.get("full_attention_interval")
     if isinstance(interval, int) and interval > 0:
@@ -217,20 +311,20 @@ def _mlp_types(cfg: dict[str, Any], n: int) -> list[str]:
       ``n_routed_experts is not None and layer_idx >= first_k_dense_replace
       and layer_idx % moe_layer_freq == 0``
 
-    A **list**-valued ``moe_layer_freq`` is a different convention again — a
-    per-layer 0/1 flag, as MiniMax-M3 ships — and is read as such. That one is
-    inferred from the config's own shape rather than from source, since the
-    implementation is out-of-tree; being wrong costs a wrong layer count, which
-    surfaces as an empty CSV column rather than a bad number.
+    A list-valued ``moe_layer_freq`` is a per-layer flag: MiniMax-M3's native
+    ``minimax_m3/nvidia/model.py:109-114`` indexes the declared layer directly
+    and compares it with zero. It does not repeat a shorter schedule.
     """
     experts = _experts(cfg)
     if experts <= 0:
         return [MLP_DENSE] * n
 
     freq = cfg.get("moe_layer_freq")
-    if isinstance(freq, list) and freq:
+    if isinstance(freq, list):
+        if len(freq) < n:
+            raise ValueError("moe_layer_freq must cover the original decoder depth")
         return [
-            MLP_MOE if freq[i % len(freq)] else MLP_DENSE for i in range(n)
+            MLP_MOE if freq[i] != 0 else MLP_DENSE for i in range(n)
         ]
 
     step = cfg.get("decoder_sparse_step")
@@ -270,8 +364,12 @@ def _sparse_flags(cfg: dict[str, Any], n: int) -> list[bool]:
     sac = cfg.get("sparse_attention_config")
     if isinstance(sac, dict):
         freq = sac.get("sparse_attention_freq")
-        if isinstance(freq, list) and freq:
-            return [bool(freq[i % len(freq)]) for i in range(n)]
+        if isinstance(freq, list):
+            # Native MiniMax model.py:98-106 enumerates the selected layer
+            # IDs. A missing suffix is non-sparse, unlike the indexed MoE list.
+            return [i < len(freq) and freq[i] != 0 for i in range(n)]
+        if cfg.get("model_type") in ("minimax_m3_vl", "minimax_m3") and freq is None:
+            return [False] * n
         return [bool(sac.get("use_sparse_attention"))] * n
 
     if "index_topk" not in cfg:
@@ -302,7 +400,7 @@ def resolve_stack(cfg: dict[str, Any], *, prefix_layers: int | None = None) -> l
     """One :class:`LayerSpec` per decoder layer, in order.
 
     Empty when a non-Kimi config declares no layer count. A prefix never
-    changes the source configuration or hides malformed later Kimi layers.
+    changes the source configuration or hides malformed later indexed layers.
     """
     if cfg.get("model_type") == "kimi_k3" and "text_config" in cfg:
         inner = cfg["text_config"]
@@ -318,12 +416,15 @@ def resolve_stack(cfg: dict[str, Any], *, prefix_layers: int | None = None) -> l
     if prefix_layers is not None:
         if type(prefix_layers) is not int or not 1 <= prefix_layers <= n:
             raise ValueError("prefix_layers must be within the original depth")
-        n = prefix_layers
     if n == 0:
         return []
+    # Resolve the original declaration before taking the engine prefix. A
+    # short valid boot must not hide an invalid source model's later layers.
     attn = _attn_types(cfg, n)
     mlp = _mlp_types(cfg, n)
     sparse = _sparse_flags(cfg, n)
+    if prefix_layers is not None:
+        n = prefix_layers
     return [
         LayerSpec(attn=attn[i], mlp=mlp[i], sparse=sparse[i])
         for i in range(n)

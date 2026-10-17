@@ -1,10 +1,11 @@
-"""Source-checked native packed dummy preparation, before vLLM postload.
+"""Capability-checked native packed dummy preparation, before vLLM postload.
 
 Only fills native checkpoint-format expert bytes before unchanged native postload.
 Ordinary linears follow Mxfp4Config's native unquantized policy. No backend override.
 """
 from __future__ import annotations
 import hashlib
+import inspect
 import copy
 import math
 from pathlib import Path
@@ -17,23 +18,6 @@ SOURCE_ELEMENTS = 4 * 1024**2
 LOW, HIGH, SEED = -0.001, 0.001, 1234
 MAX_SECONDS = 600
 RECEIPT = "_profiler_dummy_weights"
-SOURCE_HASHES = {
-    "v1/worker/worker_base.py": "41cdc6fb72d5cb2352093de7fdf35bf829fbb9e097dc6113d4597cd9a88a46aa",
-    "model_executor/model_loader/base_loader.py": "5291c330c4ed5634a9ea1d535364c26162b60251aa2af03fd409b88c34d836e2",
-    "model_executor/model_loader/utils.py": "e6e3477d926deb12fd1b50d4e6a7d649f97a5c2b6524cc2e4a604c80bb653f20",
-    "model_executor/models/config.py": "03bec47631bfd2b70614bfec2b208d87cbcc3ee2a785656e3723574c51f96d03",
-    "model_executor/model_loader/dummy_loader.py": "ad1c3fea9a60fdd9f31fed97bdb5731f8618e8a4f9b228b0026e21247c45e50e",
-    "model_executor/model_loader/weight_utils.py": "7d2573931b9684147b17018c1f6de318eea1c105556ffea03154201a72418afd",
-    "model_executor/layers/quantization/utils/mxfp4_utils.py": "09664332fe7bed93d6ea43e78485656c4f869d6364b29cdd9e05baac725e693c",
-    "model_executor/layers/quantization/mxfp4.py": "111fd1fb271573af7543acf7d3caefdcf71e0435989911a3f74d70585753faea",
-    "model_executor/layers/fused_moe/oracle/mxfp4.py": "20ff5a7f591b05fb9f18266db6dc04cebade3d7c143005bd74a1c9bc8449e4ce",
-    "model_executor/layers/fused_moe/config.py": "034e5c705d81a37b78911162d3e80e4c3dbbfe57b651f040694942c9e12f44c4",
-    "model_executor/layers/fused_moe/experts/deep_gemm_moe.py": "ed644eff0de4ec7e15815d6046ba3cfe101e3dfc4f90d429d79f6b87add76946",
-    "model_executor/layers/quantization/utils/fp8_utils.py": "6ab854317510b9d8200d4c1fc9ff342838c64942d38c518aef004bcbbf622c5f",
-    "utils/deep_gemm.py": "3c6652c4fcf2a6aa2e8c95d52056c2d86355a057d1234715b2d4b14c052dfc61",
-    "model_executor/layers/activation.py": "bebeddbd4997f49f54471ee31ac42b22c3c11dfe25244e55d20c36f390489c05",
-    "model_executor/layers/fused_moe/router/gate_linear.py": "19191d160cb48d79508eb822db795ffe638268f2c585eaffda05966e47b78252",
-}
 MOE_CLASSES = {
     "DEEPGEMM_MXFP4": "vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe.DeepGemmFP4Experts",
 }
@@ -45,19 +29,48 @@ def class_name(value):
 
 
 def verify_sources(*, packed, derived):
+    """Validate callable ABI; package versions are observations, never allowlists.
+
+    Kept as an internal entry point for callers of the previous source guard.
+    Numerical packing is checked separately on the actual target device.
+    """
     import vllm
-    if vllm.__version__ != "0.31.0":
-        raise ValueError("Pinned vLLM0.31 required")
-    sources = dict(SOURCE_HASHES) if packed else {key: SOURCE_HASHES[key] for key in (
-        "v1/worker/worker_base.py", "model_executor/model_loader/base_loader.py",
-        "model_executor/model_loader/utils.py", "model_executor/model_loader/dummy_loader.py",
-        "model_executor/model_loader/weight_utils.py")}
-    if derived:
-        sources["models/kimi_k3/nvidia/kda.py"] = dummy_weight_layouts.NATIVE_SOURCE_SHA
-    for relative, expected in sources.items():
-        if hashlib.sha256((Path(vllm.__file__).parent / relative).read_bytes()).hexdigest() != expected:
-            raise ValueError("Installed native source changed: " + relative)
-    return sources
+    from vllm.model_executor.model_loader.base_loader import BaseModelLoader
+    from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
+    callables = [(BaseModelLoader.load_model, (None, None, None)),
+                 (get_layerwise_info, (None,))]
+    if packed:
+        from vllm.model_executor.layers.quantization.utils.mxfp4_utils import downcast_to_mxfp
+        from vllm.model_executor.layers.quantization.mxfp4 import Mxfp4MoEMethod
+        callables += [(downcast_to_mxfp, (None, -1, None, None)),
+                      (Mxfp4MoEMethod.process_weights_after_loading, (None, None))]
+    for function, args in callables:
+        try:
+            inspect.signature(function).bind(*args)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Unsupported native dummy-weight callable ABI: " + repr(function)) from exc
+    version = getattr(vllm, "__version__", None)
+    return dict(vllm_version=None if version is None else str(version), torch_version=str(torch.__version__),
+                callable_abi_checked=True, derived_layout_required=derived)
+
+
+@torch.no_grad()
+def check_codec(quantize, device):
+    """Tiny known-value E2M1/E8M0 check before modifying model weights."""
+    values = [0., .5, 1., 1.5, 2., 3., 4., 6., -0., -.5, -1., -1.5, -2., -3., -4., -6.] * 2
+    source = torch.tensor([values, [v / 1024 for v in values], [0.] * 32],
+                          dtype=torch.bfloat16, device=device)
+    packed = torch.empty((3, 16), dtype=torch.uint8, device=device)
+    scales = torch.empty((3, 1), dtype=torch.uint8, device=device)
+    out, scale_out, shape = quantize(source, -1, packed, scales)
+    expected = [0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe] * 2
+    if (out.data_ptr() != packed.data_ptr() or scale_out.data_ptr() != scales.data_ptr()
+            or tuple(out.shape) != (3, 16) or tuple(scale_out.shape) != (3, 1)
+            or tuple(shape) != (3, 1) or out.dtype != torch.uint8 or scale_out.dtype != torch.uint8
+            or packed.tolist() != [expected, expected, [0] * 16]
+            or scales.tolist() != [[127], [117], [0]]):
+        raise ValueError("Unsupported native MXFP4 codec ABI/value layout")
+    return dict(e2m1_nibble_order=True, e8m0_group32=True, output_buffers_preserved=True)
 
 
 def validate_pair(packed, scales):
@@ -100,20 +113,29 @@ def collect_plan(model):
             cfg = method.moe
             if (cfg.moe_backend != "auto" or cfg.has_bias or cfg.activation != MoEActivation.SITU
                     or cfg.w13_num_shards != 2 or cfg.in_dtype != torch.bfloat16
-                    or any(getattr(cfg, key) != 1 for key in ("tp_size","pcp_size","dp_size","ep_size","sp_size"))
+                    or type(cfg.tp_size) is not int or cfg.tp_size <= 0
+                    or any(getattr(cfg, key) != 1 for key in ("pcp_size","dp_size","ep_size","sp_size"))
                     or cfg.moe_parallel_config.enable_eplb
                     or cfg.num_experts != cfg.num_local_experts
                     or cfg.num_logical_experts != cfg.num_experts):
-                raise ValueError("Packed dummy preparation requires native auto SITU BF16 unsharded experts")
-            if (cfg.activation_situ_beta,cfg.activation_situ_linear_beta)!=(4.0,25.0):
-                raise ValueError("SITU parameters differ from pinned K3 config")
+                raise ValueError("Packed dummy preparation requires native auto SITU BF16 TP experts without EP/DP")
+            # Native activation.py:361-378 forwards configured SITU scalars;
+            # linear_beta=None is its supported unset value. Neither scalar
+            # changes checkpoint allocation or dummy-weight quantization.
+            beta, linear_beta = cfg.activation_situ_beta, cfg.activation_situ_linear_beta
+            if (type(beta) not in (int, float) or not math.isfinite(beta)
+                    or (linear_beta is not None and
+                        (type(linear_beta) not in (int, float) or not math.isfinite(linear_beta)))):
+                raise ValueError("SITU requires finite beta and optional finite linear beta")
             if (method.moe_kernel is not None or method.w13_precision_config is not None
                     or method.w2_precision_config is not None):
                 raise ValueError("Weights already processed; checkpoint initialization would corrupt layout")
             e, h, i = method.num_experts, method.hidden_size, method.intermediate_size
-            if (e != cfg.num_experts or h != cfg.hidden_dim or i != cfg.intermediate_size
+            if (e != cfg.num_experts or h != cfg.hidden_dim
+                    or i != cfg.intermediate_size_per_partition
+                    or i * cfg.tp_size != cfg.intermediate_size
                     or layer.params_dtype != torch.bfloat16 or h % 128 or i % 128):
-                raise ValueError("Native allocation differs from logical TP1 expert geometry")
+                raise ValueError("Native allocation differs from exact per-rank expert geometry")
             expected = (("w13_weight", "w13_weight_scale", (e, 2*i, h//2)),
                         ("w2_weight", "w2_weight_scale", (e, h, i//2)))
             for weight_name, scale_name, shape in expected:
@@ -146,7 +168,10 @@ def collect_plan(model):
         if tensor.dtype == torch.uint8 and id(tensor) not in accounted:
             raise ValueError("Unaccounted uint8 parameter: " + name)
     if not pairs:
-        raise ValueError("No actual native Mxfp4MoEMethod expert weights")
+        roles = [layer.is_moe_layer for layer in model.modules() if hasattr(layer, "is_moe_layer")]
+        owners = [layer for layer in model.modules() if hasattr(layer, "global_num_experts")]
+        if not roles or any(value is not False for value in roles) or owners:
+            raise ValueError("No actual native Mxfp4MoEMethod expert weights for routed/unknown scope")
     return pairs, contracts, linear_records
 
 
@@ -257,11 +282,23 @@ def _classify(model, model_config):
 
 
 def _loader_identity(original):
-    import inspect
     from vllm.model_executor.model_loader import dummy_loader
+    try:
+        inspect.signature(original).bind(None, None, None)
+    except (TypeError, ValueError):
+        return False
     return (getattr(original, "__module__", None) == dummy_loader.__name__
-            and getattr(original, "__qualname__", None) == "DummyModelLoader.load_weights"
-            and Path(inspect.getsourcefile(original)).resolve() == Path(dummy_loader.__file__).resolve())
+            and getattr(original, "__qualname__", None) == "DummyModelLoader.load_weights")
+
+
+def _adapter_sources():
+    result = {}
+    for path in (__file__, dummy_weight_layouts.__file__):
+        try:
+            result[Path(path).name] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            result[Path(path).name] = None
+    return result
 
 
 def _prepare(original, loader, model, model_config):
@@ -276,7 +313,7 @@ def _prepare(original, loader, model, model_config):
     setattr(model, RECEIPT, receipt)
     started = time.monotonic()
     try:
-        sources = verify_sources(packed=packed, derived=derived)
+        runtime = verify_sources(packed=packed, derived=derived)
         if not _loader_identity(original):
             raise ValueError("Native dummy loader callable was replaced")
         from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
@@ -292,8 +329,9 @@ def _prepare(original, loader, model, model_config):
             pairs, contracts, linears = collect_plan(model)
             if any(p.device.type != "cuda" for _, p, _, _ in pairs):
                 raise ValueError("Native packed destinations must already be on CUDA")
-            if any(torch.cuda.get_device_capability(p.device) != (12, 0) for _, p, _, _ in pairs):
-                raise ValueError("Native packed dummy backend is validated only on SM120")
+            from vllm.model_executor.layers.quantization.utils.mxfp4_utils import downcast_to_mxfp
+            runtime["codec_checks"] = {str(device): check_codec(downcast_to_mxfp, device)
+                for device in {p.device for _, p, _, _ in pairs}}
         derived_plans = dummy_weight_layouts.plans(model) if derived else []
         if any(source is not None and source.device.type != "cuda"
                for _, _, source, _ in derived_plans):
@@ -309,16 +347,15 @@ def _prepare(original, loader, model, model_config):
             record = fill_pair(destination, scales, deadline=deadline)
             records.append(dict(name=name, packed_shape=list(destination.shape),
                                 scale_shape=list(scales.shape), **record))
-        receipt.update(complete=True, stage="prepared", packed_applied=packed,
+        receipt.update(complete=True, stage="prepared", packed_applied=bool(pairs),
             source_dtype="bfloat16" if packed else None,
             rng_device="cuda" if packed else None, seed=SEED if packed else None,
             low=LOW if packed else None, high=HIGH if packed else None,
             source_elements_cap=SOURCE_ELEMENTS if packed else None, cpu_rng_equals_cuda_rng=False,
             tensor_records=records, actual_selected_backend_contracts=contracts,
             ordinary_linear_records=linears, derived_buffer_records=derived_records,
-            installed_source_sha256=sources,
-            adapter_source_sha256={Path(p).name: hashlib.sha256(Path(p).read_bytes()).hexdigest()
-                                   for p in (__file__, dummy_weight_layouts.__file__)})
+            runtime_observations=runtime,
+            adapter_source_sha256=_adapter_sources())
     except Exception as exc:
         receipt.update(error_type=type(exc).__name__, error=str(exc))
         raise

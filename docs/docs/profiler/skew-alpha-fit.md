@@ -34,18 +34,19 @@ repair is needed. Recorded durations and activity coverage are preserved.
 CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
 
-`kineto-context-scoped-dummy-kv-skew-per-forward-v9` uses the same per-call CUDA interval unions as
+Skew acquisition uses the same per-call CUDA interval unions as
 ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
-CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints
-bind the effective serialized attention selectors/normalization, full capture
-contexts, installed Torch/vLLM versions and sources, including the fingerprint
-implementation. Changed identities require remeasurement, not restamping.
+CPU time and GPU gaps remain excluded. Worker and host semantic identities bind
+the effective serialized attention selectors/normalization and full capture
+contexts. `skew.meta.yaml` records the descriptive method and observed runtime
+versions; exact versions and source-file hashes are not execution vetoes.
+Changed acquisition semantics require remeasurement, not restamping.
 
-CPU `plan-skew` uses the same catalog/context projection and reads package versions
-through distribution metadata without importing Torch or vLLM. Missing metadata
-is hashed as null: a CPU environment without matching package metadata cannot
-certify reuse of live rows acquired with known versions.
+CPU `plan-skew` uses the same catalog/context projection without importing Torch
+or vLLM. It does not infer absent acquisition observations from its environment.
+These acquisition rules do not remove the fitter's separate reference-table and
+lookup-code invalidation checks below.
 
 Before each context, the profiler reserves disjoint physical pages across KV
 groups, leaving the shared pool's null block untouched, then initializes assigned attention pages with

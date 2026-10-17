@@ -13,13 +13,14 @@ import time
 from itertools import chain
 
 import pandas as pd
+import yaml
 
 from . import logger as log
 from .skew_calibration import atomic_yaml, measurement_shape
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
-PROTOCOL = "kineto-context-scoped-dummy-kv-skew-per-forward-v9"
+PROTOCOL = "pytorch-kineto-device-active-union-skew"
 
 
 def layout_contract_for_skew(arch, choices, *, runtime=None):
@@ -141,47 +142,24 @@ def capture_catalog_for_skew(catalog, contract):
 def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sha256=None,
                             component_layout_contract=None):
     """Bind raw timings to effective selectors, normalization and runtime stack."""
-    from importlib import metadata
     from .hooks.capture_scope_contract import normalize_contexts
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("Skew acquisition requires a nonempty serialized attention catalog")
     contexts = normalize_contexts(scope_contexts, catalog)
-    # Offline plan-skew must not import the GPU runtime. An unavailable
-    # distribution is explicit and cannot certify reuse of live measurements.
-    versions = {}
-    for package in ('torch', 'vllm'):
-        try:
-            versions[package] = metadata.version(package)
-        except metadata.PackageNotFoundError:
-            versions[package] = None
-    hooks = Path(__file__).parent / "hooks"
-    value = hashlib.sha256()
-    value.update(Path(__file__).read_bytes())
-    for name in ('engine.py', 'config.py', 'stack.py', 'kimi_profile.py'):
-        value.update((hooks.parent / name).read_bytes())
-    for name in ("skew_measurement.py", "activity_collector.py", "runner_capture.py", "cuda_timing.py", "timings.py",
-                 "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
-                 "recurrent_metadata.py", "tp_shape.py", "method_scopes.py", "operator_scopes.py", "capture_scope_contract.py",
-                 "dummy_weights.py", "dummy_weight_layouts.py"):
-        value.update((hooks / name).read_bytes())
-    if contexts.get('callables'):
-        value.update((hooks / 'callable_scopes.py').read_bytes())
-    if contexts['schema'] == 3:
-        value.update((hooks / 'callable_context.py').read_bytes())
     from .attention_lookup import protocol
-    if attention_lookup_sha256 is not None:
-        for path in (hooks.parent / 'attention_lookup.py', hooks / 'attention_lookup.py'):
-            value.update(path.read_bytes())
     identity = dict(protocol=protocol(PROTOCOL, attention_lookup_sha256), catalog=catalog, scope_contexts=contexts,
-                    versions=versions)
+                    attention_lookup_sha256=attention_lookup_sha256,
+                    aggregation='median of per-forward device-active unions, then median across rounds')
     if component_layout_contract is not None:
-        value.update((hooks.parent / "component_layouts.py").read_bytes())
         identity["component_layout_contract"] = component_layout_contract
-        if component_layout_contract.get('runtime') is not None:
-            value.update((hooks / 'runtime_admission.py').read_bytes())
-    value.update(json.dumps(identity, sort_keys=True,
-                           separators=(',', ':'), allow_nan=False).encode())
-    return value.hexdigest()
+    from .measurement import semantic_identity
+    return hashlib.sha256(json.dumps(semantic_identity(identity), sort_keys=True,
+                           separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def _measurement_metadata(path):
+    metadata = Path(path).parent / 'skew.meta.yaml'
+    return (yaml.safe_load(metadata.read_text()) or {}) if metadata.exists() else {}
 
 def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     """Merge ``new_rows`` with any existing CSV and rewrite atomically.
@@ -256,15 +234,16 @@ def _existing_keys(path, layers, rounds, iterations, *, block_size=None, scope_c
     fingerprint = measurement_fingerprint(scope_contexts, catalog=layers,
                                           attention_lookup_sha256=attention_lookup_sha256,
                                           component_layout_contract=component_layout_contract)
+    metadata = _measurement_metadata(path)
     for row in pd.read_csv(path, low_memory=False).fillna("").to_dict("records"):
         key = measurement_shape(row)[4]
         if row.get("case_id") and row["case_id"] != key:
             raise ValueError("Stored skew identity disagrees with its request geometry")
-        if (row.get("measurement_protocol") != expected_protocol
-                or row.get("measurement_sha256") != fingerprint
-                or (block_size is not None and int(row.get("block_size") or 0) != block_size)
-                or int(row.get("rounds") or 0) < rounds
-                or int(row.get("timed_forwards") or 0) != iterations):
+        if (row.get("measurement_protocol", metadata.get('measurement_protocol')) != expected_protocol
+                or row.get("measurement_sha256", metadata.get('measurement_sha256')) != fingerprint
+                or (block_size is not None and int(row.get("block_size", metadata.get('block_size')) or 0) != block_size)
+                or int(row.get("rounds", metadata.get('rounds')) or 0) < rounds
+                or int(row.get("timed_forwards", metadata.get('timed_forwards_per_round')) or 0) != iterations):
             continue
         samples = json.loads(row.get("round_timings_us_json") or "[]")
         if (len(samples) < rounds or any(len(values) != iterations for values in samples)
@@ -318,10 +297,12 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     runtime = _admit_skew_runtime(llm, component_layout_contract, args.attention_decode_q_lens)
     if out.exists() and not args.force:
         recorded = pd.read_csv(out, low_memory=False).fillna('')
+        metadata = _measurement_metadata(out)
         expected = dict(measurement_protocol=measured_protocol,
                         measurement_sha256=fingerprint,
                         block_size=limits.block_size)
-        if any(k not in recorded or not (recorded[k] == v).all() for k, v in expected.items()):
+        if any((not (recorded[k] == v).all()) if k in recorded else metadata.get(k) != v
+               for k, v in expected.items()):
             raise ValueError(
                 'Existing skew uses a different acquisition method or block size; '
                 'use a separate output root or --force to remeasure')
@@ -337,7 +318,21 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
         return None
     plan.update(enabled=True, tp=tp, measurement_protocol=measured_protocol,
                 measurement_sha256=fingerprint,
+                attention_lookup_sha256=attention_sha,
                 scope_contexts=scope_contexts, completed=False, measured_cases=0)
+    from .measurement import method_metadata
+    from importlib import metadata as distributions
+    versions = {}
+    for package in ('torch', 'vllm'):
+        try:
+            versions[package] = distributions.version(package)
+        except distributions.PackageNotFoundError:
+            versions[package] = None
+    facts = dict(method=method_metadata(args.measurement_iterations), runtime_versions=versions)
+    previous = _measurement_metadata(out) if out.exists() and not args.force else {}
+    acquisitions = list(previous.get('acquisitions', []))
+    plan['acquisitions'] = acquisitions
+    plan['case_families'] = dict(previous.get('case_families', {}))
     if component_layout_contract is not None:
         plan["component_layout_sha256"] = component_layout_contract["layout_sha256"]
         plan['runtime'] = runtime
@@ -395,12 +390,11 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 rows.append(dict(layer=name, case_id=key,
                     requests_json=json.dumps(shot.requests, separators=(",", ":")),
                     n_prefill=shot.n_prefill, decode_q_len=shot.decode_q_len,
-                    family=family, measurement_protocol=measured_protocol,
-                    measurement_sha256=plan["measurement_sha256"],
-                    block_size=limits.block_size,
-                    rounds=args.skew_rounds, timed_forwards=args.measurement_iterations,
                     round_timings_us_json=json.dumps(samples, separators=(",", ":")),
                     t_skew_us=round(target, 3)))
+            if facts not in acquisitions:
+                acquisitions.append(facts)
+            plan['case_families'][key] = family
             fired += 1
             if fired % 20 == 0:
                 _flush_rows(out, rows)

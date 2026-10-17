@@ -252,6 +252,11 @@ Phi-MoE's `block_glue` likewise excludes `PhiMoE`, `LayerNorm` and
 Acquisition rejects shared CUDA activity across canonical bindings. Old Phi
 glue measurements require a dense-category refresh, not a metadata restamp.
 
+For `deepseek_v32` and `glm_moe_dsa`, normalize the native `layer_types` cache
+label `deepseek_sparse_attention` to the catalog's full-attention block axis.
+Sparse indexer selection remains a separate axis; this normalization changes
+neither native execution nor the stored source config, and admits no new backend.
+
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
@@ -273,8 +278,8 @@ as `engine_resolved.per_tp[tp].model_text_config` only for authoritative main
 engines. Preserve other TP entries and MTP/short-stack refresh semantics. This
 text snapshot does not certify the wrapper, backend or parameter layout, and
 missing historical snapshots must not be reconstructed.
-Both ordinary and skew source fingerprints include engine/config/stack and the
-shape adapter. Remeasure wrongly shaped rows, never restamp them as corrected.
+Ordinary and skew acquisition metadata record resolved geometry and preparation
+semantics. Remeasure wrongly shaped rows, never restamp them as corrected.
 
 **The stack is shrunk per category, not per model.** Instrumentation, warmup
 and forward work scale with executed operations. Runtime estimates must come
@@ -459,9 +464,9 @@ tensors of shape `(tokens, top_k)` on the input device, floating weights and
 int32/int64 IDs; reject extra/shared slots rather than truncating them. These
 checks inspect metadata, not weight values. Cyclic assignments control distinct
 experts, not arbitrary load imbalance or trained-gate numerical equivalence:
-native weights are paired with synthetic IDs. The shared ordinary fingerprint
-includes this hook, so changes invalidate ordinary resumes beyond `moe.csv`;
-remeasure requested categories, never relabel or silently extend old rows.
+native weights are paired with synthetic IDs. Record this preparation in the
+ordinary method metadata. Changed routing semantics require remeasurement,
+never relabeling or silently extending incompatible rows.
 Native DP+EP components retain a separate contract.
 
 ### Vocab-parallel target endpoints
@@ -717,19 +722,26 @@ This is device-active time, not whole-step wall time. Catalog components may
 overlap each other, so their summed unions need not equal a global union.
 Coverage remains a kernel-work audit, not a union-latency percentage.
 
-Ordinary CSV rows carry `measurement_protocol` and `measurement_sha256` in the
-same atomic write as their timings. Host and worker identities include the
-catalog, repetitions, timing source and library versions. Resume rejects
-missing or incompatible identities; use a separate output root or explicitly
-remeasure with `--force`. TP-stable replication preserves row identities and
-rejects mixed timing methods before replacing the destination. Fully skipped
-ordinary categories do not acquire a new measurement timestamp. Skew uses
-`kineto-context-scoped-dummy-kv-skew-per-forward-v9`, binding its own source,
-effective serialized attention catalog, full contexts, installed Torch/vLLM
-distribution versions and timing/preparation helpers. CPU `plan-skew` uses the
-same projection without importing Torch/vLLM; absent distribution metadata hashes
-as null and cannot certify reuse of rows with known measured versions. Native DP+EP
-component contracts remain separate and retain their recorded timing method.
+New ordinary CSVs contain coordinates and `time_us`, not provenance columns.
+Record per-category acquisition identities, method descriptions and actual runtime
+versions in `tp<N>/meta.yaml::measurements`; preserve earlier acquisitions when
+extending compatible tables. Describe the PyTorch/Kineto collector, per-invocation
+device-active union, normalization and dummy input preparation directly, without
+numbered protocol branding. Resume compares semantic catalog, geometry, method
+and execution contracts, not source-file hashes or exact library versions.
+Those versions and any observed source hashes are provenance, not execution vetoes.
+Actual API, backend, shape, dtype, layout, finite-output and coverage guards remain.
+Missing or incompatible acquisition metadata requires a separate output root or
+explicit remeasurement with `--force`; never restamp historical measurements.
+TP-stable replication preserves acquisition provenance and rejects mixed methods.
+When a replica-only destination begins local acquisition, promote its category
+metadata to the local method while retaining each replica's source-TP identity.
+Validate preserved rows against that source record during local resume; copying
+TP1 rows never claims a local measurement or completed local coverage.
+Fully skipped categories do not acquire a new measurement timestamp. Skew records
+its per-forward method, contexts and runtime observations in `skew.meta.yaml`;
+CPU `plan-skew` uses the same semantic projection without importing Torch/vLLM.
+Native DP+EP component contracts and skew-fit invalidation remain separate.
 
 `hooks/history.py` prepares query request state and completes asynchronous output.
 `hooks/dummy_cache.py` initializes assigned attention pages
@@ -764,7 +776,7 @@ resolver. Preserve null/unassigned
 pages and block padding, including when layer views share backing storage.
 Bound floating-source chunks independently of total cache capacity; quantization
 temporaries add a bounded multiple, so the source cap is not a peak-memory claim.
-Initialization stays outside warmup/timing and in both acquisition fingerprints;
+Initialization stays outside warmup/timing and in acquisition method metadata;
 old rows must not be relabelled to bypass incompatible resume.
 Recurrent states are zero-start, not generated history. None of these inputs
 claims trained-workload KV statistics
@@ -786,32 +798,46 @@ Restore instance hooks even on failure. Making the whole sequence a prompt
 leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
-remain fresh prompts. The ordinary acquisition protocol is
-`kineto-context-scoped-cuda-union-dummy-weights-query-v8`.
+remain fresh prompts. Record this request-phase preparation with the CUDA
+device-active-union method, not as a numbered protocol suffix.
 
 ### Runtime contexts and coordinated component layouts
 
-The worker extension installs source-checked dummy-weight preparation before
+The worker extension installs capability-checked dummy-weight preparation before
 native loading. Ordinary models call the original loader unchanged. For the
-reviewed vLLM 0.31 SM120 native MXFP4/SITU backend, initialize checkpoint-format
+admitted native MXFP4/SITU backend, initialize checkpoint-format
 expert bytes with the native quantizer in bounded row chunks; preserve native
 backend selection and postload processing. Do not substitute arbitrary uint8
 values or silently emulate unsupported TP/EP layouts. KDA's nonpersistent
 decode conv/norm buffers copy their native parameter transforms after floating
 initialization, rather than receiving independent random values. Preparation,
 postload structure and measured-forward validity are separate facts. The main
-engine persists the preparation receipt; both acquisition fingerprints cover
-the adapters. Preparation alone does not certify a forward or serving support.
+engine persists the preparation receipt and method metadata describes the inputs.
+Preparation alone does not certify a forward or serving support.
 
-Kimi-K3's admitted local eager path uses the original nested checkpoint and
-source schedule. Ordinary categories retain their existing planners; the MoE
-category uses a two-layer prefix with one routed block, while the other
-categories reach both attention types. Keep model widths, expert count and
-top-k native. A completed category requires every planned layer/coordinate,
-matching source/runtime identities and an unchanged CSV, not any one row per
-shot. A partial shot is reacquired in full. Do not relabel old measurements.
+Architecture `native_profile` selects `NativeProfile` orchestration in
+`callable_profile.py`, with native API/backend inspection delegated to an admitted
+adapter in `hooks/runtime_admission.py`. Keep common category publication in
+`context_tables.py`, strict loading in `context_lookup.py`, and contextual
+bundle/sizing integration in `serving/core/component_sizes.py`; do not add
+checkpoint-specific orchestration or loader copies. The hybrid/residual adapter
+retains native capability, ABI, precision and execution-mode checks. Config-derived
+geometry does not establish arbitrary model/backend or device support.
+
+Kimi-K3's local eager adapter preserves the independently supplied nested config.
+Shared stack helpers derive category prefixes and original-depth residual roles;
+MoE covers the MLP axis and other categories retain their declared axes. Keep
+model widths, expert count and top-k native, with distinct MLA and KDA dimensions.
+A completed category requires every planned layer/coordinate, independently
+rebuilt catalog coverage, compatible semantic/runtime contracts and an unchanged CSV.
+Retain measured library versions as observations; do not infer absent versions
+from the consuming environment or use an exact version as execution admission. Validate partial
+CSVs before deduplication or preload can hide malformed/duplicate rows. A partial
+shot is reacquired in full. Old publication schemas and changed execution semantics
+require fresh acquisition, never relabeled measurements or inferred completion.
 Preparation elapsed times remain engine telemetry but do not participate in
-runtime identity. Keep actual source/layout and sampled-byte hashes invariant.
+runtime identity. Keep actual layout checks and table-integrity hashes; source
+file hashes describe acquisition provenance rather than pinning execution.
 Unscoped runner GPU work remains visible as coverage gaps; complete model
 boundaries do not imply complete step-time accounting or a zero-gap CLI result.
 
@@ -823,21 +849,23 @@ double-counts overlap. The gate application and output projection remain separat
 
 Schema-3 callable contexts preserve declared scalar arguments and tensor
 metadata, never values or CPU duration. Contextual dense rows cannot enter
-the token-only sink. Kimi AttnRes acquisition uses original-depth source roles
+the token-only sink. The hybrid/residual planner uses original-depth source roles
 through the unchanged native function, not the reduced engine's pooled calls.
-Its isolated synthetic arguments, source pins, per-call native activity evidence
-and completion receipts are retained under `callables/attn_res`. Lookup validates
+Its isolated synthetic arguments, native ABI, per-call activity evidence
+and completion receipts are retained under `callables/`. Lookup validates
 them once, then interpolates tokens only within an identical structural context,
 without cross-context fallback or extrapolation. Keep the fixed allocation
 bound explicit; do not silently reduce context capacity to fit it.
 
-Kimi's trace adapter requires complete ordinary and residual tables, local
+`ContextualProfileBundle` requires complete ordinary and residual tables, local
 TP1/PP1/EP1 eager text execution and explicit `duration_replay_only=True`.
 Source-role residuals disable transformer-block copying. Logical byte triples
 are not resident capacity or traffic. Distributed, graph-padded, speculative,
 offloaded, prefix-cached, power and roofline execution remain unsupported;
 do not present bounded profiling/trace readiness as full-depth GPU execution
-or end-to-end accuracy. Kimi skew acquisition is not enabled by this path.
+or end-to-end accuracy. The hybrid/residual path does not enable skew acquisition.
+Shared geometry and trace routing read expert top-k through `expert_top_k`;
+preserve the existing expert-group selection semantics.
 
 `capture_scope_contract.py` projects the whole architecture to ordinary, coverage
 and skew RPCs, preserving exclusions across category slices and including them
@@ -867,9 +895,9 @@ warnings. They are not zero measurements or proof of selected-layout coverage.
 Reject failing descriptors, unsupported async/generator or data-descriptor targets,
 ambiguous ownership, kind collisions and overlapping canonical claims. Restore
 exact prior attributes on exit; preserve a foreign replacement and invalidate the
-capture rather than overwriting it. Both acquisition fingerprints include the
-full declarations and conditionally hash `callable_scopes.py`; shared capture
-changes also invalidate prior identities. Preserve historical simulation inputs,
+capture rather than overwriting it. Both acquisition identities include the
+full declarations and their capture semantics, not source-file hashes.
+Preserve historical simulation inputs,
 but never relabel them to resume an incompatible acquisition.
 
 `CoverageReport.canonical_invocations` preserves actual per-measured-forward
@@ -909,12 +937,14 @@ an MTP or later-layer norm by analogy. `site-scope-calls-v1` checks actual canon
 calls and timing divisors against the resolved prefix before publishing each shot.
 
 `native-dsa-eager-tail-v1` binds original source configuration and logical TP/EP
-to live vLLM 0.31 runtime facts. Keep FP8 weights and BF16 activations separate;
+to live native runtime facts. Keep configured FP8/BF16 matrix widths separate
+from BF16 activations;
 do not shrink model width, emulate another TP or accept skipped/shared indexers.
 The physical acquisition is local TP1/PP1/DP1/EP1, eager decode q=1, without MTP,
 offload, sequence parallelism, dense-MHA prefill or quantized query input.
 Retain packed cache geometry and the actual unwrapped sampler class/entrypoint
-and reviewed source hashes. Sampler payload width is source-backed, not observed
+and entrypoint ABI. Source hashes and library versions are observations, not
+admission locks. Sampler payload width is source-backed, not observed
 tensor data; V1 returns int32, V2 int64. Do not force a runner to fit a byte formula.
 
 Native DSA publication requires all four categories (`dense`, `per_sequence`,
@@ -965,10 +995,10 @@ GDN contract uses cache mode `none`. Native vLLM 0.31 KDA has a separate,
 source-checked contract: it consumes the complete non-speculative view, including
 the decode prefix of a mixed batch, and does not populate GDN's prefill-only
 views. Keep state-page, query/history, initial-state and token-conservation checks
-for both. Reject unknown sources/schemas and active speculative, checkpoint,
+for both. Reject unsupported APIs/schemas and active speculative, checkpoint,
 RecoverSSM or optional FlashInfer partitions. This warmup guard does not certify
 a model's catalog, acquisition grid or serving support. Changed acquisition
-fingerprints require remeasurement, not metadata relabeling.
+semantics require remeasurement, not metadata relabeling.
 MTP shots require every requested canonical
 entry, rather than publishing a partially observed drafter table.
 
@@ -978,11 +1008,11 @@ have different logical shapes. Check the sum of all groups' physical page
 requirements against capacity. Initialize only assigned spans, respecting
 backend block axes and kernel subdivisions; preserve null and unassigned pages.
 Recurrent caches retain zero-start state. Unsupported state modes and packed
-layouts fail explicitly. Include allocation helpers in both ordinary and skew
-acquisition fingerprints; existing rows require remeasurement, not relabelling.
+layouts fail explicitly. Record allocation semantics in ordinary and skew
+method metadata; incompatible rows require remeasurement, not relabelling.
 
-Raw CSV rows preserve ordered requests, query roles, repetitions, protocol
-and actual time. Complete kernel sets and sufficient repetitions are required
+Raw skew CSV rows preserve ordered requests, query roles and actual times;
+metadata records repetitions and method. Complete kernel sets and sufficient repetitions are required
 for resume. Failed acquisition raises after checkpointing instead of silently
 publishing partial coverage. `skew.meta.yaml` records the actual per-TP plan,
 resolved limits and completion; metadata must not fabricate this from defaults.
@@ -1245,13 +1275,13 @@ use `attention_lookup.py` and `meta.yaml.attention_lookup.per_tp`: the inspected
 vLLM 0.31 Triton indexer/attend pair uses the configured selected-block count
 with the reviewed 128-token block layout (2048 tokens for the shipped config)
 for `sparse_attention` prefill lookup only. Initial/local blocks are part of that
-total, not an addition. Exact selected classes, installed source hashes, BF16
+total, not an addition. Exact selected classes, callable API, BF16
 indexer/KV storage, selection-buffer layout and model/catalog parameters must
 match; speculative acquisition and unreviewed backends/layouts are refused.
-Native-marked ordinary rows must recognize the current `measurement.PROTOCOL`
-as well as the explicitly supported historical ordinary protocol; skew keeps
-its own supported protocol. Recognition does not waive exact acquisition
-identity or completion checks and never converts historical measurements.
+Native attention publication reads the current measurement metadata and recognizes
+explicitly supported historical row protocols. Recognition does not waive
+semantic acquisition compatibility or completion checks and never converts
+historical measurements. Source-file hashes and version labels are not vetoes.
 The catalog's `key_saturates` says which entries are subject to the bound. That
 is a per-**kernel** property, not a per-model one: M3 is sparse only from its
 fourth layer on, and a sparse model's `indexer` scores the whole KV to make
@@ -2014,6 +2044,9 @@ of HuggingFace `config.json` containing fields the simulator needs (`hidden_size
 `vocab_size`, `head_dim`, `num_local_experts`, `num_experts_per_tok`).
 
 The simulator loads these via `get_config(model_name)` in `utils.py`.
+`get_source_config(model_name)` retains the original wrapper for independent
+native-profile validation. Preserve its cache boundary: the flattened simulator
+config is a separate deep copy, not a mutation of the original source object.
 
 ### Cluster configs
 Cluster configs in `configs/cluster/` define hardware topology. Key instance fields:
@@ -2621,8 +2654,9 @@ The reviewed vLLM 0.31 client sums connected engine block counts and retains the
 last READY block size. Preserve those raw fields; their product is not generally
 an aggregate token capacity. Match each instance to its directly observed DP
 rank under complete `kv_cache.capacity.per_engine`, never an inferred division.
-Version/source/client/topology or completeness failures remain explicit unknowns.
-The reviewed image digest is audit provenance, not runtime image detection.
+Unsupported callback/response APIs, replaced callbacks, client/topology mismatches
+or incomplete observations remain explicit unknowns. Record the observed version,
+callback signature and response fields; exact version equality is not required.
 These startup scheduler-pool facts neither measure physical per-GPU allocation
 nor track later elastic changes. Do not relabel historical benchmark metadata.
 

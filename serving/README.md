@@ -37,11 +37,14 @@ New native DeepSeek-V3.2 tables require explicit
 preserves measured component durations and source-bound logical tensor bytes;
 ordinary serving rejects it because the native 788-byte KV layout is not the
 legacy 708-byte capacity model. This API is not a CLI capacity override or an
-accuracy claim. See the [native trace boundary](../docs/docs/simulator/trace-generation.md#native-dsa-duration-replay).
+accuracy claim. Matrix payload bytes follow the admitted source's FP8/BF16
+precision, not a universal one-byte assumption. See the [native trace boundary](../docs/docs/simulator/trace-generation.md#native-dsa-duration-replay).
 
-Native Kimi-K3 also requires explicit duration replay and complete source-admitted
-category tables. It retains the original decoder schedule and looks up each
-AttnRes role separately, without copying one layer's residual contexts across
+Catalog-selected contextual profiles also require explicit duration replay and
+complete source-admitted category tables. The common loader validates their
+catalog/runtime identity against the independently loaded source configuration.
+Kimi-K3's hybrid/residual sizing derives dimensions and roles from that config
+and observed layouts, without copying one layer's residual contexts across
 the stack. See [Kimi replay](../docs/docs/simulator/trace-generation.md#native-kimi-duration-replay)
 for its local eager scope and unsupported memory/distribution modes.
 
@@ -55,9 +58,7 @@ serving/                        Python package
 │   ├── scheduler.py            vLLM-style continuous batching scheduler
 │   ├── trace_generator.py      builds execution traces from profiled latencies
 │   ├── memory_model.py         memory tracking, KV cache, tensor sizes
-│   ├── component_sizes.py      admitted component-boundary bytes and replay guards
-│   ├── kimi_bundle.py          completed native Kimi tables and source-role lookup
-│   ├── kimi_sizes.py           admitted Kimi logical component bytes, not capacity
+│   ├── component_sizes.py      contextual bundles, admitted logical bytes and replay guards
 │   ├── graph_generator.py      Chakra protobuf graph generation
 │   ├── controller.py           IPC with ASTRA-Sim subprocess
 │   ├── router.py               request routing across instances

@@ -41,6 +41,11 @@ retain the versions in their metadata; changing the launcher does not refresh th
 The committed examples validate their stored profile bundles, not automatically
 a new acquisition made with the latest profiler. Check both profile acquisition
 metadata and benchmark engine settings before claiming equivalent coverage.
+Profile CSVs contain coordinates and timings; per-category method and runtime
+observations are recorded in profile metadata. A version label alone neither
+proves equivalence nor vetoes execution: compare the actual backend, precision,
+geometry and workload. Bounded Kimi/GLM profiling and duration replay do not
+establish native serving capacity, TP2 support or benchmark accuracy.
 
 ### Record a workload: `bench run`
 
@@ -193,8 +198,10 @@ alone do not account for vLLM's activation budget.
 
 The bounded observer retains native READY payloads during engine construction
 and restores the callback before decoding or request submission. It adds no
-request instrumentation. Unsupported installed sources or topologies and
-incomplete observations record `status: unknown`, `per_engine: null` and a reason.
+request instrumentation. Unsupported callback/response APIs, replaced callbacks,
+client/topology mismatches and incomplete observations record `status: unknown`,
+`per_engine: null` and a reason. Observed versions and callback/response ABI facts
+are recorded; compatibility follows the actual callback and response interfaces.
 These are startup scheduler-pool facts, not physical GPU memory or later elastic
 changes. Historical artifacts keep their original fields and version semantics.
 

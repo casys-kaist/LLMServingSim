@@ -2,17 +2,14 @@
 
 Dispatch is by installed cache specs and an explicit metadata field contract,
 not checkpoint names. Certifies ordinary non-spec, cache-mode-none GDN and the
-source-checked native 0.31 Kimi KDA schema with their distinct prefill views.
+native KDA metadata schema with their distinct prefill views.
 Other recurrent schemas and
 active speculative/checkpoint protocols require their own audited contract.
 """
 from collections import Counter
 from dataclasses import dataclass
 import inspect
-import hashlib
-from functools import lru_cache
 from numbers import Integral
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -106,20 +103,11 @@ _KDA_UNUSED_GDN_FIELDS = ('chunk_indices', 'chunk_offsets', 'prefill_query_start
                           'prefill_state_indices', 'prefill_has_initial_state')
 
 
-@lru_cache(maxsize=None)
-def _kda_source_checked(cls):
-    path = Path(inspect.getfile(cls))
-    if hashlib.sha256(path.read_bytes()).hexdigest() != (
-            '6d03fe92018da9b205bbd56c00ebe1481e27c30d400e5b3694d3b25e4605724b'):
-        raise ValueError('Unreviewed native KDA metadata source')
-
-
 def _ordinary_kda(metadata):
     cls = type(metadata)
     if (cls.__module__, cls.__name__) != (
             'vllm.models.kimi_k3.nvidia.kda_metadata', 'KimiK3KDAMetadata'):
         return False
-    _kda_source_checked(cls)
     # Native builder: no speculative partition offsets in ordinary mode;
     # FlashKDA prepares its own chunks and consumes the whole non-spec view
     # (including the decode prefix of a mixed batch). It never fills GDN's

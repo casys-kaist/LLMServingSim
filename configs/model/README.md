@@ -74,9 +74,19 @@ The hybrid and sparse configurations are not uniform stacks, which is the point 
 | `MiniMax-M3` | 3 dense MLP + 57 MoE, sparse attention on 57 | 7 MTP modules |
 | `Kimi-K3` | 69 KDA + 24 MLA; 1 dense MLP + 92 MoE | not admitted by this profiler path |
 
+DeepSeek-V3.2 and GLM-5 may expose `deepseek_sparse_attention` in native
+`layer_types`. Stack resolution treats it as a cache-dispatch label, mapping it
+to the catalog's full-attention block axis while retaining sparse indexing on
+its separate axis. The stored config and native execution remain unchanged.
+
 Kimi-K3 stays nested with its original one-based attention schedule and
-`num_experts_per_token` alias. Only engine construction trims the decoder prefix;
-the stored checkpoint and trace layer order stay intact. Its current native path
+`num_experts_per_token` alias. Shared stack helpers resolve expert top-k without
+changing expert-group selection. Category prefixes, residual roles and native
+component dimensions derive from the supplied config and validated runtime,
+not a fixed checkpoint digest or geometry. Only engine construction trims the
+decoder prefix; the stored config and trace layer order stay intact.
+`get_source_config` retains that original wrapper independently of the simulator's
+flattened `get_config` copy. Its current native path
 is bounded local profiling and explicit duration replay, not full serving or
 benchmark validation. See [native Kimi acquisition](../../docs/docs/profiler/output-bundle.md#native-kimi-acquisition).
 

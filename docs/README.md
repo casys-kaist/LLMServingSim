@@ -83,13 +83,20 @@ the coverage and output guides distinguish unavailable alternatives from positiv
 CUDA coverage, separate observed invocation counts from normalization divisors,
 and require compatible acquisition identities for resume.
 The [dummy-weight contract](docs/profiler/output-bundle.md#dummy-model-weight-preparation)
-separates source-checked packed/derived initialization and postload layout
+separates capability-checked packed/derived initialization and postload layout
 observations from forward correctness or model support.
 The [native Kimi contract](docs/profiler/output-bundle.md#native-kimi-acquisition)
-connects ordinary category completion with exact residual-context publication.
-Its CLI and trace guides distinguish original-width prefix acquisition and
-standalone native residual calls from full-model GPU execution, and limit trace
-integration to source-admitted local duration replay rather than serving capacity.
+describes catalog-selected native adapters using common category completion,
+callable publication and contextual bundle loading. Geometry comes from the
+independently supplied configuration and validated runtime, not fixed checkpoint
+dimensions. Its CLI and trace guides distinguish original-width prefix acquisition
+and standalone residual calls from full-model GPU execution, retaining native API/ABI
+checks and local duration-only limits. Changed execution semantics require fresh
+acquisition; historical artifacts cannot be relabeled into the new contracts.
+New CSVs retain coordinates and timings only; per-category metadata describes the
+collector, CUDA-union aggregation, dummy inputs and observed runtime versions.
+Source hashes and exact versions are provenance, not execution vetoes. Actual
+API/backend, shape, dtype and layout guards remain mandatory.
 The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.
@@ -124,7 +131,7 @@ The output guide distinguishes recorded engine arguments from resolved dtypes;
 alternate profiler variants are not automatically selected by the simulator.
 Naming changes do not migrate prior data or bypass acquisition identities.
 TP emulation resolves local native configuration defaults and user overrides
-before sharding, preserving head width; source fingerprints cover that logic.
+before sharding, preserving head width; acquisition records retain that geometry.
 Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete

@@ -37,9 +37,12 @@ class Extension:
         from .dummy_weights import preparation_facts
         return preparation_facts(self.model_runner.get_model())
 
-    def kimi_runtime_admission(self, descriptor):
-        from .kimi_runtime import inspect_runtime
-        return inspect_runtime(self.model_runner, descriptor)
+    def native_profile_admission(self, architecture, descriptor):
+        from profiler.core.callable_profile import profile_for
+        profile = profile_for(architecture)
+        if profile is None:
+            raise ValueError('Native runtime admission requires a declared profile')
+        return profile.adapter.inspect_runtime(self.model_runner, descriptor)
 
     def component_runtime_admission(self, descriptor, shot_dict=None):
         """Read and validate an explicitly declared native execution contract."""
@@ -94,7 +97,7 @@ class Extension:
         component_layout_sha256: str | None = None,
         attention_lookup_semantic: dict[str, Any] | None = None,
         component_layout_contract: dict[str, Any] | None = None,
-        kimi_contract: dict[str, Any] | None = None,
+        native_profile_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one profiling shot and return per-layer timings.
 
@@ -137,16 +140,22 @@ class Extension:
             if runtime_sha256 != runtime['runtime_sha256']:
                 raise ValueError('Live component runtime changed before this shot')
         native_profile_sha256 = None
-        if kimi_contract is not None:
-            from profiler.core import kimi_acquisition as kimi
-            kimi.validate_scope(kimi_contract)
-            native_profile_sha256 = kimi.digest(kimi_contract)
-            cached = getattr(self, '_kimi_profile_scope', None)
+        if native_profile_contract is not None:
+            from profiler.core.callable_profile import profile_for
+            from .callable_workload import canonical
+            from profiler.core.measurement import native_scope_token, semantic_identity
+            profile = profile_for(native_profile_contract['architecture'])
+            if profile is None:
+                raise ValueError('Native acquisition contract has no declared profile')
+            profile.validate_scope(native_profile_contract)
+            native_profile_sha256 = native_scope_token(native_profile_contract)
+            cached = getattr(self, '_native_profile_scope', None)
             if cached != native_profile_sha256:
-                observed = self.kimi_runtime_admission(kimi_contract['descriptor'])
-                if kimi.canonical(observed) != kimi.canonical(kimi_contract['runtime']):
-                    raise ValueError('Actual native Kimi runtime differs before acquisition')
-                self._kimi_profile_scope = native_profile_sha256
+                observed = self.native_profile_admission(
+                    native_profile_contract['architecture'], native_profile_contract['descriptor'])
+                if canonical(semantic_identity(observed)) != canonical(semantic_identity(native_profile_contract['runtime'])):
+                    raise ValueError('Actual native runtime differs before acquisition')
+                self._native_profile_scope = native_profile_sha256
         acquisition = layerwise_measurement(slice_, iterations, scope_contexts=scope_contexts,
             component_layout_sha256=component_layout_sha256, runtime_sha256=runtime_sha256,
             attention_lookup_sha256=attention_lookup_sha256, native_profile_sha256=native_profile_sha256)
@@ -189,8 +198,8 @@ class Extension:
             measured = capture(self.model_runner,
                                lambda: complete_forward(self.model_runner, _fresh_batch()),
                                slice_, iterations, scope_contexts=scope_contexts)
-        if kimi_contract is not None:
-            kimi.validate_capture(kimi_contract, measured, slice_, iterations, warmup)
+        if native_profile_contract is not None:
+            profile.validate_capture(native_profile_contract, measured, slice_, iterations, warmup)
         if invocation_contract is not None:
             architecture, choices, expected = invocation_contract
             from profiler.core.categories import _split_linear_attention_shot

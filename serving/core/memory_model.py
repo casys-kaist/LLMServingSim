@@ -1,4 +1,5 @@
 import os
+import math
 from .utils import (
     get_architecture, get_config, get_layer_stack, is_moe as _is_moe,
     num_experts as _num_experts, num_mtp_layers,
@@ -18,6 +19,150 @@ KB_TO_BYTE = 1024
 # OffloadingConnector defaults to a factor of 1; 256 is kept because it matches
 # LMCache and preserves the shared pool's existing granularity.
 LOWER_TIER_CHUNK_TOKENS = 256
+
+
+def tensor_nbytes(shape, dtype):
+    """Logical tensor bytes from explicit metadata, not allocator capacity."""
+    widths = {'bfloat16': 2, 'float16': 2, 'float32': 4, 'float64': 8,
+              'int8': 1, 'uint8': 1, 'int16': 2, 'int32': 4, 'int64': 8,
+              'float8_e4m3fn': 1, 'float8_e5m2': 1, 'float8_e8m0fnu': 1}
+    dtype = str(dtype).removeprefix('torch.')
+    if dtype not in widths or any(type(n) is not int or n < 0 for n in shape):
+        raise ValueError('Unsupported tensor shape or dtype')
+    return math.prod(shape) * widths[dtype]
+
+
+def packed_expert_shapes(experts, hidden, intermediate, *, weight_pack,
+                         scale_group_size, scales_per_element):
+    """Pack a gated expert's logical dimensions with an explicit storage rule.
+
+    This is arithmetic only. The selected native quantization method must supply
+    the packing rule and actual padded dimensions; these shapes do not select
+    or certify a backend. Scale element dtype is supplied separately to sizing.
+    """
+    values = (experts, hidden, intermediate, weight_pack, scale_group_size, scales_per_element)
+    if any(type(n) is not int or n <= 0 for n in values):
+        raise ValueError('Expert dimensions and packing factors must be positive integers')
+    scale_pack = scale_group_size * scales_per_element
+    if any(n % divisor for n in (hidden, intermediate) for divisor in (weight_pack, scale_pack)):
+        raise ValueError('Expert dimensions do not divide the selected packing layout')
+    return dict(w13=(experts, 2 * intermediate, hidden // weight_pack),
+                w2=(experts, hidden, intermediate // weight_pack),
+                s13=(experts, 2 * intermediate, hidden // scale_pack),
+                s2=(experts, hidden, intermediate // scale_pack))
+
+
+def kimi_component_geometry(config, tp, *, projection_alignment, vocab_rows):
+    """Config-derived, non-EP/non-SP/PP1 native Kimi component geometry.
+
+    vLLM 0.31 kimi_k3/nvidia/kda.py:531-601,646-724; mla.py:196-299;
+    model.py:589-668,957-986,1169-1181. Alignment and padded vocabulary rows
+    must come from the selected runtime. Dtypes, expert packing, buffer
+    presence, cache layout and aliasing remain independent runtime facts.
+    No checkpoint dimensions or supported hardware list are encoded here.
+    """
+    from profiler.core.stack import resolve_stack
+    if config.get('model_type') not in ('kimi_k3', 'kimi_linear'):
+        raise ValueError('Native Kimi geometry requires its family source rule')
+    text = config.get('text_config', config)
+    resolve_stack(config)
+
+    def positive(value, name):
+        if type(value) is not int or value <= 0:
+            raise ValueError(name + ' must be a positive integer')
+        return value
+
+    def field(name, mapping=text):
+        return positive(mapping.get(name), name)
+
+    def shard(value, name):
+        if value % tp:
+            raise ValueError(name + ' must divide TP exactly')
+        return value // tp
+
+    positive(tp, 'tp')
+    positive(projection_alignment, 'projection_alignment')
+    positive(vocab_rows, 'vocab_rows')
+    h, vocab = field('hidden_size'), field('vocab_size')
+    if vocab_rows * tp < vocab:
+        raise ValueError('Rank-local vocabulary rows cannot cover the vocabulary')
+    linear = text.get('linear_attn_config')
+    if not isinstance(linear, dict) or linear.get('use_full_rank_gate') is not True:
+        raise ValueError('Kimi KDA geometry requires its full-rank gate configuration')
+    d, heads, conv = (field(key, linear) for key in ('head_dim', 'num_heads', 'short_conv_kernel_size'))
+    n = shard(heads, 'KDA heads')
+    p = n * d
+    raw_input_width = 4 * p + d + n
+    in_width = raw_input_width + (-raw_input_width % projection_alignment)
+    an = shard(field('num_attention_heads'), 'MLA heads')
+    q, latent = field('q_lora_rank'), field('kv_lora_rank')
+    key, rope, value = (field(key) for key in ('qk_nope_head_dim', 'qk_rope_head_dim', 'v_head_dim'))
+    if text.get('mla_use_nope') is not True or text.get('mla_use_output_gate') is not True:
+        raise ValueError('This component boundary requires NoPE q-LoRA MLA with an output gate')
+    dense = shard(field('intermediate_size'), 'dense intermediate size')
+    experts, moe_i = field('num_experts'), field('moe_intermediate_size')
+    minimum = positive(text.get('min_moe_intermediate_per_partition', 256),
+                       'min_moe_intermediate_per_partition')
+    # Native model.py:589-598 pads a too-small TP shard before FusedMoE.
+    padded_i = max(moe_i, minimum * tp) if tp > 1 else moe_i
+    local_i = shard(padded_i, 'expert intermediate size')
+    shared = text.get('num_shared_experts')
+    if type(shared) is not int or shared < 0:
+        raise ValueError('num_shared_experts must be a nonnegative integer')
+    shared_i = shard(moe_i * shared, 'shared expert intermediate size')
+    routed = field('routed_expert_hidden_size')
+    if text.get('latent_moe_use_norm') is not True:
+        raise ValueError('This latent-MoE boundary requires its routed normalization')
+    width = field('attn_res_block_size')
+    depth = field('num_hidden_layers')
+    shapes = dict(
+        embedding=dict(weight=(vocab_rows, h)), head=dict(weight=(vocab_rows, h)),
+        final_norm_and_residual=dict(norm=(h,), res_norm=(h,), res_proj=(1, h)),
+        residual=dict(input_norm=(h,), post_norm=(h,), attn_res_norm=(h,),
+                      mlp_res_norm=(h,), attn_res_proj=(1, h), mlp_res_proj=(1, h)),
+        linear_attention=dict(in_proj=(in_width, h), f_b_proj=(p, d),
+            conv=(3 * p, 1, conv), dt_bias=(p,), A_log=(n,), norm=(d,), o_proj=(h, p)),
+        full_attention=dict(in_proj=(q + latent + rope + an * value, h),
+            q_b_proj=(an * (key + rope), q), kv_b_proj=(an * (key + value), latent),
+            q_norm=(q,), kv_norm=(latent,), o_proj=(h, an * value)),
+        dense=dict(gate_up=(2 * dense, h), down=(h, dense)),
+        moe=dict(router=(experts, h), router_bias=(experts,),
+            shared_gate_up=(2 * shared_i, h), shared_down=(h, shared_i),
+            routed_down=(routed, h), routed_up=(h, routed), routed_norm=(routed,)))
+    return dict(hidden=h, vocab=vocab, depth=depth, tp=tp, shapes=shapes,
+        kda_heads=n, kda_head_dim=d, kda_projection=p, kda_input_width=in_width,
+        kda_input_padding=in_width - raw_input_width,
+        kda_decode_buffers=dict(conv=(3, conv, p), norm=(d,)),
+        kda_state_shapes=((conv - 1, 3 * p), (n, d, d)),
+        mla_heads=an, mla_output_width=an * value, mla_cache_head_size=latent + rope,
+        mla_absorbed_shapes=((an, key, latent), (an, latent, value)),
+        expert_logical_shapes=dict(w13=(experts, 2 * local_i, routed),
+                                   w2=(experts, routed, local_i)),
+        moe_padded_intermediate=padded_i, attn_res_capacity=(depth + width - 1) // width)
+
+
+def kimi_parameter_components(geometry, *, linear_dtype, norm_dtype, expert_tensors):
+    """Parameter storage per component for the admitted unquantized-linears path.
+
+    ``expert_tensors`` maps unique expert payload/scale names to (shape, dtype)
+    from the native postload layout. Aliased MLA decode views and KDA derived
+    buffers are excluded; callers account for actual independent copies apart.
+    These are parameters, not activation peaks, traffic or cache-pool capacity.
+    """
+    if str(linear_dtype).removeprefix('torch.') not in ('float16', 'bfloat16', 'float32'):
+        raise ValueError('Quantized ordinary linears require their recorded storage layout')
+    if set(expert_tensors) != {'w13', 'w2', 's13', 's2'}:
+        raise ValueError('Expected unique native expert payload and scale tensors')
+    result = {}
+    for component, tensors in geometry['shapes'].items():
+        size = 0
+        for name, shape in tensors.items():
+            dtype = ('torch.float32' if name in ('conv', 'dt_bias', 'A_log', 'router_bias')
+                     else norm_dtype if 'norm' in name else linear_dtype)
+            size += tensor_nbytes(shape, dtype)
+        result[component] = size
+    result['moe'] += sum(tensor_nbytes(shape, dtype) for shape, dtype in expert_tensors.values())
+    return result
 
 
 class MemoryModel():

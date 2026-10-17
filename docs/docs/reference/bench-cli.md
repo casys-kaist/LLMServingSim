@@ -161,10 +161,11 @@ not ensure equal capacity; see **[KV cache and memory](/docs/simulator/schedulin
 
 The observer retains bounded native READY payloads only while `AsyncLLM`
 constructs, restoring its callback before decoding or request submission. No
-worker RPC or request instrumentation is added. Unreviewed source/version,
-external or dynamic topologies and incomplete observations produce
-`status: unknown`, `per_engine: null` and a reason. Source hashes and the reviewed
-image digest identify the audit, not detected container provenance. Resolve-only
+worker RPC or request instrumentation is added. Unsupported callback/response
+APIs, replaced callbacks, client/topology mismatches and incomplete observations
+produce `status: unknown`, `per_engine: null` and a reason. The observer records
+the runtime version, callback signature and response fields; exact version equality
+is not an admission requirement. Resolve-only
 uses the same contract. Startup facts do not track later elastic changes;
 historical runs keep their original fields and recorded-version semantics.
 

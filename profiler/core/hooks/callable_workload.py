@@ -9,7 +9,6 @@ import hashlib
 import inspect
 import json
 import math
-from pathlib import Path
 import sys
 
 from .callable_context import (bind_signature, contextual_catalog, expected_counts,
@@ -49,11 +48,6 @@ def _integer(value, low, high, name):
         raise ValueError('Invalid bounded ' + name)
 
 
-def _sha(value):
-    if type(value) is not str or len(value) != 64 or any(c not in '0123456789abcdef' for c in value):
-        raise ValueError('Expected lowercase SHA256')
-
-
 def normalize(workload, catalog, scope_contexts):
     """Check the independent context manifest against a bounded argument plan.
 
@@ -68,10 +62,9 @@ def normalize(workload, catalog, scope_contexts):
         raise ValueError('Invalid callable workload schema')
     if type(work['scope']) is not dict or not work['scope']:
         raise ValueError('An independent acquisition/query scope is required')
-    if type(work['source']) is not dict or set(work['source']) != {'module', 'function', 'signature'}:
-        raise ValueError('Module, native function and signature pins are required')
-    for value in work['source'].values():
-        _sha(value)
+    if (type(work['source']) is not dict or set(work['source']) != {'module', 'function', 'signature'}
+            or any(type(value) is not str or not value for value in work['source'].values())):
+        raise ValueError('Module, native function and signature descriptions are required')
     _integer(work['shot_tokens'], 1, 2**31 - 1, 'shot tokens')
     _integer(work['iterations'], 1, 16, 'iterations')
     _integer(work['warmups'], 1, 4, 'warmups')
@@ -170,22 +163,21 @@ def normalize(workload, catalog, scope_contexts):
 
 
 def source_identity(module, function):
-    """Obtain actual loaded source identity; no target import or code mutation."""
-    return dict(module=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
-                function=hashlib.sha256(Path(inspect.getfile(function)).read_bytes()).hexdigest(),
-                signature=digest(str(inspect.signature(function))))
+    """Describe the loaded callable without pinning its implementation bytes."""
+    return dict(module=module.__name__, function=function.__module__ + '.' + function.__qualname__,
+                signature=str(inspect.signature(function)))
 
 
 def measurement(workload, catalog, scope_contexts, *, runtime_versions=None):
     work, contexts = normalize(workload, catalog, scope_contexts)
-    from profiler.core.measurement import layerwise_measurement
+    from profiler.core.measurement import layerwise_measurement, semantic_identity
     base = layerwise_measurement(catalog, work['iterations'], scope_contexts=contexts,
                                  expected_contexts=work['expected_contexts'], runtime_versions=runtime_versions)
-    root = Path(__file__).parent.parent
-    sources = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in
-               ('hooks/callable_workload.py', 'callable_profile.py', 'context_lookup.py')}
-    return dict(measurement_protocol=base['measurement_protocol'] + '-isolated-native-callable-v1',
-                measurement_sha256=digest(dict(base=base, workload=work, sources=sources)))
+    # Source observations remain workload metadata. Tensor geometry, argument
+    # recipes and invocation counts define which timings can be reused.
+    semantic_work = semantic_identity({key: value for key, value in work.items() if key != 'source'})
+    return dict(measurement_protocol=base['measurement_protocol'] + '-isolated-native-callable',
+                measurement_sha256=digest(dict(base=base, workload=semantic_work)))
 
 
 def execute(workload, catalog, scope_contexts):
@@ -199,8 +191,8 @@ def execute(workload, catalog, scope_contexts):
     if not inspect.isfunction(function) or any(check(function) for check in
             (inspect.iscoroutinefunction, inspect.isgeneratorfunction, inspect.isasyncgenfunction)):
         raise ValueError('Workload target must be a synchronous native Python function')
-    if source_identity(module, function) != work['source']:
-        raise ValueError('Loaded target source/signature differs from independent pins')
+    # Check the live callable's argument contract below. File contents and
+    # annotation formatting are provenance, not an executable compatibility ABI.
     signature = bind_signature(function, declaration['context'])
     for call in work['calls']:
         if set(call) != set(signature.parameters) or any(p.kind not in
@@ -254,4 +246,4 @@ def execute(workload, catalog, scope_contexts):
     rows = [dict(layer=row['layer'], context=row['context'], context_tokens=row['context_tokens'],
                  microseconds=row['microseconds'], **identity) for row in measured['context_samples']]
     return dict(schema=1, workload_sha256=digest(work), scope_sha256=digest(work['scope']),
-                source=work['source'], rows=rows, evidence=json.loads(canonical(evidence)))
+                source=source_identity(module, function), rows=rows, evidence=json.loads(canonical(evidence)))

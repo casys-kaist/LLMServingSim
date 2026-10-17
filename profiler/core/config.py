@@ -601,6 +601,7 @@ class Architecture(BaseModel):
     # own block sequence for it.
     mtp: MtpSection | None = None
     component_layouts: dict[str, ComponentLayoutGroup] = Field(default_factory=dict)
+    native_profile: Literal['hybrid-residual-v1'] | None = None
 
     # ------------------------------------------------------------------
     # Validation

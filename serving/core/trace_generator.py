@@ -1333,7 +1333,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             f"profiler/models/<model_type>.yaml or remove it from the block order."
         )
 
-    if layer_name == 'attn_res' and _is_kimi_native(ctx):
+    if layer_name == 'attn_res' and _is_contextual_profile(ctx):
         source_role = source_role or ('final' if layer_num is None else None)
         latency_ns = ctx.component_sizes.residual(bctx.total_len, source_role, layer_num)
     elif category == "per_sequence":
@@ -1371,7 +1371,7 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
         latency_ns = _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
     # Size calculation uses the same canonical layer names.
-    if _is_kimi_native(ctx):
+    if _is_contextual_profile(ctx):
         inp, wt, out = ctx.component_sizes.sizes_for(bctx, layer_name, source_role, layer_num)
     elif layer_name == 'attention':
         kv_len_for_sizes = bctx.kv_prefill + bctx.n_decode * bctx.kv_decode_mean
@@ -1687,7 +1687,7 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
             rank_latency_ns = _lookup_moe(
                 ctx.perf_db, ep_total, local_tokens,
                 max(activated_experts, 1))
-            if _is_kimi_native(ctx):
+            if _is_contextual_profile(ctx):
                 rank_inp, rank_wt, rank_out = ctx.component_sizes.sizes_for(bctx, 'moe')
             else:
                 rank_inp, rank_wt, rank_out = calculate_sizes(
@@ -1866,11 +1866,13 @@ def _selected_component_sizes(perf_db, tp, config):
         return cache[tp]
     from profiler.core.component_layouts import metadata_records, selected_runtime_contract
     architecture = perf_db['architecture']
-    if config.get('model_type') == 'kimi_k3':
+    if architecture.get('native_profile') is not None:
         if tp != 1:
-            raise NotImplementedError('Native Kimi category profiles support TP1 only')
-        from .kimi_bundle import KimiBundle
-        selected = KimiBundle(os.path.join(perf_db['root'], 'tp1'), architecture)
+            raise NotImplementedError('Local native category profiles support TP1 only')
+        from .component_sizes import ContextualProfileBundle
+        from .utils import get_source_config
+        selected = ContextualProfileBundle(os.path.join(perf_db['root'], 'tp1'), architecture,
+                                           get_source_config(perf_db['model']))
         selected.validate_config(config)
         cache[tp] = selected
         return selected
@@ -1965,14 +1967,15 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag)
 
 
-def _is_kimi_native(ctx):
-    return getattr(ctx.component_sizes, 'schema', None) == 'kimi-k3-native031-logical-v1'
+def _is_contextual_profile(ctx):
+    from .component_sizes import CONTEXTUAL_PROFILE
+    return getattr(ctx.component_sizes, 'schema', None) == CONTEXTUAL_PROFILE
 
 
 def _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag, source_role=None):
     """Emit an already resolved sequence without applying substitutions twice."""
     for layer_name in layers:
-        if layer_name == 'attn_res' and _is_kimi_native(ctx):
+        if layer_name == 'attn_res' and _is_contextual_profile(ctx):
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         source_role=source_role)
             continue
@@ -2035,7 +2038,7 @@ def _block_copy_key(ctx, block_mode_on, *layer_nums):
     for all 61 of DeepSeek-V3.2's. Several layer numbers for the interleaved
     path, whose block straddles a boundary.
     """
-    if block_mode_on or _is_kimi_native(ctx):
+    if block_mode_on or _is_contextual_profile(ctx):
         return None
     if ctx.is_moe and not ctx.gate.block_copy:
         return None
@@ -2651,8 +2654,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     if num_experts_cfg:
         gate = GateRouter(
             node_id, instance_id, num_experts_cfg,
-            num_experts_per_tok=(_stack_module().expert_top_k(config)
-                if config.get('model_type') == 'kimi_k3' else config.get('num_experts_per_tok', 1)),
+            num_experts_per_tok=_stack_module().expert_top_k(config),
             routing_policy=expert_routing_policy,
             seed=42,
             block_copy=enable_block_copy,

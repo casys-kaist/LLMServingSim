@@ -165,6 +165,10 @@ key fails at load time rather than silently doing nothing:
   See [Heterogeneous stacks](#heterogeneous-stacks) for what the axes are.
 - `shared:` — `prologue` and `head`, which run once per *iteration* rather
   than once per layer.
+- `native_profile:` — optional; selects a registered source-admitted native
+  acquisition adapter. `hybrid-residual-v1` uses shared category/context
+  publication and configuration-derived residual plans; omitting it preserves
+  ordinary acquisition. Selection is not permission to bypass runtime checks.
 - `component_layouts:` — optional; declares runtime-selected alternatives to
   the historical block decomposition, with coupled acquisition categories.
 
@@ -483,9 +487,10 @@ capture is preserved and the capture fails.
 
 The full architecture's callable declarations travel with every category,
 including inactive alternatives and contexts owned by other categories. They
-participate in both ordinary and skew acquisition fingerprints. See
+participate in both ordinary and skew semantic acquisition identities. See
 [resume rules](./output-bundle#cuda-activity-and-acquisition-identity): changing
-the capture implementation does not convert old rows to the new identity.
+capture semantics does not convert old rows to a new acquisition. Source hashes
+and exact library versions are observational; native API and layout checks remain.
 Declaring a boundary alone adds neither a model catalog nor simulator sizing or
 trace support for a new component.
 
@@ -520,8 +525,15 @@ and its CUDA ledger before atomically publishing rows and completion receipts.
 The immutable lookup matches the structural context exactly and interpolates
 only its token axis, refusing missing contexts and out-of-range tokens. A
 declaration alone does not supply that planner or simulator integration. The
-[Kimi acquisition](./output-bundle#native-kimi-acquisition) provides both for
-its source-derived residual roles.
+[Kimi acquisition](./output-bundle#native-kimi-acquisition) selects
+`native_profile: hybrid-residual-v1` for its source-derived residual roles.
+`NativeProfile` shares orchestration, category publication and exact-context
+loading; its runtime adapter supplies source/backend admission and callable
+planning. The entire supplied architecture participates in identity, not a
+hard-coded catalog file. Config-derived widths and schedules do not eliminate
+source, ABI or observed-layout checks, and adding this key is not certification
+of another implementation or device. Keep a new adapter's source-specific rules
+separate from the common publication/lookup mechanisms.
 
 Concurrent branches require a different treatment: choose a joined native
 boundary if their separate costs would overlap in an additive trace. Kimi's

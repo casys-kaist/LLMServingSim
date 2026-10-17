@@ -19,6 +19,14 @@ and policy, never development-session notes or intermediate experiments.
 Do not commit temporary diagnostic or fix-verification scripts, tests or
 generated experiment results. Review the staged diff before committing.
 
+Describe profiling methods directly: collector, CUDA interval aggregation,
+normalization and synthetic input preparation. New CSVs hold coordinates and
+timings; per-category metadata records methods and observed runtime versions.
+Do not document source-file hashes or exact library versions as execution vetoes.
+Keep semantic/API/backend/layout guards and table-integrity checks distinct from
+provenance. Historical timings are never upgraded by restamping metadata, and
+bounded acquisition or duration replay does not establish full serving accuracy.
+
 ## What this is
 
 A [Docusaurus 3](https://docusaurus.io/) site (TypeScript, classic preset)

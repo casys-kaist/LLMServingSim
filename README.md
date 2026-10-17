@@ -54,15 +54,18 @@ GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation an
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
 acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
-contracts. Whole-block MoE sweeps condition expert IDs while preserving native
+contracts. New CSVs hold coordinates and timings, with descriptive methods
+and runtime provenance in metadata; actual backend/layout checks govern admission.
+Whole-block MoE sweeps condition expert IDs while preserving native
 routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
 Recurrent warmup checks respect native metadata layouts without adding CPU time;
 the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)
 states their scope separately from model support.
-Source-checked packed-weight and derived-buffer preparation is also untimed;
+Capability-checked packed-weight and derived-buffer preparation is also untimed;
 see the [dummy-weight contract](https://llmservingsim.ai/docs/profiler/output-bundle#dummy-model-weight-preparation).
-Kimi-K3 has a bounded native profiling and duration-trace path with separate
-residual contexts; see its [scope and requirements](https://llmservingsim.ai/docs/profiler/output-bundle#native-kimi-acquisition).
+Catalog-selected bounded native profiling shares category completion and contextual
+duration replay; Kimi-K3's configuration-derived residual path retains a
+source-specific contract. See its [scope and requirements](https://llmservingsim.ai/docs/profiler/output-bundle#native-kimi-acquisition).
 See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components,

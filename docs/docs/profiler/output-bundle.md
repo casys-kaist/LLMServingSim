@@ -21,6 +21,7 @@ profiler/perf/<HARDWARE>/
 └── <MODEL>/<variant>/
     ├── meta.yaml
     └── tp<N>/                    # one folder per profiled TP degree
+        ├── meta.yaml             # per-category methods and acquisition observations
         ├── dense.csv
         ├── per_sequence.csv
         ├── attention.csv
@@ -62,7 +63,7 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `kineto-context-scoped-cuda-union-dummy-weights-query-v8`.
+New ordinary layerwise measurements record a descriptive device-active-union method.
 The common PyTorch/Kineto collector records explicit dynamic module scopes and
 native CUDA activities without Python stacks, tensor shapes or memory snapshots.
 For each raw module invocation, merge overlapping CUDA intervals on the same
@@ -94,33 +95,34 @@ The full architecture includes inactive alternatives, so availability and positi
 selected-layout coverage are separate checks. See the
 [callable contract](./adding-model-architecture#declared-callable-boundaries).
 
-Ordinary category CSVs add `measurement_protocol` and `measurement_sha256` to
-the numerical columns shown in the examples below. The fingerprint binds the
-timing and shape-construction implementations, catalog, full-architecture scope
-contexts, repetitions and library versions. Declared callable targets use the
-schema-2 context contract and add `callable_scopes.py` to the source fingerprint;
-explicit scalar/tensor-layout contexts use schema 3 and add their extraction
-contract. Catalogs without callable declarations retain schema 1. Shared capture-source changes still
-change acquisition identities for either schema. A selected component layout also
-contributes its identity and shared layout implementation. Host and
-worker identities must agree before writing. These columns are stored
-atomically with the timing rows; TP-stable replication retains them.
-Unchanged numerical columns remain readable by the simulator.
+New category CSVs contain only their coordinate columns and `time_us`, as shown
+below. Acquisition metadata lives in `tp<N>/meta.yaml`, under
+`measurements.<category>`. Each entry retains the acquisition `identity`, its
+semantic `measurement` token and the observed `acquisitions`. It records the
+PyTorch/Kineto collector, per-invocation device-active interval union and
+normalization, dummy weights, assigned-page KV preparation, zero-start recurrent
+state, deterministic queries and repetitions, together with actual library versions.
+Callable and contextual tables keep their structural manifests and completion
+evidence alongside the CSVs; those are not extra timing columns.
 
-Resume requires the same identity. Historical files without one remain valid
-simulation inputs but cannot be extended as if they had been measured by the
-current method. Use a separate output root or explicitly refresh the selected
-category with `--force`. No-op ordinary sweeps preserve the category's previous
-measurement provenance. TP-stable replication rejects mixed timing methods
-before replacing a destination file.
+Host/worker agreement and resume compare catalog, contexts, method, geometry and
+execution semantics. Source-file hashes and exact Torch/vLLM version strings are
+observational provenance, not execution vetoes. Native API, selected backend,
+shape, dtype, layout, finite-output and coverage checks still apply. Table hashes
+may seal completed data; they are not implementation-version locks.
 
-Skew uses the same interval accounting with its separate per-forward
-`kineto-context-scoped-dummy-kv-skew-per-forward-v9` protocol. Its fingerprint binds
-the effective serialized attention catalog, full capture contexts, installed
-Torch/vLLM distribution versions and timing/preparation sources, including the
-fingerprint implementation itself. `skew.meta.yaml` retains the contexts.
-Native DP+EP component bundles retain
-their own recorded measurement contract; they are not converted by this change.
+Historical data keep their original metadata and timing columns. Existing files
+without compatible acquisition metadata remain valid historical simulation inputs
+where supported, but cannot be extended as a current acquisition. Use a separate
+output root or explicitly refresh the category with `--force`; never restamp old
+rows. No-op sweeps preserve prior provenance. Compatible additions retain earlier
+acquisition observations; TP-stable replication rejects mixed timing methods.
+
+Skew uses the same CUDA interval accounting normalized per measured forward.
+`skew.meta.yaml` retains its semantic identity, capture contexts, descriptive
+method and observed runtime versions; new skew CSVs hold coordinates and timings.
+Native DP+EP component bundles retain their separate recorded measurement
+contract. The skew fitter's own input/code invalidation rules are unchanged.
 Catalog coverage accounts for each native kernel, copy and memset exactly once,
 including work outside module scopes. Such work is reported as a gap, not assigned
 to a convenient layer or called CPU overhead. Overlapping canonical claims remain
@@ -149,11 +151,11 @@ source-checked native vLLM 0.31 KDA metadata layout. KDA consumes the complete
 non-speculative query/state view, including mixed batches' decode prefix, rather
 than filling GDN's prefill-only views. Both paths retain query/history, state-page,
 initial-state and token-conservation checks; neither changes the native forward.
-Unknown sources/schemas and active speculative, checkpoint, RecoverSSM or optional
+Unsupported APIs/schemas and active speculative, checkpoint, RecoverSSM or optional
 FlashInfer metadata paths fail explicitly. This check is outside timing and alone
 does not establish model support; Kimi acquisition has the additional
 [native contract](#native-kimi-acquisition) below.
-Its source is part of both acquisition fingerprints: old rows remain readable,
+Its preparation semantics belong in acquisition metadata: old rows remain readable,
 but an incompatible acquisition cannot resume them by relabeling metadata. MTP
 acquisition requires every entry in its category slice: partially captured
 drafter work cannot be saved as a complete table.
@@ -170,8 +172,8 @@ Typed logical cache views are checked against the engine's shape contract;
 the packed formats below have explicit byte-layout checks. Unsupported packed
 layouts and state modes fail before acquisition.
 
-Allocation and initialization are included in both source fingerprints. Changing
-them requires fresh measurements even if the CSV schema is unchanged. Existing
+Allocation and initialization are described in acquisition metadata. Changes to
+their semantics require fresh measurements even if the CSV schema is unchanged. Existing
 bundles are not rewritten or certified by this fix; use a separate output root
 or explicitly remeasure with `--force`.
 
@@ -182,7 +184,7 @@ select the intended prefill/decode kernels for each mixed batch.
 ### Dummy model weight preparation
 
 Model weights and dummy KV history are separate inputs. The profiler still uses
-vLLM's native floating-weight initialization. On the reviewed vLLM 0.31 SM120
+vLLM's native floating-weight initialization. On the admitted native
 MXFP4/SITU path, it additionally encodes expert checkpoint bytes with the native
 MXFP4 quantizer before unchanged native postload processing. A local CUDA
 generator supplies BF16 values in `[-0.001, 0.001]`; bounded row chunks use at most
@@ -197,15 +199,15 @@ copies occur outside timed forwards.
 
 The packed path requires the source-checked native auto-selected
 `DEEPGEMM_MXFP4` backend, BF16 activations and unsharded TP/PP/DP/EP1 without
-MTP or offload. Unknown sources, layouts or synthetic sharding fail before
+MTP or offload. Unsupported APIs, backends, layouts or synthetic sharding fail before
 publication. Ordinary models call the original loader unchanged; this contract
 does not add a universal quantized-weight initializer or complete model support.
 
 An authoritative main engine retains `dummy_weight_preparation` under
 `engine_resolved.per_tp`. Its completed initialization and postload-layout checks
 do not certify finite forwards, catalog coverage or benchmark accuracy. Those
-remain independent acquisition gates. Both ordinary and skew source identities
-include these adapters, so incompatible old rows require remeasurement.
+remain independent acquisition gates. Ordinary and skew method metadata describe
+this preparation; incompatible old rows require remeasurement.
 
 ### Packed attention history
 
@@ -249,8 +251,8 @@ Older runtimes without the sparse-role capability retain the typed path;
 this does not enable their unsupported
 opaque formats. NVFP4, other packed layouts and ROCm/FNUZ packed acquisition
 remain unsupported. Preparation support alone does not certify model catalog
-coverage, trace composition or benchmark accuracy. Changes to this initializer
-still invalidate acquisition resume through the existing source fingerprints.
+coverage, trace composition or benchmark accuracy. Changed initialization semantics
+require remeasurement; a source-file hash alone does not determine compatibility.
 
 ## Runtime-selected component layouts
 
@@ -286,7 +288,11 @@ Replacement makes `pending` durable before clearing measured rows. Metadata
 writers preserve the record rather than inferring completion from file presence.
 Unrelated TP-stable replicas retain their original TP1 identities; they do not
 establish measured coverage at another degree or become new samples. Replicas
-are validated before exemption from local coverage. An empty or replica-only
+are validated before exemption from local coverage. When a replica-only table
+starts local acquisition, its category metadata adopts the local method while
+retaining each replicated layer's source-TP acquisition record. Local resume
+checks copied rows against that record, not the local measurement identity.
+An empty or replica-only
 `writing` category can resume, but cannot become `complete`. Readers
 reject stale layout contracts, inconsistent row identities, malformed/duplicate
 rows, mixed component sets and completed attention/linear-attention tables missing
@@ -324,8 +330,8 @@ matching norm prefix. Later norms use invocation normalization. The combined
 remains **uncapped** even beyond `index_topk`. Historical `attention`/`indexer`
 rows are not summed with the new tail or relabeled as it.
 
-The reviewed `native-dsa-eager-tail-v1` acquisition contract requires vLLM 0.31.0,
-original-width FP8 weights with BF16 activations, physical/logical TP1 and EP1,
+The `native-dsa-eager-tail-v1` contract targets the reviewed native vLLM 0.31 path:
+original-width FP8 or unquantized BF16 weights with BF16 activations, physical/logical TP1 and EP1,
 PP1/DP1, eager execution and decode query length 1. It rejects MTP, offload,
 sequence parallelism, shared/skipped indexers, dense-MHA prefill, quantized query
 input and unsupported cache geometry. Source-config fields are compared with the
@@ -334,11 +340,14 @@ prefix depth is checked separately, not confused with model width or identity.
 
 The existing per-TP record additionally stores `runtime.runtime_sha256`,
 `runtime.invariant_facts` and `runtime.category_engines`. The shared invariant
-binds source geometry, runtime versions, backend/cache modes and the actual
+binds source geometry, backend/cache modes and the actual
 native runner/sampler route. The profiler's transparent sampler facade does not
 change that route. Its reviewed source determines returned ID width (V1 int32,
 V2 int64); this is source-backed metadata, not a tensor-content observation.
 Category evidence retains actual reduced depths and cache capacities separately.
+Runtime versions and source hashes are recorded provenance, not exact-match
+execution admission. Actual native APIs, dtypes, layouts and backend modes must
+still satisfy the contract.
 
 All four categories — `dense`, `per_sequence`, `attention`, `moe` — must complete
 with matching identities and valid whole shots, even though the changed component
@@ -355,22 +364,42 @@ serving memory feasibility, distributed execution or benchmark accuracy.
 
 ### Native Kimi acquisition
 
-`kimi_k3.yaml` covers the source-checked vLLM 0.31 Kimi-K3 text path on SM120:
-BF16 activations, native MXFP4/SITU experts, eager execution and local TP/PP/DP/EP1.
-The original nested checkpoint configuration is preserved. Ordinary acquisition
-executes its first four decoder layers, or two for MoE, retaining the original
-widths, expert count and top-k. Another source, device/backend, precision or
-distributed deployment requires a new admitted contract, not just a catalog alias.
+`kimi_k3.yaml` selects `native_profile: hybrid-residual-v1`. The shared
+`NativeProfile` host orchestration uses an adapter in `hooks/runtime_admission.py`
+for the source-checked vLLM 0.31 Kimi-K3 text path: BF16 activations, native
+MXFP4/SITU experts, eager execution and local TP/PP/DP/EP1. Backend/ABI checks
+and observed layouts remain mandatory; source hashes and exact library versions
+are provenance rather than execution locks. Removing a fixed
+checkpoint or device-capability lock does not certify arbitrary devices or
+backends; a catalog alias alone cannot admit another native implementation.
+
+The independently supplied nested configuration defines widths, expert count,
+top-k, the decoder schedule and residual block geometry. Shared stack helpers
+derive the smallest prefix covering each category's axes; MoE uses the MLP axis.
+For the shipped configuration these are four decoder layers, or two for MoE,
+without reducing widths or experts. No fixed checkpoint digest or decoder depth
+stands in for validating the supplied configuration and observed runtime.
 
 The ordinary `profile` and `slice` commands use the existing category grids. A
-full Kimi run requires explicit `--skip-skew`; Kimi skew and MTP are not supported.
+multi-category Kimi acquisition requires explicit `--skip-skew`; skew and MTP are not supported.
 See the [bounded invocation](./running#native-kimi-profiling). Each TP directory
-contains the five ordinary CSVs plus `kimi_<category>.json`. Each record binds the
-planned row keys, native runtime, capture identity, completion status and CSV hash.
-An incomplete shot is remeasured as a whole. A completed table with changed data,
-sources or bindings is refused; do not relabel it to resume another acquisition.
+contains the ordinary CSVs plus `category_<category>.json`. Shared `CategoryRecord`
+publication binds planned row keys, the whole declared architecture, native runtime,
+capture identity, completion status and CSV hash. Loading independently rebuilds
+the catalog bindings and requires every binding at each recorded coordinate;
+completion does not claim unmeasured coordinates or a full production grid.
+Malformed, ragged or duplicate partial rows are refused before preload or
+deduplication. An incomplete shot is remeasured as a whole. A completed table with
+changed data or incompatible semantic bindings is refused. Runtime versions are
+recorded per acquisition, not compared as exact execution-admission constraints.
+Changed execution semantics and the new publication schemas require fresh
+measurements in a separate output root or an explicit remeasurement; old artifacts
+are not migrated, restamped or relabeled into successful acquisitions.
 Dummy-weight preparation elapsed times remain telemetry in engine metadata, not
-execution invariants or GPU latency inputs.
+execution invariants or GPU latency inputs. The intended scope is bounded native
+acquisition and saved-duration trace replay. Fresh GPU validation is required
+before claiming coverage for a new bundle; TP2, full profiling, native capacity
+admission and end-to-end benchmark accuracy are not established by this adapter.
 
 Two boundaries need particular care:
 
@@ -380,12 +409,14 @@ Two boundaries need particular care:
   dense components. Adding separate costs for the concurrent branches would
   double-count their overlap.
 - **AttnRes:** original layer position changes the number of residual blocks and
-  optional inputs. A four-layer engine cannot measure the full 93-layer context
-  set. The dense pass also calls the unchanged native AttnRes function separately,
-  with the original stack's 187 ordered roles and 25 distinct structural contexts
-  at each dense token point. This does not execute all 93 model layers on the GPU.
+  optional inputs. A reduced engine cannot measure every original-stack context.
+  The dense pass therefore calls the unchanged native AttnRes function separately,
+  with ordered roles and structural contexts derived from the supplied depth,
+  residual block width and source schedule at each dense token point. This does
+  not execute the full original model on the GPU.
 
-`kimi_contexts.json` records that residual plan. Under `callables/attn_res/`,
+`callable_categories.json` records token points, repetitions and runtime versions;
+`callables/callable_workloads.json` retains the explicit residual plans. Under `callables/`,
 `dense_context.csv` stores context-specific microseconds, alongside its manifest,
 completion receipts and per-token native-activity evidence. The generic collector
 is the same lightweight PyTorch/Kineto path; no CPU scope duration enters the
@@ -394,8 +425,11 @@ source, shape, strides, optional inputs and physical invocation counts are check
 Allocation is bounded to 512 MiB of declared input tensors per shot, with at most
 16 timed iterations and four warmups. Larger plans fail before engine startup.
 
-The consumer requires every category and residual context to be complete and
-compatible. Ordinary tables retain their existing interpolation. AttnRes uses an
+`ContextualProfileBundle` in `serving/core/component_sizes.py` requires every
+category and residual context to be complete and compatible with the independently
+loaded source configuration. Callable receipts bind the same runtime identity as
+ordinary categories and are checked against their per-call evidence. Ordinary
+tables retain their existing interpolation. AttnRes uses an
 immutable context lookup and linear interpolation in tokens **within that exact
 context**; it neither searches neighboring contexts nor extrapolates beyond the
 measured token range. This supports [local duration replay](../simulator/trace-generation#native-kimi-duration-replay),
@@ -418,9 +452,10 @@ and attention KV storage, max-score selection, and a contiguous int32 selection
 buffer whose width equals the configured `sparse_topk_blocks`. The reviewed
 layout requires **128 tokens per block**. Initial/local blocks occupy the
 selected-block total; they do not enlarge it. Acquisition inspects the actual selected objects,
-buffer layout, model/catalog parameters and exact installed source hashes, and
-requires worker agreement. Another implementation, source revision, layout,
-storage precision or speculative path needs a separately reviewed contract; a matching
+buffer layout, callable API and model/catalog parameters, and requires semantic
+worker agreement. Installed source hashes and versions describe provenance, not
+execution locks. Another implementation, layout, storage precision or speculative
+path needs a separately reviewed contract; a matching
 model name or version label alone is insufficient.
 
 The resulting `sparse_topk_blocks × sparse_block_size` cap (**2048** for the
@@ -433,19 +468,19 @@ anchor. A cap does not assert identical latency at every larger history.
 It is also separate from logical trace-byte accounting and physical KV capacity.
 
 Each per-TP record contains `semantic`, its `semantic_sha256`, the ordinary
-`measurement` identity, `completed`, and `attention_sha256`. The row's
-`measurement_protocol` binds the semantic digest; the acquisition fingerprint
-also covers the relevant source. Publication marks the record pending before
+`measurement` identity, `completed`, and `attention_sha256`. Acquisition metadata
+binds the semantic digest while CSVs retain coordinates and timings. Publication
+marks the record pending before
 accepting rows and seals the completed attention CSV. Consumers reject pending
 records, unknown schemas, missing metadata for marked rows, altered checksums,
 mixed identities, or model/catalog/TP mismatches. Completion describes the
 selected acquisition plan, not proof of a full grid or arbitrary context range.
 
-Native-marked ordinary rows recognize the current ordinary measurement protocol
-and the supported historical ordinary protocol; native skew rows retain their
-separate protocol. This compatibility check does not make acquisition identities
-interchangeable: source fingerprints, per-row identities and completion seals
-must still match. No protocol recognition rewrites or upgrades stored rows.
+The reader accepts current measurement metadata and explicitly supported
+historical row protocols. This does not make acquisition identities interchangeable:
+semantic contracts and completion seals must still match. Source-file changes or
+an exact version difference alone are not a veto. Reading a historical protocol
+never rewrites or upgrades its stored rows.
 
 Unmarked historical tables retain their existing lookup semantics: **2176**
 for the shipped MiniMax-M3 configuration. Do not add a contract to historical
@@ -682,8 +717,8 @@ unmodified forward is not claimed. Cyclic assignments also do not cover
 arbitrary per-expert load imbalance or guarantee latency accuracy for a backend.
 Native DP+EP components remain a separate acquisition contract.
 
-The routing hook participates in the shared ordinary measurement fingerprint,
-so a hook change invalidates ordinary-category resumes, not just `moe.csv`.
+The routing method is recorded in ordinary acquisition metadata. A change to its
+semantics requires remeasurement of affected categories, not a source-hash restamp.
 Refresh the requested categories explicitly or use a separate output root;
 `slice --group moe --force` refreshes the whole-block MoE category only. Do not
 relabel old rows or mix incompatible acquisitions on resume. This also applies
@@ -713,12 +748,12 @@ One measured target per attention kernel and ordered request shape.
 | `requests_json` | Ordered query/history pairs |
 | `n_prefill`, `decode_q_len` | Explicit query roles |
 | `case_id` | Geometry-derived key |
-| `family` | Workload-independent acquisition family |
-| `measurement_protocol` | Native per-forward timing protocol |
-| `measurement_sha256`, `block_size` | Measurement implementation fingerprint and resolved KV page size |
-| `rounds`, `timed_forwards` | Repetition counts |
 | `round_timings_us_json` | Individual forward times, grouped by context |
 | `t_skew_us` | Median of the context-level forward medians |
+
+Acquisition families, method identity, resolved block size, repetition counts
+and runtime observations live in `skew.meta.yaml`. Historical CSVs may retain
+these columns; new acquisitions do not repeat them on every timing row.
 
 Historical bimodal rows can be reconstructed; general distributions need
 their full request lists. Measured controls, when present, remain diagnostics.
@@ -730,8 +765,8 @@ the innermost launching CPU module scope, after mapping profiler thread
 identities to native OS threads. This can repair misplaced CUDA leaves in
 the upstream profile tree without shifting timestamps, changing GPU durations,
 or adding CPU overhead. Missing or ambiguous launch ownership rejects the shot.
-The timing implementation fingerprint covers this attribution logic; older
-rows remain historical measurements, not completed new-protocol acquisitions.
+Method metadata describes this attribution and aggregation; older rows remain
+historical measurements, not completed current acquisitions.
 
 `skew.meta.yaml` accompanies new acquisitions with the actual per-TP plan,
 resolved page size/capacity, seed, family counts and completion status.

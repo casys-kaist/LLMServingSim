@@ -7,9 +7,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
-- Add source-admitted Kimi-K3 category profiling and local duration trace replay.
-  Preserve joined multi-stream MLA timing, separate native KDA components and
-  original-layer AttnRes contexts, and reject incomplete or incompatible tables.
+- Keep new profiling CSVs limited to coordinates and timings; store descriptive
+  collector, CUDA-union aggregation, dummy-input preparation and runtime facts in
+  per-category metadata. Retain semantic acquisition and native API/backend/layout
+  checks without using source-file hashes or exact library versions as execution
+  vetoes. Preserve historical measurements and completed-table integrity checks.
+- Select native profiles through architecture catalogs, sharing category completion,
+  exact-context callable acquisition and local duration replay. Derive Kimi-K3's
+  prefix, residual roles and tensor geometry from the supplied configuration and
+  observed layouts while retaining native API/backend admission checks. Preserve joined
+  MLA timing and separate KDA components; reject incomplete coverage, malformed or
+  duplicate partial rows and incompatible catalog/runtime semantics. Changed
+  semantics and publication schemas require fresh acquisition, not relabeling.
   This does not certify distributed serving, resident capacity or benchmark accuracy.
 - Add runtime-admitted native DeepSeek-V3.2 profiling with site-aware component
   boundaries and coordinated dense, head, attention and MoE tables. Preserve
@@ -25,7 +34,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   layouts across category tables, resume interrupted starts and reject incomplete
   acquisitions. Size the packed GDN core and reject unsupported
   attention-wide sequence parallelism. Historical timings remain unchanged;
-  skew resume binds the effective catalog and installed runtime versions, and
+  skew resume binds the effective catalog and capture contexts, and
   changed acquisition identities require remeasurement.
 - Target vLLM 0.31.0 / CUDA 13 for new GPU acquisitions and benchmarks, aligning
   Docker and bare-metal dependency pins and source patches. Remove the upstream-fixed
@@ -42,6 +51,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Normalize DeepSeek/GLM native sparse-cache labels onto the catalog attention
+  axis without changing sparse-indexer selection or native execution. Preserve
+  TP-stable rows' source acquisition metadata when local measurement begins or
+  resumes beside them; replicas do not become locally measured coverage.
+- Size admitted native DSA matrix payloads at their configured FP8 or BF16 width,
+  including expert matrices, without changing activation/cache contracts or
+  claiming a new model/backend is runtime-certified.
 - Shard separately declared dense-MLP intermediate widths during TP shape
   emulation and reject ambiguous catalog claims even when a filename matches.
   Previously mis-shaped measurements require remeasurement, not restamping.
@@ -92,13 +108,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   across the 0.28 and 0.31 APIs.
 - Preserve native attention head dimensions during single-GPU TP emulation,
   applying user overrides and nested text shapes before sharding. Acquisition
-  fingerprints now include shape construction; affected rows need remeasurement.
+  records retain resolved geometry; affected rows need remeasurement.
 - Keep Phi-MoE decoder residual timings separate from already measured
   routing, normalization and attention work; old dense rows need remeasurement.
 - Allocate synthetic requests from the shared physical KV block pool, reserving
   the null block and preventing cache groups from overwriting one another.
   Initialize only assigned pages, including typed logical cache views in newer
-  engines; changed acquisition fingerprints require remeasurement.
+  engines; incompatible acquisition semantics require remeasurement.
 - Preserve explicit layer-type prefixes in reduced profiling models, including
   nested text configurations and overrides reapplied by vLLM.
 

@@ -140,9 +140,8 @@ def _get_llm_converter():
 def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, save_trace_text=False, *, trace):
 
     if trace.byte_contract is not None:
-        from .component_sizes import NATIVE_DSA
-        from .kimi_sizes import SCHEMA as KIMI_LOGICAL
-        if trace.byte_contract not in (NATIVE_DSA, KIMI_LOGICAL) or num_npus != 1 or enable_local_offloading:
+        from .component_sizes import NATIVE_DSA, CONTEXTUAL_PROFILE
+        if trace.byte_contract not in (NATIVE_DSA, CONTEXTUAL_PROFILE) or num_npus != 1 or enable_local_offloading:
             raise NotImplementedError('Native logical tensor annotations require single-rank duration replay without local weight offloading')
 
     cwd = os.getcwd()

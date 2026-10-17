@@ -26,10 +26,13 @@ Dummy loading prepares supported native MXFP4 expert bytes and KDA derived
 buffers before vLLM's unchanged postload processing. Ordinary models retain
 their native initialization. Preparation receipts are not forward-validation
 certificates; see [dummy weights](../docs/docs/profiler/output-bundle.md#dummy-model-weight-preparation).
-Kimi-K3 uses a source-admitted local eager path through the normal `profile`,
-`slice` and `coverage` entry points. It keeps joined multi-stream MLA timing,
-separate KDA components and full-depth residual contexts; all categories must
-complete before opt-in duration trace replay. See
+Catalog `native_profile` selects a source-admitted adapter through the normal
+`profile`, `slice` and `coverage` entry points. Shared category completion and
+callable publication validate full catalog coverage, runtime identities and
+partial CSVs before resume. Kimi-K3's hybrid/residual adapter derives prefix
+depths and original-stack contexts from configuration, retaining joined MLA
+timing and separate KDA components. All categories must complete before opt-in
+duration trace replay; the shared machinery does not admit another backend. See
 [native Kimi acquisition](../docs/docs/profiler/output-bundle.md#native-kimi-acquisition)
 for supported modes, the required `--skip-skew`, memory bounds and resume rules.
 Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
@@ -79,7 +82,7 @@ expert IDs, returning the original routing-weight tensor with its native dtype
 and scaling. It adds no GPU weight normalization or uniform-weight fill.
 Warmup uses the same cyclic ID assignment as timing; a backend that bypasses
 the routing hook is rejected. This is synthetic conditioning, not trained routing
-or numerical equivalence. Changed acquisition fingerprints require fresh
+or numerical equivalence. Changed acquisition semantics require fresh
 measurements, not relabeling old rows; see the
 [table contract](../docs/docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles).
 Skew warmups verify the backend's query/history geometry. When a backend
@@ -88,14 +91,19 @@ and exact returned object; no backend is exempted from the check.
 Timed skew kernels are assigned by native launch correlation and the launching
 module's CPU scope, with OS-thread mapping across profiler event namespaces.
 This changes ownership only, not GPU durations or CPU overhead. Missing or
-ambiguous launch evidence rejects the measurement. Skew resume checks source,
-effective catalog, full contexts and installed runtime versions; old rows are not
-relabelled as new acquisitions.
+ambiguous launch evidence rejects the measurement. Skew resume checks semantic
+method, effective catalog and full contexts; runtime versions are observations,
+not exact-version execution locks. Old rows are not relabelled as new acquisitions.
 Ordinary layerwise categories and skew use per-call CUDA interval unions: streams
 on the same device share an interval union, while distinct module calls remain
-separate before averaging. CPU time and gaps are excluded. Ordinary CSV rows
-carry `measurement_protocol` and `measurement_sha256`; worker/host mismatches,
-incompatible resumes and mixed-method TP-stable replication are rejected.
+separate before averaging. CPU time and gaps are excluded. New CSVs contain
+coordinates and timings; `tp<N>/meta.yaml::measurements` records per-category
+method, dummy-input preparation, execution facts and runtime versions. Semantic
+worker/host mismatches, incompatible resumes and mixed-method TP-stable replication
+are rejected. Source hashes and exact library versions are provenance, not vetoes;
+actual API/backend, shape, dtype, layout and finite-output guards remain.
+Starting local acquisition beside TP-stable replicas preserves their source-TP
+provenance; local resume never relabels copied timings as locally measured rows.
 Native DP+EP components retain their separately versioned measurement contract.
 Whole-block MoE uses the same fine token grid as dense layers instead of only
 powers of two. Expert-count coordinates and feasibility checks are unchanged;
@@ -140,12 +148,9 @@ profiler/                          Python package: python -m profiler
 │   ├── attention_shape.py         shared attention geometry and feasibility
 │   ├── measurement.py             acquisition identity and timing protocols
 │   ├── component_layouts.py       runtime alternatives and coupled acquisition state
-│   ├── context_tables.py          atomic structural-context rows and completion receipts
-│   ├── context_lookup.py          immutable context lookup and within-context interpolation
-│   ├── callable_profile.py        isolated native-call acquisition and reload validation
-│   ├── kimi_acquisition.py        Kimi category admission and complete-table publication
-│   ├── kimi_profile.py            source checkpoint, prefix and residual-role contracts
-│   ├── kimi_callable.py           original-depth native residual argument plans
+│   ├── context_tables.py          category/structural-context publication and receipts
+│   ├── context_lookup.py          strict category loading and exact-context interpolation
+│   ├── callable_profile.py        catalog-selected native and isolated-call orchestration
 │   ├── hardware.py                device facts and NCCL link calibration
 │   ├── moe_profile.py             native DP+EP component acquisition
 │   ├── moe_deployment.py          TP/DP/EP ownership and token domains
@@ -671,6 +676,7 @@ profiled TP degree:
 
 ```text
 tp<N>/
+├── meta.yaml              per-category method, execution facts and acquisition provenance
 ├── dense.csv              layer, tokens, time_us
 ├── per_sequence.csv       layer, sequences, time_us
 ├── attention.csv          layer, prefill_chunk, prefill_key, n_decode,
@@ -678,7 +684,7 @@ tp<N>/
 ├── linear_attention.csv   layer, prefill_tokens, n_decode, time_us (hybrid only)
 ├── moe.csv                ep, tokens, activated_experts, time_us (whole-block MoE)
 ├── mtp.csv                layer, sequences, time_us (one drafter pass; opt-in)
-├── skew.csv               ordered geometry, per-forward timings and protocol
+├── skew.csv               ordered geometry and per-forward timings
 ├── skew.meta.yaml         per-TP acquisition plan and completion status
 ├── skew_fit.csv           layer/query/prefill/leverage/N calibration buckets
 ├── moe_components.json    published native TP/DP/EP component index (opt-in)
@@ -686,8 +692,8 @@ tp<N>/
 ```
 
 Times are in microseconds. Files depend on the model and selected categories;
-this overview lists key coordinates, not every CSV column. Ordinary timing rows
-also carry acquisition identities. See the [output schema](../docs/docs/profiler/output-bundle.md)
+this overview lists key coordinates, not every CSV column. Acquisition identities
+and runtime observations are metadata, not new timing columns. See the [output schema](../docs/docs/profiler/output-bundle.md)
 and [native MoE contract](../docs/docs/profiler/native-moe-components.md)
 for complete fields and component-bundle contents.
 

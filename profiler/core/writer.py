@@ -29,6 +29,7 @@ from typing import Any, Iterable
 import yaml
 
 from profiler.core.measurement import FIELDS as MEASUREMENT_FIELDS
+from profiler.core.measurement import measurement_token
 
 from profiler import __version__ as profiler_version
 from profiler.core import logger as log
@@ -50,6 +51,34 @@ from profiler.core.config import (
 # ---------------------------------------------------------------------------
 # DedupSink — the CSV-producing accumulator
 # ---------------------------------------------------------------------------
+
+def category_measurement(directory, category):
+    path = Path(directory) / 'meta.yaml'
+    data = yaml.safe_load(path.read_text()) if path.exists() else {}
+    return (data or {}).get('measurements', {}).get(category)
+
+
+def record_category_measurement(directory, category, identity, *, replace=False):
+    """Record actual acquisition facts without relabeling previous measurements."""
+    path = Path(directory) / 'meta.yaml'
+    data = (yaml.safe_load(path.read_text()) if path.exists() else {}) or {}
+    records = data.setdefault('measurements', {})
+    previous = records.get(category)
+    token = measurement_token(identity)
+    replica_only = (previous is not None and previous.get('acquisitions') == []
+                    and bool(previous.get('replicated')))
+    if previous is not None and not replace and not replica_only:
+        if previous['measurement'] != token:
+            raise ValueError('Category measurement semantics changed; remeasure explicitly')
+        acquisitions = previous.setdefault('acquisitions', [previous['identity']])
+        if identity not in acquisitions:
+            acquisitions.append(identity)
+    else:
+        records[category] = dict(identity=identity, measurement=token, acquisitions=[identity])
+        if previous is not None and previous.get('replicated'):
+            records[category]['replicated'] = previous['replicated']
+    from .context_tables import _atomic
+    _atomic(path, yaml.safe_dump(data, sort_keys=False))
 
 class DedupSink:
     """Accumulates Points, averages duplicates, flushes a sorted CSV.
@@ -142,10 +171,13 @@ class DedupSink:
             field_order = reader.fieldnames or []
             if not field_order:
                 return 0
-            if self.measurement is not None and any(k not in field_order for k in MEASUREMENT_FIELDS):
-                raise ValueError(
-                    f'{self.out_path} has no current measurement identity; '
-                    'use a separate output root or --force to remeasure')
+            saved = category_measurement(self.out_path.parent, self.out_path.stem)
+            plain = not any(k in field_order for k in MEASUREMENT_FIELDS)
+            if self.measurement is not None and plain:
+                contextual = (self.out_path.parent / 'dense_context_manifest.json').exists()
+                if saved is None and not contextual:
+                    raise ValueError(f'{self.out_path} lacks compatible measurement metadata; '
+                                     'use a separate output root or --force to remeasure')
             # A prior file that predates one of this sink's key fields cannot
             # be preloaded at all -- every row would fail the key build below --
             # and adopting its column order would pin ``flush`` to a schema too
@@ -164,12 +196,25 @@ class DedupSink:
             # Establish ordering now so flush preserves the original
             # schema even when no new rows come in.
             if self._fieldnames is None:
-                ordered = ['microseconds' if f == 'time_us' else f for f in field_order]
+                ordered = ['microseconds' if f == 'time_us' else f for f in field_order
+                           if f not in MEASUREMENT_FIELDS]
                 self._fieldnames = ordered
             for row in reader:
                 preserve = row.get("layer") in preserve_layers
                 recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
-                if self.measurement is not None and not preserve and recorded != self.measurement:
+                if self.measurement is not None and plain and saved is not None:
+                    if preserve:
+                        replica = saved.get('replicated', {}).get(row.get('layer'))
+                        if (not isinstance(replica, dict) or replica.get('source_tp') != 1
+                                or not isinstance(replica.get('identity'), dict)
+                                or replica.get('measurement') != measurement_token(replica['identity'])):
+                            raise ValueError('Replicated row lacks its source acquisition metadata')
+                    elif (saved.get('acquisitions') == []
+                          or saved.get('measurement') != self.measurement):
+                        raise ValueError(f'{self.out_path} has incompatible measured-row metadata; '
+                                         'use a separate output root or --force to remeasure')
+                if (self.measurement is not None and not preserve and any(recorded.values())
+                        and recorded != self.measurement):
                     raise ValueError(
                         f'{self.out_path} uses a different measurement method; '
                         'use a separate output root or --force to remeasure')
@@ -201,7 +246,7 @@ class DedupSink:
                     continue
                 key = tuple(key_parts)
                 if preserve:
-                    if not all(recorded.values()):
+                    if any(recorded.values()) and not all(recorded.values()):
                         raise ValueError(f'Incomplete replicated measurement identity in {self.out_path}')
                     if key in self._preserved_rows or key in self._bucket:
                         raise ValueError(f'Duplicate replicated row in {self.out_path}')
@@ -254,13 +299,13 @@ class DedupSink:
         rows: list[dict[str, Any]] = []
         for key in sorted(self._bucket.keys() | self._preserved_rows.keys()):
             if key in self._preserved_rows:
-                rows.append(dict(self._preserved_rows[key]))
+                rows.append({field: value for field, value in self._preserved_rows[key].items()
+                             if field not in MEASUREMENT_FIELDS})
                 continue
             total_us, count = self._bucket[key]
             avg_us = total_us / count
             row = {f: v for f, v in zip(self.key_fields, key)}
             row["time_us"] = _format_time_us(avg_us)
-            row.update(self._row_measurements.get(key, {}))
             rows.append(row)
 
         assert self._fieldnames is not None
@@ -270,8 +315,6 @@ class DedupSink:
             "time_us" if f == "microseconds" else f
             for f in header
         ]
-        if self._row_measurements:
-            header.extend(k for k in MEASUREMENT_FIELDS if k not in header)
 
         # Write beside the target and rename. Opening ``out_path`` directly
         # truncates it before the first row is validated, so one bad row
@@ -329,15 +372,7 @@ def sink_for(category: Category, out_dir: Path, measurement=None) -> DedupSink:
 
 # The only place where category→key-field mapping is specified. Adding
 # a new Point type means adding a line here.
-_KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
-    "dense": ["layer", "tokens"],
-    "per_sequence": ["layer", "sequences"],
-    "attention": ["layer", "prefill_chunk", "prefill_key", "n_decode",
-                  "kv_decode", "decode_q_len"],
-    "linear_attention": ["layer", "prefill_tokens", "n_decode"],
-    "moe": ["ep", "tokens", "activated_experts"],
-    "mtp": ["layer", "sequences"],
-}
+from .context_lookup import CATEGORY_KEY_FIELDS as _KEY_FIELDS_BY_CATEGORY
 
 
 # ---------------------------------------------------------------------------
@@ -857,12 +892,26 @@ def _replicate_layer_file(
     else:
         merged = src_stable
 
-    protocols = {row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
-                 for row in merged}
-    if len(protocols) > 1:
-        raise ValueError(
-            f'TP-stable replication would mix timing methods in {dst}; '
-            'remeasure the destination category with the current profiler first')
+    source_record = category_measurement(src.parent, src.stem)
+    destination_record = category_measurement(dst.parent, dst.stem)
+    if source_record is not None or destination_record is not None:
+        if source_record is None or (dst_rows if dst.exists() else []) and destination_record is None:
+            raise ValueError('TP-stable replication cannot infer historical measurement semantics')
+        if (destination_record is not None and
+                source_record['identity']['method'] != destination_record['identity']['method']):
+            raise ValueError('TP-stable replication would mix different measurement methods')
+        merged = [{key: value for key, value in row.items() if key not in MEASUREMENT_FIELDS}
+                  for row in merged]
+    else:
+        # Historical tables predate metadata records. Distinguish their timing
+        # meaning without treating a numbered implementation label as an ABI.
+        def method(row):
+            protocol = row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
+            if ('cuda-union' in protocol or 'device-active-union' in protocol):
+                return 'per-call-device-active-union'
+            return protocol
+        if len({method(row) for row in merged}) > 1:
+            raise ValueError('TP-stable replication would mix historical timing methods')
     if any(bool(row.get(MEASUREMENT_FIELDS[0])) != bool(row.get(MEASUREMENT_FIELDS[1]))
            for row in merged):
         raise ValueError('TP-stable replication encountered an incomplete measurement identity')
@@ -874,6 +923,17 @@ def _replicate_layer_file(
     ))
 
     _write_csv_rows(dst, merged)
+    if source_record is not None:
+        from .context_tables import _atomic
+        meta_path = dst.parent / 'meta.yaml'
+        metadata = (yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {}) or {}
+        record = metadata.setdefault('measurements', {}).setdefault(dst.stem,
+            dict(identity=source_record['identity'], measurement=source_record['measurement'],
+                 acquisitions=[]))
+        record.setdefault('replicated', {}).update({name: dict(source_tp=1,
+            identity=source_record['identity'], measurement=source_record['measurement'])
+            for name in sorted(layer_whitelist)})
+        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
     log.debug(
         "replicated %d tp_stable rows into %s", len(src_stable), dst
     )

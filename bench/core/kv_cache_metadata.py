@@ -1,32 +1,19 @@
 """Retain native engine READY capacities during the synchronous bench boot.
 
-Only the reviewed vLLM startup path is observed. The temporary callback is
+Only compatible native vLLM startup callbacks are observed. The temporary callback is
 restored before decoding or replay; no worker calls or engine mutations are
 made. This adds bounded frontend startup bookkeeping, not a request timer.
 """
 
 from __future__ import annotations
 
-import hashlib
+import inspect
 import sys
 import threading
 from pathlib import Path
 from types import FunctionType
 
 
-_REVIEWED_IMAGE = (
-    "sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
-)
-_SOURCE_SHA256 = {
-    "vllm.v1.engine.core_client":
-        "24eecc78e8fc4849d4eac948c7586ee349ebfd503d07e80f05ec6c859da06fdd",
-    "vllm.v1.engine.core":
-        "f116962c35d9d312b20b0b76c34a8cdaa6d3f1d31f2036db4e123957d2d1555b",
-    "vllm.v1.engine.async_llm":
-        "ff933ed78aa3195782cf1c6d18c53897adfa5bf920421bd2bcc330f2adc84d1e",
-    "vllm.v1.engine":
-        "e7532e6c9fde4643cf31cd793d4ae4a6d618c71c87208430fb6680105dc1af42",
-}
 _MAX_RESPONSES = 1024
 _MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 
@@ -46,9 +33,7 @@ class ReadyResponseCapture:
 
     def __init__(self):
         self.reason = "startup READY responses were not observed"
-        self.source = {"kind": "native_engine_core_ready",
-                       "reviewed_image_digest": _REVIEWED_IMAGE,
-                       "checked_source_sha256": {}}
+        self.source = {"kind": "native_engine_core_ready"}
         self._records = []
         self._payload_bytes = 0
         self._client = None
@@ -60,27 +45,31 @@ class ReadyResponseCapture:
 
     def _inspect_runtime(self):
         version = getattr(sys.modules.get("vllm"), "__version__", None)
-        self.source["vllm_version"] = version
-        if version != "0.31.0":
-            raise ValueError("unreviewed vLLM version")
-        for name, expected in _SOURCE_SHA256.items():
-            module = sys.modules.get(name)
-            digest = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-            self.source["checked_source_sha256"][name] = digest
-            if digest != expected:
-                raise ValueError(f"unreviewed installed source: {name}")
+        self.source["vllm_version"] = None if version is None else str(version)
         native = sys.modules["vllm.v1.engine.core_client"]
         original = native.MPClient.__dict__["_apply_ready_response"]
         if (type(original) is not FunctionType
                 or original.__module__ != native.__name__
                 or original.__qualname__ != "MPClient._apply_ready_response"
-                or original.__code__.co_firstlineno != 821
                 or Path(original.__code__.co_filename).resolve()
                 != Path(native.__file__).resolve()
                 or hasattr(original, "__wrapped__")
                 or any(cls._apply_ready_response is not original for cls in
                        (native.AsyncMPClient, native.DPLBAsyncMPClient))):
             raise ValueError("native READY callback was replaced or overridden")
+        try:
+            inspect.signature(original).bind(None, b"")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("unsupported native READY callback signature") from exc
+        required = {"data_parallel_rank", "num_gpu_blocks", "block_size",
+                    "kv_cache_size_tokens", "tensor_parallel_size",
+                    "pipeline_parallel_size", "data_parallel_size", "vllm_version"}
+        fields = (getattr(native.EngineCoreReadyResponse, "__struct_fields__", None)
+                  or tuple(getattr(native.EngineCoreReadyResponse, "__dataclass_fields__", {})))
+        if not required.issubset(fields) or not callable(native.msgspec.msgpack.decode):
+            raise ValueError("unsupported native READY response ABI")
+        self.source["callback_abi"] = str(inspect.signature(original))
+        self.source["response_fields"] = list(fields)
         return native, original
 
     def __enter__(self):
@@ -230,8 +219,6 @@ class ReadyResponseCapture:
                 if (not _integer(row[axis], minimum=1)
                         or row[axis] != getattr(cfg.parallel_config, axis)):
                     raise ValueError(f"READY disagrees with configured {axis}")
-            if row["vllm_version"] != self.source["vllm_version"]:
-                raise ValueError("READY vLLM version disagrees with client")
             rows.append(row)
         if seen != set(ranks):
             raise ValueError("READY rank set is incomplete")

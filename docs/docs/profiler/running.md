@@ -29,6 +29,12 @@ values are truncated consistently, including when forwarded to vLLM after config
 This preserves the selected prefix; it does not certify catalog coverage or
 end-to-end accuracy for a new model family.
 
+DeepSeek-V3.2 and GLM-5 native configs may populate `layer_types` with the cache
+label `deepseek_sparse_attention`. Stack resolution maps that label to the
+catalog's full-attention block axis, retaining sparse indexing as a separate
+axis. It does not turn sparse attention into dense execution or alter the source
+configuration; actual runtime/backend admission is still required.
+
 For a nested `text_config`, declared backbone fields and decoder depth are
 written into the temporary config before native loading. Backbone-only keys
 are then removed from the forwarded `hf_overrides`: assigning them again to
@@ -71,9 +77,11 @@ doesn't.
 
 ### Native Kimi profiling
 
-Kimi-K3 uses the same `profile`, `slice` and `coverage` CLI, under a narrower
+Catalog `native_profile: hybrid-residual-v1` selects Kimi-K3's adapter through
+the same `profile`, `slice` and `coverage` CLI, under a narrower
 [native execution contract](./output-bundle#native-kimi-acquisition). For a small
-acquisition on a compatible SM120 device inside the vLLM 0.31 container:
+acquisition on a device supporting the admitted native backend, inside the
+vLLM 0.31 container:
 
 ```bash
 python -m profiler profile moonshotai/Kimi-K3 --hardware RTXPRO6000 \
@@ -83,16 +91,24 @@ python -m profiler profile moonshotai/Kimi-K3 --hardware RTXPRO6000 \
   --measurement-iterations 2 --skip-skew --out /runs/kimi-profile
 ```
 
-The small token range is an acquisition example, not a recommended accuracy grid.
+The small token range is an acquisition example, not a recommended accuracy grid
+or a completed GPU-validation claim. The intended scope is bounded TP1 acquisition
+and saved-duration traces, not full profiling or an end-to-end benchmark.
 Reserve sufficient device memory for original-width prefix engines and bound host
 memory as described in the resource-safety guide. Do not shrink the model geometry
 to make a failed native acquisition appear supported. Engine context limits must
 also accommodate the native MLA chunk workspace; an extremely short model length
 can be incompatible with its hybrid block alignment even for a small token shot.
 
-The dense pass includes isolated native AttnRes contexts for all original layer
-roles. Ordinary categories and residual contexts resume together, with partial
-shots remeasured and incompatible identities refused. Explicit `--skip-skew` is
+The original configuration determines category prefix depths and all original-layer
+AttnRes roles; geometry is not fixed to one checkpoint's dimensions. The dense
+pass includes their isolated native contexts. Ordinary categories and residual
+contexts resume together, with partial shots remeasured and malformed/duplicate
+partial CSVs or incompatible semantic identities refused. Old model-specific
+publications and changed execution semantics require fresh acquisition, not a
+metadata conversion. Source hashes and exact runtime versions are provenance;
+actual API/backend, shape, dtype and layout checks still apply. Configuration-derived planning is not evidence
+of arbitrary device support. Explicit `--skip-skew` is
 required for a full run. TP>1, native DP/EP acquisition, MTP, shape overrides and
 non-BF16 activation/KV paths are not admitted by this contract. Use `coverage`
 with the same model/device and sufficient engine limits to inspect actual CUDA
@@ -332,9 +348,10 @@ in the CSV, not a rounded display coordinate. Multi-prefill shots can produce
 fractional keys; compatible rows at those coordinates are skipped just like
 integer-key rows. This does not alter stored timings or their acquisition identity.
 
-Skew resume additionally requires matching source, effective catalog, full contexts
-and installed runtime versions, resolved block size, complete kernel set and
-sufficient per-forward repetitions. A change to timing attribution requires remeasurement even when
+Skew resume additionally requires compatible method semantics, effective catalog,
+full contexts, resolved block size, complete kernel set and sufficient per-forward
+repetitions. Runtime versions are recorded observations, not exact-match vetoes.
+A change to timing attribution requires remeasurement even when
 the requested geometry is unchanged. Retained historical rows are not proof
 that the current acquisition protocol has completed. Current skew acquisition
 uses the same per-call CUDA interval union as the ordinary attention reference

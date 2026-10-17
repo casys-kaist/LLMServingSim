@@ -1007,10 +1007,12 @@ def _category_content(root, architecture, record, category, *, allow_partial=Fal
         fields = reader.fieldnames or []
         if not fields and allow_partial:
             return
-        if len(fields) != len(set(fields)) or not {"layer", "time_us", *MEASUREMENT_FIELDS} <= set(fields):
+        stamps = set(MEASUREMENT_FIELDS).intersection(fields)
+        if (len(fields) != len(set(fields)) or not {"layer", "time_us"} <= set(fields)
+                or (stamps and stamps != set(MEASUREMENT_FIELDS))):
             raise ValueError(f"Invalid acquired category header: {path}")
-        if category == "attention" and set(fields) != {
-                "layer", "time_us", *MEASUREMENT_FIELDS, "prefill_chunk", "prefill_key",
+        if category == "attention" and set(fields) - stamps != {
+                "layer", "time_us", "prefill_chunk", "prefill_key",
                 "n_decode", "kv_decode", "decode_q_len"}:
             raise ValueError(f"Acquired attention rows require the current coordinate schema: {path}")
         rows = list(reader)
@@ -1021,6 +1023,11 @@ def _category_content(root, architecture, record, category, *, allow_partial=Fal
     members = set().union(*(_members(group) for group in architecture["component_layouts"].values()))
     tp = int(root.name.removeprefix("tp"))
     measurement = record["categories"][category]["measurement"]
+    if not stamps:
+        from .writer import category_measurement
+        saved = category_measurement(root, category)
+        if saved is None or saved['measurement'] != measurement:
+            raise ValueError(f"Category metadata does not match its selected layout: {path}")
     shots = {}
     seen = set()
     for row in rows:
@@ -1028,7 +1035,8 @@ def _category_content(root, architecture, record, category, *, allow_partial=Fal
             raise ValueError(f"Malformed acquired category row: {path}")
         if row["layer"] not in catalog:
             raise ValueError(f"Unknown canonical component in {path}: {row['layer']}")
-        _measurement({field: row[field] for field in MEASUREMENT_FIELDS})
+        if stamps:
+            _measurement({field: row[field] for field in MEASUREMENT_FIELDS})
         latency = float(row["time_us"])
         if not math.isfinite(latency) or latency <= 0:
             raise ValueError(f"Invalid acquired latency in {path}")
@@ -1060,7 +1068,7 @@ def _category_content(root, architecture, record, category, *, allow_partial=Fal
                       and catalog[row["layer"]].get("tp_stable", False))
         if replicated:
             continue
-        if any(row[field] != value for field, value in measurement.items()):
+        if stamps and any(row[field] != value for field, value in measurement.items()):
             raise ValueError(f"Mixed measurement identity in {path}")
         present = shots.setdefault(key, set())
         present.add(row["layer"])
@@ -1100,8 +1108,9 @@ def _runtime_category_content(root, architecture, record, category, *, allow_par
         fields = reader.fieldnames or []
         if not fields and allow_partial:
             return
-        if (len(fields) != len(set(fields))
-                or set(fields) != coordinates[category] | {"time_us", *MEASUREMENT_FIELDS}):
+        stamps = set(MEASUREMENT_FIELDS).intersection(fields)
+        if (len(fields) != len(set(fields)) or (stamps and stamps != set(MEASUREMENT_FIELDS))
+                or set(fields) - stamps != coordinates[category] | {"time_us"}):
             raise ValueError(f"Invalid native {category} header: {path}")
         rows = list(reader)
     expected = set(filter_catalog_slice(architecture, record["selections"],
@@ -1109,6 +1118,11 @@ def _runtime_category_content(root, architecture, record, category, *, allow_par
     if not expected or (category == "moe" and len(expected) != 1):
         raise ValueError(f"Invalid native component set for {category}")
     measurement = record["categories"][category]["measurement"]
+    if not stamps:
+        from .writer import category_measurement
+        saved = category_measurement(root, category)
+        if saved is None or saved['measurement'] != measurement:
+            raise ValueError(f"Category metadata does not match its native layout: {path}")
     descriptor = record["runtime"]["invariant_facts"]["descriptor"]
     source = descriptor["source_config"]
     shots, seen = {}, set()
@@ -1122,8 +1136,9 @@ def _runtime_category_content(root, architecture, record, category, *, allow_par
     for row in rows:
         if None in row or any(value is None for value in row.values()):
             raise ValueError(f"Malformed native category row: {path}")
-        _measurement({field: row[field] for field in MEASUREMENT_FIELDS})
-        if any(row[field] != value for field, value in measurement.items()):
+        if stamps:
+            _measurement({field: row[field] for field in MEASUREMENT_FIELDS})
+        if stamps and any(row[field] != value for field, value in measurement.items()):
             raise ValueError(f"Mixed measurement identity in {path}")
         try:
             latency = float(row["time_us"])

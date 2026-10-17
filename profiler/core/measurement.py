@@ -1,11 +1,58 @@
-"""Acquisition identity carried atomically with ordinary category CSV rows."""
+"""Descriptive measurement metadata and semantic host/worker agreement."""
 
 import hashlib
 import json
-from pathlib import Path
 
 FIELDS = ('measurement_protocol', 'measurement_sha256')
-PROTOCOL = 'kineto-context-scoped-cuda-union-dummy-weights-query-v8'
+PROTOCOL = 'pytorch-kineto-device-active-union'
+
+
+def method_metadata(iterations):
+    return dict(collector='PyTorch profiler / Kineto',
+        aggregation='device-active interval union per invocation, normalized over calls',
+        ownership='CPU launch correlation; CPU durations excluded',
+        preparation=dict(weights='vLLM dummy initialization',
+            kv='assigned pages initialized before warmup', recurrent_state='zero-start',
+            queries='deterministic token IDs and explicit request phases'),
+        iterations=iterations)
+
+
+def semantic_identity(value):
+    """Project nested execution facts, retaining geometry, dtype and backend."""
+    if isinstance(value, dict):
+        observations = {'runtime_versions', 'sources', 'vllm_version',
+            'torch_version', 'native_sources', 'source_hashes', 'adapter_source_sha256',
+            'source_sha256', 'elapsed_seconds', 'preparation_seconds', 'prepare_elapsed_seconds',
+            'transformers_version', 'sampler_sources', 'endpoint_source_sha256',
+            'installed_source_sha256', 'native_source_sha256', 'runtime_observations',
+            'elapsed_preparation_seconds', 'sampled_rows_sha256', 'full_tensor_sha256',
+            'original_config_sha256'}
+        if {'protocol', 'catalog', 'iterations'} <= value.keys():
+            # These names are version observations only on measurement records;
+            # a catalog entry's ``vllm`` selects the operation being measured.
+            observations |= {'torch', 'vllm'}
+        return {key: semantic_identity(item) for key, item in value.items()
+                if key not in observations}
+    if isinstance(value, (list, tuple)):
+        return [semantic_identity(item) for item in value]
+    return value
+
+
+def measurement_compatibility(identity):
+    """Versions describe an acquisition; executable bytes do not define data."""
+    return semantic_identity(identity)
+
+
+def native_scope_token(scope):
+    return hashlib.sha256(json.dumps(semantic_identity(scope), sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def measurement_token(identity):
+    value = measurement_compatibility(identity)
+    fingerprint = hashlib.sha256(json.dumps(value, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    return dict(measurement_protocol=identity['protocol'], measurement_sha256=fingerprint)
 
 
 def layerwise_identity(catalog, iterations, *, scope_contexts=None,
@@ -34,48 +81,21 @@ def layerwise_identity(catalog, iterations, *, scope_contexts=None,
             or any(type(value) is not str or not value for value in runtime_versions.values())):
         raise ValueError('Explicit runtime versions must name torch and vllm')
 
-    source = Path(__file__)
-    hooks = source.parent/'hooks'
-    files = [source] + [source.parent/name for name in (
-        'engine.py', 'config.py', 'stack.py', 'kimi_profile.py')] + [hooks/name for name in (
-        'extension.py', 'cuda_timing.py', 'activity_collector.py', 'runner_capture.py',
-        'recurrent_metadata.py', 'tp_shape.py', 'method_scopes.py', 'operator_scopes.py', 'capture_scope_contract.py',
-        'skew_measurement.py', 'timings.py', 'batch.py', 'moe_hook.py',
-        'sampler_shim.py', 'history.py', 'dummy_cache.py', 'cache_pages.py',
-        'dummy_weights.py', 'dummy_weight_layouts.py')]
-    if contexts.get('callables'):
-        files.append(hooks / 'callable_scopes.py')
-    if contexts['schema'] == 3:
-        files.append(hooks / 'callable_context.py')
-    if expected_contexts is not None:
-        files.append(source.parent / 'context_tables.py')
     from .attention_lookup import protocol
     measured_protocol = protocol(PROTOCOL, attention_lookup_sha256)
-    if attention_lookup_sha256 is not None:
-        files += [source.parent / 'attention_lookup.py', hooks / 'attention_lookup.py']
     identity = dict(protocol=measured_protocol, catalog=catalog, iterations=iterations, scope_contexts=contexts,
-                    **runtime_versions,
-                    sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files})
+                    **runtime_versions, method=method_metadata(iterations))
     if attention_lookup_sha256 is not None:
-        # The shared resolver and worker adapter deliberately have the same
-        # basename; retain both rather than colliding in the source map.
-        identity['sources']['core/attention_lookup.py'] = hashlib.sha256(
-            (source.parent / 'attention_lookup.py').read_bytes()).hexdigest()
+        identity['attention_lookup_sha256'] = attention_lookup_sha256
     if component_layout_sha256 is not None:
         identity['component_layout_sha256'] = component_layout_sha256
-        identity['sources']['component_layouts.py'] = hashlib.sha256(
-            (source.parent / 'component_layouts.py').read_bytes()).hexdigest()
     if runtime_sha256 is not None:
         identity['runtime_sha256'] = runtime_sha256
-        identity['sources']['runtime_admission.py'] = hashlib.sha256(
-            (hooks / 'runtime_admission.py').read_bytes()).hexdigest()
     if native_profile_sha256 is not None:
         if (type(native_profile_sha256) is not str or len(native_profile_sha256) != 64
                 or any(c not in '0123456789abcdef' for c in native_profile_sha256)):
             raise ValueError('Invalid native profile identity')
         identity['native_profile_sha256'] = native_profile_sha256
-        for name in ('kimi_acquisition.py', 'hooks/kimi_runtime.py', 'hooks/kimi_inventory.py'):
-            identity['sources'][name] = hashlib.sha256((source.parent / name).read_bytes()).hexdigest()
     if expected_contexts is not None:
         from .hooks.callable_context import expected_counts, contextual_catalog
         counts = expected_counts(expected_contexts)
@@ -88,6 +108,4 @@ def layerwise_identity(catalog, iterations, *, scope_contexts=None,
 
 def layerwise_measurement(catalog, iterations, **kwargs):
     identity = layerwise_identity(catalog, iterations, **kwargs)
-    fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True,
-        separators=(',', ':'), allow_nan=False).encode()).hexdigest()
-    return dict(measurement_protocol=identity['protocol'], measurement_sha256=fingerprint)
+    return measurement_token(identity)
