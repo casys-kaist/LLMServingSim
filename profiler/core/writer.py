@@ -961,7 +961,7 @@ def _engine_resolved_block(
     variant_root: Path,
     limits_by_tp: Any,
 ) -> dict[str, Any] | None:
-    """``{"per_tp": {tp: {block_size, max_model_len, num_cache_tokens}}}``.
+    """Per-TP cache limits and, when available, the native text config.
 
     What the engine actually **settled on**, which is not always what was asked
     for: vLLM derives the KV block size from the backend's
@@ -977,6 +977,11 @@ def _engine_resolved_block(
     rank's shard, so the resolved size is a per-rank fact. Entries already in
     the file are **kept**: a ``slice`` refresh boots one TP and must not erase
     what the other TPs resolved.
+
+    ``model_text_config`` retains resolved text fields after the temporary
+    model directory is deleted, including consumed nested overrides. It is
+    not a complete wrapper, backend or weight-layout description. Missing
+    snapshots in older limits/metadata remain missing, never reconstructed.
     """
     prior = _prior_meta(variant_root)
     prior_block = prior.get("engine_resolved")
@@ -994,11 +999,15 @@ def _engine_resolved_block(
     for tp, limits in limits_by_tp.items():
         if limits is None:
             continue
-        merged[str(tp)] = _stringify({
+        resolved = {
             "block_size": getattr(limits, "block_size", None),
             "max_model_len": getattr(limits, "max_model_len", None),
             "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
-        })
+        }
+        model_text_config = getattr(limits, "model_text_config", None)
+        if model_text_config is not None:
+            resolved["model_text_config"] = model_text_config
+        merged[str(tp)] = _stringify(resolved)
     return {"per_tp": dict(sorted(merged.items(), key=lambda kv: int(kv[0])))} if merged else None
 
 

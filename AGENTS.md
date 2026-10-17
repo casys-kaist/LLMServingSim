@@ -258,6 +258,16 @@ the native head width when reducing the head count would otherwise change it;
 unsupported special-width changes fail rather than guessing. Nested text
 fields and user shape overrides feed the same sharding step. Strict dimension
 divisibility remains; this does not add replicated-KV-head TP emulation.
+Consume nested backbone-only overrides after materializing them in the local
+config; do not reapply them to wrapper properties that may be read-only.
+Keep independently declared root fields, including shared root/text token IDs,
+forwarded. Validate the final native config, not only the materialized dict.
+Recorded engine kwargs are not a complete resolved model configuration.
+`probe_limits` snapshots the native text config without another RPC; persist it
+as `engine_resolved.per_tp[tp].model_text_config` only for authoritative main
+engines. Preserve other TP entries and MTP/short-stack refresh semantics. This
+text snapshot does not certify the wrapper, backend or parameter layout, and
+missing historical snapshots must not be reconstructed.
 Both ordinary and skew source fingerprints include engine/config/stack and the
 shape adapter. Remeasure wrongly shaped rows, never restamp them as corrected.
 

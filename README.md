@@ -69,6 +69,8 @@ binds new sparse-prefill lookups to the measured backend per TP; historical bund
 Profiler precision labels keep checkpoint quantization separate from floating
 activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
 before acquiring an alternate precision.
+Nested text-model overrides are materialized before native configuration loading;
+see [configuration and TP emulation](https://llmservingsim.ai/docs/profiler/running#reduced-model-configurations).
 
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement

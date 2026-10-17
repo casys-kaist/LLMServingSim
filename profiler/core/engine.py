@@ -96,6 +96,10 @@ class RuntimeLimits:
     top_k: int | None = None
     moe_ep: int = 1
     key_saturation: int | None = None
+    # Native text configuration of this engine, not the wrapper or backend.
+    # Persisted for authoritative main engines so consumed overrides survive
+    # deletion of the temporary local config.
+    model_text_config: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +282,12 @@ def _materialize_config(
     That fails loudly at 60 layers of experts (out of memory) and would fail
     *silently* on a smaller model -- profiling a shape nobody asked for.
 
-    So for a nested config the same overrides are written into ``text_config``
-    as well. Only keys the backbone already declares are touched, so this
-    cannot invent fields the class would reject.
+    For a nested config, backbone overrides are written into ``text_config``
+    and consumed from the subsequently forwarded ``hf_overrides``. Reapplying
+    them to the wrapper can hit a read-only proxy property or create a second,
+    conflicting value. Unrelated or independently declared wrapper overrides
+    stay forwarded. Only keys the backbone already declares are touched,
+    apart from the decoder depth.
     """
     written = copy.deepcopy(model_config)
     inner = written.get("text_config")
@@ -303,6 +310,14 @@ def _materialize_config(
         # An explicit override is applied again after reading config.json.
         if "layer_types" in overrides:
             overrides["layer_types"] = copy.deepcopy(layer_types[:depth])
+    if isinstance(written.get("text_config"), dict):
+        # Those values are already present in the local file read by the
+        # native config constructor. Apply them there once, not again to the
+        # wrapper's attributes (which may expose read-only text properties).
+        kwargs["hf_overrides"] = {
+            key: value for key, value in overrides.items()
+            if key not in inner or key in written
+        }
     return written
 
 
@@ -537,6 +552,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
         num_experts=num_experts,
         top_k=top_k,
         key_saturation=key_saturation,
+        model_text_config=copy.deepcopy(cfg_dict),
     )
 
 

@@ -684,21 +684,45 @@ Notable entries:
   The engine is booted with `max_num_batched_tokens + max_num_seqs` for
   shot-bypass headroom, and the bump is subtracted back before
   recording, so what you see here is the sweep bound.
-- `hf_overrides` — how single-GPU TP emulation is done: per-rank shapes
-  divided by the TP degree and a checkpoint-derived layer count. Category
-  engines retain every block type they measure; hybrid stacks are not
-  universally reduced to one layer.
+- `hf_overrides` — the overrides still forwarded after local config
+  materialization, not a complete inventory of effective model fields.
+  Nested backbone-only fields, including reduced depth and per-rank shapes,
+  are written into `text_config` and consumed before calling vLLM. Root-only
+  and shared root/text keys remain forwarded. Flat model overrides are unchanged.
+  Category engines retain every block type they measure; hybrid stacks are
+  not universally reduced to one layer.
 - `load_format: dummy` — checkpoint weights are not loaded. Synthetic weights
   support shape-controlled acquisition, not equivalence to trained routing or
   KV contents; see the measurement contracts above.
 - `model` — the tmpdir the model config was written to, so vLLM needed
   no Hub access. The path is dead after the run.
 
+An empty `hf_overrides` does not mean the original full-depth model ran. Consumed
+values are applied in the temporary local config; their resolved text fields
+are retained separately under `engine_resolved`, below. A configuration fix does
+not certify new backend coverage or migrate existing tables; incompatible
+acquisition resumes remain rejected.
+
 Explicit `dtype` and `kv_cache_dtype` engine arguments are retained here when
 passed. Their absence means vLLM's defaults were used, not that a particular
 dtype was resolved. A quantized model can record `dtype: bfloat16` while keeping
 FP8 weights. Check these arguments, the source config and any recorded runtime
 facts together; `variant` alone does not encode every effective dtype.
+
+### `engine_resolved`
+
+`per_tp[tp]` retains the engine's `block_size`, `max_model_len` and
+`num_cache_tokens`. New authoritative main-engine records also include
+`model_text_config`: a deep-copied snapshot of the native resolved text config,
+including reduced depth, per-rank fields and consumed nested overrides. The
+snapshot survives deletion of the temporary config directory. It is not the
+multimodal wrapper config, backend selection or a parameter-layout inventory.
+
+A refresh updates only the recorded TP entries. MTP and non-authoritative
+short-stack engines do not replace main-engine snapshots. Older limits and
+metadata without a snapshot keep that absence; missing values are not
+reconstructed from today's config. Read the source and engine arguments with
+these facts rather than treating the snapshot as full execution provenance.
 
 ### Grid specs are compact, not enumerated
 

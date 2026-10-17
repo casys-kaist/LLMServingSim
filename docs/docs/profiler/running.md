@@ -25,9 +25,20 @@ provides an explicit `layer_types` list, a depth of N retains its first N entrie
 in their original order, including inside a nested `text_config`. A requested
 depth that is non-integer, non-positive or longer than that list is rejected.
 The source model config is not modified. Explicit `hf_overrides.layer_types`
-values are truncated consistently because vLLM reapplies them after config load.
+values are truncated consistently, including when forwarded to vLLM after config load.
 This preserves the selected prefix; it does not certify catalog coverage or
 end-to-end accuracy for a new model family.
+
+For a nested `text_config`, declared backbone fields and decoder depth are
+written into the temporary config before native loading. Backbone-only keys
+are then removed from the forwarded `hf_overrides`: assigning them again to
+the wrapper can fail on read-only properties or create conflicting values.
+Keys independently declared at the root stay forwarded, including token IDs
+shared by the root and text config, so both retain the requested value.
+Unrelated root overrides and flat-model behavior are unchanged. Inspect the
+source/materialized config and resolved native fields, not just the flat
+engine-argument dictionary. Authoritative main-engine text fields are saved per
+TP; see [engine metadata](./output-bundle#engine_resolved).
 
 For TP emulation, installed vLLM resolves the local unsharded configuration
 after user overrides. The profiler then shrinks declared TP dimensions while

@@ -33,6 +33,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Apply nested backbone overrides through the materialized config without
+  assigning them again to wrapper properties. Preserve root/shared overrides
+  and flat-model behavior, and retain the authoritative engine's resolved text
+  config in per-TP metadata. Changed acquisition identities require remeasurement.
 - Bind new MiniMax-M3 sparse-prefill lookup caps to the measured native backend
   per TP. The source-checked vLLM 0.31 Triton BF16 contract selects 16 blocks of
   128 tokens (2048); unmarked historical tables retain 2176. Preserve raw CSV

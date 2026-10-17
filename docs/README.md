@@ -93,6 +93,9 @@ KV pool; null and unassigned pages are not initialized. The output guide describ
 layout validation and the remeasurement requirement after allocation changes.
 The running guide also describes preserving explicit layer-type prefixes when
 reducing a model for category-specific acquisition.
+Nested backbone-only overrides are consumed after materialization; the output
+guide distinguishes forwarded engine kwargs from the native text-config snapshot
+recorded per TP, without claiming complete wrapper or backend provenance.
 Its precision-naming section separates checkpoint quantization from explicit
 floating activation overrides, requires intentional labels for HF precision or
 nested text-config overrides, and documents compatibility-label limitations.

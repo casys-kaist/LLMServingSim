@@ -7,6 +7,9 @@ Synthetic KV preparation reserves disjoint pages from vLLM's shared physical
 pool, preserves the null block and initializes only assigned pages outside timing.
 Category-specific decoder reductions retain the model's explicit layer-type prefix,
 including nested text configurations.
+Backbone-only overrides are consumed after writing the nested config, avoiding
+duplicate assignments to wrapper properties. Root-only and shared root/text
+overrides stay forwarded; flat model configuration is unchanged.
 TP emulation resolves user overrides before sharding and preserves vLLM's
 unsharded attention head width. Shape-construction changes invalidate acquisition
 resume; old incorrectly shaped rows need remeasurement, not metadata relabelling.
@@ -712,6 +715,13 @@ batch.
   with the shard. A `slice` refresh of one TP **merges** into what is already
   there rather than replacing it. A bundle written before the split carries a
   flat `block_size`, which is still read as a fallback.
+
+  New authoritative engine records also retain `model_text_config`, a snapshot
+  of the native resolved text config, including consumed nested overrides and
+  reduced depth. It survives deletion of the temporary model directory. MTP and
+  short-stack refreshes preserve the main engine's entry; older records without
+  a snapshot remain valid but do not gain invented fields. This is not a complete
+  wrapper, backend or parameter-layout record.
 
 - `attention_grid` — the 4D attention sweep's caps (`max_kv`),
   geometric factors (`chunk_factor`, `kv_factor`), and compact spec

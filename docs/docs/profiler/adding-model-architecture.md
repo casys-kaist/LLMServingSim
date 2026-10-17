@@ -117,11 +117,12 @@ Two consequences worth knowing before you author a config:
   is what vLLM registers, hands you `transformers`' generic config class
   instead — which lacks fields (`rope_theta`) the model plugin then reads off
   it.
-- **`hf_overrides` only ever reaches the top level.** For a nested config the
-  profiler mirrors its overrides into `text_config` as well
-  (`engine._materialize_config`), or neither the shrink-to-N-layers nor the TP
-  shard fields would take effect — and the latter fails without an error, so you
-  get a profile of a shape nobody asked for.
+- **Forwarded `hf_overrides` reaches the top level.** The profiler materializes
+  nested backbone overrides in `text_config` (`engine._materialize_config`),
+  then consumes backbone-only keys instead of assigning them again to wrapper
+  properties. Independently declared root keys stay forwarded, including shared
+  root/text fields. Check the final native config as well as the local file;
+  a shape-correct dictionary alone does not prove successful native loading.
 
 Some `model_type` values are different checkpoints of **one compatible**
 implementation, and a wrapped checkpoint may expose both its own name and its
