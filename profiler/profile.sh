@@ -89,16 +89,13 @@ HARDWARE="RTXPRO6000"
 # LINEAR_ATTN_CHUNK=64
 
 # --- MoE target parallelism -------------------------------------------------
-# DP_DEGREES selects native DP+EP component acquisition on one physical GPU.
-# DP=1 includes local native components; EP is derived as TP * DP, retaining the
-# global expert IDs and top-k. Leave MOE_EP_DEGREES unset in this mode; native
-# acquisition cannot be combined with ONLY_SKEW, PROFILE_MTP or FORCE. Use a
-# new OUT_ROOT to remeasure an immutable native contract.
+# MoE profiling defaults to eager native components at DP=1 on one physical GPU.
+# EP is TP * DP; global expert IDs and top-k are retained. DP_DEGREES selects
+# other targets. Explicit --dp cannot be combined with ONLY_SKEW or PROFILE_MTP.
+# Native contracts are immutable: use a new OUT_ROOT instead of FORCE.
 # DP_DEGREES="1,2"                # --dp; comma-separated target DP degrees
 # MOE_ROUNDS=3                    # independent native measurement contexts
-# Without DP_DEGREES, the retained whole-block path profiles the requested EP
-# degrees with a reduced checkpoint shape. This is not native DP+EP coverage.
-# MOE_EP_DEGREES="1"              # legacy --moe-ep-degrees; e.g. "1,2,4,8"
+# MOE_GRID_FACTOR=2.0             # spacing for tokens, active experts and assignments
 
 # --- Drafter (MTP) ----------------------------------------------------------
 # Boot with speculative decoding so vLLM also builds the model's own MTP
@@ -213,9 +210,9 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
-[[ -n "${MOE_EP_DEGREES:-}" ]]         && cmd+=(--moe-ep-degrees "$MOE_EP_DEGREES")
 [[ -n "${DP_DEGREES:-}" ]]             && cmd+=(--dp "$DP_DEGREES")
 [[ -n "${MOE_ROUNDS:-}" ]]             && cmd+=(--moe-rounds "$MOE_ROUNDS")
+[[ -n "${MOE_GRID_FACTOR:-}" ]]        && cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.

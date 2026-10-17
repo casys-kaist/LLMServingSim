@@ -53,7 +53,8 @@ perf/<hardware>/<model>/<variant>/
     ├── per_sequence.csv            # seq-count → latency
     ├── attention.csv               # per-layer, per-q: (pc, kv_pre, n_dec, kv_dec)
     ├── linear_attention.csv        # hybrid only: per-layer (prefill_tokens, n_dec)
-    ├── moe.csv                     # whole-block MoE: (ep, tokens, experts)
+    ├── moe.csv                     # retained historical whole-block fallback
+    ├── moe_components/             # native component CSVs per deployment
     ├── skew.csv                    # raw heterogeneous-decode shots
     └── skew_fit.csv                # fitted per-bucket alpha table
 ```
@@ -63,10 +64,16 @@ simulator multiplies by 1000 and rounds to ns at load time.
 
 Schema details on **[Output bundle](./output-bundle)**.
 
-Explicit-DP [native MoE profiling](./native-moe-components) adds deployment
-records to the root metadata and deployment-specific CSV tables. It
-preserves global top-k and separates local routing, gathered expert work and
-local finalization, with independently measured eager/graph GPU timings.
+[Native MoE profiling](./native-moe-components) is the default for MoE models,
+at DP1 unless `--dp` selects other target degrees. It adds deployment records
+to the root metadata and component CSVs, preserving global top-k and separating
+local routing, gathered expert work and applicable finalization. New measurements
+are eager only, without isolated graph capture. Expert points cover tokens,
+active local experts and local assignments; `--moe-grid-factor` defaults to
+`2` and retains feasible geometry corners. This grid does not follow serving
+CUDA capture sizes. Quantized and shared-expert paths remain unsupported for
+new component acquisition. Historical `moe.csv` reads remain available; the
+whole-block acquisition path has been removed.
 
 ## How it fits the bigger picture
 

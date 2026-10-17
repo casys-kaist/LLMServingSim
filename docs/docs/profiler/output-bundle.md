@@ -25,7 +25,7 @@ profiler/perf/<HARDWARE>/
         ├── per_sequence.csv
         ├── attention.csv
         ├── linear_attention.csv  # mamba / gated-DeltaNet models only
-        ├── moe.csv               # MoE models only, one grid per EP degree
+        ├── moe.csv               # historical whole-block fallback only
         ├── mtp.csv               # one drafter pass, only with --profile-mtp
         ├── skew.csv              # skew-enabled runs only
         ├── skew_fit.csv          # skew-enabled runs only
@@ -364,12 +364,16 @@ Runtime versions are recorded provenance; historical source hashes are not exact
 execution admission. Actual native APIs, dtypes, layouts and backend modes must
 still satisfy the contract.
 
-All four categories — `dense`, `per_sequence`, `attention`, `moe` — must complete
+The historical representation requires all four categories — `dense`,
+`per_sequence`, `attention`, `moe` — to be complete
 with matching identities and valid whole shots, even though the changed component
 sites principally span dense and attention. Missing head/MoE rows or engine
 evidence cannot be certified by completing attention alone. Compatible interrupted
 shots resume; incompatible old rows require fresh acquisition, never a metadata
-rewrite. Skew uses the same selected attention components and runtime identity.
+rewrite. New full acquisition is blocked by unsupported quantized MoE components;
+ordinary category slices and coverage remain available, but cannot replace its
+historical whole-block table. Skew uses the same selected attention components
+and runtime identity.
 
 These tables currently support only explicit
 [duration trace replay](../simulator/trace-generation.md#native-dsa-duration-replay).
@@ -390,13 +394,15 @@ backends; a catalog alias alone cannot admit another native implementation.
 
 The independently supplied nested configuration defines widths, expert count,
 top-k, the decoder schedule and residual block geometry. Shared stack helpers
-derive the smallest prefix covering each category's axes; MoE uses the MLP axis.
-For the shipped configuration these are four decoder layers, or two for MoE,
+derive the smallest prefix covering each category's axes. Historical whole-block
+MoE acquisition used the MLP axis. For the shipped configuration these are four
+decoder layers, or two for the historical MoE slice,
 without reducing widths or experts. No fixed checkpoint digest or decoder depth
 stands in for validating the supplied configuration and observed runtime.
 
-The ordinary `profile` and `slice` commands use the existing category grids. A
-multi-category Kimi acquisition requires explicit `--skip-skew`; skew and MTP are not supported.
+Ordinary category `slice` commands use the existing grids. New full Kimi profiles
+are blocked by unsupported quantized MoE components; historical whole-block
+measurements remain readable. Skew and MTP are not supported.
 See the [bounded invocation](./running#native-kimi-profiling). Each TP directory
 contains the ordinary CSVs; root `per_tp[tp].categories.<category>` stores its
 `contract`, publication `status` and completed `csv_sha256`. Shared `CategoryRecord`
@@ -675,7 +681,8 @@ produces.
 
 ## Native DP+EP components
 
-Explicit `--dp` acquisition publishes root `per_tp[tp].moe_components` metadata
+Native MoE acquisition defaults to DP1; `--dp` selects other target degrees.
+It publishes root `per_tp[tp].moe_components` metadata
 and deployment-specific `components.csv` tables. Contracts and coverage live in
 that root record, not standalone index/contract/coverage JSON files.
 Conditioning coverage is a compact count and maximum-change summary; individual
@@ -683,10 +690,20 @@ control coordinates and timings stay in raw resume checkpoints. Publication stil
 requires the configured quality checks and preserves the completed table checksum.
 These are separate from the legacy whole-block `moe.csv`: local gate/routing,
 gathered experts and local finalization have different token domains and
-separate eager/graph measurements. Global expert count and top-k are preserved.
+eager measurements. New acquisition does not capture isolated CUDA graphs.
+Historical tables retain their recorded modes. Global expert count and top-k are preserved.
 DP1 records only `gate_routing` and `experts`, with verified identity preparation
 and aliased no-op finalization in `contract.local_execution`; no synthetic copy
 or zero-latency row is stored. Target-specific backend selection is retained.
+New expert tables sample physical tokens N, active local experts A and local
+assignments M using `--moe-grid-factor` (default `2`) and mandatory feasible
+geometry corners. The recorded `expert_sampling` contract identifies these axes
+and their spacing. Sampling does not use serving capture sizes. The simulator
+precomputes Delaunay support at load time and caches barycentric interpolation
+in physical coordinates, using at most four measured rows per query. It fits no
+latency predictor. Historical balanced-assignment tables retain their existing
+lookup. Quantized and shared-expert acquisition remains unsupported.
+
 Matching tables are selected automatically, with deployment, dtype, coverage
 and checksum validation. See [Native MoE components](./native-moe-components)
 for the full schema, raw repetitions, resume and unsupported-path behavior.
@@ -707,68 +724,22 @@ ep,tokens,activated_experts,time_us
 | `activated_experts` | Distinct experts touched on that rank |
 | `time_us` | Measured whole-block latency in microseconds |
 
-The token axis uses the same fine grid as dense-layer acquisition, including
-the configured upper endpoint. It is not restricted to powers of two:
-grouped-kernel cost can change sharply inside those wide intervals. Resolved
-context and page-aligned KV limits filter infeasible points, and the existing
-active-expert axis still respects global or EP-local top-k and expert counts.
-The grid contains no model-specific tile constants or benchmark-derived knots.
+These are historical measurements. Whole-block acquisition, expert/top-k slicing,
+forced routing and `--moe-ep-degrees` have been removed. A new
+`slice --group moe` measures native components at DP1 by default and does not
+rewrite `moe.csv`; native contracts require a fresh output root to remeasure.
 
-Compatible acquisition resumes add missing token points; stored tables do not
-gain resolution from a code update alone. More samples reduce interpolation
-distance but do not guarantee accuracy across every kernel transition. Runtime
-lookup remains unchanged, as does the native DP+EP component grid.
-
-Whole-block timing is divided by the matched MoE node's own invocation count.
-A merged decoder parent can count dense and MoE layers together; its count
-would understate the cost of one MoE block. Other categories retain their
-parent/occurrence normalization so merged projection pairs remain sums.
-Remeasure affected hybrid-stack tables with `slice --group moe --force`:
-updating the profiler does not change stored CSV values, and the correction
-is not a universal multiplier. This normalization does not change native
-DP+EP component measurements or imply support for additional backends.
-
-To control the grid, the profiler replaces only expert IDs with a balanced
-cyclic assignment. Native top-k/grouped-top-k GPU kernels still execute, and
-their original routing-weight tensor passes through unchanged, including dtype,
-normalization and scaling already applied by the router. There is no additional
-GPU weight fill, copy or normalization. The surrounding routing template keeps
-its native ID conversion and mapping; previous instance instrumentation is
-restored on exit. Warmup uses the same ID assignment as the timed calls. Each
-context must actually invoke the router; monolithic backends that bypass it are
-rejected rather than labelled with an unmeasured expert count.
-
-The hook requires native weights and IDs to be strided tensors of shape
-`(tokens, top_k)` on the input device, with floating weights and int32/int64 IDs.
-Extra/shared routing slots and incompatible output shapes or dtypes are rejected,
-not truncated. These checks inspect tensor metadata without reading weight values
-or adding GPU weight work; they do not establish support for every MoE backend.
-
-This is synthetic conditioning, not a trained-gate routing sample. The preserved
-weights are paired with different expert IDs, so numerical equivalence to an
-unmodified forward is not claimed. Cyclic assignments also do not cover
-arbitrary per-expert load imbalance or guarantee latency accuracy for a backend.
-Native DP+EP components remain a separate acquisition contract.
-
-The routing method is recorded in ordinary acquisition metadata. A change to its
-semantics requires remeasurement of affected categories, not a source-hash restamp.
-Refresh the requested categories explicitly or use a separate output root;
-`slice --group moe --force` refreshes the whole-block MoE category only. Do not
-relabel old rows or mix incompatible acquisitions on resume. This also applies
-to older tables that omitted native routing kernels. Stored timings remain
-unchanged until an explicit refresh; a code update is not a data correction.
-
-The legacy consumer uses two-dimensional interpolation over tokens and active
+The legacy consumer retains two-dimensional interpolation over tokens and active
 experts within an EP grid. An unprofiled EP degree falls back to the nearest
-with a warning. Acquire this retained path with `--moe-ep-degrees` (or
-`MOE_EP_DEGREES` in `profile.sh`) when no native adapter covers the deployment.
+with a warning. A bundle without the EP column is read as EP1.
 
-This acquisition changes the expert/top-k checkpoint shape to approximate a
-local rank. It does not reproduce global top-k routing or separate local and
-gathered regions of the native DP+EP kernel. An EP column alone does not establish
-a matching DP/backend measurement; active DP fallback warns that accuracy may
-degrade. A bundle without the EP column is read as EP1. Existing CSVs remain
-usable but are not relabelled as native component measurements.
+The old acquisition changed the checkpoint expert/top-k shape to approximate a
+local rank. Its EP column does not establish native global-top-k routing,
+DP/backend coverage or separate local and gathered measurements. Existing files
+remain readable until supported components are remeasured, with warnings for
+unverified DP coverage. Stored timings are neither corrected nor relabelled by
+a code or metadata update. Unsupported native acquisition fails explicitly;
+there is no whole-block acquisition fallback.
 
 
 ## `skew.csv` (skew-enabled runs)

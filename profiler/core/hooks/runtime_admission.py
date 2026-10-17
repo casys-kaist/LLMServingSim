@@ -631,7 +631,7 @@ class HybridResidualProfile:
     def validate_request(self, args, *, full=False):
         self.original_text(args.model_config)
         if (list(args.tp_degrees) != [1] or args.profile_mtp or args.only_skew
-                or args.moe_dp_degrees is not None or tuple(args.moe_ep_degrees or (1,)) != (1,)
+                or args.moe_dp_degrees is not None
                 or args.hf_overrides or (full and not args.skip_skew)
                 or tuple(args.attention_decode_q_lens) != (1,)):
             raise NotImplementedError('Hybrid residual acquisition requires local TP1/EP1, q=1, '

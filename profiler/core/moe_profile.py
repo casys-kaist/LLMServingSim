@@ -1,4 +1,4 @@
-"""Native MoE acquisition; legacy whole-block tables stay intact."""
+"""Eager native MoE acquisition with independent local-work coordinates."""
 from dataclasses import asdict, replace
 import csv
 import fcntl
@@ -71,37 +71,59 @@ def _replace_entry(previous, entry):
     return dict(block, schema=SCHEMA, entries=retained + [{**(matching[0] if matching else {}), **entry}])
 
 
-def grid(maximum):
+def grid(maximum, factor=2.0, minimum=1):
     if type(maximum) is not int or maximum < 1:
         raise ValueError("Grid maximum must be a positive integer")
-    values, value = {1, maximum}, 1.
+    if not math.isfinite(factor) or factor <= 1 or not 1 <= minimum <= maximum:
+        raise ValueError("Grid needs a finite factor > 1 and valid positive bounds")
+    values, value = {minimum, maximum}, 1.
     while value < maximum:
-        values.add(max(1, round(value)))
-        value *= math.sqrt(2)
+        point = max(1, round(value))
+        if minimum <= point <= maximum:
+            values.add(point)
+        value *= factor
     return sorted(values)
 
 
 def points_for(contract):
     target = MoeTarget(**contract['target'])
     place = ExpertPlacement(contract['global_experts'], contract['global_top_k'], target.ep, target.rank)
+    factor = contract['expert_sampling']['grid_factor']
+    maximum_tokens = contract['maximum_expert_tokens']
+    token_points = set(grid(maximum_tokens, factor))
+    local_e = len(place.local_global_ids)
+    # A <= min(local_E, N*k) changes slope at local_E/k. Preserve both
+    # integer neighbours so interpolation does not cut off feasible work.
+    for per_token in (place.global_top_k,
+                      max(0, place.global_top_k-(place.global_experts-local_e))):
+        if per_token:
+            for corner in (local_e//per_token, (local_e+per_token-1)//per_token):
+                if 1 <= corner <= maximum_tokens:
+                    token_points.add(corner)
     local = target.token_domains((contract['local_token_budget'],)*target.dp)['gate_rows']
     for mode in contract['modes']:
         for component in target.components:
             if component == 'experts':
                 continue
-            for n in grid(local):
+            for n in grid(local, factor):
                 yield dict(component=component, mode=mode, tokens=n,
                            activated_experts=-1, local_assignments=-1)
-        for n in grid(contract['maximum_expert_tokens']):
-            local_e = len(place.local_global_ids)
-            pairs = (n*place.global_top_k*local_e+place.global_experts-1)//place.global_experts
-            minimum, maximum = (pairs+n-1)//n, min(local_e, pairs)
-            for active in sorted(set(grid(maximum)+[minimum])):
-                try:
-                    lower, upper = place.assignment_bounds(n, active)
-                except ValueError:
-                    continue
-                if lower <= pairs <= upper:
+        for n in sorted(token_points):
+            balanced = (n*place.global_top_k*local_e+place.global_experts-1)//place.global_experts
+            minimum, maximum = place.active_bounds(n)
+            active_points = set(grid(maximum, factor, minimum))
+            # Preserve the corners where the feasible assignment envelope
+            # changes slope; these are geometry, not fitted latency knobs.
+            for corner in (place.global_top_k,
+                           n*max(0, place.global_top_k-(place.global_experts-local_e))):
+                if minimum <= corner <= maximum:
+                    active_points.add(corner)
+            for active in sorted(active_points):
+                lower, upper = place.assignment_bounds(n, active)
+                assignments = set(grid(upper, factor, lower))
+                if lower <= balanced <= upper:
+                    assignments.add(balanced)
+                for pairs in sorted(assignments):
                     yield dict(component='experts', mode=mode, tokens=n,
                                activated_experts=active, local_assignments=pairs)
             try:
@@ -295,7 +317,7 @@ class MeasurementStore:
 
 def validate_request(arch, args):
     if args.moe_dp_degrees is None or not probe_moe_params(args.model_config or {}):
-        raise ValueError("Native component profiling requires a MoE checkpoint and explicit DP")
+        raise ValueError("Native component profiling requires a MoE checkpoint and resolved DP")
     if not arch.catalog.moe or len(arch.catalog.moe) != 1:
         raise NotImplementedError("One catalog MoE block is required for this component adapter")
     if args.force:
@@ -306,6 +328,8 @@ def validate_request(arch, args):
         raise ValueError("Native component target DP degrees must be positive integers")
     if args.moe_rounds < 1 or args.measurement_iterations < 1:
         raise ValueError("Measurement repetitions must be positive")
+    if not math.isfinite(args.moe_grid_factor) or args.moe_grid_factor <= 1:
+        raise ValueError("MoE grid factor must be finite and greater than one")
     config = args.model_config or {}
     for holder in (config, config.get('text_config') or {}):
         if holder.get('quantization_config'):
@@ -327,7 +351,7 @@ def run_components(arch_path, args, tps, variant_root):
     experts, _ = probe_moe_params(args.model_config)
     if any(target.ep > experts for target in targets):
         raise ValueError("Requested EP degree exceeds the global expert count")
-    engine_args = replace(args, tp_degrees=[1], moe_ep_degrees=(1,), profile_mtp=False)
+    engine_args = replace(args, tp_degrees=[1], profile_mtp=False)
     budget = args.max_num_batched_tokens or HOST_ENGINE_DEFAULTS['max_num_batched_tokens']
     variant_root.mkdir(parents=True, exist_ok=True)
     def record_bundle(meta):
@@ -342,6 +366,8 @@ def run_components(arch_path, args, tps, variant_root):
         for target in targets:
             native = llm.collective_rpc('moe_component_initialize', args=(asdict(target), budget))[0]
             contract = dict(native, model=args.model, hardware=args.hardware, variant=args.effective_variant,
+                expert_sampling=dict(axes=['tokens', 'activated_experts', 'local_assignments'],
+                                     grid_factor=args.moe_grid_factor),
                 protocol=dict(rounds=args.moe_rounds, iterations=args.measurement_iterations,
                               representative='median_of_forward_medians', timing='cuda_kernel_sum'))
             contract = json.loads(json.dumps(contract, default=str))

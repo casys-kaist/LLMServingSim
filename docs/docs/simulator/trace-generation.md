@@ -396,7 +396,8 @@ because a batch is large.
 MoE uses `EXPERT {i}` / `EXPERT END` markers. Native execution emits rank-local
 gate/routing, expert and finalization regions with collectives between them.
 It selects a TP/DP/EP/rank contract and uses local rows for gate/finalization,
-gathered rows and active experts for expert work. Legacy lookup instead reads
+gathered rows, active experts and local assignments for new expert tables.
+Historical component tables retain their balanced-total lookup. Legacy lookup instead reads
 the whole-block EP slice from `moe.csv`, using gathered or replicated input
 rows, not the router's unique local-token estimate.
 
@@ -404,8 +405,9 @@ DP members index their own global expert ranks while trace markers remain
 instance-local. Ranks execute in parallel and synchronize at their collectives;
 Chakra preserves dependencies across every collective and skipped expert region.
 
-Expert-to-rank assignment uses even partitioning:
-`expert_id * ep_size // num_experts`.
+Native expert-to-rank assignment uses contiguous vLLM ownership, assigning
+remainder experts to the first ranks. The legacy whole-block path retains
+`expert_id * ep_size // num_experts`; these agree when EP divides the expert count.
 
 ## Gotchas
 

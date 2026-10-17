@@ -55,6 +55,9 @@ local DP1 from DP+EP execution, and full expert parallelism from tensor-sharded
 experts. Component support does not imply a new published benchmark result.
 Its coverage-selection cache assumes immutable bundles during a simulation;
 missing coverage and corrupt installed data have different failure behavior.
+New acquisition defaults to DP1, measures eagerly without graph capture and uses
+configurable independent input-row, active-expert and assignment axes. Historical
+tables retain their reading semantics; capture-grid sampling is not yet automatic.
 
 The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
 0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained
@@ -156,8 +159,8 @@ alternate profiler variants are not automatically selected by the simulator.
 Naming changes do not migrate prior data or bypass acquisition identities.
 TP emulation resolves local native configuration defaults and user overrides
 before sharding, preserving head width; acquisition records retain that geometry.
-Its whole-block MoE section documents the shared fine token grid and the
-distinction between acquisition resolution and runtime interpolation.
+Its historical whole-block MoE section documents retained reads, not an available
+acquisition path. Native component grids and runtime interpolation are separate.
 The resume guide also distinguishes atomic progress checkpoints from complete
 bundles ready for simulation and documents exact fractional attention-key matching.
 CSV-generation seals detect interrupted metadata/data replacement, including
@@ -186,19 +189,16 @@ an acquisition port; vLLM device support alone does not establish compatibility.
 The [collective-link schema](docs/reference/cluster-config.md#collective-specific-links)
 documents optional per-operation analytical Ring links and configuration
 precedence, without changing collective payloads or the common fallback.
-The [native MoE guide](docs/profiler/native-moe-components.md) describes explicit-DP
+The [native MoE guide](docs/profiler/native-moe-components.md) describes default-DP1
 single-rank acquisition, publication checks, component lookup and supported
 execution contracts. It distinguishes measured GPU work from analytical transport.
 Deferred finalization is checked through the effective vLLM capability;
 an unsupported API cannot silently become a supported component contract.
 The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)
-also explains whole-block MoE invocation normalization and when existing
-hybrid-stack tables need remeasurement. Forced-routing grids retain native
-top-k GPU work and the exact native routing-weight tensor, changing only expert
-IDs. Warmup uses the same synthetic assignment and bypassed hooks are rejected.
-This does not establish trained-routing numerical equivalence or arbitrary
-expert-load coverage; changed acquisition identities require remeasurement,
-not relabeling existing rows.
+also explains historical whole-block MoE normalization and why those rows cannot
+be relabelled as component measurements. New component stimuli preserve global
+top-k while varying local work; they do not establish trained-routing numerical
+equivalence or arbitrary within-rank histogram coverage.
 The same table guide explains non-overlapping sparse-indexer glue ownership
 and the dense-category refresh needed for older DeepSeek/GLM glue rows.
 The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B

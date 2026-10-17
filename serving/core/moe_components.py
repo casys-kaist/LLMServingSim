@@ -1,7 +1,8 @@
 """Strict, cached lookup of deployment-matched native MoE components.
 
-The expert surface describes balanced local assignment totals, not an
-arbitrary routing histogram. The runtime selects a matching published table;
+The expert surface separates input rows, active local experts and local
+assignments; within-rank histograms remain balanced profiling stimuli.
+Historical surfaces retain their balanced-total lookup. The runtime selects a matching published table;
 unsupported coverage is distinct from a corrupt measurement contract.
 """
 from bisect import bisect_left
@@ -65,6 +66,67 @@ def _linear(pairs, x):
     return fa+(fb-fa)*(x-a)/(b-a)
 
 
+class _ExpertSurface:
+    """Prebuilt simplices in physical (N, A, M) coordinates.
+
+    Fixed per-axis scaling conditions the geometry without changing affine
+    interpolation. SVD removes only affine dependencies, such as M=k*N at
+    EP1, so a plane, line or single measured point needs no invented extent.
+    """
+    tolerance = 1e-9
+
+    def __init__(self, samples):
+        import numpy as np
+
+        coordinates = np.asarray([point for point, _ in samples], dtype=float)
+        self.values = np.asarray([value for _, value in samples], dtype=float)
+        self.origin = coordinates[0]
+        self.scale = np.ptp(coordinates, axis=0)
+        self.scale[self.scale == 0] = 1.
+        normalized = (coordinates-self.origin)/self.scale
+        _, singular, vectors = np.linalg.svd(normalized, full_matrices=False)
+        threshold = max(normalized.shape)*np.finfo(float).eps*singular[0]
+        self.dimension = int(np.count_nonzero(singular > threshold))
+        self.basis = vectors[:self.dimension]
+        projected = normalized @ self.basis.T
+        if self.dimension == 1:
+            self.line = sorted(zip(projected[:, 0].tolist(), self.values.tolist()))
+        elif self.dimension > 1:
+            from scipy.spatial import Delaunay, QhullError
+            try:
+                self.triangulation = Delaunay(projected)
+            except QhullError as exc:
+                raise ValueError('Native MoE coordinates cannot form a supported interpolation surface') from exc
+            # Materialize SciPy's lazy barycentric transforms during loading.
+            self.transforms = self.triangulation.transform
+            self.vertices = self.values[self.triangulation.simplices]
+
+    def __call__(self, coordinates):
+        normalized = (coordinates-self.origin)/self.scale
+        projected = normalized @ self.basis.T
+        if abs(normalized-projected @ self.basis).max() > self.tolerance:
+            raise MoeCoverageError('Expert query is outside the measured affine support')
+        if self.dimension == 0:
+            return float(self.values[0])
+        if self.dimension == 1:
+            x = float(projected[0])
+            if x < self.line[0][0]-self.tolerance or x > self.line[-1][0]+self.tolerance:
+                raise MoeCoverageError('Expert query is outside the measured line support')
+            return _linear(self.line, min(self.line[-1][0], max(self.line[0][0], x)))
+        simplex = int(self.triangulation.find_simplex(projected, tol=self.tolerance))
+        if simplex < 0:
+            raise MoeCoverageError('Expert query is outside the measured convex support')
+        transform = self.transforms[simplex]
+        weights = (transform[:self.dimension] @ (projected-transform[self.dimension])).tolist()
+        weights.append(1.-sum(weights))
+        if any(not math.isfinite(weight) or weight < -self.tolerance
+               or weight > 1.+self.tolerance for weight in weights):
+            raise MoeCoverageError('Expert query has no nonnegative interpolation weights')
+        weights = [max(0., min(1., weight)) for weight in weights]
+        total = sum(weights)
+        return sum(weight*value for weight, value in zip(weights, self.vertices[simplex]))/total
+
+
 class MoeComponentTable:
     def __init__(self, tp_folder, *, target, expected):
         target = MoeTarget(**target)
@@ -101,14 +163,26 @@ class MoeComponentTable:
                 or coverage['schema'] != index['schema']
                 or MoeTarget(**contract['target']) != target or coverage['complete'] is not True):
             raise ValueError('Incomplete or inconsistent MoE component contract')
-        if contract.get('graph_attribution') != GRAPH_ATTRIBUTION:
-            raise ValueError('Graph data needs launch-correlated acquisition; module-tree graph timings are not supported')
-        if ((contract.get('expert_conditioning') or {}).get('schema') != MOE_CONDITIONING_POLICY
-                or coverage.get('quality_supported') is not True
-                or contract.get('eager_attribution') != EAGER_ATTRIBUTION
+        modes = contract.get('modes')
+        self.independent_assignments = 'expert_sampling' in contract
+        if self.independent_assignments:
+            sampling = contract['expert_sampling']
+            if (not isinstance(sampling, dict)
+                    or sampling.get('axes') != ['tokens', 'activated_experts', 'local_assignments']
+                    or type(sampling.get('grid_factor')) not in (int, float)
+                    or not math.isfinite(sampling['grid_factor']) or sampling['grid_factor'] <= 1
+                    or modes != ['eager']
+                    or contract.get('expert_output_reference') != 'independent_eager_clone'):
+                raise ValueError('Independent MoE axes require an eager acquisition contract')
+        elif (modes != ['eager', 'graph']
+                or contract.get('graph_attribution') != GRAPH_ATTRIBUTION
                 or contract.get('graph_memory_pool') != 'independent_per_variant'
                 or contract.get('graph_output_reference') != 'independent_pre_capture_clone'):
-            raise ValueError('Native MoE data requires matched-work conditioning controls, native launch attribution and independently verified graph variants')
+            raise ValueError('Historical graph data requires verified launch-correlated acquisition')
+        if ((contract.get('expert_conditioning') or {}).get('schema') != MOE_CONDITIONING_POLICY
+                or coverage.get('quality_supported') is not True
+                or contract.get('eager_attribution') != EAGER_ATTRIBUTION):
+            raise ValueError('Native MoE data requires matched-work conditioning and native launch attribution')
         required = {'model', 'hardware', 'variant', 'global_experts', 'global_top_k', 'hidden_dim'}
         if not required.issubset(expected) or any(contract.get(k) != v for k, v in expected.items()):
             raise ValueError('Model, hardware or tensor geometry differs from the measured MoE contract')
@@ -151,6 +225,7 @@ class MoeComponentTable:
         if checksum != coverage['table_sha256'] or (not embedded and checksum != entry['table_sha256']):
             raise ValueError('MoE component CSV checksum mismatch')
         self.local, self.expert, self.zero = defaultdict(list), defaultdict(list), defaultdict(list)
+        self.assignments, self.active = defaultdict(list), defaultdict(list)
         self.exact, plan = {}, []
         with table.open() as stream:
             for row in csv.DictReader(stream):
@@ -159,7 +234,7 @@ class MoeComponentTable:
                 us = float(row['time_us'])
                 key = (component, mode, n, a, p)
                 if (component not in target.components
-                        or mode not in ('eager', 'graph') or n < 1
+                        or mode not in modes or n < 1
                         or not math.isfinite(us) or us <= 0 or key in self.exact):
                     raise ValueError('Invalid or duplicate native MoE coordinate')
                 self.exact[key] = us
@@ -170,7 +245,14 @@ class MoeComponentTable:
                         raise ValueError('Local component has an expert coordinate')
                     self.local[component, mode].append((n, us))
                 elif a == p == 0:
+                    if placement.assignment_bounds(n, a)[0] != 0:
+                        raise ValueError('All-remote work is impossible for this placement')
                     self.zero[mode].append((n, us))
+                elif self.independent_assignments:
+                    lower, upper = placement.assignment_bounds(n, a)
+                    if a < 1 or not lower <= p <= upper:
+                        raise ValueError('Infeasible local expert assignments')
+                    self.assignments[mode, n, a].append((p, us))
                 else:
                     balanced = (n*contract['global_top_k']*contract['local_experts']+contract['global_experts']-1)//contract['global_experts']
                     if p != balanced or not 1 <= a <= min(contract['local_experts'], p) or p > n*a:
@@ -195,13 +277,33 @@ class MoeComponentTable:
                 or not math.isfinite(summary['max_relative_change'])
                 or not 0 <= summary['max_relative_change'] <= tolerance):
             raise ValueError('Native MoE conditioning summary disagrees with supported coverage')
-        for pairs in (*self.local.values(), *self.expert.values(), *self.zero.values()):
+        for pairs in (*self.local.values(), *self.expert.values(), *self.zero.values(), *self.assignments.values()):
             pairs.sort()
-        self.tokens = {mode: sorted(n for m,n in self.expert if m == mode) for mode in ('eager', 'graph')}
+        if self.independent_assignments:
+            for (mode, n, a), pairs in self.assignments.items():
+                if (pairs[0][0], pairs[-1][0]) != placement.assignment_bounds(n, a):
+                    raise ValueError('Independent assignment grid must include feasible endpoints')
+                self.active[mode, n].append(a)
+            for (mode, n), axis in self.active.items():
+                axis.sort()
+                if (axis[0], axis[-1]) != placement.active_bounds(n):
+                    raise ValueError('Active-expert grid must include feasible endpoints')
+            self.tokens = {m: sorted(n for mode, n in self.active if mode == m) for m in modes}
+        else:
+            self.tokens = {mode: sorted(n for m,n in self.expert if m == mode) for mode in modes}
         if any(not self.tokens[m] or any((c,m) not in self.local for c in target.components if c != 'experts')
-               for m in ('eager','graph')):
+               for m in modes):
             raise ValueError('Missing component or execution mode')
-        self.contract, self.target = contract, target
+        self.contract, self.target, self.placement = contract, target, placement
+        if self.independent_assignments:
+            self.surfaces = {mode: _ExpertSurface(sorted(
+                ((n, a, p), us) for (component, m, n, a, p), us in self.exact.items()
+                if component == 'experts' and m == mode and a > 0)) for mode in modes}
+
+    def execution_mode(self, graph):
+        # Acquisition mode is not a serving padding decision. New tables use
+        # eager kernels at the already-resolved (possibly padded) row count.
+        return 'graph' if graph and not self.independent_assignments else 'eager'
 
     @lru_cache(maxsize=4096)
     def local_ns(self, component, mode, tokens):
@@ -220,6 +322,8 @@ class MoeComponentTable:
             if mode not in self.zero:
                 raise MoeCoverageError('This deployment has no all-remote routing support')
             return max(1, round(_linear(self.zero[mode], tokens)*1000))
+        if self.independent_assignments:
+            return self._independent_ns(mode, tokens, activated, local_assignments)
         c = self.contract
         balanced = (tokens*c['global_top_k']*c['local_experts']+c['global_experts']-1)//c['global_experts']
         if local_assignments != balanced or not 1 <= activated <= min(c['local_experts'], balanced) or balanced > tokens*activated:
@@ -254,3 +358,19 @@ class MoeComponentTable:
         if not candidates:
             raise MoeCoverageError('Expert query is outside the measured feasible support')
         return max(1, round(min(candidates, key=lambda item:item[0])[1]*1000))
+
+    def _independent_ns(self, mode, tokens, activated, assignments):
+        """Interpolate physical work coordinates using the prebuilt surface."""
+        place = self.placement
+        try:
+            amin, amax = place.active_bounds(tokens)
+            lower, upper = place.assignment_bounds(tokens, activated)
+        except ValueError as exc:
+            raise MoeCoverageError(str(exc)) from exc
+        if not amin <= activated <= amax or not lower <= assignments <= upper:
+            raise MoeCoverageError('Expert query has infeasible active experts or assignments')
+        exact = self.exact.get(('experts', mode, tokens, activated, assignments))
+        if exact is not None:
+            return max(1, round(exact*1000))
+        result = self.surfaces[mode]((tokens, activated, assignments))
+        return max(1, round(result*1000))

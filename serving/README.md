@@ -126,6 +126,11 @@ and DP collectives; full EP at TP>1 retains its trailing TP AllReduce.
 The full padded DP token vector determines each stage's shape; recorded dtypes
 determine the hidden/top-k collective payloads. Missing coverage warns and retains
 the legacy EP table, while corrupt or out-of-support installed data is rejected.
+New tables use eager timings at those resolved row counts, with independent
+input-row, active-local-expert and local-assignment coordinates supplied by the
+routing policy. Interpolation geometry is built once and queries are cached;
+historical balanced-total eager/graph tables keep their original lookup.
+Within-rank expert-load imbalance is still approximated, not an extra measured axis.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
 Table paths locate data without defining execution identity. Historical standalone
@@ -478,6 +483,8 @@ expert work, combine and finalization. Missing coverage is distinct from corrupt
 installed data; unsupported paths retain the documented legacy fallback.
 DP1 emits only routing and experts plus optional TP reduction, and never uses
 full-EP data for tensor-sharded experts.
+RR/RAND can use new three-axis tables; old balanced-total tables retain their
+policy fallback. Capture sizes affect serving row counts, not acquisition mode.
 
 ### `run_paths.py`
 

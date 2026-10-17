@@ -43,17 +43,18 @@ git submodule update --init --recursive
 This:
 
 - Mounts the repo root into the container at `/app/LLMServingSim`
-- Installs the Python deps the simulator needs, three of them
+- Installs the Python deps the simulator needs, four of them
   **version-pinned** for the image's Python 3.10:
 
   ```
-  pyyaml pyinstrument rich pandas==1.5.3 numpy==1.23.5 matplotlib==3.5.3
+  pyyaml pyinstrument rich pandas==1.5.3 numpy==1.23.5 scipy==1.10.1 matplotlib==3.5.3
   ```
 
   Each is imported by code that runs in this container: `pyyaml` for
   the profiler's `meta.yaml` and architecture catalogs, `pyinstrument`
   by `serving/__main__.py`, `rich` by the loggers, `pandas` by the
   scheduler / trace generator / PIM model, `numpy` by the scheduler,
+  `scipy` by new native MoE physical-coordinate interpolation,
   and `matplotlib` by `bench/core/plots.py`. If you install by hand,
   keep the pins.
 - Drops you into a `bash` shell at `/app/LLMServingSim`

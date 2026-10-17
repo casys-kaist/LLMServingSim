@@ -65,7 +65,7 @@ profiler/                          Python package: python -m profiler
 │       ├── runtime_admission.py   explicit native runtime/configuration admission
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
-│       └── moe_hook.py            whole-block forced routing
+│       └── moe_hook.py            native MoE runner discovery
 ├── models/                        architecture catalogs and model-type aliases
 │   ├── llama.yaml
 │   ├── qwen3.yaml                 Qwen3 dense and MoE
@@ -126,7 +126,7 @@ not run profiling, replace CSVs or certify eager timings as graph timings.
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
-| **MoE parallelism** | `--moe-ep-degrees` for legacy whole-block grids; explicit `--dp` selects native DP+EP components with EP=TP*DP; `--moe-rounds` controls native repetitions |
+| **MoE parallelism** | Native DP1 components by default; `--dp` selects target degrees with EP=TP*DP; `--moe-rounds` controls repetitions and `--moe-grid-factor` (default `2`) spaces all three expert axes |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-n-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
@@ -158,12 +158,13 @@ not `--out-root`. Common-command path defaults are rooted at the repository.
 Use `--help` on any subcommand for its accepted options.
 
 Native MoE components use one physical GPU to emulate each deployment rank,
-preserving global expert IDs and top-k. Explicit DP acquisition has immutable,
-resumable contracts rather than `--force` replacement; expert forward counts may
-exceed `--measurement-iterations` to cover matched weight cycles. Set
-`DP_DEGREES` and optionally `MOE_ROUNDS` in `profile.sh`; leave
-`MOE_EP_DEGREES` unset because native EP is TP*DP. `DP_DEGREES="1,2"` includes
-local DP1 and DP+EP targets; omitting DP retains the whole-block EP path.
+preserving global expert IDs and top-k. MoE acquisition defaults to DP1;
+`DP_DEGREES="1,2"` adds local and DP+EP targets in the shell templates.
+Contracts are immutable and resumable: use a new output root to remeasure,
+rather than `--force`. Expert forward counts can exceed
+`--measurement-iterations` to cover matched weight cycles. `MOE_ROUNDS` and
+`MOE_GRID_FACTOR` control repetitions and grid spacing. Dense models, coverage,
+ordinary category slices and skew-only acquisition do not acquire components.
 DP1 measures gate/routing and experts, verifying identity preparation and aliased
 no-op finalization instead of adding a copy. TP>1 means full EP, not tensor-sharded
 experts. The native backend is selected independently for each target.
@@ -181,8 +182,8 @@ The main contributors to acquisition time, in rough order of effect:
    warmup, first-use compilation or processing. Estimate throughput with the
    current collector on a bounded subset of the intended configuration.
    A repetition count does not guarantee a measurement error bound. Ordinary
-   bindings default to parent calls times catalog occurrences; whole-block
-   MoE defaults to its own invocation count. A catalog's explicit `normalization`
+   bindings default to parent calls times catalog occurrences; historical
+   whole-block MoE measurements used the block's own invocation count. A catalog's explicit `normalization`
    selects either rule. Top-level parent-normalized bindings use the timed-forward
    count, retaining full parameter signatures when grouping compatible calls.
 
@@ -565,7 +566,9 @@ not treated as a stable CLI.
 Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
 explicit module scopes retain CUDA kernels, copies and memsets without recording
 Python stacks, tensor shapes or memory snapshots. Geometry and finite-output
-checks run outside timing; native DP+EP components keep their eager/graph contract.
+checks run outside timing. New native MoE components are measured eagerly,
+without isolated CUDA graph capture. Historical eager/graph tables retain their
+recorded modes.
 
 Ordinary layerwise categories and skew use per-call CUDA interval unions: streams
 on the same device share an interval union, while distinct module calls remain
@@ -636,23 +639,24 @@ resume; old incorrectly shaped rows need remeasurement, not metadata relabelling
 
 ### MoE measurement
 
-Whole-block MoE timings use the matched block's invocation count, not a
-decoder parent's count that can include dense layers. Refresh affected old
-hybrid-stack `moe.csv` grids with `slice --group moe --force`; a code update
-does not repair stored timings. Native DP+EP component measurements are separate.
+New MoE measurements separate gate/routing, experts and applicable finalization.
+They run eagerly and never capture an isolated expert CUDA graph. Expert sampling
+covers physical token rows N, active local experts A and local assignments M,
+with geometric spacing controlled by `--moe-grid-factor` (default `2`) and
+mandatory feasible geometry corners. This grid is independent of serving CUDA
+capture sizes. Conditioning and repeated measurements remain required; sampling
+alone does not establish an interpolation error bound or full-model accuracy.
 
-Whole-block forced routing executes native routing kernels and replaces only
-expert IDs, returning the original routing-weight tensor with its native dtype
-and scaling. It adds no GPU weight normalization or uniform-weight fill.
-Warmup uses the same cyclic ID assignment as timing; a backend that bypasses
-the routing hook is rejected. This is synthetic conditioning, not trained routing
-or numerical equivalence. Changed acquisition semantics require fresh
-measurements, not relabeling old rows; see the
-[table contract](../docs/docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles).
+The simulator constructs the new tables' Delaunay support at load time and uses
+cached barycentric interpolation in physical N/A/M coordinates, with at most four
+measured points per query. This is table interpolation, not a fitted latency
+predictor. Historical balanced-assignment component tables retain their lookup.
 
-Whole-block MoE uses the same fine token grid as dense layers instead of only
-powers of two. Expert-count coordinates and feasibility checks are unchanged;
-new sweeps extend compatible tables without changing runtime lookup.
+Whole-block acquisition, forced routing and `--moe-ep-degrees` are removed.
+Historical `moe.csv` files remain readable until supported components are
+remeasured. Quantized, shared-expert and other unsupported native paths fail
+explicitly; they cannot fall back to the removed acquisition method. See the
+[native component contract](../docs/docs/profiler/native-moe-components.md).
 
 ## Execution scope
 
@@ -705,17 +709,21 @@ callable publication validate full catalog coverage, runtime identities and
 partial CSVs before resume. Kimi-K3's hybrid/residual adapter derives prefix
 depths and original-stack contexts from configuration, retaining joined MLA
 timing and separate KDA components. All categories must complete before opt-in
-duration trace replay; the shared machinery does not admit another backend. See
+duration trace replay. New full Kimi profiles are blocked by unsupported quantized
+MoE components; ordinary category slices and coverage remain available. The shared
+machinery does not admit another backend. See
 [native Kimi acquisition](../docs/docs/profiler/output-bundle.md#native-kimi-acquisition)
-for supported modes, the required `--skip-skew`, memory bounds and resume rules.
+for supported category slices, memory bounds and resume rules.
 
 ### DeepSeek-V3.2
 
 Native DeepSeek-V3.2 uses declared sequence sites and a guarded first-layer norm
-fusion. Its admitted TP1 eager representation requires complete `dense`,
+fusion. Its historical TP1 eager representation requires complete `dense`,
 `per_sequence`, `attention` and `moe` tables sharing a runtime identity; source
 geometry, backend modes and the actual native sampler route are checked before
-acquisition. Its combined attention/indexer tail retains full-context coordinates.
+acquisition. Quantized MoE component acquisition is not supported, so a new full
+bundle cannot currently replace that whole-block table. Ordinary category slices
+and coverage remain available. Its combined attention/indexer tail retains full-context coordinates.
 See [native DSA acquisition](../docs/docs/profiler/output-bundle.md#native-dsa-acquisition)
 for supported modes and the separate duration-only trace boundary.
 
@@ -768,7 +776,7 @@ tp<N>/
 ├── attention.csv          layer, prefill_chunk, prefill_key, n_decode,
 │                          kv_decode, decode_q_len, time_us
 ├── linear_attention.csv   layer, prefill_tokens, n_decode, time_us (hybrid only)
-├── moe.csv                ep, tokens, activated_experts, time_us (whole-block MoE)
+├── moe.csv                historical whole-block fallback only
 ├── mtp.csv                layer, sequences, time_us (one drafter pass; opt-in)
 ├── skew.csv               ordered geometry and per-forward timings
 ├── skew_fit.csv           layer/query/prefill/leverage/N calibration buckets
@@ -800,7 +808,7 @@ library/model versions and numeric structural schemas are retained.
 share its implementation. See the [attention schema](https://llmservingsim.ai/docs/profiler/output-bundle#attentioncsv)
 for the formula and legacy single-prefill compatibility.
 
-**Every category is keyed by `layer` except `moe`.** That is not cosmetic:
+**Ordinary categories are keyed by `layer`; historical `moe.csv` is not.** That is not cosmetic:
 the `attention` category holds **more than one kernel** on a sparse model and
 they share neither a latency curve nor a skew alpha. MiniMax-M3 profiles
 `attention` (its non-sparse layers), `sparse_attention` and `indexer`;

@@ -1,17 +1,14 @@
 """Worker-local native component acquisition, with explicit token domains."""
-from pathlib import Path
-
 import torch
 
 from .moe_expert_region import NativeExpertRegion
 from .moe_hook import single_moe_runner
 from .skew_measurement import MARKER
-from .graph_measurement import extract_graph_forwards
 from .eager_measurement import extract_eager_forwards
 from ..moe_deployment import MoeTarget
 from ..moe_geometry import ExpertPlacement
 from ..metadata_names import (MOE_WEIGHT_POLICY, MOE_CONDITIONING_POLICY,
-                              EAGER_ATTRIBUTION, GRAPH_ATTRIBUTION)
+                              EAGER_ATTRIBUTION)
 
 
 def _deferred_finalize_enabled(config):
@@ -97,7 +94,7 @@ class ComponentMeasurement:
             raise ValueError("Unexpected native router output contract")
         props = torch.cuda.get_device_properties(self.device)
         self.contract = dict(metadata, schema='moe-components', expert_region=self.expert.contract,
-            components=list(self.target.components), modes=['eager', 'graph'],
+            components=list(self.target.components), modes=['eager'],
             topk_ids_dtype=str(ids.dtype), topk_weights_dtype=str(weights.dtype),
             hidden_dim=h, intermediate_size=inter, input_dtype=str(self.cfg.in_dtype),
             gate_weight_bytes=self.gate.weight.numel()*self.gate.weight.element_size(),
@@ -110,10 +107,8 @@ class ComponentMeasurement:
                 quality_relative_tolerance=.03,representative='higher_bank_control',
                 local_components='isolated_warm',warmup_complete_cycles=3),
             routing_stimulus='balanced_local_histogram_with_full_global_topk',
-            graph_attribution=GRAPH_ATTRIBUTION,
-            graph_memory_pool='independent_per_variant',
             eager_attribution=EAGER_ATTRIBUTION,
-            graph_output_reference='independent_pre_capture_clone',
+            expert_output_reference='independent_eager_clone',
             torch_version=str(torch.__version__), cuda_version=torch.version.cuda,
             synthetic_expert_weights=True,
             gpu=dict(name=props.name, total_memory=props.total_memory,
@@ -156,6 +151,9 @@ class ComponentMeasurement:
 
     @torch.inference_mode()
     def measure(self, point, iterations, failure_dir=None):
+        if point['mode'] != 'eager':
+            raise ValueError('Native MoE component acquisition requires eager mode')
+
         from torch.profiler import record_function
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
 
@@ -204,26 +202,6 @@ class ComponentMeasurement:
             if point['component'] == 'finalize_copy':
                 torch.testing.assert_close(result, hidden, atol=0, rtol=0)
             torch.cuda.synchronize()
-            if point['mode'] == 'graph':
-                # Native expert outputs may alias a shared workspace. Keep
-                # independent values before capture can overwrite that storage.
-                expected_values = tuple(value.clone() for value in outputs)
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph):
-                    captured_result = call()
-                def replay():
-                    graph.replay()
-                    return captured_result
-                wrapped = ProfileCall(replay)
-                captured = wrapped()
-                torch.cuda.synchronize()
-                captured_values = captured if isinstance(captured, tuple) else (captured,)
-                if len(expected_values) != len(captured_values):
-                    raise ValueError('Captured component output structure changed')
-                for expected, actual in zip(expected_values,captured_values):
-                    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-            elif point['mode'] != 'eager':
-                raise ValueError("Unknown measurement execution mode")
             context = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                        torch.profiler.ProfilerActivity.CUDA])
             with context as hook:
@@ -231,18 +209,6 @@ class ComponentMeasurement:
                     with record_function(MARKER+str(index)):
                         wrapped()
             torch.cuda.synchronize()
-            if point['mode'] == 'graph':
-                try:
-                    raw = extract_graph_forwards(hook.profiler.kineto_results, iterations)
-                except Exception as exc:
-                    if failure_dir is not None:
-                        import tempfile
-                        Path(failure_dir).mkdir(parents=True, exist_ok=True)
-                        diagnostic = Path(tempfile.mkdtemp(prefix='graph-', dir=failure_dir))/'trace.json'
-                        hook.export_chrome_trace(str(diagnostic))
-                        raise ValueError(f'{exc}; original CUDA trace: {diagnostic}') from exc
-                    raise
-                return dict(raw, verified=True, geometry=details)
             raw = extract_eager_forwards(hook.profiler.kineto_results, iterations)
             return dict(raw, verified=True, geometry=details)
         finally:

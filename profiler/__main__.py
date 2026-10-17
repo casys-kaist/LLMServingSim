@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -186,22 +187,18 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "support this. Pair it with the coverage subcommand "
                         "first: the drafter's kernels show up as unbound "
                         "until a catalog binds them.")
-    p.add_argument("--moe-ep-degrees", type=str, default="1",
-                   dest="moe_ep_degrees",
-                   help="Comma-separated legacy whole-block EP degrees, e.g. "
-                        "'1,2,4,8'. Default '1'. This path reduces the "
-                        "checkpoint's expert/top-k shape to approximate rank "
-                        "work; it does not establish native DP+EP coverage. "
-                        "Omit this option when selecting native components "
-                        "with --dp, where EP is TP*DP.")
     p.add_argument("--dp", default=None, dest="moe_dp_degrees",
                    help="Target DP degrees for native MoE component profiling, "
                         "comma separated. Experts retain global top-k and IDs; "
                         "EP is TP*DP. DP=1 measures local modular components without DP collectives. "
                         "The profiler still uses one physical GPU. "
-                        "Only profile or slice --group moe accept this option.")
+                        "Defaults to DP=1 for MoE profiling. Only profile or "
+                        "slice --group moe accept this option.")
     p.add_argument("--moe-rounds", type=int, default=3,
                    help="Independent measurement contexts per native MoE point.")
+    p.add_argument("--moe-grid-factor", type=float, default=2.0,
+                   help="Geometric spacing for native MoE token, active-expert "
+                        "and assignment axes (finite and greater than 1; default 2).")
     p.add_argument("--hf-override", action="append", default=None,
                    dest="hf_override", metavar="KEY=VALUE",
                    help="Override one model-config field, repeatable. The "
@@ -455,6 +452,8 @@ def _build_profile_args(
     architecture: str,
     model_config: dict,
 ) -> ProfileArgs:
+    if not math.isfinite(ns.moe_grid_factor) or ns.moe_grid_factor <= 1:
+        raise ValueError("--moe-grid-factor must be finite and greater than 1")
     raw_dp = getattr(ns, "moe_dp_degrees", None)
     dp_degrees = None
     if raw_dp is not None:
@@ -465,8 +464,6 @@ def _build_profile_args(
             raise ValueError("--dp is only supported for profile or slice --group moe")
         if getattr(ns, "only_skew", False) or getattr(ns, "profile_mtp", False):
             raise ValueError("Native MoE profiling cannot be combined with skew-only or MTP")
-        if str(getattr(ns, "moe_ep_degrees", "1")) != "1":
-            raise ValueError("With --dp, EP is TP*DP; omit the legacy --moe-ep-degrees option")
         if ns.moe_rounds < 1 or ns.measurement_iterations < 1:
             raise ValueError("Native MoE profiling requires positive repeat counts")
     return ProfileArgs(
@@ -488,11 +485,7 @@ def _build_profile_args(
         profile_mtp=bool(getattr(ns, "profile_mtp", False)),
         moe_dp_degrees=dp_degrees,
         moe_rounds=ns.moe_rounds,
-        moe_ep_degrees=tuple(sorted({
-            max(1, int(v))
-            for v in str(getattr(ns, "moe_ep_degrees", "1") or "1").split(",")
-            if v.strip()
-        })) or (1,),
+        moe_grid_factor=ns.moe_grid_factor,
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_decode_q_lens=tuple(

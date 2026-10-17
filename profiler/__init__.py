@@ -11,7 +11,8 @@ Module map:
         runner.py               full-run orchestration
         config.py               Architecture loader + ProfileArgs + engine defaults
         engine.py               vLLM engine lifecycle
-        categories.py           profile categories (dense / per_seq / attn / moe)
+        categories.py           ordinary layerwise profile categories
+        moe_profile.py          native MoE component acquisition
         skew.py / skew_plan.py  dynamic heterogeneous acquisition
         skew_calibration.py    offline supported-N fit and lookup
         writer.py               CSV output + meta.yaml
@@ -21,7 +22,7 @@ Module map:
             batch.py            synthetic SchedulerOutput assembly
             activity_collector.py scoped native CUDA collection
             timings.py          grouped timing normalization and catalog matching
-            moe_hook.py         FusedMoE forced-routing patcher
+            moe_hook.py         native MoE runner discovery
     models/                     architecture yamls (one per HF model_type)
     power/                      nvidia-smi / IPMI power-logging shell helpers
     perf/                       profile output root (per hardware/model/variant)

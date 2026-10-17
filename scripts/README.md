@@ -76,3 +76,5 @@ exclusive GPU availability, and run the acquisition under explicit memory limits
   example, `VLLM_GPUS='"device=0,1"' ./scripts/docker-vllm.sh`.
 - `bench validate` is CPU-only and works in the simulator environment.
   Only recording new vLLM runs requires the GPU environment.
+- `docker-sim.sh` includes SciPy for new three-axis native MoE interpolation.
+  Its triangulation is prepared at table load; no GPU is needed for lookup.

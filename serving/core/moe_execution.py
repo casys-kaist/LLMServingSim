@@ -55,9 +55,6 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     if ctx.tp_size > 1 and dp > 1 and type(entry.get('sequence_parallel')) is not bool:
         raise ValueError('TP+DP MoE needs an audited sequence-parallel catalog flag')
     sp = bool(ctx.tp_size > 1 and dp > 1 and entry.get('sequence_parallel'))
-    if ctx.gate.routing_policy not in ('BALANCED', 'CUSTOM'):
-        _warn(ctx, f'policy={ctx.gate.routing_policy} needs local-assignment coverage beyond the balanced surface')
-        return False
     expected = dict(model=ctx.model, hardware=ctx.hardware, variant=ctx.perf_db['variant'],
                     global_experts=ctx.gate.E, global_top_k=ctx.gate.k,
                     hidden_dim=ctx.config['hidden_size'],
@@ -84,13 +81,15 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     domain = domains[0]
     if any(d != domain for d in domains):
         raise ValueError('Local TP ranks disagree on the modeled token domains')
+    if (ctx.gate.routing_policy not in ('BALANCED', 'CUSTOM')
+            and any(not table.independent_assignments for table in tables)):
+        _warn(ctx, f'policy={ctx.gate.routing_policy} requires independently measured assignment counts')
+        return False
     mode_value = getattr(bctx.batch, 'cudagraph_mode', 0)
     if mode_value not in (0,1,2):
         raise ValueError('Unknown model-forward execution mode')
-    # The modular MoE custom op is a graph-safe opaque region in either
-    # PIECEWISE or FULL mode; NONE uses the eager acquisition.
-    mode = 'graph' if mode_value else 'eager'
     local, gathered = domain['gate_rows'], domain['expert_rows']
+    routing = ctx.gate.route_ep(layer_num, batch_id, gathered, ctx.ep_total, native=True)
     h, k = expected['hidden_dim'], expected['global_top_k']
     weight_loc = get_device(ctx.placement, layer_num, 'moe', 'weights')
     parts = []
@@ -104,13 +103,9 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
         if payloads is not None and this_payloads != payloads:
             raise ValueError('MoE ranks disagree on dispatch tensor dtypes')
         payloads = this_payloads
-        local_e = contract['local_experts']
-        pairs = (gathered*k*local_e+ctx.gate.E-1)//ctx.gate.E
-        if ctx.gate.gate_curve is None:
-            active = round(local_e*(1-((ctx.gate.E-k)/ctx.gate.E)**gathered))
-        else:
-            active = round(ctx.gate._measured_activated(gathered)*local_e/ctx.gate.E)
-        active = min(local_e, pairs, max((pairs+gathered-1)//gathered, active))
+        pairs = routing.local_assignments[table.target.rank]
+        active = routing.activated_experts[table.target.rank]
+        mode = table.execution_mode(bool(mode_value))
         times = (table.local_ns('gate_routing', mode, local),
                  table.expert_ns(mode, gathered, active, pairs))
         if dp > 1:

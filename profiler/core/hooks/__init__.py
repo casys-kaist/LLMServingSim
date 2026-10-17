@@ -13,5 +13,6 @@ Modules:
     runner_capture.py      common warmup/capture validation
     cache_pages.py         physical shared-pool request allocation
     timings.py             catalog matching and normalization
-    moe_hook.py     MoE router forced-routing context manager
+    moe_hook.py     native MoE runner discovery
+    moe_components.py      eager native component measurement
 """

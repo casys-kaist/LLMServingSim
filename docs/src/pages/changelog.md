@@ -10,7 +10,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
-- Extend opt-in native MoE component profiling and lookup to DP1 full-EP targets.
+- Make eager native MoE component profiling the default at DP1, with full-EP
+  deployment targets, a configurable doubling grid and independent input-row,
+  active-expert and assignment axes. Remove isolated CUDA graph capture, its unused collector and
+  whole-block acquisition; retain historical table reads until remeasurement.
+  Use routing-policy work counts and cached physical-coordinate interpolation
+  for new tables without changing serving graph padding or communication costs.
   Preserve global routing geometry and target-specific backend selection; omit
   verified no-op boundaries and DP collectives while retaining TP output reduction.
   Tensor-sharded and unsupported native backends retain their separate coverage limits.

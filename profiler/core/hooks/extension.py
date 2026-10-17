@@ -11,11 +11,6 @@ from typing import Any
 
 from profiler.core.hooks.batch import Shot
 from profiler.core.hooks.history import complete_forward, prepare_history
-from profiler.core.hooks.moe_hook import (
-    ExpertRoute,
-    force_moe_routing,
-    single_moe_runner,
-)
 from profiler.core.hooks.sampler_shim import wrap_sampler_for_profiling
 from profiler.core.hooks.runner_capture import capture, verified_warmup
 from profiler.core.hooks.activity_collector import coverage_report
@@ -107,14 +102,15 @@ class Extension:
                 ``{canonical_name: {"vllm": cls, "within": parent, ...}}``
                 scoped to the category we're profiling (so timings for
                 unrelated layers aren't returned).
-            kind: One of ``"dense"``, ``"per_sequence"``, ``"attention"``,
-                ``"moe"``. Used to decide whether to forge MoE routing.
+            kind: Ordinary category name; MoE uses component RPCs.
             iterations: Number of timed forward passes (averaged via
                 the hook's invocation count). Default 3.
 
         Returns:
             List of ``TimingSample`` as plain dicts (pickled back to host).
         """
+        if kind == "moe":
+            raise ValueError("Whole-block MoE acquisition was removed; use native components")
         shot = Shot.hydrate(shot_dict)
         if type(iterations) is not int or iterations < 1:
             raise ValueError('A positive timed-forward count is required')
@@ -169,35 +165,11 @@ class Extension:
         # it is not part of the measured query latency.
         _fresh_batch = prepare_history(self.model_runner, shot)
 
-        # -- optional MoE routing forge --------------------------------
-        route: ExpertRoute | None = None
-        if kind == "moe":
-            if shot.experts is None or "activated" not in shot.experts:
-                raise ValueError(
-                    "moe shot missing experts.activated payload"
-                )
-            moe_runner = single_moe_runner(self.model_runner)
-            num_tokens = sum(new for new, _ in shot.requests)
-            route = ExpertRoute.forge(
-                moe_runner,
-                num_tokens=num_tokens,
-                activated_experts=int(shot.experts["activated"]),
-            )
-
-        # -- warm-up run, result discarded -----------------------------
-        # Warm the same expert distribution as the measured forwards. A
-        # natural gate can activate a different set and leave shape-dependent
-        # expert setup in the first timed call. Use separate contexts so both
-        # warmup and timed execution must actually consume forced routing.
-        with force_moe_routing(route):
-            warmup = verified_warmup(self.model_runner, shot,
-                            lambda: complete_forward(self.model_runner, _fresh_batch()))
-
-        # -- measured runs (N iterations, averaged) -------------------
-        with force_moe_routing(route):
-            measured = capture(self.model_runner,
-                               lambda: complete_forward(self.model_runner, _fresh_batch()),
-                               slice_, iterations, scope_contexts=scope_contexts)
+        warmup = verified_warmup(self.model_runner, shot,
+                        lambda: complete_forward(self.model_runner, _fresh_batch()))
+        measured = capture(self.model_runner,
+                           lambda: complete_forward(self.model_runner, _fresh_batch()),
+                           slice_, iterations, scope_contexts=scope_contexts)
         if native_profile_contract is not None:
             profile.validate_capture(native_profile_contract, measured, slice_, iterations, warmup)
         if invocation_contract is not None:
@@ -235,10 +207,7 @@ class Extension:
         of the catalog as a whole, and a layer bound in the wrong category
         still binds.
 
-        MoE routing is deliberately not forged. Which experts fire changes the
-        cost of the ``moe`` block, not whether anything binds it, and forging
-        would need an ``experts`` payload that has nothing to do with the
-        question being asked.
+        Coverage executes the model's natural routing.
         """
         shot = Shot.hydrate(shot_dict)
         if type(iterations) is not int or iterations < 1:

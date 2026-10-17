@@ -2,7 +2,7 @@
 
 A ``Shot`` is one unit of work we hand to the vLLM worker: a list of
 (new_tokens, history) pairs describing the shape of every request in a
-synthetic batch, plus optional MoE routing hints. A ``Shot`` is
+synthetic batch. A ``Shot`` is
 serialized to a plain dict for cross-process transport (via
 ``llm.collective_rpc``) and rehydrated inside the worker.
 
@@ -35,14 +35,9 @@ class Shot:
             entry per synthetic request. ``new_tokens`` is what we'll
             feed into ``execute_model`` this step; ``history`` is the
             KV the engine should treat as preloaded.
-        experts: Optional MoE payload. When set, the worker activates
-            exactly ``experts["activated"]`` experts via forced
-            routing (see moe_hook.force_moe_routing). None for
-            non-MoE shots.
     """
 
     requests: list[tuple[int, int]]
-    experts: dict[str, Any] | None = None
     # Query tokens per decode request. Carried rather than re-derived from
     # ``requests``, because with more than one query token a decode is
     # indistinguishable by shape from a prefill chunk -- which is exactly the
@@ -65,7 +60,6 @@ class Shot:
     def hydrate(cls, raw: dict[str, Any]) -> "Shot":
         return cls(
             requests=[tuple(r) for r in raw.get("requests", [])],
-            experts=raw.get("experts"),
             decode_q_len=int(raw.get("decode_q_len") or 1),
             n_prefill=int(raw.get("n_prefill") or 0),
         )
@@ -205,20 +199,6 @@ class Shot:
             )
         return cls(requests=reqs)
 
-    @classmethod
-    def moe(cls, total_tokens: int, activated_experts: int,
-            ep: int = 1) -> "Shot":
-        """Dense-style batch tagged with MoE routing metadata.
-
-        ``ep`` is the EP degree the booting engine stands in for. It rides on
-        the shot only so ``extract_points`` can label the row -- the worker
-        does not read it, because the slice is already baked into the engine's
-        expert count and top-k.
-        """
-        return cls(
-            requests=[(total_tokens, 0)],
-            experts={"activated": activated_experts, "ep": ep},
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -871,12 +871,9 @@ class ProfileArgs:
             ``engine.resolve_attention_max_kv``) before any grid is composed --
             so every reader downstream, including the meta the run records,
             sees one concrete number and never ``None``.
-        moe_ep_degrees: EP degrees to profile the MoE block at. Each one past
-            1 costs its own engine boot, because the slice a rank runs -- E/ep
-            experts, k/ep assignments per token -- is a config the engine is
-            built with, not a per-shot knob. Default ``(1,)``, which is the
-            whole model on one rank and what every bundle held before the axis
-            existed.
+        moe_dp_degrees: Target DP degrees for native MoE components. None
+            selects DP1 automatically for MoE acquisition; other categories
+            and coverage are unaffected. EP is TP times DP.
         profile_mtp: When set, boot with ``speculative_config`` so the drafter
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
@@ -932,15 +929,15 @@ class ProfileArgs:
     # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
-    moe_ep_degrees: tuple[int, ...] = (1,)
     moe_dp_degrees: tuple[int, ...] | None = None
-    """Explicit target DP degrees for native, separately timed MoE components.
+    """Target DP degrees for native, separately timed MoE components.
 
-    None retains legacy whole-block acquisition. This is target metadata, not
+    None selects DP1 automatically for MoE acquisition. This is target metadata, not
     the number of actual profiler processes. EP is resolved as TP times DP.
     DP1 measures local gate/routing and experts without DP dispatch/combine.
     """
     moe_rounds: int = 3
+    moe_grid_factor: float = 2.0
     profile_mtp: bool = False
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one

@@ -8,11 +8,11 @@ Each category knows three things:
   3. Which slice of the ModelSpec's catalog it cares about
      (``catalog_slice``).
 
-Four concrete categories:
+Ordinary categories:
     DenseCategory       token-parameterized layers (embedding, qkv_proj, ...)
     SequenceCategory    sequence-parameterized layers (lm_head, sampler)
     AttentionCategory   the unified prefill+decode+mixed attention grid
-    ExpertCategory      MoE block (tokens × activated_experts)
+    Native MoE components use the separate moe_profile acquisition driver.
 
 Adding a new profile kind is a matter of subclassing ``Category`` and
 registering it in ``categories_for()``.
@@ -28,7 +28,6 @@ from profiler.core.config import (
     Architecture,
     LayerEntry,
     ProfileArgs,
-    declares_moe,
 )
 if TYPE_CHECKING:
     from profiler.core.engine import RuntimeLimits
@@ -112,18 +111,8 @@ class LinearAttentionPoint:
     microseconds: float
 
 
-@dataclass(frozen=True)
-class ExpertPoint:
-    ep: int
-    tokens: int
-    activated_experts: int
-    microseconds: float
-
-
-# Union alias for writer.py's benefit.
 Point = (
     DensePoint | ContextDensePoint | SequencePoint | MtpPoint | AttentionPoint | LinearAttentionPoint
-    | ExpertPoint
 )
 
 
@@ -131,18 +120,8 @@ Point = (
 # Grid helpers (shared)
 # ---------------------------------------------------------------------------
 
-def _power_of_two_grid(max_value: int) -> list[int]:
-    """``[1, 2, 4, 8, ..., largest_pow2_le_max]``."""
-    values: list[int] = []
-    v = 1
-    while v <= max_value:
-        values.append(v)
-        v *= 2
-    return values
-
-
 def _token_grid(max_tokens: int) -> list[int]:
-    """Token grid shared by dense, per_sequence and whole-block MoE sweeps.
+    """Token grid shared by dense and per_sequence sweeps.
 
     Fine points at the low end (where decode-sized batches live),
     coarser at the high end. Matches the shape of vLLM's typical
@@ -891,96 +870,6 @@ def _split_linear_attention_shot(shot: Shot) -> tuple[int, int]:
     return (pre, n_dec)
 
 
-class ExpertCategory(Category):
-    """MoE block (gate + grouped experts), keyed by
-    (tokens, activated_experts)."""
-
-    name = "moe"
-    sink_filename = "moe.csv"
-    label = "moe"
-
-    def compose_shots(self, arch, args, limits, tp):
-        # MoE parameters come from the live HF config via RuntimeLimits,
-        # not from the yaml. If catalog.moe.* entries exist but the
-        # live config didn't expose num_experts / top_k, fail loudly.
-        if limits.num_experts is None or limits.top_k is None:
-            # One catalog now serves a whole family, so a ``catalog.moe`` entry
-            # says "this family has MoE checkpoints", not "this checkpoint is
-            # MoE". A dense member declares nothing MoE and simply has no
-            # expert sweep to run.
-            model_config = args.model_config or {}
-            if not declares_moe(model_config):
-                return
-            raise RuntimeError(
-                "catalog.moe entries are declared and the model config "
-                "mentions MoE, but num_experts / top_k could not both be "
-                "read from it. If this model uses a non-standard field "
-                "name, add it to MOE_NUM_EXPERTS_KEYS / MOE_TOP_K_KEYS in "
-                "profiler/core/config.py."
-            )
-        # Already rank-local under an EP override: ``hf_overrides`` shrank the
-        # expert count to E/ep and the top-k to k/ep, and ``probe_limits`` read
-        # them back off the live config. So the grid below is one rank's, and
-        # its ``activated`` floor is k/ep rather than k -- which is the whole
-        # point of the axis.
-        num_experts = limits.num_experts
-        top_k = limits.top_k
-        ep = max(1, int(getattr(limits, "moe_ep", 1)))
-
-        # The token curve need not be linear between powers of two. Use the
-        # common token grid, without backend-specific tile assumptions; the
-        # expert axis and physical feasibility checks remain independent.
-        for n_tokens in _token_grid(limits.max_num_batched_tokens):
-            # Cheap guards: n_tokens must fit context (with sampler
-            # +1 headroom) + cache.
-            if n_tokens >= limits.max_model_len:
-                continue
-            bs = limits.block_size
-            if ((n_tokens + bs - 1) // bs) * bs > limits.num_cache_tokens:
-                continue
-            for activated in _power_of_two_grid(num_experts):
-                # Minimum activations per call is top_k (every token
-                # votes for top_k experts).
-                if activated < top_k:
-                    continue
-                # Upper bound: each token contributes top_k distinct
-                # activations, so more than n_tokens*top_k is impossible.
-                if activated > min(num_experts, n_tokens * top_k):
-                    continue
-                yield Shot.moe(
-                    total_tokens=n_tokens,
-                    activated_experts=activated,
-                    ep=ep,
-                )
-
-    def extract_points(self, shot, timings, arch, tp):
-        total_tokens = sum(new for new, _ in shot.requests)
-        assert shot.experts is not None
-        activated = int(shot.experts["activated"])
-        if not timings:
-            return
-        sample = timings[0]
-        yield ExpertPoint(
-            ep=int(shot.experts.get("ep", 1)),
-            tokens=total_tokens,
-            activated_experts=activated,
-            microseconds=sample.microseconds,
-        )
-
-    def catalog_slice(self, arch):
-        return _entry_dict(arch.catalog.moe, arch)
-
-    def shot_key(self, shot):
-        total_tokens = sum(new for new, _ in shot.requests)
-        assert shot.experts is not None
-        # Must match the CSV row key minus ``layer``, and moe has no layer
-        # column -- so ``ep`` leads, exactly as it does in _KEY_FIELDS_BY_CATEGORY.
-        # Resume mode compares against this, so a bundle profiled before the
-        # axis existed preloads as ep=1 and is skipped rather than re-fired.
-        return (int(shot.experts.get("ep", 1)), total_tokens,
-                int(shot.experts["activated"]))
-
-
 # ---------------------------------------------------------------------------
 # Category registry
 # ---------------------------------------------------------------------------
@@ -989,10 +878,7 @@ def categories_for(arch: Architecture, tp: int) -> list[Category]:
     """Return the list of categories that should run for this (arch, tp).
 
     Excludes:
-      * Any category whose catalog slice is empty (e.g., ExpertCategory
-        for a dense model).
-      * ExpertCategory for tp != 1 (MoE is profiled once at tp=1;
-        simulator scales per-expert time by ep_size).
+      * Any category whose catalog slice is empty.
       * Any category for which every matching layer is tp_stable AND
         tp != 1 (replicate_tp_stable will fill it in from tp=1).
     """
@@ -1002,13 +888,10 @@ def categories_for(arch: Architecture, tp: int) -> list[Category]:
         (SequenceCategory(), arch.catalog.per_sequence),
         (AttentionCategory(), arch.catalog.attention),
         (LinearAttentionCategory(), arch.catalog.linear_attention),
-        (ExpertCategory(), arch.catalog.moe),
         (MtpCategory(), arch.catalog.mtp),
     ]
     for cat, entries in registry:
         if not entries:
-            continue
-        if isinstance(cat, ExpertCategory) and tp != 1:
             continue
         if tp != 1 and all(e.tp_stable for e in entries.values()):
             continue
@@ -1022,6 +905,5 @@ CATEGORY_BY_NAME: dict[str, type[Category]] = {
     SequenceCategory.name: SequenceCategory,
     AttentionCategory.name: AttentionCategory,
     LinearAttentionCategory.name: LinearAttentionCategory,
-    ExpertCategory.name: ExpertCategory,
     MtpCategory.name: MtpCategory,
 }

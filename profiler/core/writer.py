@@ -40,7 +40,6 @@ from profiler.core.categories import (
     AttentionPoint,
     Category,
     DensePoint,
-    ExpertPoint,
     Point,
     SequencePoint,
 )

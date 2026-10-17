@@ -78,17 +78,17 @@ doesn't.
 ### Native Kimi profiling
 
 Catalog `native_profile: hybrid-residual` selects Kimi-K3's adapter through
-the same `profile`, `slice` and `coverage` CLI, under a narrower
+ordinary category `slice` and `coverage` commands, under a narrower
 [native execution contract](./output-bundle#native-kimi-acquisition). For a small
 acquisition on a device supporting the admitted native backend, inside the
 vLLM 0.31 container:
 
 ```bash
-python -m profiler profile moonshotai/Kimi-K3 --hardware RTXPRO6000 \
+python -m profiler slice moonshotai/Kimi-K3 --hardware RTXPRO6000 \
   --tp 1 --dtype bfloat16 --max-model-len 1024 \
   --max-num-batched-tokens 16 --max-num-seqs 2 \
   --attention-max-kv 128 --gpu-memory-utilization 0.68 \
-  --measurement-iterations 2 --skip-skew --out /runs/kimi-profile
+  --measurement-iterations 2 --group dense --tp-refresh 1 --out-root /runs/kimi-profile
 ```
 
 The small token range is an acquisition example, not a recommended accuracy grid
@@ -109,7 +109,9 @@ publications and changed execution semantics require fresh acquisition, not a
 metadata conversion. Source hashes and exact runtime versions are provenance;
 actual API/backend, shape, dtype and layout checks still apply. Configuration-derived planning is not evidence
 of arbitrary device support. Explicit `--skip-skew` is
-required for a full run. TP>1, native DP/EP acquisition, MTP, shape overrides and
+required by the full-run adapter, but full profiles now fail because quantized
+MoE component acquisition is unsupported. Ordinary slices do not replace the
+historical whole-block MoE table. TP>1, native DP/EP acquisition, MTP, shape overrides and
 non-BF16 activation/KV paths are not admitted by this contract. Use `coverage`
 with the same model/device and sufficient engine limits to inspect actual CUDA
 ownership; it does not prove end-to-end serving accuracy.
@@ -143,12 +145,13 @@ See **[Cluster config → Hardware facts are inherited](../reference/cluster-con
    there.
 2. Picks the matching architecture YAML by `model_type`.
 3. Writes the model config to a tmpdir; spins vLLM up against that.
-4. Sweeps the catalog's **dense / per_sequence / attention / linear_attention /
-   moe** shot grids (and the separate MTP pass when requested),
+4. Sweeps the catalog's **dense / per_sequence / attention / linear_attention**
+   shot grids (and the separate MTP pass when requested),
    writing CSVs under `profiler/perf/<HW>/<MODEL>/<variant>/tp<N>/`.
 5. (Unless `SKIP_SKEW` is set) Runs the heterogeneous-decode
    skew sweep and fits per-bucket alphas to `skew_fit.csv`.
-6. Writes `meta.yaml` summarizing the run.
+6. Acquires native MoE components for MoE models, at DP1 by default.
+7. Writes `meta.yaml` summarizing the run.
 
 For each TP degree in `TP_DEGREES`, the profiler emulates that TP
 on a single GPU by dividing the model's per-rank shapes via
@@ -174,23 +177,33 @@ unset to inherit the CLI defaults.
 
 ## MoE parallelism
 
-For supported unquantized local or DP+EP models, explicit CLI `--dp` selects
-[native component profiling](./native-moe-components), with EP=TP*DP and
-preserved global expert IDs/top-k. It accepts `profile` or `slice --group moe`;
-`--moe-rounds` controls repeated contexts. Target ranks are emulated on one
-physical GPU, and communication is modeled separately. In `profile.sh`, set
-`DP_DEGREES` and optionally `MOE_ROUNDS`. Use `DP_DEGREES="1,2"` for local
-DP1 and DP+EP acquisition. DP1 omits native no-op prepare/finalize and DP
-collectives; TP>1 still means full EP, not tensor-sharded experts. Omit
-`MOE_EP_DEGREES` because EP is derived from TP and DP. Do not
-combine native acquisition with `ONLY_SKEW`, `PROFILE_MTP` or `FORCE`; use a
-fresh `OUT_ROOT` to remeasure an immutable native contract.
+For supported unquantized local or DP+EP models, MoE acquisition defaults to
+[native components](./native-moe-components) at DP1, preserving global expert
+IDs and top-k. `--dp` selects other target degrees for `profile` or
+`slice --group moe`; EP is TP*DP. Each rank is emulated on one physical GPU,
+with communication modeled separately. In either shell template,
+`DP_DEGREES="1,2"` selects local and DP+EP targets and `MOE_ROUNDS` controls
+repeated contexts. DP1 omits native no-op prepare/finalize and DP collectives;
+TP>1 still means full EP, not tensor-sharded experts.
 
-Without `--dp`, `--moe-ep-degrees` (`MOE_EP_DEGREES`) selects retained whole-block `moe.csv`
-profiles. That path shrinks the expert/top-k checkpoint shape and approximates
-rank-local work; it is not the native DP+EP execution contract. Do not combine
-the two acquisition modes or infer DP/backend coverage from the legacy EP axis.
-See [Output bundle](./output-bundle) for compatibility and fallback behavior.
+New component measurements are eager only, without isolated CUDA graph capture.
+Expert sampling covers tokens N, active local experts A and local assignments M.
+`--moe-grid-factor` (`MOE_GRID_FACTOR`, default `2`) controls geometric spacing
+on all three axes, with mandatory feasible geometry corners. This grid does not
+follow serving CUDA capture sizes. Sampling and conditioning checks do not by
+themselves establish full-model accuracy.
+
+Omitted DP does not affect dense models, coverage, ordinary category slices or
+skew-only runs. A full `--profile-mtp` run acquires target components separately
+from its drafter pass. Explicit `--dp` still cannot be combined with
+`--only-skew` or `--profile-mtp`. Native contracts are immutable: use a fresh
+`OUT_ROOT` to remeasure instead of `FORCE`.
+
+Whole-block acquisition and `--moe-ep-degrees` have been removed. Historical
+`moe.csv` files remain readable until supported components are remeasured.
+Quantized, shared-expert and other unsupported native paths fail explicitly;
+no removed whole-block acquisition is substituted. See
+[Output bundle](./output-bundle) for compatibility and fallback behavior.
 
 ## Attention grid
 
@@ -498,9 +511,9 @@ flags for any non-empty value, including `0`; unset them to disable.
 | `--max-model-len` | from the model config | `MAX_MODEL_LEN` |
 | `--num-hidden-layers` | category/checkpoint-derived minimal stack | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
-| `--moe-ep-degrees` | `1` | `MOE_EP_DEGREES` |
-| `--dp` | unset (native acquisition opt-in) | `DP_DEGREES` |
+| `--dp` | automatic DP1 for MoE acquisition | `DP_DEGREES` |
 | `--moe-rounds` | `3` | `MOE_ROUNDS` |
+| `--moe-grid-factor` | `2.0` | `MOE_GRID_FACTOR` |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |
 | `--linear-attn-chunk` | config `chunk_size`, else vLLM's `FLA_CHUNK_SIZE` | `LINEAR_ATTN_CHUNK` |
 | `--attention-max-kv` | resolved context minus `max(decode_q_len) + 1` | `ATTENTION_MAX_KV` |
@@ -583,14 +596,10 @@ single lightweight PyTorch/Kineto context. The default is 3; the per-call
 figure uses the catalog's invocation normalization. Repetition reduces sampling
 noise but does not guarantee an error bound across models and hardware.
 
-For whole-block MoE shots, warmup and timed calls use the same forced expert
-ID assignment. Native routing kernels still run; only the selected IDs are
-replaced. Their original weight tensor, including dtype and scaling, passes
-through without an extra GPU weight fill or normalization. This synthetic
-conditioning is not trained routing or numerical equivalence. A backend that
-bypasses the routing hook is rejected.
-See the [whole-block table contract](./output-bundle#moecsv-legacy-whole-block-moe-profiles)
-for refresh requirements and the distinction from native DP+EP components.
+Native MoE components use their separate eager acquisition and conditioning
+protocol. Expert work is measured at feasible token/active-expert/assignment
+coordinates; no isolated CUDA graph is captured. See the
+[native component contract](./native-moe-components).
 
 Collection overhead is separate from KV preparation and device execution.
 The collector records CPU ownership scopes and native CUDA activities, with
@@ -623,12 +632,12 @@ hard to tell apart, but because **at one layer some of them do not exist**. A
 `o_proj` are never built, their rows go missing from `dense.csv`, and the
 simulator charges those layers zero. The axes are also a conservative proxy for
 what a category needs — DeepSeek's `dense` would in truth serve at one layer,
-since `moe` is its own category — and the slack is left in on purpose:
+since native MoE components are measured separately — and the slack is left in on purpose:
 the multidimensional attention sweep is much larger than the dense sweep.
 :::
 
-Ordinary bindings default to **parent calls × catalog occurrences**; whole-block
-MoE defaults to its own invocation count. A catalog's explicit `normalization`
+Ordinary bindings default to **parent calls × catalog occurrences**; historical
+whole-block MoE measurements used the block's own invocation count. A catalog's explicit `normalization`
 can select either rule. Top-level parent-normalized bindings use the timed-forward
 count as their parent count. Declared function/method scopes retain these units
 without adding descendant parent counts; see the
@@ -694,12 +703,13 @@ changing metadata cannot convert them. Native contract checks are separate
 from context coverage, capacity admission and end-to-end accuracy validation.
 
 Native DeepSeek-V3.2's combined `dsa_attention_tail` includes indexing work and
-keeps the full-context axis; do not cap its grid at `index_topk`. The admitted
-representation requires `--tp 1 --moe-ep-degrees 1`, eager BF16 activations with
-the original FP8 weight configuration, and no `--dp` or `--profile-mtp`.
-Complete dense, per-sequence, attention and whole-block MoE acquisition together
-in a fresh bundle. A short attention-only prefix cannot certify the head or MoE
-tables. See [native DSA acquisition](./output-bundle.md#native-dsa-acquisition)
+keeps the full-context axis; do not cap its grid at `index_topk`. The
+historical representation requires TP1, eager BF16 activations with the original
+FP8 weight configuration, and no MTP. Its complete bundle includes historical
+whole-block MoE timings. New full acquisition is blocked because native quantized
+MoE components are unsupported; ordinary category slices and coverage remain
+available. A short attention-only prefix cannot certify the head or replace the
+historical MoE table. See [native DSA acquisition](./output-bundle.md#native-dsa-acquisition)
 for live mode checks and the explicit duration-only consumer boundary.
 
 ### `--profile-mtp` — profiling the drafter
@@ -799,12 +809,13 @@ python -m profiler slice meta-llama/Llama-3.1-8B \
 | `--tp-refresh` | ✓ | The single TP degree to refresh. Must be a member of `--tp` |
 | `--group` | ✓ | One of `dense`, `per_sequence`, `attention`, `linear_attention`, `moe`, `mtp` |
 
-It measures only that TP/category and updates `tp<N>/<group>.csv` plus the
-relevant `meta.yaml` fields. Compatible rows resume by default; `--force`
-replaces the selected category. A whole-block MoE slice can boot a separate
-engine for each requested EP degree. It errors out if the
-architecture YAML has no entries in `catalog.<group>` — asking for
-`moe` on a dense model, for instance.
+Ordinary slices measure only that TP/category and update `tp<N>/<group>.csv`
+plus the relevant `meta.yaml` fields. Compatible rows resume by default;
+`--force` replaces the selected ordinary category. A MoE slice instead writes
+native deployment component tables and their root metadata, defaults to DP1,
+and requires a fresh output root for remeasurement. It errors when the checkpoint
+or native adapter does not support the requested acquisition; a dense checkpoint
+cannot supply a MoE slice.
 
 For [coupled layouts](./output-bundle#runtime-selected-component-layouts), a slice
 can leave sibling categories pending after an acquisition change. It does not
@@ -992,7 +1003,7 @@ profiler/perf/<HARDWARE>/<MODEL>/<variant>/
     ├── dense.csv
     ├── per_sequence.csv
     ├── attention.csv
-    ├── moe.csv         (MoE models only)
+    ├── moe_components/ (native MoE deployment tables)
     ├── skew.csv         (skew-enabled runs)
     └── skew_fit.csv     (skew-enabled runs)
 ```

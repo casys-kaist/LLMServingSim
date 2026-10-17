@@ -46,8 +46,8 @@ python -m profiler slice Qwen/Qwen3-30B-A3B-Instruct-2507 \
 Use `--dp 1` for a local target or `--dp 1,2` to acquire both independently.
 DP1 with TP1 is a single-GPU MoE block. At TP greater than one, this option
 means whole experts distributed over EP=TP, not tensor-sharded experts.
-Do not reuse one geometry's measurements for the other, or combine `--dp`
-with the legacy `--moe-ep-degrees` sweep. To refresh TP2,
+Do not reuse one geometry's measurements for the other. Whole-block acquisition
+and its `--moe-ep-degrees` option have been removed. To refresh TP2,
 use `--tp 1,2 --tp-refresh 2`; the existing CLI still requires TP1 in its
 session list, but a slice measures only the selected degree.
 
@@ -59,8 +59,9 @@ tensor geometry, not a trained router's distribution. Collective execution
 and CPU time are excluded. Target and acquisition parallelism are recorded
 separately, so a TP2/DP2 table is not evidence of a four-GPU communication run.
 
-Omitting `--dp` preserves the legacy whole-block acquisition. The explicit-DP
-path also works in `profile`, replacing only its MoE category. A MoE slice
+Omitting `--dp` selects DP1 for MoE acquisition. The component path also works
+in `profile`, replacing only its MoE category; dense models and non-MoE slices
+do not acquire MoE components. A MoE slice
 does not restamp the main engine, attention grid or skew metadata.
 
 ## Shapes and measurement protocol
@@ -82,12 +83,27 @@ as `local_execution` in the root contract. No zero-time or synthetic-copy row
 is added. A backend requiring additional work is rejected rather than silently
 omitted or replaced by another backend.
 
-The token grid grows geometrically to the configured local budget and its
-derived gathered maximum. Expert coordinates retain global top-k and contain
-only feasible local active-expert counts at the balanced local assignment total.
-The grid is derived from configuration and model geometry, not benchmark requests.
+`--moe-grid-factor` (default **2**) controls the geometric grids. Local component
+rows range up to the local budget; expert input rows reach the derived gathered
+maximum. Expert measurements have three independent coordinates:
 
-Each component is measured in eager and CUDA graph modes. Launch-correlated
+| Axis | Meaning |
+| --- | --- |
+| N (`tokens`) | Rows presented to the expert kernel, including remote choices |
+| A (`activated_experts`) | Distinct active experts owned by this rank |
+| M (`local_assignments`) | Local token-expert pairs; not unique dispatched tokens |
+
+Every point retains the checkpoint's global top-k `k`. For local expert count
+`L` and global expert count `E`, positive-work points satisfy
+`max(A, N * max(0, k - (E - L))) <= M <= N * min(k, A)`.
+The grid includes feasible endpoints and slope-change corners as well as the
+balanced assignment total wherever feasible. All-remote `A=M=0` is measured
+separately when remote experts can satisfy top-k. At EP1, `M=N*k`; the third
+axis therefore collapses without redundant measurements. The grid derives from
+configuration and geometry, not benchmark requests or measured latencies.
+
+New components are measured **eagerly only**, with no isolated CUDA graph
+creation or replay. Launch-correlated
 CUDA activities are attributed to individual forwards without adding CPU
 durations or launch gaps. `--moe-rounds` controls independent measurement
 contexts; `--measurement-iterations` is the minimum forwards per context.
@@ -99,12 +115,22 @@ Bank count is derived from local expert weight bytes and GPU L2 capacity, with
 a minimum of two banks. The `B` and `2B` arms use identical warmup and timed
 forward counts covering complete cycles. Every expert point must pass the
 recorded 3% pooled-median stability check before the higher-bank measurement is
-published. Graph variants use independent allocator pools and are checked
-against independent eager output copies, including after all captures.
+published. Independent weight-bank outputs are compared against cloned eager
+references, including DP1 output alias checks.
 
 These are explicit measurement-conditioning rules, not a guarantee of exact
 full-model cache behavior. Local gate/finalization regions remain isolated-warm.
 Kernel selection and arbitrary trained routing distributions can still differ.
+Different within-rank histograms can share N/A/M: the table approximates them
+with a balanced histogram over A active experts, not an exact learned router.
+
+Serving CUDA graph padding remains active. New eager timings are queried at
+the already-resolved padded rows; historical graph rows are not relabelled.
+The current acquisition grid is geometric, **not an automatic sweep of serving
+capture sizes**. If capture sizes become sampling coordinates, local rows must
+first be transformed into expert rows through the target's DP/SP geometry;
+capture sizes alone never determine A or M. Eager measurement at such coordinates
+would still not capture or replay a graph.
 
 ## Files, resume and lookup
 
@@ -128,6 +154,7 @@ The root record has `schema: moe-components` and `entries`, each containing
 `target`, a TP-relative table `path`, `contract` and `coverage`. The contract
 describes geometry, target TP/DP/EP/rank, expert ownership, dtypes, native backend
 and measurement conditioning, with acquisition observations kept as provenance.
+New contracts record `modes: [eager]` and `expert_sampling` (axis names and factor).
 Coverage records completion, completed rounds and the table checksum. Its compact
 `conditioning_summary` contains `checked_points`, `failed_points` and
 `max_relative_change`; the tolerance stays in `contract.expert_conditioning`.
@@ -136,7 +163,7 @@ are not published in metadata.
 `samples.jsonl` preserves individual forwards and control measurements for resume
 and auditing; runtime lookup needs only root metadata and the component CSV.
 Acquisition failures may additionally retain `failures.jsonl` and a diagnostic
-Chrome trace for the failed graph-attribution check. These are optional debugging
+Chrome trace for a failed attribution check. These are optional debugging
 artifacts emitted on failure, not normal-path metadata or simulator inputs; do
 not commit diagnostic artifacts as part of a published profile bundle.
 New acquisitions do not write standalone index, contract or coverage JSON files.
@@ -161,10 +188,18 @@ a new runtime entry. A historical standalone index is consulted only when the ro
 MoE owner is absent; a malformed or incomplete root entry cannot fall back to it.
 
 Serving automatically selects a matching index entry. Local components use
-one-dimensional interpolation; experts use bounded interpolation within the
-measured feasible token/active-expert surface. Local assignment totals are checked,
-not treated as an independently measured arbitrary-routing axis. Lookups are cached
-with bounded capacity. There is no fitted neural predictor or per-workload multiplier.
+one-dimensional interpolation. New expert tables build an affine triangulation
+of measured N/A/M coordinates once at load time, removing dependent dimensions
+such as EP1's `M=N*k`. Lookup uses at most four measured vertices with nonnegative
+weights; exact rows are returned directly and queries are cached with bounded
+capacity. There is no online nearest-neighbour search, fitted predictor or
+per-workload multiplier. Out-of-support queries do not extrapolate.
+
+The router supplies active counts and local assignments. BALANCED/CUSTOM retain
+rounded expected rank loads; RR/RAND count their selected pairs. CUSTOM's active
+count curve does not provide a rank-load histogram. Historical balanced-total
+component tables keep their old interpolation and mode choice, and support only
+their previously admitted routing policies. Retained `moe.csv` reads are unchanged.
 
 Missing deployment coverage or an unsupported routing policy warns and retains
 the legacy EP-table path, whose DP/backend accuracy is unverified. Corrupt contracts,
@@ -195,7 +230,7 @@ The current adapter requires positive DP, full EP, linear expert placement,
 and unquantized native modular experts with standard activation layout. Shared
 experts, monolithic/quantized backends, deferred finalization, input-weighted
 routing, padded hidden dimensions, biased or redundant experts, LoRA, EPLB and tensor-sharded experts need
-their own adapters. BALANCED and the supported CUSTOM active-count curve use
-the balanced assignment surface; arbitrary rank histograms are not covered.
+their own adapters. New tables admit rank-level N/A/M variation but do not resolve
+arbitrary within-rank expert histograms or establish trained-routing accuracy.
 No coverage of other models, hardware or execution paths should be inferred
 solely from a matching file format.

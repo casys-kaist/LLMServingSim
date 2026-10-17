@@ -49,7 +49,7 @@ LLMServingSim/
 │   │   ├── runner.py           # Orchestration (spin_up → categories → spin_down)
 │   │   ├── config.py           # Architecture / ProfileArgs / engine defaults
 │   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
-│   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
+│   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / MTP
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
 │   │   ├── skew_calibration.py # Offline reference-aligned fit + supported-N lookup
 │   │   ├── skew_plan.py        # Dynamic heterogeneous distribution coverage
@@ -448,30 +448,18 @@ be the machine rather than the flag.
 
 The profiler Docker targets **vLLM v0.31.0 / CUDA 13**
 (`vllm/vllm-openai:v0.31.0`). Changing the environment pin does not certify
-every catalog/backend or remeasure the historical bundles. The MoE hook forges expert routing by
-patching `_compute_routing` on the live router instance — every symbol under
+every catalog/backend or remeasure the historical bundles. Every symbol under
 `profiler/core/hooks/` is a vLLM *internal* API and is version-specific. v0.28
 restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
 `FusedMoEFactory` returning a `MoERunner` that owns a `router` (`BaseRouter`)
 and a `RoutedExperts`.
 
-Whole-block forced routing must execute the original `_compute_routing` before
-substituting precomputed expert IDs; return the exact native weight tensor,
-preserving its values, dtype and scaling. Do not fill uniform weights or add
-GPU weight normalization. Otherwise the whole-block timing loses native routing
-work or feeds the expert kernel a different weight distribution. Both warmup
-and timed contexts use the requested ID assignment and must consume the hook;
-monolithic backends that bypass it cannot silently publish that grid. Keep the
-surrounding routing template intact and restore the exact previous instance
-override on exit, including on failure. Require two strided native output
-tensors of shape `(tokens, top_k)` on the input device, floating weights and
-int32/int64 IDs; reject extra/shared slots rather than truncating them. These
-checks inspect metadata, not weight values. Cyclic assignments control distinct
-experts, not arbitrary load imbalance or trained-gate numerical equivalence:
-native weights are paired with synthetic IDs. Record this preparation in the
-ordinary method metadata. Changed routing semantics require remeasurement,
-never relabeling or silently extending incompatible rows.
-Native DP+EP components retain a separate contract.
+Whole-block forced-routing acquisition has been removed. New native component
+acquisition retains the original global expert count and top-k. Gate/routing
+executes natively; expert-only stimuli vary local active experts and assignments
+with balanced local histograms and uniform weights. These are independent
+measurement boundaries, not trained-gate numerical equivalence. Historical
+whole-block CSVs remain readable and must never be relabelled as components.
 
 ### Vocab-parallel target endpoints
 
@@ -1109,7 +1097,9 @@ profiled GPU work or add CPU launch/preparation time to simulated GPU latency.
 Use matched query/KV shapes, execution modes and measurement boundaries when
 checking a residual. Tick-level throughput aggregates and end-to-end agreement
 cannot identify a per-layer error or establish a universal per-step adjustment.
-Native MoE components have separate eager/graph acquisition contracts.
+New native MoE components use eager-only acquisition, without isolated graph
+capture. Serving graph padding is separate and still determines lookup rows.
+Historical eager/graph component tables retain their measured mode selection.
 
 Calibrate communication from primitive measurements using the backend's
 actual cost model, not by fitting model benchmark errors. Keep raw samples,
@@ -2252,7 +2242,7 @@ weights, inputs and batching, not a universal correction for that architecture.
   selection. It is not a control that holds everything except the distinct
   count fixed, and end-to-end agreement cannot bound an individual MoE table's
   error without separating other costs.
-- Legacy whole-block acquisition and native DP+EP components have different
+- Historical whole-block measurements and native components have different
   contracts. Neither a measured count curve nor matching CSV columns establish
   arbitrary-histogram or deployment coverage.
 
@@ -2297,8 +2287,9 @@ geometry and head rows remain separate from model-forward padding.
 
 ### Native local and DP+EP component profiles
 
-Explicit profiler `--dp` uses the native component adapter rather than shrinking
-the checkpoint's global expert count/top-k. The target is full EP=TP*DP with
+MoE acquisition defaults to native DP1 components; `--dp` selects other degrees.
+The removed whole-block path no longer shrinks global expert count/top-k.
+The target is full EP=TP*DP with
 DP>=1, independently of the one-GPU acquisition process. `MoeTarget` is shared
 with serving: local gate/finalization rows and gathered expert rows differ,
 and sequence-parallel wrappers require per-member ceil division before gathering.
@@ -2310,7 +2301,7 @@ not the DP+EP selection: native priorities can differ. NoDPEP preparation must
 preserve the input and return no scale or token metadata; with a NoOP reduction,
 experts write directly to the caller's output alias. Observe no CUDA work in
 prepare/finalize before recording `local_execution` and omit `finalize_copy`
-entirely. Preserve the alias in every conditioned eager/graph variant. DP1
+entirely. Preserve the alias in every conditioned eager variant. DP1
 traces contain gate/routing, experts and optional TP AllReduce, no DP collectives.
 Full EP at TP>1 owns whole experts and is not plain tensor-sharded TP. Missing
 DP1 native coverage falls back without consuming a mismatched EP table.
@@ -2331,12 +2322,12 @@ contracts, observations, coverage and CSV checksums. Paths locate tables; folder
 names do not establish contract identity. No new index/contract/coverage JSON
 sidecars are written. `moe_components` metadata is separately owned; a MoE refresh must not
 restamp attention/skew or the main engine. Individual CUDA activities are counted
-once per forward, in separate eager/graph measurements. No CPU duration is added.
+once per forward during eager measurements. No CPU duration is added.
 No-op resume preserves original runtime observations. Record distinct later
 `acquisition_contexts` only after validating new work; this list is not a count
 of durable or completed measurement rows.
 Expert measurements rotate positions and L2-sized weight banks, compare B/2B
-under identical complete-cycle work, independently verify graph outputs and
+under identical complete-cycle work, independently verify eager outputs and
 require the recorded stability gate before publication. Those rules condition
 the measurement; they do not prove full-model cache equivalence.
 Publish only `coverage.conditioning_summary` with `checked_points`,
@@ -2345,12 +2336,26 @@ Publish only `coverage.conditioning_summary` with `checked_points`,
 raw resume checkpoints, not published metadata. Preserve runtime observations,
 geometry, dtypes, parallelism, backend, completion and the CSV integrity check.
 
+New plans use `--moe-grid-factor` (default 2) for input rows N, active local
+experts A and local assignments M, including feasible endpoints, envelope
+corners and balanced-total anchors. At EP1 M=N*k collapses the assignment axis.
+`expert_sampling` belongs in the root contract; CSV columns remain unchanged.
+The grid is not yet selected from serving capture sizes. New acquisition must
+not create CUDA graphs; eager timing and serving-padded coordinates are distinct.
+
 Serving automatically consumes matching tables for the supported modular,
-unquantized local or DP+EP path. Local components use token interpolation, experts use
-the feasible token/active-expert surface with balanced assignment totals, and
-caches are bounded. Missing deployment/policy coverage warns and retains the
+unquantized local or DP+EP path. Local components use token interpolation.
+New experts use physical N/A/M interpolation: construct affine-rank-reduced
+simplices at table load, then use nonnegative barycentric weights and bounded
+query caches. Do not normalize by query-dependent feasible ranges: doing so
+can reduce assignment work during interpolation. Check feasible geometry and
+measured support; never extrapolate. Historical balanced-total tables retain
+their original interpolation and graph/eager selection. The routing policy
+supplies A/M; BALANCED and measured active-count CUSTOM use rounded expectations,
+RR/RAND use selected pairs and native rank ownership. Within-rank imbalance is
+not a fourth measured axis. Missing deployment/policy coverage warns and retains the
 legacy EP table; corruption and out-of-support queries are errors. Shared,
-quantized, monolithic, deferred, tensor-sharded and arbitrary-routing variants
+quantized, monolithic, deferred and tensor-sharded variants
 need separate contracts, not guessed aliases. Keep historical acquisition
 fingerprints as provenance; do not relabel old samples after changing a method.
 
@@ -2421,13 +2426,10 @@ permute cost does not vanish with the expert count. The curve saturates from
 ep=8 on (28.1 / 27.5 / 27.7 us on DeepSeek) for the same reason: once `k/ep`
 floors at 1 only one expert plus that fixed cost is left.
 
-`--moe-ep-degrees 1,2,4,8,...` sweeps it. Each degree past 1 costs one engine
-boot and the same ~57 shots, so a full sweep is ~10 minutes per model. The
-slice is written into the materialized **config file**, not passed as
-`hf_overrides`, for the same reason `_cap_mtp_modules` is: on a wrapped
-checkpoint the expert fields live under `text_config`, where a top-level
-override never lands (MiniMax-M3 is exactly that shape). `n_group` must divide
-the local expert count, which costs DeepSeek-V3.2 only `ep=64`.
+These are historical reduced-expert measurements, not the current acquisition
+plan or runtime estimate. `--moe-ep-degrees` and its config-slicing path were
+removed. New component sweeps use `--tp`, `--dp` and unchanged global top-k;
+unsupported native adapters fail rather than falling back to old acquisition.
 
 The simulator picks the table for the instance's **total** EP degree and falls
 back to the nearest profiled one with a one-shot warning. Not interpolated, for

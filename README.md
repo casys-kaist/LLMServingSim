@@ -65,10 +65,10 @@ Actual backend/layout checks govern admission, not source hashes or folder names
 CSV publication checks protect resume after an interrupted replacement without
 changing measured timings.
 Native [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
-supports local DP1 and DP+EP targets with deployment-matched execution boundaries
-and cached coverage selection.
-Whole-block MoE sweeps condition expert IDs while preserving native
-routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
+defaults to local DP1 and supports DP+EP targets with deployment-matched execution
+boundaries. New eager-only tables separate input rows, active local experts and
+local assignments; the configurable grid defaults to doubling. Historical
+whole-block and component tables remain readable until remeasurement.
 Recurrent warmup checks respect native metadata layouts without adding CPU time;
 the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)
 states their scope separately from model support.

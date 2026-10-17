@@ -198,6 +198,9 @@ of hidden-state output. Sequence-parallel wrappers dispatch over EP and restore
 TP output with an AllGather; non-SP wrappers dispatch within DP and restore
 TP output with an AllReduce when TP is greater than one. The complete padded
 DP token vector determines local/gathered rows, including SP ceil division.
+New expert tables additionally use the routing policy's active local expert and
+assignment counts. Eager acquisition does not remove serving graph padding:
+the same resolved rows drive component lookup and collective sizes.
 
 Chakra chains every collective a marker carries and preserves the latest
 compute/communication dependency through skipped expert ranks. Reinstall the

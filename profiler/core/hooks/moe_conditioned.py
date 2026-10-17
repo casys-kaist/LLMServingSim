@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 
 from ..moe_conditioning import expert_conditioning
-from .graph_measurement import extract_graph_forwards
 from .eager_measurement import extract_eager_forwards
 from .moe_expert_region import NativeExpertRegion
 from .skew_measurement import MARKER
@@ -14,6 +13,9 @@ from .skew_measurement import MARKER
 
 @torch.inference_mode()
 def measure_experts(owner, point, iterations, failure_dir=None):
+    if point['mode'] != 'eager':
+        raise ValueError('Native MoE component acquisition requires eager mode')
+
     from .moe_components import ProfileCall
 
     n, active, pairs = (point[k] for k in ('tokens','activated_experts','local_assignments'))
@@ -48,10 +50,9 @@ def measure_experts(owner, point, iterations, failure_dir=None):
     output_alias = torch.empty_like(hidden) if owner.target.dp == 1 else None
     calls = [[ProfileCall(bank.bind(hidden,route,weights,output_alias=output_alias)) for route in ids]
              for bank in owner.expert_banks[:maximum]]
-    graph_calls = []
-    for b,bank_calls in enumerate(calls):
-        captured_bank = []
+    for bank_calls in calls:
         for r,call in enumerate(bank_calls):
+            # Clone before another bank reuses the native output workspace.
             reference = calls[0][r]().clone()
             for _ in range(3): result=call()
             if output_alias is not None and result is not output_alias:
@@ -59,28 +60,6 @@ def measure_experts(owner, point, iterations, failure_dir=None):
             if not torch.isfinite(reference).all().item():
                 raise ValueError('Non-finite native expert reference')
             torch.testing.assert_close(result,reference,atol=0,rtol=0)
-            if point['mode']=='graph':
-                graph = torch.cuda.CUDAGraph()
-                # Controls replay different subsets/orders of the variants.
-                # Do not rely on a shared graph allocator's lifetime order.
-                with torch.cuda.graph(graph): captured=call()
-                def replay(graph=graph,captured=captured):
-                    graph.replay()
-                    return captured
-                wrapped=ProfileCall(replay)
-                torch.testing.assert_close(wrapped(),reference,atol=0,rtol=0)
-                captured_bank.append(wrapped)
-            elif point['mode']!='eager':
-                raise ValueError('Unknown native execution mode')
-        graph_calls.append(captured_bank)
-    if point['mode']=='graph':
-        # Validate again after every graph has been captured, in the actual
-        # interleaved replay order, against independent eager values.
-        for r in range(len(ids)):
-            reference=calls[0][r]().clone()
-            for b in range(maximum):
-                torch.testing.assert_close(graph_calls[b][r](),reference,atol=0,rtol=0)
-        calls=graph_calls
     results=[]
     for arm,banks in enumerate(plan['bank_counts']):
         cycle = plan['cycles'][arm]
@@ -98,10 +77,7 @@ def measure_experts(owner, point, iterations, failure_dir=None):
                     choose(j)()
         torch.cuda.synchronize()
         try:
-            if point['mode']=='graph':
-                raw=extract_graph_forwards(hook.profiler.kineto_results,count)
-            else:
-                raw=extract_eager_forwards(hook.profiler.kineto_results,count)
+            raw=extract_eager_forwards(hook.profiler.kineto_results,count)
         except Exception as exc:
             if failure_dir is not None:
                 import tempfile

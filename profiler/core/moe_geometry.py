@@ -60,6 +60,14 @@ class ExpertPlacement:
             raise ValueError("No valid global top-k routing exists for this point")
         return lower, upper
 
+    def active_bounds(self, tokens: int) -> tuple[int, int]:
+        """Positive-work support; the all-remote case is a separate surface."""
+        if tokens < 1:
+            raise ValueError("A measured gathered batch must contain tokens")
+        local = len(self.local_global_ids)
+        minimum = max(1, self.global_top_k - (self.global_experts - local))
+        return minimum, min(local, tokens * self.global_top_k)
+
     def balanced_route(self, tokens: int, activated_local: int,
                        local_assignments: int) -> tuple[tuple[int, ...], ...]:
         """Construct a balanced local histogram with an explicit assignment total.

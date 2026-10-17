@@ -30,7 +30,7 @@ from profiler.core.categories import (
     _entry_dict,
     categories_for,
 )
-from profiler.core.config import Architecture, ProfileArgs, load_architecture
+from profiler.core.config import Architecture, ProfileArgs, declares_moe, load_architecture
 from profiler.core.engine import (
     probe_limits,
     resolve_attention_max_kv,
@@ -164,12 +164,7 @@ def _fire_one_category(
     measured rows; only completed shots reach them. ``--force`` replaces
     the selected category rather than appending to its prior acquisition.
 
-    ``wipe`` overrides that for a category swept more than once in a single
-    run. ``moe`` is: it fires once per EP degree, each on its own engine, and
-    the degrees share one CSV because ``ep`` is a column. With ``--force``
-    every pass started from an empty sink, so each one erased the degrees
-    before it and the file ended up holding only the last -- 50 rows at ep=8
-    where four degrees had been measured. Only the first pass may wipe.
+    ``wipe`` overrides the session's replacement policy for this category.
     """
     if wipe is None:
         wipe = args.force
@@ -385,9 +380,15 @@ def run_full(
 
     log.banner(args, variant_root)
 
-    if args.moe_dp_degrees is not None:
+    component_args = None
+    if not args.only_skew and (args.moe_dp_degrees is not None
+                              or any(declares_moe(holder) for holder in (
+                                  args.model_config or {},
+                                  (args.model_config or {}).get("text_config") or {}))):
         from .moe_profile import validate_request
-        validate_request(arch, args)
+        component_args = dataclasses.replace(
+            args, moe_dp_degrees=args.moe_dp_degrees or (1,), profile_mtp=False)
+        validate_request(arch, component_args)
 
     last_engine_kwargs: dict[str, Any] | None = None
     # Keyed by TP, not a single "last": the engine resolves a different
@@ -425,15 +426,10 @@ def run_full(
         # 4 layers for its MLP axis and 1 for attention, and the attention
         # sweep is the expensive one.
         wanted = categories_for(arch, tp)
-        moe_eps = tuple(args.moe_ep_degrees or (1,))
         by_depth: dict[int, list] = {}
         for category in wanted:
             if category.name == "mtp":
                 continue  # second pass, with the drafter built
-            if category.name == "moe" and args.moe_dp_degrees is not None:
-                continue
-            if category.name == "moe" and 1 not in moe_eps:
-                continue  # every requested EP slice needs its own engine
             depth = minimal_layer_count_for(
                 args.model_config or {}, profile.stack_axes(category) if profile else category.stack_axes)
             by_depth.setdefault(depth, []).append(category)
@@ -507,37 +503,6 @@ def run_full(
             finally:
                 spin_down(llm, tmpdir)
 
-        # Per-EP pass for the MoE block. ep=1 rode the main engine above (it
-        # *is* the main engine's expert count), so only the other degrees need
-        # a boot -- each one a different model: E/ep experts, k/ep assignments
-        # per token. That is what makes the rank-local operating point a
-        # measured grid point instead of a clamp against the ep=1 floor.
-        moe_category = next(
-            (c for c in categories_for(arch, tp) if c.name == "moe"), None)
-        if moe_category is not None and not args.only_skew and args.moe_dp_degrees is None:
-            for ep in (e for e in moe_eps if e != 1):
-                with log.stage(f"TP={tp}  booting vLLM engine at EP={ep} "
-                               f"for the MoE slice"):
-                    llm, _, tmpdir = spin_up(args, tp, moe_category.stack_axes,
-                                             moe_ep=ep, native_profile=profile)
-                    ep_limits = dataclasses.replace(
-                        probe_limits(llm, args), moe_ep=ep)
-                log.info(
-                    "TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
-                    tp, ep, ep_limits.num_experts, ep_limits.top_k,
-                )
-                try:
-                    # ep=1 rode the main engine above and has already wiped
-                    # under --force; these passes add to that file.
-                    if _fire_one_category(
-                        llm, moe_category, arch, args, ep_limits, tp, tp_root,
-                        wipe=False,
-                    ):
-                        acquired_categories.add(moe_category.name)
-                finally:
-                    spin_down(llm, tmpdir)
-
-
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
         # and its entries are pinned to the drafter's wrapper, so nothing can
@@ -561,9 +526,9 @@ def run_full(
                 finally:
                     spin_down(llm, tmpdir)
 
-    if args.moe_dp_degrees is not None:
+    if component_args is not None:
         from .moe_profile import run_components
-        run_components(arch_path, args, args.tp_degrees, variant_root)
+        run_components(arch_path, component_args, args.tp_degrees, variant_root)
 
     # After every tp has run, copy tp_stable rows from tp1 into the rest.
     # Skip when only_skew=True (nothing new to replicate).
@@ -615,22 +580,23 @@ def run_slice(
         profile.validate_request(args)
     variant_root = _variant_root(out_root, args)
 
-    if group not in CATEGORY_BY_NAME:
+    if group not in CATEGORY_BY_NAME and group != "moe":
         raise ValueError(
             f"unknown group {group!r}; must be one of "
-            f"{sorted(CATEGORY_BY_NAME)}"
+            f"{sorted((*CATEGORY_BY_NAME, 'moe'))}"
         )
     if tp not in args.tp_degrees:
         raise ValueError(
             f"tp={tp} is not in the session's tp_degrees ({args.tp_degrees})"
         )
 
-    if args.moe_dp_degrees is not None:
-        if group != "moe":
-            raise ValueError("Explicit DP applies only to the MoE slice")
+    if group == "moe":
         from .moe_profile import run_components
-        run_components(arch_path, args, [tp], variant_root)
+        component_args = dataclasses.replace(args, moe_dp_degrees=args.moe_dp_degrees or (1,))
+        run_components(arch_path, component_args, [tp], variant_root)
         return
+    if args.moe_dp_degrees is not None:
+        raise ValueError("Explicit DP applies only to the MoE slice")
 
 
     category_cls = CATEGORY_BY_NAME[group]
@@ -654,34 +620,16 @@ def run_slice(
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)
 
-    # The MoE block is the one category whose engine is a *slice* of the model
-    # rather than the whole of it, so a refresh may need several boots. Every
-    # other group is one engine and ``moe_ep`` stays 1.
-    eps = (tuple(args.moe_ep_degrees or (1,)) if group == "moe" else (1,))
-    engine_kwargs: dict = {}
-    limits = None
-    acquired = False
-    for ep in eps:
-        stage = f"TP={tp}  booting vLLM engine ({depth} layer(s))"
-        if ep != 1:
-            stage += f" at EP={ep}"
-        with log.stage(stage):
-            llm, engine_kwargs, tmpdir = spin_up(
-                args, tp, axes, moe_ep=ep, native_profile=profile)
-            limits = dataclasses.replace(probe_limits(llm, args), moe_ep=ep)
-            args = dataclasses.replace(
-                args, attention_max_kv=resolve_attention_max_kv(args, limits),
-            )
-        if ep != 1:
-            log.info("TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
-                     tp, ep, limits.num_experts, limits.top_k)
-        try:
-            acquired = _fire_one_category(
-                llm, category, arch, args, limits, tp, tp_root,
-                wipe=(args.force and ep == eps[0]),
-            ) or acquired
-        finally:
-            spin_down(llm, tmpdir)
+    with log.stage(f"TP={tp}  booting vLLM engine ({depth} layer(s))"):
+        llm, engine_kwargs, tmpdir = spin_up(args, tp, axes, native_profile=profile)
+        limits = probe_limits(llm, args)
+        args = dataclasses.replace(
+            args, attention_max_kv=resolve_attention_max_kv(args, limits),
+        )
+    try:
+        acquired = _fire_one_category(llm, category, arch, args, limits, tp, tp_root)
+    finally:
+        spin_down(llm, tmpdir)
 
     # A slice refresh at tp=1 may invalidate prior replication; redo it.
     if tp == 1:
