@@ -1,14 +1,18 @@
 """Fail-closed recurrent warmup validation; never used during timing.
 
 Dispatch is by installed cache specs and an explicit metadata field contract,
-not model names. Currently certifies the ordinary non-spec, cache-mode-none
-GDN metadata schema shared by vLLM 0.28 and 0.31. Other recurrent schemas and
+not checkpoint names. Certifies ordinary non-spec, cache-mode-none GDN and the
+source-checked native 0.31 Kimi KDA schema with their distinct prefill views.
+Other recurrent schemas and
 active speculative/checkpoint protocols require their own audited contract.
 """
 from collections import Counter
 from dataclasses import dataclass
 import inspect
+import hashlib
+from functools import lru_cache
 from numbers import Integral
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -95,16 +99,50 @@ KNOWN_FIELDS = frozenset('''num_prefills num_prefill_tokens num_decodes num_deco
     chunk_indices chunk_offsets prefill_query_start_loc prefill_state_indices
     prefill_has_initial_state nums_dict batch_ptr token_chunk_offset_ptr'''.split())
 
+_KDA_FIELDS = frozenset('''spec_token_start non_spec_token_start
+    flashinfer_prefill_query_start_loc flashinfer_prefill_seq_order
+    recoverssm_commit recoverssm_context checkpoint'''.split())
+_KDA_UNUSED_GDN_FIELDS = ('chunk_indices', 'chunk_offsets', 'prefill_query_start_loc',
+                          'prefill_state_indices', 'prefill_has_initial_state')
+
+
+@lru_cache(maxsize=None)
+def _kda_source_checked(cls):
+    path = Path(inspect.getfile(cls))
+    if hashlib.sha256(path.read_bytes()).hexdigest() != (
+            '6d03fe92018da9b205bbd56c00ebe1481e27c30d400e5b3694d3b25e4605724b'):
+        raise ValueError('Unreviewed native KDA metadata source')
+
+
+def _ordinary_kda(metadata):
+    cls = type(metadata)
+    if (cls.__module__, cls.__name__) != (
+            'vllm.models.kimi_k3.nvidia.kda_metadata', 'KimiK3KDAMetadata'):
+        return False
+    _kda_source_checked(cls)
+    # Native builder: no speculative partition offsets in ordinary mode;
+    # FlashKDA prepares its own chunks and consumes the whole non-spec view
+    # (including the decode prefix of a mixed batch). It never fills GDN's
+    # prefill-only FLA view. Other optional execution paths need their own audit.
+    if not _KDA_FIELDS.issubset(vars(metadata)):
+        raise ValueError('Incomplete native KDA metadata schema')
+    for field in (*_KDA_FIELDS, *_KDA_UNUSED_GDN_FIELDS):
+        if getattr(metadata, field, None) is not None:
+            raise ValueError('Active KDA metadata path is not certified: ' + field)
+    return True
+
 
 def verify_final_state(metadata, expected, geometry_rows):
     """Verify the actual metadata handed to the model, after group reuse."""
     fields = set(vars(metadata))
+    is_kda = _ordinary_kda(metadata)
+    known = KNOWN_FIELDS | _KDA_FIELDS if is_kda else KNOWN_FIELDS
     required = {'num_prefills', 'num_prefill_tokens', 'num_decodes', 'num_decode_tokens',
                 'num_spec_decodes', 'num_spec_decode_tokens', 'num_actual_tokens',
                 'non_spec_query_start_loc', 'non_spec_state_indices_tensor'}
-    if not required.issubset(fields) or fields - KNOWN_FIELDS:
+    if not required.issubset(fields) or fields - known:
         raise ValueError(f'Unsupported recurrent metadata field contract: {type(metadata).__name__}; '
-                         f'missing={sorted(required-fields)}, extra={sorted(fields-KNOWN_FIELDS)}')
+                         f'missing={sorted(required-fields)}, extra={sorted(fields-known)}')
     if (_integer(metadata.num_spec_decodes, 'num_spec_decodes') != 0 or
             _integer(metadata.num_spec_decode_tokens, 'num_spec_decode_tokens') != 0):
         raise ValueError('Active speculative recurrent metadata is not certified')
@@ -143,7 +181,7 @@ def verify_final_state(metadata, expected, geometry_rows):
             raise ValueError('Malformed recurrent initial-state flags')
         if flags[:active] != [history > 0 for _, history in geometry_rows]:
             raise ValueError('Recurrent initial-state flags differ from request histories')
-    if n_prefill:
+    if n_prefill and not is_kda:
         p_queries, p_active = _starts(getattr(metadata, 'prefill_query_start_loc', None),
                                       'prefill_query_start_loc')
         p_ids = _array(getattr(metadata, 'prefill_state_indices', None), 1, 'prefill_state_indices')

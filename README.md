@@ -56,6 +56,9 @@ against recorded benchmarks are CPU-only. See the
 acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
 contracts. Whole-block MoE sweeps condition expert IDs while preserving native
 routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
+Recurrent warmup checks respect native metadata layouts without adding CPU time;
+the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)
+states their scope separately from model support.
 See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components,

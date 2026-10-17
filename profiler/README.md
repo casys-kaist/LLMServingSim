@@ -17,6 +17,10 @@ Ordinary and skew acquisition use one lightweight PyTorch/Kineto collector:
 explicit module scopes retain CUDA kernels, copies and memsets without recording
 Python stacks, tensor shapes or memory snapshots. Geometry and finite-output
 checks run outside timing; native DP+EP components keep their eager/graph contract.
+Recurrent warmup checks distinguish GDN's prefill-only views from native KDA's
+complete non-speculative view without relaxing state-page or token checks.
+See the [acquisition contract](../docs/docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
+for the supported metadata paths and remeasurement requirements.
 Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
 Qwen's GDN output projection. This describes simulator communication, not a new
 profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).

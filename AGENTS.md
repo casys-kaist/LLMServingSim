@@ -908,8 +908,15 @@ errors through the host CoverageReport and CLI exit status.
 
 Untimed recurrent warmup checks must bind each query/history pair to its own
 assigned state pages, including reused backend metadata. The audited ordinary
-GDN contract uses cache mode `none`; reject unknown schemas and active
-speculative/checkpoint partitions. MTP shots require every requested canonical
+GDN contract uses cache mode `none`. Native vLLM 0.31 KDA has a separate,
+source-checked contract: it consumes the complete non-speculative view, including
+the decode prefix of a mixed batch, and does not populate GDN's prefill-only
+views. Keep state-page, query/history, initial-state and token-conservation checks
+for both. Reject unknown sources/schemas and active speculative, checkpoint,
+RecoverSSM or optional FlashInfer partitions. This warmup guard does not certify
+a model's catalog, acquisition grid or serving support. Changed acquisition
+fingerprints require remeasurement, not metadata relabeling.
+MTP shots require every requested canonical
 entry, rather than publishing a partially observed drafter table.
 
 `hooks/cache_pages.py` allocates all cache groups from one shared physical

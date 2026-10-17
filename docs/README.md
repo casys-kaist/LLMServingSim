@@ -71,6 +71,8 @@ The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-
 defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, acquisition identity columns and
 interrupted-start recovery and catalog/runtime-bound skew resume; existing tables
 are not automatically converted.
+It distinguishes GDN and source-checked KDA warmup metadata contracts without
+equating a metadata check with complete model or serving support.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
 catalog-declared TP output reductions and their activation-sized payloads.
 The profiler guides distinguish runtime ownership contexts from GPU timing and

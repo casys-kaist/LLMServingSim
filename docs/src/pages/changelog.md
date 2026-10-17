@@ -40,6 +40,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Validate native KDA recurrent metadata without requiring GDN-only prefill
+  views. Preserve query/history and state-page checks, reject unsupported
+  metadata modes, and require remeasurement after acquisition identity changes.
 - Record source-qualified per-engine KV capacities at benchmark startup,
   distinguishing vLLM 0.31's DP aggregate from an individual scheduler pool.
   Preserve raw fields and report unsupported or incomplete observations explicitly.

@@ -142,9 +142,17 @@ forward invalidates the shot. Warmup validates geometry and finite output outsid
 timing. A failed check cannot produce a successful acquisition.
 
 Recurrent-only prefixes also verify query/history pairs and their assigned state
-pages, including metadata reused between cache groups. This guard currently
-accepts ordinary non-speculative GDN metadata with cache mode `none`; unknown
-schemas or active speculative/checkpoint partitions fail explicitly. MTP
+pages, including metadata reused between cache groups. With cache mode `none`,
+the guard accepts ordinary non-speculative GDN metadata and a separately
+source-checked native vLLM 0.31 KDA metadata layout. KDA consumes the complete
+non-speculative query/state view, including mixed batches' decode prefix, rather
+than filling GDN's prefill-only views. Both paths retain query/history, state-page,
+initial-state and token-conservation checks; neither changes the native forward.
+Unknown sources/schemas and active speculative, checkpoint, RecoverSSM or optional
+FlashInfer metadata paths fail explicitly. This check is outside timing and is
+not a claim of complete Kimi catalog, acquisition-grid or serving support.
+Its source is part of both acquisition fingerprints: old rows remain readable,
+but an incompatible acquisition cannot resume them by relabeling metadata. MTP
 acquisition requires every entry in its category slice: partially captured
 drafter work cannot be saved as a complete table.
 
