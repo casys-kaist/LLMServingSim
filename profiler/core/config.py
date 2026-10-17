@@ -938,6 +938,7 @@ class ProfileArgs:
 
     None retains legacy whole-block acquisition. This is target metadata, not
     the number of actual profiler processes. EP is resolved as TP times DP.
+    DP1 measures local gate/routing and experts without DP dispatch/combine.
     """
     moe_rounds: int = 3
     profile_mtp: bool = False

@@ -114,17 +114,23 @@ class MoeComponentTable:
             raise ValueError('Model, hardware or tensor geometry differs from the measured MoE contract')
         placement = ExpertPlacement(contract['global_experts'],contract['global_top_k'],
                                     target.ep,target.rank)
-        if (target.dp < 2 or contract.get('placement') != 'linear'
-                or contract.get('expert_map') != list(placement.expert_map)
+        expected_map = None if target.ep == 1 else list(placement.expert_map)
+        if (contract.get('placement') != 'linear'
+                or contract.get('expert_map') != expected_map
                 or contract.get('local_experts') != len(placement.local_global_ids)):
             raise ValueError('MoE expert ownership differs from the target rank')
         parallel = contract['expert_parallel_config']
         expected_parallel = dict(tp_size=1,tp_rank=0,pcp_size=1,pcp_rank=0,
             dp_size=target.dp,dp_rank=target.dp_rank,ep_size=target.ep,ep_rank=target.rank,
-            sp_size=target.tp if target.sequence_parallel else 1,use_ep=True,
+            sp_size=target.tp if target.sequence_parallel else 1,use_ep=target.ep > 1,
             all2all_backend='allgather_reducescatter',enable_eplb=False)
         if any(parallel.get(k) != v for k,v in expected_parallel.items()):
             raise ValueError('MoE backend or parallel configuration differs from the supported execution path')
+        if contract.get('components') != list(target.components):
+            raise ValueError('MoE GPU components differ from the supported target execution')
+        if target.dp == 1 and contract.get('local_execution') != dict(
+                prepare='identity', finalize='output_alias_noop', expert_output_alias=True):
+            raise ValueError('DP1 requires verified identity preparation and aliased no-op finalization')
         region = contract['expert_region']
         if (region.get('schema') != 'native-modular-expert-region'
                 or region.get('expert_parallel_config') != parallel
@@ -152,7 +158,7 @@ class MoeComponentTable:
                 n, a, p = (int(row[k]) for k in ('tokens', 'activated_experts', 'local_assignments'))
                 us = float(row['time_us'])
                 key = (component, mode, n, a, p)
-                if (component not in ('gate_routing', 'experts', 'finalize_copy')
+                if (component not in target.components
                         or mode not in ('eager', 'graph') or n < 1
                         or not math.isfinite(us) or us <= 0 or key in self.exact):
                     raise ValueError('Invalid or duplicate native MoE coordinate')
@@ -192,14 +198,14 @@ class MoeComponentTable:
         for pairs in (*self.local.values(), *self.expert.values(), *self.zero.values()):
             pairs.sort()
         self.tokens = {mode: sorted(n for m,n in self.expert if m == mode) for mode in ('eager', 'graph')}
-        if any(not self.tokens[m] or any((c,m) not in self.local for c in ('gate_routing','finalize_copy'))
+        if any(not self.tokens[m] or any((c,m) not in self.local for c in target.components if c != 'experts')
                for m in ('eager','graph')):
             raise ValueError('Missing component or execution mode')
         self.contract, self.target = contract, target
 
     @lru_cache(maxsize=4096)
     def local_ns(self, component, mode, tokens):
-        if component not in ('gate_routing', 'finalize_copy') or mode not in self.tokens:
+        if component == 'experts' or component not in self.target.components or mode not in self.tokens:
             raise ValueError('Invalid local component or mode')
         if type(tokens) is not int or tokens < 1:
             raise ValueError('Positive integer local token count required')

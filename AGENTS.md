@@ -2263,7 +2263,7 @@ A matching native component table is preferred; otherwise the retained
 whole-block `moe.csv` path is used with a warning for unverified DP coverage.
 Other all-to-all backends need separate execution contracts.
 
-Native modular execution keeps local gate/routing, three ordered AllGathers
+Native DP+EP modular execution keeps local gate/routing, three ordered AllGathers
 (hidden states, top-k weights, top-k IDs), gathered expert computation,
 ReduceScatter and local finalization separate. Tensor widths follow the
 recorded dtypes. Sequence-parallel wrappers dispatch over EP and restore the
@@ -2295,15 +2295,25 @@ active experts, not the number of unique tokens with a local expert from
 work must keep separate row domains on the native path. Attention/request
 geometry and head rows remain separate from model-forward padding.
 
-### Native DP+EP component profiles
+### Native local and DP+EP component profiles
 
 Explicit profiler `--dp` uses the native component adapter rather than shrinking
 the checkpoint's global expert count/top-k. The target is full EP=TP*DP with
-DP>=2, independently of the one-GPU acquisition process. `MoeTarget` is shared
+DP>=1, independently of the one-GPU acquisition process. `MoeTarget` is shared
 with serving: local gate/finalization rows and gathered expert rows differ,
 and sequence-parallel wrappers require per-member ceil division before gathering.
 Pass the full already-padded DP vector through both wave-completion paths; its
 sum/minimum cannot reconstruct the sequence-parallel geometry.
+
+DP1 is non-SP in this adapter. Select its backend from the resolved target,
+not the DP+EP selection: native priorities can differ. NoDPEP preparation must
+preserve the input and return no scale or token metadata; with a NoOP reduction,
+experts write directly to the caller's output alias. Observe no CUDA work in
+prepare/finalize before recording `local_execution` and omit `finalize_copy`
+entirely. Preserve the alias in every conditioned eager/graph variant. DP1
+traces contain gate/routing, experts and optional TP AllReduce, no DP collectives.
+Full EP at TP>1 owns whole experts and is not plain tensor-sharded TP. Missing
+DP1 native coverage falls back without consuming a mismatched EP table.
 
 Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
 capability. `defer_moe_finalize` is a request flag in 0.28 and a request method
@@ -2333,7 +2343,7 @@ raw resume checkpoints, not published metadata. Preserve runtime observations,
 geometry, dtypes, parallelism, backend, completion and the CSV integrity check.
 
 Serving automatically consumes matching tables for the supported modular,
-unquantized DP+EP path. Local components use token interpolation, experts use
+unquantized local or DP+EP path. Local components use token interpolation, experts use
 the feasible token/active-expert surface with balanced assignment totals, and
 caches are bounded. Missing deployment/policy coverage warns and retains the
 legacy EP table; corruption and out-of-support queries are errors. Shared,
@@ -2341,7 +2351,7 @@ quantized, monolithic, deferred, tensor-sharded and arbitrary-routing variants
 need separate contracts, not guessed aliases. Keep historical acquisition
 fingerprints as provenance; do not relabel old samples after changing a method.
 
-Trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,
+DP+EP trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,
 ReduceScatter, finalize-copy, then the wrapper's optional TP AllGather (SP) or
 AllReduce (non-SP). Chakra must chain every marker collective and retain the
 last dependency through ranks it skips. The ragged Ring envelope and independent

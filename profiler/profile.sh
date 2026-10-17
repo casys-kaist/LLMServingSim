@@ -90,11 +90,11 @@ HARDWARE="RTXPRO6000"
 
 # --- MoE target parallelism -------------------------------------------------
 # DP_DEGREES selects native DP+EP component acquisition on one physical GPU.
-# Supported targets require DP >= 2; EP is derived as TP * DP, retaining the
+# DP=1 includes local native components; EP is derived as TP * DP, retaining the
 # global expert IDs and top-k. Leave MOE_EP_DEGREES unset in this mode; native
 # acquisition cannot be combined with ONLY_SKEW, PROFILE_MTP or FORCE. Use a
 # new OUT_ROOT to remeasure an immutable native contract.
-# DP_DEGREES="2"                  # --dp; comma-separated target DP degrees
+# DP_DEGREES="1,2"                # --dp; comma-separated target DP degrees
 # MOE_ROUNDS=3                    # independent native measurement contexts
 # Without DP_DEGREES, the retained whole-block path profiles the requested EP
 # degrees with a reduced checkpoint shape. This is not native DP+EP coverage.

@@ -43,7 +43,10 @@ def measure_experts(owner, point, iterations, failure_dir=None):
     histogram = Counter(e for r in routes for e in r if owner.place.expert_map[e]>=0)
     if len(histogram)!=active or sum(histogram.values())!=pairs:
         raise ValueError('Conditioned routing changed the requested local work')
-    calls = [[ProfileCall(bank.bind(hidden,route,weights)) for route in ids]
+    # NoDPEP writes the already-reduced expert result directly into the
+    # caller's output. A distinct final buffer would add a non-native copy.
+    output_alias = torch.empty_like(hidden) if owner.target.dp == 1 else None
+    calls = [[ProfileCall(bank.bind(hidden,route,weights,output_alias=output_alias)) for route in ids]
              for bank in owner.expert_banks[:maximum]]
     graph_calls = []
     for b,bank_calls in enumerate(calls):
@@ -51,6 +54,8 @@ def measure_experts(owner, point, iterations, failure_dir=None):
         for r,call in enumerate(bank_calls):
             reference = calls[0][r]().clone()
             for _ in range(3): result=call()
+            if output_alias is not None and result is not output_alias:
+                raise ValueError('Native DP1 expert did not preserve its output alias')
             if not torch.isfinite(reference).all().item():
                 raise ValueError('Non-finite native expert reference')
             torch.testing.assert_close(result,reference,atol=0,rtol=0)

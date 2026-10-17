@@ -38,21 +38,23 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     if not counts:
         if ctx.dp_sum_total_len:
             raise ValueError('Native DP+EP needs the complete padded DP token vector')
-        _warn(ctx, 'DP=1 prepare/finalize is not profiled by this component contract')
-        return False
-    if (sum(counts) != ctx.dp_sum_total_len or min(counts) != ctx.dp_min_total_len
+        counts = (bctx.total_len,)
+    elif (sum(counts) != ctx.dp_sum_total_len or min(counts) != ctx.dp_min_total_len
             or counts[ctx.dp_rank] != bctx.total_len):
         raise ValueError('MoE token vector differs from this DP wave or sub-batch')
     dp = len(counts)
     if ctx.local_ep != ctx.tp_size or ctx.ep_total != ctx.tp_size*dp:
-        raise ValueError('Native MoE requires full TP*DP expert parallelism')
+        if dp > 1:
+            raise ValueError('Native MoE requires full TP*DP expert parallelism')
+        _warn(ctx, 'native tables cover full TP*DP expert parallelism, not tensor-sharded experts')
+        return False
     entries = ctx.perf_db['architecture']['catalog'].get('moe') or {}
     if len(entries) != 1:
         raise ValueError('Native MoE needs one unambiguous catalog component binding')
     entry = next(iter(entries.values()))
-    if ctx.tp_size > 1 and type(entry.get('sequence_parallel')) is not bool:
+    if ctx.tp_size > 1 and dp > 1 and type(entry.get('sequence_parallel')) is not bool:
         raise ValueError('TP+DP MoE needs an audited sequence-parallel catalog flag')
-    sp = bool(ctx.tp_size > 1 and entry.get('sequence_parallel'))
+    sp = bool(ctx.tp_size > 1 and dp > 1 and entry.get('sequence_parallel'))
     if ctx.gate.routing_policy not in ('BALANCED', 'CUSTOM'):
         _warn(ctx, f'policy={ctx.gate.routing_policy} needs local-assignment coverage beyond the balanced surface')
         return False
@@ -105,15 +107,18 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
             active = round(ctx.gate._measured_activated(gathered)*local_e/ctx.gate.E)
         active = min(local_e, pairs, max((pairs+gathered-1)//gathered, active))
         times = (table.local_ns('gate_routing', mode, local),
-                 table.expert_ns(mode, gathered, active, pairs),
-                 table.local_ns('finalize_copy', mode, local))
+                 table.expert_ns(mode, gathered, active, pairs))
+        if dp > 1:
+            times += (table.local_ns('finalize_copy', mode, local),)
         gate_bytes = contract.get('gate_weight_bytes')
         expert_bytes = contract.get('expert_weight_bytes')
         if type(gate_bytes) is not int or type(expert_bytes) is not int:
             raise ValueError('Native MoE profile must record measured component weight sizes')
         parts.append((times, gate_bytes, expert_bytes))
     group_size = ctx.ep_total if sp else dp
-    if sp or ctx.tp_size == 1:
+    if dp == 1:
+        dispatch_dims = None
+    elif sp or ctx.tp_size == 1:
         dispatch_dims = ctx.ep_dim
     else:
         if ctx.ep_dim is None or ctx.tp_dim is None or len(ctx.ep_dim) != len(ctx.tp_dim):
@@ -124,20 +129,25 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     chunks = domain['dispatch_rows']
     # Retain the existing analytical ragged Ring envelope. This is an
     # equivalent network payload, not a claim that NCCL packs the tensors.
-    remote_rows = gathered-min(chunks)
-    dispatch_sizes = [(remote_rows*b+group_size-2)//(group_size-1) for b in payloads]
-    combine_size = ((remote_rows*h*ctx.fp+group_size-2)//(group_size-1))*group_size
-    dispatch = ' '.join(_collective('ALLGATHER',dispatch_dims,size) for size in dispatch_sizes)
-    combine = _collective('REDUCESCATTER',dispatch_dims,combine_size)
+    dispatch_sizes, combine_size = [], 0
+    dispatch = combine = 'NONE 0'
+    if dp > 1:
+        remote_rows = gathered-min(chunks)
+        dispatch_sizes = [(remote_rows*b+group_size-2)//(group_size-1) for b in payloads]
+        combine_size = ((remote_rows*h*ctx.fp+group_size-2)//(group_size-1))*group_size
+        dispatch = ' '.join(_collective('ALLGATHER',dispatch_dims,size) for size in dispatch_sizes)
+        combine = _collective('REDUCESCATTER',dispatch_dims,combine_size)
     restore = 'NONE 0'
     if ctx.tp_size > 1:
         restore = _collective('ALLGATHER' if sp else 'ALLREDUCE',ctx.tp_dim,local*h*ctx.fp)
 
-    # Three rank-local phases keep each rank's cost, with collectives
-    # between phases. The final expert marker also preserves PP boundaries.
-    for phase, name, end in ((0,'moe_gate_routing',dispatch),
-                             (1,'moe_experts',combine),
-                             (2,'moe_finalize_copy',restore)):
+    # DP1 has no dispatch/combine or finalize copy. The final expert marker
+    # still carries its optional TP reduction and preserves PP boundaries.
+    phases = [(0,'moe_gate_routing',dispatch), (1,'moe_experts',restore)]
+    if dp > 1:
+        phases = [(0,'moe_gate_routing',dispatch), (1,'moe_experts',combine),
+                  (2,'moe_finalize_copy',restore)]
+    for phase, name, end in phases:
         for local_rank, (times, gate_bytes, expert_bytes) in enumerate(parts):
             lines.append((f'EXPERT {local_rank} NONE 0',))
             rows = gathered if phase == 1 else local
@@ -150,7 +160,8 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
         if weight_loc != 'LOCAL':
             power_acc.dram_weight_bytes += sum(g+e for _,g,e in parts)
         power_acc.link_data_bytes += sum(total_ring_data(s,group_size,collective='allgather') for s in dispatch_sizes)
-        power_acc.link_data_bytes += total_ring_data(combine_size,group_size,collective='reducescatter')
+        if dp > 1:
+            power_acc.link_data_bytes += total_ring_data(combine_size,group_size,collective='reducescatter')
         if ctx.tp_size > 1:
             power_acc.link_data_bytes += total_ring_data(local*h*ctx.fp,ctx.tp_size,
                 collective='allgather' if sp else 'allreduce')

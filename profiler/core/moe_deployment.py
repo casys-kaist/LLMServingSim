@@ -35,6 +35,13 @@ class MoeTarget:
     def tp_rank(self):
         return self.rank % self.tp
 
+    @property
+    def components(self):
+        """GPU regions in the admitted modular, already-reduced expert path."""
+        if self.dp == 1:
+            return ('gate_routing', 'experts')
+        return ('gate_routing', 'experts', 'finalize_copy')
+
     def token_domains(self, padded_dp_tokens):
         """Receive already-padded counts, never infer graph padding here."""
         if len(padded_dp_tokens) != self.dp:

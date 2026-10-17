@@ -86,7 +86,9 @@ def points_for(contract):
     place = ExpertPlacement(contract['global_experts'], contract['global_top_k'], target.ep, target.rank)
     local = target.token_domains((contract['local_token_budget'],)*target.dp)['gate_rows']
     for mode in contract['modes']:
-        for component in ('gate_routing', 'finalize_copy'):
+        for component in target.components:
+            if component == 'experts':
+                continue
             for n in grid(local):
                 yield dict(component=component, mode=mode, tokens=n,
                            activated_experts=-1, local_assignments=-1)
@@ -300,8 +302,8 @@ def validate_request(arch, args):
         raise ValueError("Native contracts are immutable; use a new output root instead of --force")
     if args.profile_mtp or args.only_skew:
         raise ValueError("Native components do not profile a drafter or skew")
-    if any(type(dp) is not int or dp < 2 for dp in args.moe_dp_degrees):
-        raise NotImplementedError("Native DP+EP components require DP>=2; DP1 prepare/finalize support is separate")
+    if any(type(dp) is not int or dp < 1 for dp in args.moe_dp_degrees):
+        raise ValueError("Native component target DP degrees must be positive integers")
     if args.moe_rounds < 1 or args.measurement_iterations < 1:
         raise ValueError("Measurement repetitions must be positive")
     config = args.model_config or {}
@@ -317,9 +319,10 @@ def run_components(arch_path, args, tps, variant_root):
     arch = load_architecture(arch_path)
     validate_request(arch, args)
     entry = next(iter(arch.catalog.moe.values()))
-    if any(tp > 1 for tp in tps) and entry.sequence_parallel is None:
+    if (any(tp > 1 for tp in tps) and any(dp > 1 for dp in args.moe_dp_degrees)
+            and entry.sequence_parallel is None):
         raise ValueError("TP+DP requires an audited MoE sequence_parallel catalog binding")
-    targets = [MoeTarget(tp, dp, tp*dp, rank, bool(entry.sequence_parallel and tp>1))
+    targets = [MoeTarget(tp, dp, tp*dp, rank, bool(entry.sequence_parallel and tp>1 and dp>1))
                for tp in tps for dp in args.moe_dp_degrees for rank in range(tp*dp)]
     experts, _ = probe_moe_params(args.model_config)
     if any(target.ep > experts for target in targets):

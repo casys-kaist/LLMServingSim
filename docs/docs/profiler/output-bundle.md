@@ -684,6 +684,9 @@ requires the configured quality checks and preserves the completed table checksu
 These are separate from the legacy whole-block `moe.csv`: local gate/routing,
 gathered experts and local finalization have different token domains and
 separate eager/graph measurements. Global expert count and top-k are preserved.
+DP1 records only `gate_routing` and `experts`, with verified identity preparation
+and aliased no-op finalization in `contract.local_execution`; no synthetic copy
+or zero-latency row is stored. Target-specific backend selection is retained.
 Matching tables are selected automatically, with deployment, dtype, coverage
 and checksum validation. See [Native MoE components](./native-moe-components)
 for the full schema, raw repetitions, resume and unsupported-path behavior.

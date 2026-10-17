@@ -10,6 +10,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Extend opt-in native MoE component profiling and lookup to DP1 full-EP targets.
+  Preserve global routing geometry and target-specific backend selection; omit
+  verified no-op boundaries and DP collectives while retaining TP output reduction.
+  Tensor-sharded and unsupported native backends retain their separate coverage limits.
 - Record completed worker CUDA-graph observations in new benchmarks and allow
   explicit CPU-only import into profile metadata. Reuse matching serving policies
   separately from eager acquisition settings; preserve explicit instance overrides

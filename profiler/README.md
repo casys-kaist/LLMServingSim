@@ -162,8 +162,11 @@ preserving global expert IDs and top-k. Explicit DP acquisition has immutable,
 resumable contracts rather than `--force` replacement; expert forward counts may
 exceed `--measurement-iterations` to cover matched weight cycles. Set
 `DP_DEGREES` and optionally `MOE_ROUNDS` in `profile.sh`; leave
-`MOE_EP_DEGREES` unset because native EP is TP*DP. Supported native targets
-require DP>=2; omitting DP retains the whole-block EP path.
+`MOE_EP_DEGREES` unset because native EP is TP*DP. `DP_DEGREES="1,2"` includes
+local DP1 and DP+EP targets; omitting DP retains the whole-block EP path.
+DP1 measures gate/routing and experts, verifying identity preparation and aliased
+no-op finalization instead of adding a copy. TP>1 means full EP, not tensor-sharded
+experts. The native backend is selected independently for each target.
 The deferred-finalization guard reads vLLM's effective boolean property, not
 its request flag or method; unknown capability APIs are rejected. See the
 [native MoE guide](https://llmservingsim.ai/docs/profiler/native-moe-components)

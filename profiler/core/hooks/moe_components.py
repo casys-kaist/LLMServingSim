@@ -48,8 +48,6 @@ class ComponentMeasurement:
         from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import TopKWeightAndReduceNoOP
 
         self.target = MoeTarget(**target)
-        if self.target.dp == 1:
-            raise NotImplementedError("The native component contract currently covers DP+EP; DP1 needs its own prepare/finalize adapter")
         self.runner = single_moe_runner(model_runner)
         runner = self.runner
         if model_runner.vllm_config.quant_config is not None:
@@ -85,16 +83,21 @@ class ComponentMeasurement:
         self.reduction = self.expert.experts.finalize_weight_and_reduce_impl()
         if not isinstance(self.reduction, TopKWeightAndReduceNoOP):
             raise NotImplementedError("Post-expert weight reduction needs a separately timed pre-combine region")
-        self.finalize = naive_dp_ep.MoEPrepareAndFinalizeNaiveDPEPModular(self.target.sequence_parallel)
-        hidden = torch.randn((2, h), device=self.device, dtype=self.cfg.in_dtype, generator=gen)
+        if self.target.dp == 1:
+            from vllm.model_executor.layers.fused_moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEPModular
+            self.finalize = MoEPrepareAndFinalizeNoDPEPModular()
+        else:
+            self.finalize = naive_dp_ep.MoEPrepareAndFinalizeNaiveDPEPModular(self.target.sequence_parallel)
+        probe_rows = min(2, self.cfg.max_num_tokens)
+        hidden = torch.randn((probe_rows, h), device=self.device, dtype=self.cfg.in_dtype, generator=gen)
         with torch.inference_mode():
             weights, ids = self._gate(hidden)
         self.indices_dtype = ids.dtype
-        if tuple(ids.shape) != (2, self.cfg.experts_per_token) or weights.dtype != torch.float32:
+        if tuple(ids.shape) != (probe_rows, self.cfg.experts_per_token) or weights.dtype != torch.float32:
             raise ValueError("Unexpected native router output contract")
         props = torch.cuda.get_device_properties(self.device)
         self.contract = dict(metadata, schema='moe-components', expert_region=self.expert.contract,
-            components=['gate_routing', 'experts', 'finalize_copy'], modes=['eager', 'graph'],
+            components=list(self.target.components), modes=['eager', 'graph'],
             topk_ids_dtype=str(ids.dtype), topk_weights_dtype=str(weights.dtype),
             hidden_dim=h, intermediate_size=inter, input_dtype=str(self.cfg.in_dtype),
             gate_weight_bytes=self.gate.weight.numel()*self.gate.weight.element_size(),
@@ -116,6 +119,35 @@ class ComponentMeasurement:
             gpu=dict(name=props.name, total_memory=props.total_memory,
                      capability=list(torch.cuda.get_device_capability(self.device))),
             excluded=['collectives', 'cpu_time', 'launch_gaps', 'shared_experts'])
+        if self.target.dp == 1:
+            self._verify_local_boundary(hidden, weights, ids)
+            self.contract['local_execution'] = dict(
+                prepare='identity', finalize='output_alias_noop', expert_output_alias=True)
+
+    @torch.inference_mode()
+    def _verify_local_boundary(self, hidden, weights, ids):
+        """Omit DP1 boundaries only after observing their native no-op contract."""
+        from torch.autograd import DeviceType
+        from vllm.model_executor.layers.fused_moe.config import FUSED_MOE_UNQUANTIZED_CONFIG
+
+        output = torch.empty_like(hidden)
+        call = self.expert.bind(hidden, ids, weights, output_alias=output)
+        if call() is not output:
+            raise NotImplementedError('Native DP1 expert output does not preserve its output alias')
+        reference = output.clone()
+        torch.cuda.synchronize()
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                               torch.profiler.ProfilerActivity.CUDA]) as hook:
+            prepared = self.finalize.prepare(hidden, weights, ids, self.cfg.num_experts,
+                self.expert.mapping, False, FUSED_MOE_UNQUANTIZED_CONFIG)
+            self.finalize.finalize(output, output, weights, ids, False, self.reduction)
+        if (len(prepared) != 5 or prepared[0] is not hidden
+                or any(value is not None for value in prepared[1:])):
+            raise NotImplementedError('Native DP1 preparation is not an unquantized identity')
+        if any(event.device_type() == DeviceType.CUDA and not event.is_user_annotation()
+               for event in hook.profiler.kineto_results.events()):
+            raise NotImplementedError('Native DP1 prepare/finalize performs unprofiled CUDA work')
+        torch.testing.assert_close(output, reference, atol=0, rtol=0)
 
     def _gate(self, hidden):
         logits, _ = self.gate(hidden)
@@ -128,6 +160,8 @@ class ComponentMeasurement:
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
 
         n = point['tokens']
+        if point['component'] not in self.target.components:
+            raise ValueError('Component is not part of the native target execution')
         if type(iterations) is not int or iterations < 1:
             raise ValueError("Measurement needs positive iterations")
         if point['component'] == 'experts':

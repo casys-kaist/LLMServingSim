@@ -197,7 +197,7 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dp", default=None, dest="moe_dp_degrees",
                    help="Target DP degrees for native MoE component profiling, "
                         "comma separated. Experts retain global top-k and IDs; "
-                        "EP is TP*DP. Supported native targets require DP>=2. "
+                        "EP is TP*DP. DP=1 measures local modular components without DP collectives. "
                         "The profiler still uses one physical GPU. "
                         "Only profile or slice --group moe accept this option.")
     p.add_argument("--moe-rounds", type=int, default=3,

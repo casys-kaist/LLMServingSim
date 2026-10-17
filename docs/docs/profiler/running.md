@@ -174,13 +174,15 @@ unset to inherit the CLI defaults.
 
 ## MoE parallelism
 
-For supported unquantized DP+EP models, explicit CLI `--dp` selects
+For supported unquantized local or DP+EP models, explicit CLI `--dp` selects
 [native component profiling](./native-moe-components), with EP=TP*DP and
 preserved global expert IDs/top-k. It accepts `profile` or `slice --group moe`;
 `--moe-rounds` controls repeated contexts. Target ranks are emulated on one
-physical GPU, and communication is measured separately. In `profile.sh`, set
-`DP_DEGREES` and optionally `MOE_ROUNDS`. Supported native targets require
-DP>=2; omit `MOE_EP_DEGREES` because EP is derived from TP and DP. Do not
+physical GPU, and communication is modeled separately. In `profile.sh`, set
+`DP_DEGREES` and optionally `MOE_ROUNDS`. Use `DP_DEGREES="1,2"` for local
+DP1 and DP+EP acquisition. DP1 omits native no-op prepare/finalize and DP
+collectives; TP>1 still means full EP, not tensor-sharded experts. Omit
+`MOE_EP_DEGREES` because EP is derived from TP and DP. Do not
 combine native acquisition with `ONLY_SKEW`, `PROFILE_MTP` or `FORCE`; use a
 fresh `OUT_ROOT` to remeasure an immutable native contract.
 
