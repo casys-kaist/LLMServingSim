@@ -85,14 +85,68 @@ def grid(maximum, factor=2.0, minimum=1):
     return sorted(values)
 
 
+def physical_token_budget(plan, budget):
+    """MRV1 compiler SP also pads eager forwards beyond a logical budget."""
+    return max([budget] + [((budget+g.sp_multiple-1)//g.sp_multiple)*g.sp_multiple
+                           for g in plan.graphs.values() if g.runner == 'v1'])
+
+
+def token_sampling(target, plan, budget):
+    """Capture-first token axes, with eager fallback in target DP/SP domains.
+
+    Successful DP graph rounds use one padded count on every member. A round
+    outside graph coverage may instead have unequal counts; capture anchors
+    alone cannot describe its gathered expert rows or its peers' local rows.
+    """
+    domains = [target.token_domains((n,)*target.dp) for n in plan.forward_sizes]
+    anchors = dict(local=sorted({d['gate_rows'] for d in domains}),
+                   experts=sorted({d['expert_rows'] for d in domains}))
+    logical_budget = budget
+    budget = physical_token_budget(plan, budget)
+    maximum = target.token_domains((budget,)*target.dp)
+    graphs = list(plan.graphs.values())
+    # Decode-only graphs leave prefill/mixed eager throughout the token range.
+    partial = not graphs or any(g.mode not in ('FULL', 'PIECEWISE', 'FULL_AND_PIECEWISE')
+                               or not g.capture_sizes for g in graphs)
+    ranges = dict(local=[], experts=[])
+    if partial:
+        ranges = dict(local=[[1, maximum['gate_rows']]],
+                      experts=[[1, maximum['expert_rows']]])
+    else:
+        cap = min(g.capture_sizes[-1] for g in graphs)
+        if cap < budget:
+            # One eager DP member can cancel graph replay on a small peer.
+            # V2 also removes that peer's padding; retain the full local axis.
+            first = target.token_domains((cap+1,)+(1,)*(target.dp-1))
+            local_start = 1 if target.dp > 1 else first['gate_rows']
+            ranges = dict(local=[[local_start, maximum['gate_rows']]],
+                          experts=[[first['expert_rows'], maximum['expert_rows']]])
+    return dict(logical_token_budget=logical_budget, capture_tokens=anchors,
+                geometric_token_ranges=ranges)
+
+
+def _token_points(sampling, axis, maximum):
+    # Endpoints support interpolation even when the smallest capture pads N=1.
+    points = {1, maximum}
+    points.update(n for n in sampling.get('capture_tokens', {}).get(axis, ())
+                  if 0 < n <= maximum)
+    # Preserve the plans of already-started three-axis acquisitions. New plans
+    # explicitly distinguish an empty eager range from absent plan metadata.
+    ranges = sampling.get('geometric_token_ranges', {}).get(axis, [[1, maximum]])
+    for lower, upper in ranges:
+        if (type(lower) is not int or type(upper) is not int
+                or not 1 <= lower <= upper <= maximum):
+            raise ValueError('MoE geometric token range exceeds its target domain')
+        points.update(grid(upper, sampling['grid_factor'], lower))
+    return points
+
+
 def points_for(contract):
     target = MoeTarget(**contract['target'])
     place = ExpertPlacement(contract['global_experts'], contract['global_top_k'], target.ep, target.rank)
     factor = contract['expert_sampling']['grid_factor']
     maximum_tokens = contract['maximum_expert_tokens']
-    token_points = set(grid(maximum_tokens, factor))
-    anchors = contract['expert_sampling'].get('capture_tokens', {})
-    token_points.update(n for n in anchors.get('experts', ()) if 0 < n <= maximum_tokens)
+    token_points = _token_points(contract['expert_sampling'], 'experts', maximum_tokens)
     local_e = len(place.local_global_ids)
     # A <= min(local_E, N*k) changes slope at local_E/k. Preserve both
     # integer neighbours so interpolation does not cut off feasible work.
@@ -107,8 +161,7 @@ def points_for(contract):
         for component in target.components:
             if component == 'experts':
                 continue
-            local_points = set(grid(local, factor))
-            local_points.update(n for n in anchors.get('local', ()) if 0 < n <= local)
+            local_points = _token_points(contract['expert_sampling'], 'local', local)
             for n in sorted(local_points):
                 yield dict(component=component, mode=mode, tokens=n,
                            activated_experts=-1, local_assignments=-1)
@@ -396,13 +449,13 @@ def run_components(arch_path, args, tps, variant_root):
         for target in targets:
             plan = resolve_sampling(args, limits, target.tp, dp=target.dp,
                                     meta=read_bundle(variant_root))
-            domains = [target.token_domains((n,)*target.dp) for n in plan.forward_sizes]
-            capture_tokens = dict(local=sorted({d['gate_rows'] for d in domains}),
-                                  experts=sorted({d['expert_rows'] for d in domains}))
-            native = llm.collective_rpc('moe_component_initialize', args=(asdict(target), budget))[0]
+            physical_budget = physical_token_budget(plan, budget)
+            native = llm.collective_rpc('moe_component_initialize',
+                                        args=(asdict(target), physical_budget))[0]
             contract = dict(native, model=args.model, hardware=args.hardware, variant=args.effective_variant,
                 expert_sampling=dict(axes=['tokens', 'activated_experts', 'local_assignments'],
-                                     grid_factor=args.moe_grid_factor, capture_tokens=capture_tokens),
+                                     grid_factor=args.moe_grid_factor,
+                                     **token_sampling(target, plan, budget)),
                 sampling_graph=plan.metadata(),
                 protocol=dict(rounds=args.moe_rounds, iterations=args.measurement_iterations,
                               representative='median_of_forward_medians', timing='cuda_kernel_sum'))

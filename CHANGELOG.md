@@ -14,6 +14,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   preferring matching completed worker captures unless explicitly overridden.
   Record observed and derived sampling provenance separately; map native MoE
   coordinates through target DP/SP geometry and retain independent expert axes.
+  Prefer captures on MoE token axes and sample eager-only ranges geometrically,
+  retaining DP-cancellation coverage, compiler-SP bounds and feasible endpoints.
   Default geometric spacing to doubling except attention request counts, which
   retain square-root-of-two spacing. Add `--grid-factor` and target-only
   `--cudagraph` options; graph coordinates do not make timings graph measurements.

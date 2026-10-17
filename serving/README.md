@@ -487,6 +487,9 @@ DP1 emits only routing and experts plus optional TP reduction, and never uses
 full-EP data for tensor-sharded experts.
 RR/RAND can use new three-axis tables; old balanced-total tables retain their
 policy fallback. Capture sizes affect serving row counts, not acquisition mode.
+The expert query uses gathered/padded N and the router's rank-local A/M; its
+cache key includes all three, so changing assignment load changes the lookup
+even if N and A stay fixed. Local gate/finalization rows remain separate.
 
 ### `run_paths.py`
 

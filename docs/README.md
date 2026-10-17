@@ -57,9 +57,10 @@ Its coverage-selection cache assumes immutable bundles during a simulation;
 missing coverage and corrupt installed data have different failure behavior.
 New acquisition defaults to DP1, measures eagerly without graph capture and uses
 configurable independent input-row, active-expert and assignment axes. Historical
-tables retain their reading semantics. Target graph coordinates now supplement
-geometric samples after target DP/SP transformation, with active-expert and
-assignment axes retained independently. The [sampling guide](docs/profiler/running.md#sampling-policy)
+tables retain their reading semantics. MoE token axes prefer target graph
+coordinates after DP/SP transformation, with geometric fallback for uncovered
+regimes and independent active-expert/assignment axes. Physical bounds include
+compiler-SP padding. The [sampling guide](docs/profiler/running.md#sampling-policy)
 documents observed versus derived captures, eager-only acquisition, category
 limits and the optional target-only `--cudagraph` and `--grid-factor` controls.
 

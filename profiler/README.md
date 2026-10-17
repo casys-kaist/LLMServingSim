@@ -692,9 +692,13 @@ New MoE measurements separate gate/routing, experts and applicable finalization.
 They run eagerly and never capture an isolated expert CUDA graph. Expert sampling
 covers physical token rows N, active local experts A and local assignments M,
 with geometric spacing controlled by `--moe-grid-factor` (default `2`) and
-mandatory feasible geometry corners. Target serving capture tokens also anchor
-the token axes after transformation through target DP/SP geometry; capture sizes
-do not determine A or M. Conditioning and repeated measurements remain required; sampling
+mandatory feasible geometry corners. Token axes prefer serving capture sizes
+after target DP/SP transformation; geometric points cover eager regimes and
+out-of-capture ranges instead of being added everywhere. DP cancellation can
+require small local eager points even when only another rank exceeds the cap.
+Compiler-SP padding is included in the physical acquisition bound. A and M
+remain independent geometric axes, since capture sizes do not determine routing.
+Conditioning and repeated measurements remain required; sampling
 alone does not establish an interpolation error bound or full-model accuracy.
 
 The simulator constructs the new tables' Delaunay support at load time and uses

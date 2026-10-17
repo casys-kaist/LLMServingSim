@@ -709,7 +709,13 @@ New expert tables sample physical tokens N, active local experts A and local
 assignments M using `--moe-grid-factor` (default `2`) and mandatory feasible
 geometry corners. The recorded `expert_sampling` contract identifies these axes
 and their spacing, plus local/expert token anchors transformed from target
-serving graph coordinates. `sampling_graph` records their source; capture
+serving graph coordinates. `capture_tokens` holds those anchors;
+`geometric_token_ranges` holds uncovered local/expert intervals (empty means
+capture-covered, absent preserves an existing plan). `logical_token_budget`
+retains the requested limit; `local_token_budget` in the contract includes any
+MRV1 compiler-SP rounding needed for the physical buffer.
+Endpoints and feasible corners remain part of the plan. `sampling_graph` records
+the capture source; capture
 sizes do not determine active experts or assignments. The simulator
 precomputes Delaunay support at load time and caches barycentric interpolation
 in physical coordinates, using at most four measured rows per query. It fits no

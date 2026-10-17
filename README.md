@@ -70,8 +70,9 @@ changing measured timings.
 Native [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
 defaults to local DP1 and supports DP+EP targets through consistent TP/DP/EP
 selectors and deployment-matched execution boundaries. New eager-only tables
-separate input rows, active local experts and local assignments; the configurable
-grid defaults to doubling. Historical
+separate input rows, active local experts and local assignments. Token axes prefer
+serving capture sizes; uncovered token ranges and routing-work axes default to
+doubling, with required geometry boundaries retained. Historical
 whole-block and component tables remain readable until remeasurement.
 Recurrent warmup checks respect native metadata layouts without adding CPU time;
 the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)

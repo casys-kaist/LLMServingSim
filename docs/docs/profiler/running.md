@@ -195,9 +195,11 @@ TP>1 still means full EP, not tensor-sharded experts.
 New component measurements are eager only, without isolated CUDA graph capture.
 Expert sampling covers tokens N, active local experts A and local assignments M.
 `--moe-grid-factor` (`MOE_GRID_FACTOR`, default `2`) controls geometric spacing
-on all three axes, with mandatory feasible geometry corners. Target serving
-graph points supplement token rows after DP/SP transformation; A and M retain
-their own feasible axes. Sampling and conditioning checks do not by
+on routing-work axes and uncovered token ranges, with mandatory feasible geometry
+corners. Target serving graph points replace interior geometric token points in
+fully covered regimes after DP/SP transformation. Eager-only regimes, out-of-cap
+rows and DP cancellation retain geometric coverage; A and M keep their own axes.
+Sampling and conditioning checks do not by
 themselves establish full-model accuracy.
 
 Omitted DP does not affect dense models, coverage, ordinary category slices or
@@ -234,7 +236,7 @@ feasibility checks, KV history axes or expert-work axes.
 | Dense | Forward-token anchors; TP1 measurements for stable entries include anchors from requested TP degrees |
 | Per sequence | Geometric actual output rows; target logits and sampler run outside the backbone graph |
 | Attention and linear attention | Pure-decode request anchors for FULL-capable modes at the selected query length; pure-prefill anchors only for `FULL`; mixed axes remain geometric |
-| Native MoE | Capture tokens mapped through target DP/SP token domains into local and expert rows; active experts and assignments remain independent |
+| Native MoE | Capture-first local/expert token axes after DP/SP mapping, geometric eager fallback; active experts and assignments remain independent |
 | MTP | Drafter request anchors only; the table does not represent the complete first-pass query/token layout |
 | Skew | Existing independent geometric acquisition axes |
 

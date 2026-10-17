@@ -2379,10 +2379,16 @@ New plans use `--moe-grid-factor` (default 2) for input rows N, active local
 experts A and local assignments M, including feasible endpoints, envelope
 corners and balanced-total anchors. At EP1 M=N*k collapses the assignment axis.
 `expert_sampling` belongs in the root contract; CSV columns remain unchanged.
-Target serving capture tokens G supplement the geometric token axes after
+Target serving capture tokens G take precedence on token axes after
 `target.token_domains((G,) * target.dp)` maps them to local and expert rows.
-Capture sizes never determine A or M. Keep transformed anchors in
-`expert_sampling.capture_tokens` and source/target information in `sampling_graph`.
+Use geometric points only in uncovered token ranges, retaining endpoints and
+feasibility corners. Decode-only/NONE policies require the full eager range;
+an out-of-capture DP peer can require small local eager rows on every member.
+Include MRV1 compiler-SP rounding in physical bounds before native initialization.
+Capture sizes never determine A or M. Keep transformed anchors, logical budget
+and eager ranges in `expert_sampling`; source/target information belongs in
+`sampling_graph`. Absent range metadata retains an existing acquisition plan;
+a changed semantic plan requires a fresh output root.
 New acquisition must not create CUDA graphs; eager timing and serving-padded
 coordinates are distinct.
 
@@ -2427,16 +2433,9 @@ Refresh benchmark outputs, summaries and public plots together.
 
 ### The legacy MoE grid is per EP degree
 
-Whole-block MoE token coordinates use the shared `_token_grid`, not powers of
-two: long token intervals can conceal grouped-kernel cost changes. Keep the
-grid independent of benchmark requests and hardware tile constants. Resolved
-token/context/cache limits still bound it, and active-expert feasibility is
-unchanged. This improves sampling resolution, not an error guarantee between
-knots. Runtime interpolation and native DP+EP component acquisition are separate
-contracts. A compatible resume adds missing token coordinates; code changes
-alone do not densify stored tables.
-
-The following describes retained `moe.csv` acquisition and fallback, not the
+Historical whole-block acquisition used a per-EP token grid. That acquisition
+path has been removed; only its stored `moe.csv` lookup remains until remeasurement.
+The following describes those historical measurements and their fallback, not the
 native full-top-k component contract above. A reduced-top-k checkpoint is an
 approximation and must not be presented as the native distributed kernel.
 An EP rank does not run the model's MoE block; it runs a **slice** of it, and

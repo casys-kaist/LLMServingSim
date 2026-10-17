@@ -136,12 +136,25 @@ with a balanced histogram over A active experts, not an exact learned router.
 
 Serving CUDA graph padding remains active. New eager timings are queried at
 the already-resolved padded rows; historical graph rows are not relabelled.
-The acquisition grid combines geometric points with target serving capture
-tokens G. Each G is mapped through `target.token_domains((G,) * DP)` to obtain
+The acquisition token axes prefer target serving capture tokens G. Each G is
+mapped through `target.token_domains((G,) * DP)` to obtain
 local gate/finalization rows and gathered expert rows. The graph resolver handles
-compiler SP; the token-domain transformation handles model-level SP. These coordinates anchor
-the token axes; capture sizes alone never determine A or M, whose independent
-geometric axes and feasible corners are retained. Matching completed worker
+compiler SP; the token-domain transformation handles model-level SP. MRV1's
+compiler-SP rounding also increases the physical acquisition bound when the
+logical token budget is not divisible by TP.
+
+For `FULL`, `PIECEWISE` and `FULL_AND_PIECEWISE`, capture points replace interior
+geometric token points in the covered range. Beyond the capture cap, geometric
+points and the transition endpoint are included. `NONE` and `FULL_DECODE_ONLY`
+retain the full geometric range because prefill/mixed can run eagerly. With DP,
+one out-of-capture member can cancel graph replay for small peers: the planner
+retains their local geometric range and the possible unequal gathered-row range.
+Endpoints and feasible slope-change corners remain even if not capture sizes.
+Consequently a custom capture list can remove redundant points, but mandatory
+transition/geometry points mean the total is not always smaller.
+
+Capture sizes alone never determine A or M, whose independent geometric axes and
+feasible corners are retained. Matching completed worker
 captures are preferred unless target options override them; otherwise candidate
 captures are derived and labelled as such. Eager measurement at these coordinates
 does not capture or replay a graph. See [sampling policy](./running#sampling-policy).
@@ -211,7 +224,10 @@ weights; exact rows are returned directly and queries are cached with bounded
 capacity. There is no online nearest-neighbour search, fitted predictor or
 per-workload multiplier. Out-of-support queries do not extrapolate.
 
-The router supplies active counts and local assignments. BALANCED/CUSTOM retain
+The expert query is `(gathered/padded N, rank-local A, rank-local M)`, and all
+three coordinates enter the lookup cache key. Local gate/finalization components
+use their own row counts rather than expert assignments. The router supplies
+active counts and local assignments. BALANCED/CUSTOM retain
 rounded expected rank loads; RR/RAND count their selected pairs. CUSTOM's active
 count curve does not provide a rank-load histogram. Historical balanced-total
 component tables keep their old interpolation and mode choice, and support only
