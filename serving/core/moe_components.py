@@ -15,6 +15,9 @@ from pathlib import Path
 
 from profiler.core.moe_deployment import MoeTarget
 from profiler.core.moe_geometry import ExpertPlacement
+from profiler.core.bundle_metadata import read_tp
+from profiler.core.metadata_names import (
+    EAGER_ATTRIBUTION, GRAPH_ATTRIBUTION, MOE_CONDITIONING_POLICY)
 from .communication import dtype_bytes
 
 
@@ -25,6 +28,31 @@ class MoeCoverageError(ValueError):
 def _hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
                                      allow_nan=False).encode()).hexdigest()
+
+
+def component_index(tp_folder):
+    """Read the root-owned record, or an unmigrated historical JSON index."""
+    missing = object()
+    record = read_tp(tp_folder, 'moe_components', missing)
+    canonical = record is not missing
+    if record is missing:
+        historical = Path(tp_folder)/'moe_components.json'
+        if not historical.is_file():
+            return None
+        record = json.loads(historical.read_text())
+    if (not isinstance(record, dict) or record.get('schema') != 'moe-components'
+            or not isinstance(record.get('entries'), list)):
+        raise ValueError('Unknown MoE component index schema')
+    for entry in record['entries']:
+        if not isinstance(entry, dict) or not isinstance(entry.get('target'), dict):
+            raise ValueError('Malformed MoE component target entry')
+        MoeTarget(**entry['target'])
+        if not isinstance(entry.get('path'), str):
+            raise ValueError('Malformed MoE component table path')
+        if canonical and (not isinstance(entry.get('contract'), dict)
+                          or not isinstance(entry.get('coverage'), dict)):
+            raise ValueError('Root MoE metadata must embed its contract and coverage')
+    return record
 
 
 def _linear(pairs, x):
@@ -41,30 +69,43 @@ class MoeComponentTable:
     def __init__(self, tp_folder, *, target, expected):
         target = MoeTarget(**target)
         root = Path(tp_folder).resolve()
-        index = json.loads((root/'moe_components.json').read_text())
-        if index['schema'] != 'moe-components-v1':
-            raise ValueError('Unknown MoE component index schema')
+        index = component_index(root)
+        if index is None:
+            raise MoeCoverageError('No native MoE component metadata is installed')
         matching = [e for e in index['entries'] if e['target'] == vars(target)]
         if not matching:
             raise MoeCoverageError('A matching TP/DP/EP/rank/sequence-parallel contract is required')
         if len(matching) != 1:
             raise ValueError('Duplicate native MoE deployment contracts in the component index')
         entry = matching[0]
-        folder = (root/entry['path']).resolve()
-        if not folder.is_relative_to(root):
+        relative = Path(entry['path'])
+        if relative.is_absolute() or '..' in relative.parts:
             raise ValueError('MoE component path leaves its TP bundle')
-        contract = json.loads((folder/'contract.json').read_text())
-        coverage = json.loads((folder/'coverage.json').read_text())
-        identity = _hash(contract)
-        if (contract['schema'] != index['schema'] or coverage['schema'] != index['schema']
-                or contract['target'] != vars(target) or entry['contract_id'] != identity
-                or coverage['contract_id'] != identity or coverage['complete'] is not True):
+        path = (root/relative).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError('MoE component path leaves its TP bundle')
+        embedded = 'contract' in entry or 'coverage' in entry
+        if embedded:
+            contract, coverage = entry['contract'], entry['coverage']
+            table = path
+        else:
+            # Historical bundles are read-only: their old identities are
+            # checked against their own records, never against current code.
+            contract = json.loads((path/'contract.json').read_text())
+            coverage = json.loads((path/'coverage.json').read_text())
+            identity = _hash(contract)
+            if entry['contract_id'] != identity or coverage['contract_id'] != identity:
+                raise ValueError('Inconsistent historical MoE component identity')
+            table = path/'components.csv'
+        if (contract['schema'] != index['schema']
+                or coverage['schema'] != index['schema']
+                or MoeTarget(**contract['target']) != target or coverage['complete'] is not True):
             raise ValueError('Incomplete or inconsistent MoE component contract')
-        if contract.get('graph_attribution') != 'native_graph_launch_correlation_v1':
+        if contract.get('graph_attribution') != GRAPH_ATTRIBUTION:
             raise ValueError('Graph data needs launch-correlated acquisition; module-tree graph timings are not supported')
-        if ((contract.get('expert_conditioning') or {}).get('schema') != 'rotated-weight-cycles-v2'
+        if ((contract.get('expert_conditioning') or {}).get('schema') != MOE_CONDITIONING_POLICY
                 or coverage.get('quality_supported') is not True
-                or contract.get('eager_attribution') != 'native_eager_launch_correlation_v1'
+                or contract.get('eager_attribution') != EAGER_ATTRIBUTION
                 or contract.get('graph_memory_pool') != 'independent_per_variant'
                 or contract.get('graph_output_reference') != 'independent_pre_capture_clone'):
             raise ValueError('Native MoE data requires matched-work conditioning controls, native launch attribution and independently verified graph variants')
@@ -85,7 +126,7 @@ class MoeComponentTable:
         if any(parallel.get(k) != v for k,v in expected_parallel.items()):
             raise ValueError('MoE backend or parallel configuration differs from the supported execution path')
         region = contract['expert_region']
-        if (region.get('schema') != 'native-modular-expert-region-v1'
+        if (region.get('schema') != 'native-modular-expert-region'
                 or region.get('expert_parallel_config') != parallel
                 or any(region.get(k) != contract[k] for k in
                        ('global_experts','global_top_k','local_experts','expert_map',
@@ -100,9 +141,8 @@ class MoeComponentTable:
                 or contract['expert_weight_bytes'] <= 0
                 or contract['expert_weight_bytes'] % contract['local_experts']):
             raise ValueError('Invalid native component dtype or measured weight-byte contract')
-        table = folder/'components.csv'
         checksum = hashlib.sha256(table.read_bytes()).hexdigest()
-        if checksum != entry['table_sha256'] or checksum != coverage['table_sha256']:
+        if checksum != coverage['table_sha256'] or (not embedded and checksum != entry['table_sha256']):
             raise ValueError('MoE component CSV checksum mismatch')
         self.local, self.expert, self.zero = defaultdict(list), defaultdict(list), defaultdict(list)
         self.exact, plan = {}, []
@@ -135,6 +175,20 @@ class MoeComponentTable:
                 or coverage['expected_rounds'] != len(plan)*contract['protocol']['rounds']
                 or coverage['completed_rounds'] != coverage['expected_rounds']):
             raise ValueError('Native MoE plan and completed coverage disagree')
+        summary = coverage.get('conditioning_summary')
+        tolerance = contract['expert_conditioning'].get('quality_relative_tolerance')
+        expert_points = sum(point['component'] == 'experts' for point in plan)
+        if (not isinstance(summary, dict)
+                or set(summary) != {'checked_points', 'failed_points', 'max_relative_change'}
+                or type(summary['checked_points']) is not int
+                or summary['checked_points'] != expert_points or expert_points < 1
+                or type(summary['failed_points']) is not int or summary['failed_points'] != 0
+                or type(tolerance) not in (int, float) or not math.isfinite(tolerance)
+                or not 0 < tolerance < 1
+                or type(summary['max_relative_change']) not in (int, float)
+                or not math.isfinite(summary['max_relative_change'])
+                or not 0 <= summary['max_relative_change'] <= tolerance):
+            raise ValueError('Native MoE conditioning summary disagrees with supported coverage')
         for pairs in (*self.local.values(), *self.expert.values(), *self.zero.values()):
             pairs.sort()
         self.tokens = {mode: sorted(n for m,n in self.expert if m == mode) for mode in ('eager', 'graph')}

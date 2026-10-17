@@ -8,8 +8,8 @@ title: Output bundle
 Each profile run produces a directory tree under
 `profiler/perf/<HARDWARE>/<MODEL>/<variant>/`. This is **the contract
 between the profiler and the simulator**. Tables must match their schemas,
-model geometry and execution contract. Versioned skew and native MoE tables
-also require matching acquisition identities and reference fingerprints;
+model geometry and execution contract. Skew calibration retains reference
+invalidation checks, and native MoE requires matching semantic deployment contracts;
 filenames alone do not establish compatibility.
 
 ## Folder layout
@@ -19,9 +19,8 @@ profiler/perf/<HARDWARE>/
 ├── hardware.yaml                 # the card's spec + the measured interconnect;
 │                                 # one per hardware folder, shared by every model
 └── <MODEL>/<variant>/
-    ├── meta.yaml
+    ├── meta.yaml                 # all profile metadata, including per-TP records
     └── tp<N>/                    # one folder per profiled TP degree
-        ├── meta.yaml             # per-category methods and acquisition observations
         ├── dense.csv
         ├── per_sequence.csv
         ├── attention.csv
@@ -29,10 +28,8 @@ profiler/perf/<HARDWARE>/
         ├── moe.csv               # MoE models only, one grid per EP degree
         ├── mtp.csv               # one drafter pass, only with --profile-mtp
         ├── skew.csv              # skew-enabled runs only
-        ├── skew.meta.yaml        # skew plan and acquisition completion
         ├── skew_fit.csv          # skew-enabled runs only
-        ├── moe_components.json   # native TP/DP/EP component index, opt-in
-        └── moe_components/       # contract-keyed native component bundles
+        └── moe_components/       # deployment-specific CSVs and optional raw checkpoints
 ```
 
 `<variant>` uses the established checkpoint label plus explicit activation/KV
@@ -96,18 +93,19 @@ selected-layout coverage are separate checks. See the
 [callable contract](./adding-model-architecture#declared-callable-boundaries).
 
 New category CSVs contain only their coordinate columns and `time_us`, as shown
-below. Acquisition metadata lives in `tp<N>/meta.yaml`, under
-`measurements.<category>`. Each entry retains the acquisition `identity`, its
+below. Acquisition metadata lives in the variant-root `meta.yaml`, under
+`per_tp[tp].measurements.<category>`. Each entry retains the acquisition `identity`, its
 semantic `measurement` token and the observed `acquisitions`. It records the
 PyTorch/Kineto collector, per-invocation device-active interval union and
 normalization, dummy weights, assigned-page KV preparation, zero-start recurrent
 state, deterministic queries and repetitions, together with actual library versions.
 Callable and contextual tables keep their structural manifests and completion
-evidence alongside the CSVs; those are not extra timing columns.
+records in the same root metadata; those are not extra timing columns or sidecars.
 
 Host/worker agreement and resume compare catalog, contexts, method, geometry and
-execution semantics. Source-file hashes and exact Torch/vLLM version strings are
-observational provenance, not execution vetoes. Native API, selected backend,
+execution semantics. Exact Torch/vLLM version strings are observational provenance,
+not execution vetoes. Historical source hashes remain readable observations;
+new admission does not collect source-file digests. Native API, selected backend,
 shape, dtype, layout, finite-output and coverage checks still apply. Table hashes
 may seal completed data; they are not implementation-version locks.
 
@@ -119,7 +117,7 @@ rows. No-op sweeps preserve prior provenance. Compatible additions retain earlie
 acquisition observations; TP-stable replication rejects mixed timing methods.
 
 Each new ordinary CSV publication also records
-`measurements.<category>.publication` with a `state` and `csv_sha256`. The writer
+`per_tp[tp].measurements.<category>.publication` with a `state` and `csv_sha256`. The writer
 first serializes and flushes the replacement CSV, records the intended checksum
 as `pending`, atomically replaces the CSV, then marks that publication `complete`.
 Later checkpoints and TP-stable replication use the same ordering. This prevents
@@ -136,7 +134,7 @@ Publication `complete` certifies that CSV generation, not completion of the
 requested acquisition grid or any separate category-coverage contract.
 
 Skew uses the same CUDA interval accounting normalized per measured forward.
-`skew.meta.yaml` retains its semantic identity, capture contexts, descriptive
+Root `per_tp[tp].skew` retains its semantic identity, capture contexts, descriptive
 method and observed runtime versions; new skew CSVs hold coordinates and timings.
 Native DP+EP component bundles retain their separate recorded measurement
 contract. The skew fitter's own input/code invalidation rules are unchanged.
@@ -164,7 +162,7 @@ timing. A failed check cannot produce a successful acquisition.
 Recurrent-only prefixes also verify query/history pairs and their assigned state
 pages, including metadata reused between cache groups. With cache mode `none`,
 the guard accepts ordinary non-speculative GDN metadata and a separately
-source-checked native vLLM 0.31 KDA metadata layout. KDA consumes the complete
+native vLLM 0.31 KDA metadata layout. KDA consumes the complete
 non-speculative query/state view, including mixed batches' decode prefix, rather
 than filling GDN's prefill-only views. Both paths retain query/history, state-page,
 initial-state and token-conservation checks; neither changes the native forward.
@@ -214,7 +212,7 @@ and FP32 norm from the initialized native parameters, preserving their relation
 instead of randomizing the derived buffers independently. These checks and
 copies occur outside timed forwards.
 
-The packed path requires the source-checked native auto-selected
+The packed path requires the native auto-selected
 `DEEPGEMM_MXFP4` backend, BF16 activations and unsharded TP/PP/DP/EP1 without
 MTP or offload. Unsupported APIs, backends, layouts or synthetic sharding fail before
 publication. Ordinary models call the original loader unchanged; this contract
@@ -289,7 +287,7 @@ probes; they are not reduced with the requested grid. An otherwise valid small
 engine envelope can therefore fail discovery before category acquisition.
 
 `meta.yaml.component_layouts` is the single authority: schema
-`component-layouts-v1`, with a `per_tp` record containing variant selections,
+`component-layouts`, with a `per_tp` record containing variant selections,
 `layout_sha256`, a shared acquisition identity and each affected category's
 state/measurement identity. The layout hash binds declarations, choices and
 affected catalog bindings, not CSV timing values. Each CSV retains its usual
@@ -335,8 +333,8 @@ multi-file transaction. These checks do not establish end-to-end model accuracy.
 
 ### Native DSA acquisition
 
-`deepseek_v32.yaml` retains the historical `legacy_modules_v1` representation
-and declares `native_eager_tail_v1` for the native DeepSeek-V3.2 path. Selection
+`deepseek_v32.yaml` retains the historical `legacy-modules` representation
+and declares `native-eager-tail` for the native DeepSeek-V3.2 path. Selection
 requires actual positive CUDA coverage, site invocation counts and runtime
 admission; a catalog alias does not extend this contract to GLM-5.
 
@@ -347,7 +345,7 @@ matching norm prefix. Later norms use invocation normalization. The combined
 remains **uncapped** even beyond `index_topk`. Historical `attention`/`indexer`
 rows are not summed with the new tail or relabeled as it.
 
-The `native-dsa-eager-tail-v1` contract targets the reviewed native vLLM 0.31 path:
+The `native-dsa-eager-tail` contract targets the reviewed native vLLM 0.31 path:
 original-width FP8 or unquantized BF16 weights with BF16 activations, physical/logical TP1 and EP1,
 PP1/DP1, eager execution and decode query length 1. It rejects MTP, offload,
 sequence parallelism, shared/skipped indexers, dense-MHA prefill, quantized query
@@ -362,7 +360,7 @@ native runner/sampler route. The profiler's transparent sampler facade does not
 change that route. Its reviewed source determines returned ID width (V1 int32,
 V2 int64); this is source-backed metadata, not a tensor-content observation.
 Category evidence retains actual reduced depths and cache capacities separately.
-Runtime versions and source hashes are recorded provenance, not exact-match
+Runtime versions are recorded provenance; historical source hashes are not exact-match
 execution admission. Actual native APIs, dtypes, layouts and backend modes must
 still satisfy the contract.
 
@@ -381,12 +379,12 @@ serving memory feasibility, distributed execution or benchmark accuracy.
 
 ### Native Kimi acquisition
 
-`kimi_k3.yaml` selects `native_profile: hybrid-residual-v1`. The shared
+`kimi_k3.yaml` selects `native_profile: hybrid-residual`. The shared
 `NativeProfile` host orchestration uses an adapter in `hooks/runtime_admission.py`
-for the source-checked vLLM 0.31 Kimi-K3 text path: BF16 activations, native
+for the runtime-admitted vLLM 0.31 Kimi-K3 text path: BF16 activations, native
 MXFP4/SITU experts, eager execution and local TP/PP/DP/EP1. Backend/ABI checks
-and observed layouts remain mandatory; source hashes and exact library versions
-are provenance rather than execution locks. Removing a fixed
+and observed layouts remain mandatory; exact library versions and historical
+source hashes are provenance rather than execution locks. Removing a fixed
 checkpoint or device-capability lock does not certify arbitrary devices or
 backends; a catalog alias alone cannot admit another native implementation.
 
@@ -400,7 +398,8 @@ stands in for validating the supplied configuration and observed runtime.
 The ordinary `profile` and `slice` commands use the existing category grids. A
 multi-category Kimi acquisition requires explicit `--skip-skew`; skew and MTP are not supported.
 See the [bounded invocation](./running#native-kimi-profiling). Each TP directory
-contains the ordinary CSVs plus `category_<category>.json`. Shared `CategoryRecord`
+contains the ordinary CSVs; root `per_tp[tp].categories.<category>` stores its
+`contract`, publication `status` and completed `csv_sha256`. Shared `CategoryRecord`
 publication binds planned row keys, the whole declared architecture, native runtime,
 capture identity, completion status and CSV hash. Loading independently rebuilds
 the catalog bindings and requires every binding at each recorded coordinate;
@@ -409,9 +408,10 @@ Malformed, ragged or duplicate partial rows are refused before preload or
 deduplication. An incomplete shot is remeasured as a whole. A completed table with
 changed data or incompatible semantic bindings is refused. Runtime versions are
 recorded per acquisition, not compared as exact execution-admission constraints.
-Changed execution semantics and the new publication schemas require fresh
-measurements in a separate output root or an explicit remeasurement; old artifacts
-are not migrated, restamped or relabeled into successful acquisitions.
+Changed execution semantics require fresh measurements in a separate output root
+or an explicit remeasurement. Historical metadata has narrow read fallbacks;
+relocation alone neither remeasures timings nor relabels an incomplete acquisition
+as successful.
 Dummy-weight preparation elapsed times remain telemetry in engine metadata, not
 execution invariants or GPU latency inputs. The intended scope is bounded native
 acquisition and saved-duration trace replay. Fresh GPU validation is required
@@ -432,20 +432,28 @@ Two boundaries need particular care:
   residual block width and source schedule at each dense token point. This does
   not execute the full original model on the GPU.
 
-`callable_categories.json` records token points, repetitions and runtime versions;
-`callables/callable_workloads.json` retains the explicit residual plans. Under `callables/`,
-`dense_context.csv` stores context-specific microseconds, alongside its manifest,
-completion receipts and per-token native-activity evidence. The generic collector
+Root `per_tp[tp].contexts` holds `ordinary` and `callables` context records, each
+with its contract and completion receipts. `per_tp[tp].callables.callables` holds
+acquisition `options`, the explicit residual `plan` and token-keyed `shots`.
+Options retain the selected profile, tokens, iterations, warmups and runtime
+versions. The plan retains workloads, catalog, contexts and semantic stamps;
+compact shot summaries bind scope, measurement stamp, CSV-shot checksum, call
+counts, native kernel routes and device observations.
+
+`tp<N>/callables/dense_context.csv` still stores context-specific microseconds.
+Full native CUDA ledgers are validated during acquisition, not saved as new
+per-token evidence JSON files. Historical sidecars remain read-only fallbacks.
+The generic collector
 is the same lightweight PyTorch/Kineto path; no CPU scope duration enters the
 table. Explicit finite synthetic tensors supply the standalone function's inputs;
-source, shape, strides, optional inputs and physical invocation counts are checked.
+native API, shape, strides, optional inputs and physical invocation counts are checked.
 Allocation is bounded to 512 MiB of declared input tensors per shot, with at most
 16 timed iterations and four warmups. Larger plans fail before engine startup.
 
 `ContextualProfileBundle` in `serving/core/component_sizes.py` requires every
 category and residual context to be complete and compatible with the independently
-loaded source configuration. Callable receipts bind the same runtime identity as
-ordinary categories and are checked against their per-call evidence. Ordinary
+loaded source configuration. Callable receipts bind compatible runtime semantics
+and the validated per-shot summaries to the saved timing rows. Ordinary
 tables retain their existing interpolation. AttnRes uses an
 immutable context lookup and linear interpolation in tokens **within that exact
 context**; it neither searches neighboring contexts nor extrapolates beyond the
@@ -459,19 +467,20 @@ those gaps or interpret model-boundary coverage as complete step-time accounting
 ## Native attention lookup contract
 
 New MiniMax-M3 attention acquisitions record
-`meta.yaml.attention_lookup` with schema `native-attention-lookup-v1` and an
+`meta.yaml.attention_lookup` with schema `native-attention-lookup` and an
 independent `per_tp` record for each measured TP. This is acquisition-owned
 backend evidence, not a user-supplied cap or a reinterpretation of old data.
 
-The supported contract is the source-checked **vLLM 0.31.0 NVIDIA Triton** pair
+The supported contract checks the native **vLLM 0.31.0 NVIDIA Triton** pair
 `MiniMaxM3IndexerTritonImpl` / `MiniMaxM3SparseTritonImpl`, using BF16 indexer
 and attention KV storage, max-score selection, and a contiguous int32 selection
 buffer whose width equals the configured `sparse_topk_blocks`. The reviewed
 layout requires **128 tokens per block**. Initial/local blocks occupy the
 selected-block total; they do not enlarge it. Acquisition inspects the actual selected objects,
 buffer layout, callable API and model/catalog parameters, and requires semantic
-worker agreement. Installed source hashes and versions describe provenance, not
-execution locks. Another implementation, layout, storage precision or speculative
+worker agreement. Observed versions and any historical source hashes are provenance,
+not execution locks; new acquisition checks the actual API and layout. Another
+implementation, layout, storage precision or speculative
 path needs a separately reviewed contract; a matching
 model name or version label alone is insufficient.
 
@@ -509,7 +518,7 @@ Keep one writer per variant root and published bundles immutable.
 
 Serving, skew fitting, support completion and `plan-skew` share the per-TP
 resolver. Native skew rows bind the same semantics and require a matching
-completed `skew.meta.yaml` checksum before fitting. A zero-case skew plan creates
+completed root `per_tp[tp].skew` record and table checksum before fitting. A zero-case skew plan creates
 no new skew file or completion claim, does not itself trigger a fit, and leaves
 existing artifacts intact,
 even with `--force`; it contributes no new skew provenance. Other nonempty TP
@@ -666,8 +675,12 @@ produces.
 
 ## Native DP+EP components
 
-Explicit `--dp` acquisition publishes `tp<N>/moe_components.json` and
-contract-specific `contract.json`, `coverage.json` and `components.csv` files.
+Explicit `--dp` acquisition publishes root `per_tp[tp].moe_components` metadata
+and deployment-specific `components.csv` tables. Contracts and coverage live in
+that root record, not standalone index/contract/coverage JSON files.
+Conditioning coverage is a compact count and maximum-change summary; individual
+control coordinates and timings stay in raw resume checkpoints. Publication still
+requires the configured quality checks and preserves the completed table checksum.
 These are separate from the legacy whole-block `moe.csv`: local gate/routing,
 gathered experts and local finalization have different token domains and
 separate eager/graph measurements. Global expert count and top-k are preserved.
@@ -769,7 +782,7 @@ One measured target per attention kernel and ordered request shape.
 | `t_skew_us` | Median of the context-level forward medians |
 
 Acquisition families, method identity, resolved block size, repetition counts
-and runtime observations live in `skew.meta.yaml`. Historical CSVs may retain
+and runtime observations live in root `per_tp[tp].skew`. Historical CSVs may retain
 these columns; new acquisitions do not repeat them on every timing row.
 
 Historical bimodal rows can be reconstructed; general distributions need
@@ -785,13 +798,16 @@ or adding CPU overhead. Missing or ambiguous launch ownership rejects the shot.
 Method metadata describes this attribution and aggregation; older rows remain
 historical measurements, not completed current acquisitions.
 
-`skew.meta.yaml` accompanies new acquisitions with the actual per-TP plan,
+Root `per_tp[tp].skew` records new acquisitions with the actual per-TP plan,
 resolved page size/capacity, seed, family counts and completion status.
 Interrupted or failed runs retain an incomplete status and checkpointed rows.
+If the final rows were saved but the completion update was interrupted, resume
+validates the completed plan and seals its record without measuring again or
+adding acquisition provenance.
 
 ## `skew_fit.csv` (skew-enabled runs)
 
-New fits use `runtime-skew-calibration-v1` and write:
+New fits use `runtime-skew-calibration` and write:
 
 ```text
 layer,decode_q_len,pc_label,lev_label,n_anchor,alpha,direct_rows,pooled_rows
@@ -831,14 +847,38 @@ run `profiler refit-skew` first. Disabled bundles do not read these tables.
 
 ## `meta.yaml`
 
-Sibling of the `tp<N>/` folders. Ordinary engine/category metadata and
-calibration have separate authority. This schematic omits generated hashes;
+Sibling of the `tp<N>/` folders and the only metadata document written for a
+new profile bundle. `per_tp[tp]` owns measurements, category publication,
+context/callable records, skew acquisition and native MoE entries. Already-central
+engine, attention-lookup, component-layout and calibration sections retain their
+existing locations and separate authority. Updates preserve unrelated records
+through the shared strict metadata reader/writer, without changing numerical
+simulation behavior. Metadata writes are serialized
+under an empty `.meta.lock`; this lock file is synchronization, not measurement
+metadata. It does not make concurrent acquisition into one table safe: honor each
+acquisition path's writer exclusion and do not change a bundle while it is being read.
+
+Historical sidecars have narrow read fallbacks, not new write destinations;
+`skew.meta.yaml` is no longer loaded.
+Optional raw repetition checkpoints support acquisition resume; failure-only
+diagnostic records can support debugging. Neither is required to load published
+timing tables, and neither replaces the root metadata contract.
+Moving existing metadata preserves its observations and timing-table bytes;
+it does not certify a fresh acquisition. This schematic omits generated hashes;
 use the profiler to create enabled entries, not hand-written placeholders.
 
 ```yaml
 hardware: RTXPRO6000
 model: Qwen/Qwen3-32B
 variant: bf16
+per_tp:
+  '2':
+    measurements: {}  # category identities, observations and CSV publication seals
+    categories: {}    # native category contracts, status and completed CSV hashes
+    contexts: {}      # ordinary/callables contracts and completion receipts
+    callables: {}     # callable options, plans and compact per-shot summaries
+    skew: {}          # actual acquisition plan and completion, when acquired
+    moe_components: {} # deployment entries with contracts, coverage and table paths
 engine_resolved:
   per_tp:
     '2':
@@ -849,7 +889,7 @@ skew_fit:
   enabled: true
   per_tp:
     2:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity: {hardware: RTXPRO6000, model: Qwen/Qwen3-32B, variant: bf16, tp: 2}
       estimator: supported_n_relative_latency_l1
       min_rows: 20
@@ -858,6 +898,12 @@ skew_fit:
 ```
 
 ### Identity and provenance
+
+Stored symbolic method, policy and format labels use descriptive hyphen-separated
+names, without old-name aliases. Remeasure obsolete method contracts in a separate
+output root rather than relabeling them. Legacy file-layout fallbacks still require
+current method contracts; unmarked historical mainstream tables remain readable.
+Numeric structural schemas and actual library/model versions are unchanged.
 
 | Key | Meaning |
 | --- | --- |
@@ -949,8 +995,11 @@ listing every point:
 | `2-256 x2` | `2` doubling to `256`, no zero point |
 | `[0.0625, 0.125, …]` | an explicit list, used where the axis is not geometric |
 
-New `skew_profile.per_tp` entries retain explicit dynamic acquisition axes
-and completion from each measured TP's `skew.meta.yaml`.
+The root `per_tp[tp].skew` record retains explicit dynamic acquisition axes,
+resolved limits and completion. Older root summaries may remain historical
+records, but acquisition, refitting and lookup do not load `skew.meta.yaml`.
+Current repeat-level skew data requires complete root acquisition metadata;
+unmarked historical skew tables retain their existing behavior.
 
 ### What the simulator actually reads
 
@@ -959,7 +1008,7 @@ and completion from each measured TP's `skew.meta.yaml`.
 | `engine_effective.max_num_batched_tokens` / `.max_num_seqs` | One-shot warning when the runtime CLI exceeds the sweep bounds, since lookups will extrapolate |
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
 | `attention_lookup.per_tp[tp]` | Validate native attention semantics, row identity and completion checksum; select the matching TP's sparse-prefill cap |
-| `skew_fit.per_tp[tp].schema` | Required versioned calibration schema |
+| `skew_fit.per_tp[tp].schema` | Required `runtime-skew-calibration` format |
 | `skew_fit.per_tp[tp].identity`, `.reference`, `.bucket_table_sha256` | Validate bundle identity, attention/reference implementation, saturation contract and table bytes |
 | `skew_fit.per_tp[tp].axes`, `.bucket_table` | Load partitions and supported N anchors once |
 | `skew_fit.per_tp[tp].alpha_default_by_kernel`, `.n_range_by_kernel` | Same-kernel/query fallback and measured N bounds |

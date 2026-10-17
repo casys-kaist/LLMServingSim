@@ -4,16 +4,15 @@ Only fills native checkpoint-format expert bytes before unchanged native postloa
 Ordinary linears follow Mxfp4Config's native unquantized policy. No backend override.
 """
 from __future__ import annotations
-import hashlib
 import inspect
 import copy
 import math
-from pathlib import Path
 import time
 import torch
 from . import dummy_weight_layouts
+from profiler.core.metadata_names import PACKED_WEIGHT_POLICY
 
-POLICY = "native-mxfp4-dummy-bf16-cuda-row-chunks-v1"
+POLICY = PACKED_WEIGHT_POLICY
 SOURCE_ELEMENTS = 4 * 1024**2
 LOW, HIGH, SEED = -0.001, 0.001, 1234
 MAX_SECONDS = 600
@@ -28,10 +27,9 @@ def class_name(value):
     return cls.__module__ + "." + cls.__name__
 
 
-def verify_sources(*, packed, derived):
+def verify_capabilities(*, packed, derived):
     """Validate callable ABI; package versions are observations, never allowlists.
 
-    Kept as an internal entry point for callers of the previous source guard.
     Numerical packing is checked separately on the actual target device.
     """
     import vllm
@@ -214,16 +212,9 @@ def _stream_fill(packed, scales, *, quantize, allocate, make_generator,
             raise TimeoutError("Native packed preparation deadline exceeded; discard engine")
     if filled_rows != rows:
         raise ValueError("Packed initialization did not fill every row")
-    # Three sampled rows, not a full GPU-to-CPU checksum or RNG equivalence claim.
-    indices = sorted(set((0, rows//2, rows-1)))
-    sample = hashlib.sha256()
-    for row in indices:
-        sample.update(destination[row].detach().cpu().numpy().tobytes())
-        sample.update(scale_destination[row].detach().cpu().numpy().tobytes())
     return dict(complete=True, rows=rows, logical_width=width, chunk_rows=chunk_rows,
                 chunks=chunks, source_buffer_bytes=source.numel()*source.element_size(),
-                sampled_row_indices=indices, sampled_rows_sha256=sample.hexdigest(),
-                full_tensor_sha256=None, elapsed_preparation_seconds=clock()-started)
+                elapsed_preparation_seconds=clock()-started)
 
 
 @torch.no_grad()
@@ -291,16 +282,6 @@ def _loader_identity(original):
             and getattr(original, "__qualname__", None) == "DummyModelLoader.load_weights")
 
 
-def _adapter_sources():
-    result = {}
-    for path in (__file__, dummy_weight_layouts.__file__):
-        try:
-            result[Path(path).name] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        except OSError:
-            result[Path(path).name] = None
-    return result
-
-
 def _prepare(original, loader, model, model_config):
     packed, derived = _classify(model, model_config)
     if not packed and not derived:
@@ -313,7 +294,7 @@ def _prepare(original, loader, model, model_config):
     setattr(model, RECEIPT, receipt)
     started = time.monotonic()
     try:
-        runtime = verify_sources(packed=packed, derived=derived)
+        runtime = verify_capabilities(packed=packed, derived=derived)
         if not _loader_identity(original):
             raise ValueError("Native dummy loader callable was replaced")
         from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
@@ -354,8 +335,7 @@ def _prepare(original, loader, model, model_config):
             source_elements_cap=SOURCE_ELEMENTS if packed else None, cpu_rng_equals_cuda_rng=False,
             tensor_records=records, actual_selected_backend_contracts=contracts,
             ordinary_linear_records=linears, derived_buffer_records=derived_records,
-            runtime_observations=runtime,
-            adapter_source_sha256=_adapter_sources())
+            runtime_observations=runtime)
     except Exception as exc:
         receipt.update(error_type=type(exc).__name__, error=str(exc))
         raise

@@ -5,7 +5,7 @@ from profiler.core.moe_deployment import MoeTarget
 from .communication import dtype_bytes
 from .config_builder import get_device
 from .logger import get_logger
-from .moe_components import MoeComponentTable, MoeCoverageError
+from .moe_components import MoeComponentTable, MoeCoverageError, component_index
 from .power_model import total_ring_data
 
 _warned = set()
@@ -29,7 +29,7 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     root = Path(ctx.perf_db['root'])/f'tp{ctx.tp_size}'
     available = ctx.perf_db.setdefault('native_moe_index_present', {})
     if ctx.tp_size not in available:
-        available[ctx.tp_size] = (root/'moe_components.json').is_file()
+        available[ctx.tp_size] = component_index(root) is not None
     if not available[ctx.tp_size]:
         if ctx.dp_sum_total_len:
             _warn(ctx, 'no DP-aware native component table is installed')

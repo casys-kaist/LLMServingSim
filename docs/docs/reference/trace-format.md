@@ -121,7 +121,7 @@ tail consumes the supported sparse-query/index-query activations and returns
 BF16 `[tokens, heads, value_dim]` output. The native 656-byte main cache and
 132-byte index cache remain explicit runtime facts, separate from legacy capacity.
 
-Input token IDs are int32. Sampled IDs use the actual source-checked native route:
+Input token IDs are int32. Sampled IDs use the actual inspected native route:
 V1 returns int32 and V2 int64. The sampler row and final Chakra memory-store node
 use that recorded width, rather than assuming the input and output ID buffers
 share a dtype. CPU scope time never contributes to `comp_time`.
@@ -157,7 +157,7 @@ support for nondefault runtime indexer dtypes or whole-model TP deployments.
 
 Raw latency-table coordinates and stored timings are unchanged. Unmarked
 historical MiniMax tables retain their 2176 prefill-lookup cap, separately from
-the 2048-position byte cap for the shipped config. New source-checked native
+the 2048-position byte cap for the shipped config. New runtime-checked native
 Triton BF16 acquisitions instead record the configured selected-block count
 times the reviewed 128-token block width as their per-TP sparse-prefill lookup cap
 (2048 for the shipped config)

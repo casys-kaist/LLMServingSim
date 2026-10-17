@@ -111,7 +111,7 @@ skew_fit:
   enabled: true
   per_tp:
     1:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity:
         hardware: RTXPRO6000
         model: meta-llama/Llama-3.1-8B
@@ -166,7 +166,7 @@ skew_fit:
       bucket_table: tp1/skew_fit.csv
       bucket_table_sha256: ee45638785cac22a54614a208e1127e96cf7e41b13f9d98a58e289119c320285
     2:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity:
         hardware: RTXPRO6000
         model: meta-llama/Llama-3.1-8B

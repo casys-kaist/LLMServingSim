@@ -3,7 +3,7 @@
 # MLA's q-LoRA phase joins concurrent gate and attention streams. Splitting
 # those into additive rows would charge overlapping device time twice.
 model_types: [kimi_k3]
-native_profile: hybrid-residual-v1
+native_profile: hybrid-residual
 blocks:
   attn:
     linear_attention:

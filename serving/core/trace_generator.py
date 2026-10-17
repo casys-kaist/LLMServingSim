@@ -195,8 +195,8 @@ def _load_meta(variant_root):
         raise FileNotFoundError(
             f"meta.yaml missing at {path}. Re-run the profiler to produce it."
         )
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+    from profiler.core.bundle_metadata import read_bundle
+    return read_bundle(variant_root)
 
 
 def _hydrate_skew_fit_tables(meta, variant_root):

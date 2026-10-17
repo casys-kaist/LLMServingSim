@@ -25,7 +25,7 @@ def semantic_identity(value):
             'source_sha256', 'elapsed_seconds', 'preparation_seconds', 'prepare_elapsed_seconds',
             'transformers_version', 'sampler_sources', 'endpoint_source_sha256',
             'installed_source_sha256', 'native_source_sha256', 'runtime_observations',
-            'elapsed_preparation_seconds', 'sampled_rows_sha256', 'full_tensor_sha256',
+            'elapsed_preparation_seconds', 'sampled_rows_sha256', 'sampled_row_indices', 'full_tensor_sha256',
             'original_config_sha256'}
         if {'protocol', 'catalog', 'iterations'} <= value.keys():
             # These names are version observations only on measurement records;

@@ -1,6 +1,4 @@
 """Worker-local native component acquisition, with explicit token domains."""
-import hashlib
-import inspect
 from pathlib import Path
 
 import torch
@@ -12,6 +10,8 @@ from .graph_measurement import extract_graph_forwards
 from .eager_measurement import extract_eager_forwards
 from ..moe_deployment import MoeTarget
 from ..moe_geometry import ExpertPlacement
+from ..metadata_names import (MOE_WEIGHT_POLICY, MOE_CONDITIONING_POLICY,
+                              EAGER_ATTRIBUTION, GRAPH_ATTRIBUTION)
 
 
 def _deferred_finalize_enabled(config):
@@ -46,8 +46,6 @@ class ComponentMeasurement:
     def __init__(self, model_runner, target, local_budget):
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
         from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import TopKWeightAndReduceNoOP
-        from ..moe_conditioning import expert_conditioning
-        from .moe_conditioned import measure_experts
 
         self.target = MoeTarget(**target)
         if self.target.dp == 1:
@@ -94,33 +92,28 @@ class ComponentMeasurement:
         self.indices_dtype = ids.dtype
         if tuple(ids.shape) != (2, self.cfg.experts_per_token) or weights.dtype != torch.float32:
             raise ValueError("Unexpected native router output contract")
-        sources = (type(self), type(self.gate), type(runner.router), type(self.finalize), type(self.reduction))
         props = torch.cuda.get_device_properties(self.device)
-        self.contract = dict(metadata, schema='moe-components-v1', expert_region=self.expert.contract,
+        self.contract = dict(metadata, schema='moe-components', expert_region=self.expert.contract,
             components=['gate_routing', 'experts', 'finalize_copy'], modes=['eager', 'graph'],
             topk_ids_dtype=str(ids.dtype), topk_weights_dtype=str(weights.dtype),
             hidden_dim=h, intermediate_size=inter, input_dtype=str(self.cfg.in_dtype),
             gate_weight_bytes=self.gate.weight.numel()*self.gate.weight.element_size(),
             expert_weight_bytes=w13.numel()*w13.element_size()+w2.numel()*w2.element_size(),
             activation=str(self.cfg.activation),
-            measurement_context='native_rotated_expert_weights_v1',
-            expert_conditioning=dict(schema='rotated-weight-cycles-v2',
+            measurement_context=MOE_WEIGHT_POLICY,
+            expert_conditioning=dict(schema=MOE_CONDITIONING_POLICY,
                 l2_bytes=int(props.L2_cache_size),capacity_multiple=2,
                 minimum_banks=2,
                 quality_relative_tolerance=.03,representative='higher_bank_control',
                 local_components='isolated_warm',warmup_complete_cycles=3),
             routing_stimulus='balanced_local_histogram_with_full_global_topk',
-            graph_attribution='native_graph_launch_correlation_v1',
+            graph_attribution=GRAPH_ATTRIBUTION,
             graph_memory_pool='independent_per_variant',
-            eager_attribution='native_eager_launch_correlation_v1',
+            eager_attribution=EAGER_ATTRIBUTION,
             graph_output_reference='independent_pre_capture_clone',
             torch_version=str(torch.__version__), cuda_version=torch.version.cuda,
             synthetic_expert_weights=True,
-            source_sha256={f'{c.__module__}.{c.__name__}': hashlib.sha256(
-                Path(inspect.getfile(c)).read_bytes()).hexdigest() for c in (*sources,
-                    extract_graph_forwards, extract_eager_forwards, MoeTarget, ExpertPlacement,
-                    expert_conditioning,measure_experts)},
-            gpu=dict(name=props.name, uuid=str(props.uuid), total_memory=props.total_memory,
+            gpu=dict(name=props.name, total_memory=props.total_memory,
                      capability=list(torch.cuda.get_device_capability(self.device))),
             excluded=['collectives', 'cpu_time', 'launch_gaps', 'shared_experts'])
 

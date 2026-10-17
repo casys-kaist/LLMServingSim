@@ -8,6 +8,7 @@ from collections import Counter
 import math
 
 from .skew_measurement import MARKER
+from ..metadata_names import GRAPH_ATTRIBUTION
 
 
 def extract_graph_forwards(kineto, iterations):
@@ -60,4 +61,4 @@ def extract_graph_forwards(kineto, iterations):
     return dict(per_forward_us=values, cuda_kernel_counts=[dict(c) for c in counts],
                 conservation_delta_us={'component':sum(values)-native_sum},
                 excluded_gpu_annotations=excluded,
-                attribution='native_graph_launch_correlation_v1')
+                attribution=GRAPH_ATTRIBUTION)

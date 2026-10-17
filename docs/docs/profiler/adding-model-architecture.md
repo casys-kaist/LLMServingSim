@@ -165,8 +165,8 @@ key fails at load time rather than silently doing nothing:
   See [Heterogeneous stacks](#heterogeneous-stacks) for what the axes are.
 - `shared:` — `prologue` and `head`, which run once per *iteration* rather
   than once per layer.
-- `native_profile:` — optional; selects a registered source-admitted native
-  acquisition adapter. `hybrid-residual-v1` uses shared category/context
+- `native_profile:` — optional; selects a registered runtime-admitted native
+  acquisition adapter. `hybrid-residual` uses shared category/context
   publication and configuration-derived residual plans; omitting it preserves
   ordinary acquisition. Selection is not permission to bypass runtime checks.
 - `component_layouts:` — optional; declares runtime-selected alternatives to
@@ -521,17 +521,19 @@ ordinary callables retain schema 2, catalogs without callables schema 1.
 Such rows are not pooled into the ordinary dense timing. An acquisition planner
 must declare every expected context and invocation count before capture. The
 isolated callable API validates the unchanged native target, each forward's calls
-and its CUDA ledger before atomically publishing rows and completion receipts.
+and its CUDA ledger before publishing rows and completion records in the
+variant-root `meta.yaml`. Context definitions and callable plans are metadata,
+not standalone JSON artifacts beside the timing CSV.
 The immutable lookup matches the structural context exactly and interpolates
 only its token axis, refusing missing contexts and out-of-range tokens. A
 declaration alone does not supply that planner or simulator integration. The
 [Kimi acquisition](./output-bundle#native-kimi-acquisition) selects
-`native_profile: hybrid-residual-v1` for its source-derived residual roles.
+`native_profile: hybrid-residual` for its source-derived residual roles.
 `NativeProfile` shares orchestration, category publication and exact-context
-loading; its runtime adapter supplies source/backend admission and callable
+loading; its runtime adapter supplies native API/backend admission and callable
 planning. The entire supplied architecture participates in identity, not a
 hard-coded catalog file. Config-derived widths and schedules do not eliminate
-source, ABI or observed-layout checks, and adding this key is not certification
+native API or observed-layout checks, and adding this key is not certification
 of another implementation or device. Keep a new adapter's source-specific rules
 separate from the common publication/lookup mechanisms.
 
@@ -559,9 +561,9 @@ merely the spelling of an interchangeable kernel. Each named group declares:
   `replacement_prefix` and `consumed_by`. Consumption is restricted to absolute
   target layer 0, after the rewritten prefix matches and the consuming component
   appears in the active shared prologue. This is not an MTP rewrite.
-- `invocation_contract: site-scope-calls-v1` additionally checks resolved site
+- `invocation_contract: site-scope-calls` additionally checks resolved site
   calls and normalization against the actual acquired prefix. The optional
-  `runtime_contract: native-dsa-eager-tail-v1` invokes the explicit native DSA
+  `runtime_contract: native-dsa-eager-tail` invokes the explicit native DSA
   admission adapter and requires four-category publication; it is not a generic
   opt-out from execution checks.
 

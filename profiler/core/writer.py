@@ -23,6 +23,7 @@ import math
 import os
 import platform
 import subprocess
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -31,6 +32,7 @@ import yaml
 
 from profiler.core.measurement import FIELDS as MEASUREMENT_FIELDS
 from profiler.core.measurement import measurement_token
+from profiler.core.bundle_metadata import read_bundle, read_tp, update_tp, update_bundle
 
 from profiler import __version__ as profiler_version
 from profiler.core import logger as log
@@ -53,38 +55,73 @@ from profiler.core.config import (
 # DedupSink — the CSV-producing accumulator
 # ---------------------------------------------------------------------------
 
+def _measurement_location(directory, category):
+    directory = Path(directory)
+    for tp_dir in (directory, *directory.parents):
+        if tp_dir.name.startswith('tp') and tp_dir.name[2:].isdigit() and int(tp_dir.name[2:]) > 0:
+            relative = directory.relative_to(tp_dir)
+            return tp_dir, str(relative / category) if relative.parts else category
+    raise ValueError(f'Measurement table is not inside a tp<N> directory: {directory}')
+
+
 def category_measurement(directory, category):
-    path = Path(directory) / 'meta.yaml'
-    data = yaml.safe_load(path.read_text()) if path.exists() else {}
-    return (data or {}).get('measurements', {}).get(category)
+    tp_dir, key = _measurement_location(directory, category)
+    records = read_tp(tp_dir, 'measurements', {})
+    if not isinstance(records, dict):
+        raise ValueError('Expected per-TP measurement metadata mapping')
+    if key in records:
+        if not isinstance(records[key], dict):
+            raise ValueError(f'Invalid measurement metadata for {key}')
+        return records[key]
+    return _legacy_category_measurement(directory, category)
 
 
-def _measurement_metadata(directory, category, identity, *, replace=False):
+def _legacy_category_measurement(directory, category):
     path = Path(directory) / 'meta.yaml'
-    data = (yaml.safe_load(path.read_text()) if path.exists() else {}) or {}
-    records = data.setdefault('measurements', {})
-    previous = records.get(category)
+    legacy = (yaml.safe_load(path.read_text()) if path.exists() else {}) or {}
+    return legacy.get('measurements', {}).get(category)
+
+
+def _update_category_measurement(directory, category, mutator):
+    tp_dir, key = _measurement_location(directory, category)
+    legacy = _legacy_category_measurement(directory, category)
+    def apply(previous):
+        records = dict(previous or {})
+        records[key] = mutator(deepcopy(records.get(key, legacy)))
+        return records
+    return update_tp(tp_dir, 'measurements', apply)[key]
+
+
+def _compatible_measurement(record, token):
+    """Validate stored evidence before comparing measurement semantics."""
+    identity = record.get('identity')
+    if not isinstance(identity, dict) or record.get('measurement') != measurement_token(identity):
+        raise ValueError('Measurement metadata differs from its recorded identity')
+    return record['measurement'] == token
+
+
+def _measurement_record(previous, identity, *, replace=False):
     token = measurement_token(identity)
     replica_only = (previous is not None and previous.get('acquisitions') == []
                     and bool(previous.get('replicated')))
     if previous is not None and not replace and not replica_only:
-        if previous['measurement'] != token:
+        if not _compatible_measurement(previous, token):
             raise ValueError('Category measurement semantics changed; remeasure explicitly')
         acquisitions = previous.setdefault('acquisitions', [previous['identity']])
         if identity not in acquisitions:
             acquisitions.append(identity)
     else:
-        records[category] = dict(identity=identity, measurement=token, acquisitions=[identity])
+        record = dict(identity=identity, measurement=token, acquisitions=[identity])
         if previous is not None and previous.get('replicated'):
-            records[category]['replicated'] = previous['replicated']
-    return data
+            record['replicated'] = previous['replicated']
+        return record
+    return previous
 
 
 def record_category_measurement(directory, category, identity, *, replace=False):
     """Record facts for an already acquired table; sinks publish facts with CSVs."""
-    data = _measurement_metadata(directory, category, identity, replace=replace)
-    from .context_tables import _atomic
-    _atomic(Path(directory) / 'meta.yaml', yaml.safe_dump(data, sort_keys=False))
+    _update_category_measurement(directory, category,
+        lambda previous: _measurement_record(previous, identity, replace=replace))
 
 
 def _validate_publication(path, record):
@@ -99,26 +136,29 @@ def _validate_publication(path, record):
                          'use fresh output or explicitly remeasure with --force')
 
 
-def _publish_csv(temporary, path, metadata=None):
+def _publish_csv(temporary, path, record_update=None):
     """Seal intended bytes before replacing the CSV, then mark completion."""
-    from .context_tables import _atomic
-    meta_path = path.parent / 'meta.yaml'
-    if metadata is None:
-        metadata = (yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {}) or {}
-    record = metadata.get('measurements', {}).get(path.stem)
-    if record is not None:
-        record['publication'] = dict(state='pending',
-            csv_sha256=hashlib.sha256(temporary.read_bytes()).hexdigest())
-        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
+    publish = record_update is not None or category_measurement(path.parent, path.stem) is not None
+    checksum = hashlib.sha256(temporary.read_bytes()).hexdigest()
+    if publish:
+        def pending(previous):
+            record = record_update(previous) if record_update is not None else previous
+            record['publication'] = dict(state='pending', csv_sha256=checksum)
+            return record
+        _update_category_measurement(path.parent, path.stem, pending)
     temporary.replace(path)
     directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(directory_fd)
     finally:
         os.close(directory_fd)
-    if record is not None:
-        record['publication']['state'] = 'complete'
-        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
+    if publish:
+        def complete(record):
+            if record.get('publication') != dict(state='pending', csv_sha256=checksum):
+                raise ValueError('Measurement publication changed during CSV replacement')
+            record['publication']['state'] = 'complete'
+            return record
+        _update_category_measurement(path.parent, path.stem, complete)
 
 class DedupSink:
     """Accumulates Points, averages duplicates, flushes a sorted CSV.
@@ -222,7 +262,10 @@ class DedupSink:
             _validate_publication(self.out_path, saved)
             plain = not any(k in field_order for k in MEASUREMENT_FIELDS)
             if self.measurement is not None and plain:
-                contextual = (self.out_path.parent / 'dense_context_manifest.json').exists()
+                contextual = False
+                if saved is None:
+                    from .context_tables import read_context_record
+                    contextual = read_context_record(self.out_path.parent) is not None
                 if saved is None and not contextual:
                     raise ValueError(f'{self.out_path} lacks compatible measurement metadata; '
                                      'use a separate output root or --force to remeasure')
@@ -260,7 +303,7 @@ class DedupSink:
                                 or replica.get('measurement') != measurement_token(replica['identity'])):
                             raise ValueError('Replicated row lacks its source acquisition metadata')
                     elif (saved.get('acquisitions') == []
-                          or saved.get('measurement') != self.measurement):
+                          or not _compatible_measurement(saved, self.measurement)):
                         raise ValueError(f'{self.out_path} has incompatible measured-row metadata; '
                                          'use a separate output root or --force to remeasure')
                 if (self.measurement is not None and not preserve and any(recorded.values())
@@ -378,12 +421,11 @@ class DedupSink:
                 writer.writerows(rows)
                 f.flush()
                 os.fsync(f.fileno())
-            metadata = None
+            record_update = None
             if self._measurement_update is not None:
                 identity, replace = self._measurement_update
-                metadata = _measurement_metadata(self.out_path.parent, self.out_path.stem,
-                                                 identity, replace=replace)
-            _publish_csv(tmp, self.out_path, metadata)
+                record_update = lambda previous: _measurement_record(previous, identity, replace=replace)
+            _publish_csv(tmp, self.out_path, record_update)
             self._measurement_update = None
         finally:
             tmp.unlink(missing_ok=True)
@@ -472,17 +514,6 @@ def _geometric_spec(values) -> Any:
         else f"x{r0:.3g}"
     core = f"{tail[0]}-{tail[-1]} {factor}"
     return core if prefix is None else f"{prefix}, {core}"
-
-
-def _skew_meta_block(args, variant_root, prior=None):
-    """Record actual per-TP plans, never reconstruct engine bounds from defaults."""
-    result = dict(prior or {})
-    plans = {int(tp): value for tp, value in (result.get("per_tp") or {}).items()}
-    for path in sorted(Path(variant_root).glob("tp*/skew.meta.yaml")):
-        with path.open() as stream:
-            plans[int(path.parent.name[2:])] = yaml.safe_load(stream)
-    result.update(enabled=bool(plans) or bool(result.get("enabled")), per_tp=plans)
-    return result
 
 
 def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
@@ -669,10 +700,8 @@ def persist_meta(
     ``--block-size`` is omitted. A shrunk single-category engine is not
     authoritative either, for the same reason.
 
-    ``records_skew`` -- same restraint for ``skew_profile``, which
-    ``_skew_meta_block`` merges from actual per-TP acquisition sidecars. A run
-    that swept no skew must retain earlier coverage and provenance rather
-    than replacing it with a grid inferred from defaults.
+    Skew acquisition writes its own per-TP record directly. Session refreshes
+    preserve that record and every other owner's metadata under the shared lock.
 
     ``records_attention_grid`` -- only a run that swept attention knows which
     axes were fired. A ``per_sequence`` refresh regenerating the block from its
@@ -774,57 +803,38 @@ def persist_meta(
             or _attention_grid_spec(args, eff_mnbt, eff_msq)
         ),
         "measurement_iterations": args.measurement_iterations,
-        "skew_profile": (
-            _skew_meta_block(args, variant_root, prior.get("skew_profile"))
-            if records_skew
-            else prior.get("skew_profile") or None
-        ),
         "skew_fit": _calibrated_skew_fit_block(variant_root, args),
-        "moe_components": prior.get("moe_components"),
     }
-    # Component acquisition updates meta.yaml before touching a coupled
-    # table. Preserve that sole record without rebuilding or certifying it.
-    from profiler.core.component_layouts import metadata_records
-    with Path(arch_path).open() as stream:
-        layout_records = metadata_records(variant_root, yaml.safe_load(stream))
-    if layout_records is not None:
-        meta["component_layouts"] = layout_records
-    # Attention acquisition owns this record; engine-only/partial refreshes
-    # must preserve it, never reconstruct or seal old rows from new facts.
-    from profiler.core import attention_lookup as lookup_contract
-    lookup_meta = lookup_contract.metadata(variant_root)
-    with Path(arch_path).open() as stream:
-        lookup_contract.resolve(variant_root, args.model_config, yaml.safe_load(stream), meta=lookup_meta)
-    if 'attention_lookup' in lookup_meta:
-        meta['attention_lookup'] = lookup_meta['attention_lookup']
-    variant_root.mkdir(parents=True, exist_ok=True)
-    out = variant_root / "meta.yaml"
-    from profiler.core.skew_calibration import atomic_yaml
-    atomic_yaml(out, meta, Dumper=_CompactDumper)
-    log.debug("wrote meta.yaml → %s", out)
-
-
-def persist_moe_component_meta(args, variant_root, tps):
-    """Record native-component ownership without restamping other categories."""
-    import hashlib
-    from .skew_calibration import atomic_yaml
-    prior = _prior_meta(variant_root)
-    for key, value in (("model", args.model), ("hardware", args.hardware),
-                       ("variant", args.effective_variant)):
-        if key in prior and prior[key] != value:
-            raise ValueError("Native MoE output identity differs from the existing bundle")
-        prior[key] = value
-    block = prior.setdefault("moe_components", {})
-    if block is None:
-        block = prior["moe_components"] = {}
-    block["schema"] = "moe-components-v1"
-    entries = block.setdefault("per_tp", {})
-    for tp in tps:
-        index = variant_root/f"tp{tp}"/"moe_components.json"
-        entries[tp] = dict(index=str(index.relative_to(variant_root)),
-                           sha256=hashlib.sha256(index.read_bytes()).hexdigest(),
-                           measured_at=_utcnow_iso(), vllm_version=_vllm_version())
-    atomic_yaml(variant_root/"meta.yaml", prior, Dumper=_CompactDumper)
+    def merge(current):
+        # Only the current refresh's observations replace shared fields. Each
+        # acquisition owner retains its latest locked record, including TP
+        # writers that finished after this session summary was computed.
+        meta['category_provenance'] = _category_provenance(current, measured_categories,
+            meta['vllm_version'], meta['profiled_at'], _artifacts_present(variant_root))
+        if not records_engine and current.get('engine_effective'):
+            meta['engine_effective'] = current['engine_effective']
+        if not records_attention_grid and current.get('attention_grid'):
+            meta['attention_grid'] = current['attention_grid']
+        for key in ('engine_resolved', 'skew_fit'):
+            existing = deepcopy(current.get(key) or {})
+            observed = meta.get(key) or {}
+            entries = {str(tp): value for tp, value in (existing.get('per_tp') or {}).items()}
+            updates = observed.get('per_tp') or {}
+            if key == 'engine_resolved':
+                measured = {str(tp) for tp, value in (limits or {}).items() if value is not None} if records_engine else set()
+                updates = {tp: value for tp, value in updates.items() if str(tp) in measured}
+            entries.update({str(tp): value for tp, value in updates.items()})
+            if entries:
+                if updates:
+                    existing.update({field: value for field, value in observed.items() if field != 'per_tp'})
+                existing['per_tp'] = entries
+                meta[key] = existing
+            elif key in current and not updates:
+                meta[key] = current[key]
+        meta['tp_degrees'] = sorted(set(current.get('tp_degrees') or []) | set(meta['tp_degrees']))
+        current.update(meta)
+    update_bundle(variant_root, merge)
+    log.debug('wrote meta.yaml → %s', variant_root / 'meta.yaml')
 
 
 def _calibrated_skew_fit_block(variant_root, args):
@@ -834,33 +844,6 @@ def _calibrated_skew_fit_block(variant_root, args):
     return fit_bundle(variant_root,
         dict(hardware=args.hardware, model=args.model, variant=args.effective_variant),
         args.model_config)
-
-
-# ---------------------------------------------------------------------------
-# YAML dumper that keeps short scalar lists on one line
-# ---------------------------------------------------------------------------
-
-
-class _CompactDumper(yaml.SafeDumper):
-    """SafeDumper that emits lists of primitives in flow style.
-
-    Block-style lists balloon meta.yaml (every bin / label / tp_degree
-    on its own line). Flow style collapses them to a single line while
-    still being valid YAML and round-trippable by safe_load.
-    """
-
-
-def _represent_list(dumper, data):
-    flow = all(
-        isinstance(x, (int, float, str, bool, type(None))) for x in data
-    )
-    return dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=flow,
-    )
-
-
-_CompactDumper.add_representer(list, _represent_list)
-_CompactDumper.add_representer(tuple, _represent_list)
 
 
 # ---------------------------------------------------------------------------
@@ -976,17 +959,16 @@ def _replicate_layer_file(
         for k in key_fields
     ))
 
-    metadata = None
+    record_update = None
     if source_record is not None:
-        meta_path = dst.parent / 'meta.yaml'
-        metadata = (yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {}) or {}
-        record = metadata.setdefault('measurements', {}).setdefault(dst.stem,
-            dict(identity=source_record['identity'], measurement=source_record['measurement'],
-                 acquisitions=[]))
-        record.setdefault('replicated', {}).update({name: dict(source_tp=1,
-            identity=source_record['identity'], measurement=source_record['measurement'])
-            for name in sorted(layer_whitelist)})
-    _write_csv_rows(dst, merged, metadata=metadata)
+        def record_update(previous):
+            record = previous or dict(identity=source_record['identity'],
+                measurement=source_record['measurement'], acquisitions=[])
+            record.setdefault('replicated', {}).update({name: dict(source_tp=1,
+                identity=source_record['identity'], measurement=source_record['measurement'])
+                for name in sorted(layer_whitelist)})
+            return record
+    _write_csv_rows(dst, merged, record_update=record_update)
     log.debug(
         "replicated %d tp_stable rows into %s", len(src_stable), dst
     )
@@ -1001,7 +983,7 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]], *, metadata=None) -> None:
+def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]], *, record_update=None) -> None:
     rows = list(rows)
     if not rows:
         return
@@ -1015,7 +997,7 @@ def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]], *, metadata=None
             writer.writerows(rows)
             f.flush()
             os.fsync(f.fileno())
-        _publish_csv(temporary, path, metadata)
+        _publish_csv(temporary, path, record_update)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -1064,14 +1046,7 @@ def _prior_meta(variant_root: Path) -> dict[str, Any]:
     describes work it did not do. Reading the prior file is how those parts
     survive; see ``persist_meta``'s ``records_*`` flags for which.
     """
-    existing = variant_root / "meta.yaml"
-    if not existing.is_file():
-        return {}
-    try:
-        with existing.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except Exception:
-        return {}
+    return read_bundle(variant_root)
 
 
 def _engine_resolved_block(

@@ -12,6 +12,9 @@ __pycache__/
 # Ignore bench results
 bench/results/
 
+# Synchronization only; profile metadata lives in meta.yaml.
+profiler/perf/**/.meta.lock
+
 # Ignore scratch simulation output. The committed example runs under
 # outputs/example_*.csv stay tracked; everything else in outputs/ is
 # per-run scratch. ASTRA-Sim regenerates its inputs on every run, and

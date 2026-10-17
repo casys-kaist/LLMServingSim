@@ -207,7 +207,7 @@ or implement an accelerator adapter.
 For a target outside the bundled acquisition path, use an appropriate
 measurement adapter or analytical model. The simulator consumes the
 **profile bundle contract**, independently of the acquisition environment;
-versioned skew and native MoE data also require their matching metadata.
+skew calibration and native MoE data also require their matching metadata.
 
 The strategy: synthesize CSVs in the
 [Output bundle](./output-bundle) format from your own measurement
@@ -269,7 +269,7 @@ Even when synthesizing, write a `meta.yaml` so the simulator's
 runtime warnings work properly:
 
 ```yaml
-profiler_version: "synthetic-v1"
+profiler_version: "synthetic"
 vllm_version: "n/a"
 gpu: "<driver device name, or n/a>"
 hardware: "<HARDWARE>"          # must equal the folder name
@@ -286,7 +286,7 @@ skew_fit:
   enabled: false                # no measured heterogeneous correction
 ```
 
-Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration-v1` entries or their hashes:
+Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration` entries or their hashes:
 generate them from measured skew data and matching attention references with
 `profiler refit-skew`. See [Skew & alpha fit](./skew-alpha-fit).
 
@@ -305,7 +305,7 @@ or fill them in however you like.
 
 :::warning[Enable only measured, compiled calibration]
 An absent or disabled `skew_fit` applies zero correction. Enabled entries
-must use the versioned compiler output; the old constant-alpha and bucket
+must use a recognized calibration format from the compiler; the old constant-alpha and bucket
 formats are rejected. `profiler refit-skew` compiles your own raw measurements
 against matching attention references. A missing TP or query slice does not
 borrow another slice's correction.

@@ -11,7 +11,7 @@ to local rows. Native component profiling measures these GPU regions separately
 while leaving communication to the network model.
 
 The shipped RTXPRO6000 BF16 Qwen3-30B bundle includes a TP1/DP2/EP2 component
-index. Its contracts define the actual bounds and backend; the same model name
+entry in its root metadata. Its contracts define the actual bounds and backend; the same model name
 at another TP or DP degree does not imply coverage. Published bundles contain
 the runtime files, not the original per-forward acquisition streams. Keep the
 original acquisition directory to resume it, or choose a separate `--out-root`
@@ -23,8 +23,10 @@ in 0.28 and 0.31. The similarly named `defer_moe_finalize` is a request flag
 in 0.28 and a request method in 0.31; its truthiness is not an execution mode.
 Unknown capability APIs and actually deferred execution are rejected.
 A vLLM upgrade or a different expert backend requires auditing the whole
-execution contract, not merely reusing the same CSV column names. Source changes
-create a new acquisition identity; they do not relabel historical measurements.
+execution contract, not merely reusing the same CSV column names. Compatibility
+depends on native APIs, geometry, backend and conditioning semantics, not source
+hashes, exact library versions or directory names. A semantic method change does
+not relabel historical measurements.
 
 ## Acquire a deployment-matched table
 
@@ -88,32 +90,56 @@ Kernel selection and arbitrary trained routing distributions can still differ.
 
 ## Files, resume and lookup
 
-Within each `tp<N>/`, `moe_components.json` indexes target-specific folders:
+The variant-root `meta.yaml::per_tp[tp].moe_components` record indexes target
+tables. New output uses readable deployment directories rather than contract hashes:
 
 ```text
-moe_components.json
-moe_components/<contract-id>/
-  contract.json
-  coverage.json
-  components.csv
-  samples.jsonl
+<variant>/
+├── meta.yaml
+└── tp<N>/
+    └── moe_components/
+        └── dp2_ep2_rank0_sp0/
+            ├── components.csv
+            └── samples.jsonl    # optional raw acquisition checkpoint
 ```
 
 `components.csv` stores `component,mode,tokens,activated_experts,local_assignments,time_us`.
 The three components are `gate_routing`, `experts` and `finalize_copy`.
-`contract.json` records model/hardware identity, target TP/DP/EP/rank, expert
-ownership, dtypes, native backend, source fingerprints and measurement protocol.
-`coverage.json` records completed rounds, stability checks and the table checksum.
+The root record has `schema: moe-components` and `entries`, each containing
+`target`, a TP-relative table `path`, `contract` and `coverage`. The contract
+describes geometry, target TP/DP/EP/rank, expert ownership, dtypes, native backend
+and measurement conditioning, with acquisition observations kept as provenance.
+Coverage records completion, completed rounds and the table checksum. Its compact
+`conditioning_summary` contains `checked_points`, `failed_points` and
+`max_relative_change`; the tolerance stays in `contract.expert_conditioning`.
+Every control check still runs, but individual control coordinates and timings
+are not published in metadata.
 `samples.jsonl` preserves individual forwards and control measurements for resume
-and auditing; runtime lookup needs only the index, contract, coverage and CSV.
+and auditing; runtime lookup needs only root metadata and the component CSV.
+Acquisition failures may additionally retain `failures.jsonl` and a diagnostic
+Chrome trace for the failed graph-attribution check. These are optional debugging
+artifacts emitted on failure, not normal-path metadata or simulator inputs; do
+not commit diagnostic artifacts as part of a published profile bundle.
+New acquisitions do not write standalone index, contract or coverage JSON files.
+Historical standalone layouts remain readable when their method contracts are
+current; file-layout fallback does not translate obsolete symbolic names.
+Moving metadata does not alter timing-table bytes or turn them
+into fresh measurements. Paths locate tables, not execution identity.
 
 Re-running the same contract resumes completed rounds. An incomplete trailing raw
 record is archived before repair; malformed complete records are rejected. A
-contract has an exclusive writer lock and is immutable. `--force` is rejected:
-use another output root for a fresh acquisition. Run only one acquisition writer
-per output bundle; the per-contract lock is not a multi-writer index transaction.
+target has an exclusive `writer.lock` and immutable semantic conditions. `--force`
+is rejected: use another output root for a fresh acquisition. Run only one
+acquisition writer per target; distinct targets serialize their shared root
+metadata updates through `.meta.lock`. Changed version/provenance observations
+alone do not change resume identity. Raw samples are needed to resume acquisition,
+but not to consume a published metadata-and-CSV bundle.
+No-op resume preserves the original runtime observations. Distinct later
+observations enter the root entry's `acquisition_contexts` only after validated
+new work; this is a context list, not a count of durable or completed rows.
 Incomplete or quality-failing acquisitions retain raw evidence but do not publish
-a new runtime index entry.
+a new runtime entry. A historical standalone index is consulted only when the root
+MoE owner is absent; a malformed or incomplete root entry cannot fall back to it.
 
 Serving automatically selects a matching index entry. Local components use
 one-dimensional interpolation; experts use bounded interpolation within the

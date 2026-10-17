@@ -32,7 +32,7 @@ DeepSeek representation is described by its
 it uses a combined, full-context `dsa_attention_tail` and explicit local duration
 replay only. This does not extend native acquisition to GLM-5.
 
-MiniMax-M3's new source-checked vLLM 0.31 Triton BF16 acquisition records a
+MiniMax-M3's new runtime-checked vLLM 0.31 Triton BF16 acquisition records a
 [per-TP attention contract](../../profiler/output-bundle.md#native-attention-lookup-contract):
 the configured selected-block count and reviewed 128-token block layout determine
 the sparse-prefill lookup cap (2048 for the shipped configuration). The

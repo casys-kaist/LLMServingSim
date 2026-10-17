@@ -11,7 +11,9 @@ import hashlib
 import json
 import math
 
-SCHEMA = 'native-dsa-eager-tail-v1'
+from profiler.core.metadata_names import PACKED_WEIGHT_POLICY
+
+SCHEMA = 'native-dsa-eager-tail'
 MODEL_MODULE = 'vllm.models.deepseek_v32.nvidia.model'
 ATTENTION_MODULE = 'vllm.models.deepseek_v32.attention'
 DIMENSIONS = ('hidden_size', 'vocab_size', 'num_attention_heads', 'q_lora_rank',
@@ -23,23 +25,11 @@ PARALLEL = ('tensor_parallel_size', 'pipeline_parallel_size', 'data_parallel_siz
 SAMPLER_ROUTES = {
     ('vllm.v1.worker.gpu_model_runner.GPUModelRunner',
      'vllm.v1.sample.sampler.Sampler'): dict(
-        dtype='torch.int32', entrypoint='forward', sources=('v1/sample/sampler.py',)),
+        dtype='torch.int32', entrypoint='forward'),
     ('vllm.v1.worker.gpu.model_runner.GPUModelRunner',
      'vllm.v1.worker.gpu.sample.sampler.Sampler'): dict(
-        dtype='torch.int64', entrypoint='__call__', sources=(
-            'v1/worker/gpu/sample/sampler.py', 'v1/worker/gpu/sample/gumbel.py')),
+        dtype='torch.int64', entrypoint='__call__'),
 }
-
-
-def _observed_sources(root, paths):
-    """Optional provenance; source availability/content never admits a layout."""
-    observed = {}
-    for name in paths:
-        try:
-            observed[name] = hashlib.sha256((root/name).read_bytes()).hexdigest()
-        except (OSError, TypeError):
-            observed[name] = None
-    return observed
 
 
 def _semantic(value):
@@ -47,7 +37,7 @@ def _semantic(value):
     metadata = {'vllm_version', 'torch_version', 'transformers_version', 'native_sources',
         'source_hashes', 'sampler_sources', 'endpoint_source_sha256', 'installed_source_sha256',
         'adapter_source_sha256', 'native_source_sha256', 'runtime_observations',
-        'elapsed_preparation_seconds', 'sampled_rows_sha256', 'full_tensor_sha256',
+        'elapsed_preparation_seconds', 'sampled_rows_sha256', 'sampled_row_indices', 'full_tensor_sha256',
         'original_config_sha256'}
     if isinstance(value, dict):
         return {key: _semantic(item) for key, item in value.items() if key not in metadata}
@@ -286,13 +276,11 @@ def _sampler_facts(runner):
     """Bind the callable used by history._execute(), not a default runner mode.
 
     The profiling facade does not convert outputs. Inspect the native object
-    behind it and its callable's source; file reads and metadata checks occur
-    outside the measured forwards. Unknown wrappers or modified return paths
+    behind it and its callable identity. Checks occur outside the measured
+    forwards. Unknown wrappers or modified return paths
     need a new review rather than an assumed token width.
     """
     import inspect
-    from pathlib import Path
-    import vllm
     from .sampler_shim import Sampler as ProfilingSampler
 
     sampler = _get(runner, 'sampler')
@@ -306,13 +294,11 @@ def _sampler_facts(runner):
             or getattr(bound, '__func__', None) is not getattr(type(sampler), method)):
         _fail('sampler entrypoint is overridden on the live instance')
     native = inspect.unwrap(bound.__func__)
-    package = Path(vllm.__file__).resolve().parent
     if (native.__module__ != type(sampler).__module__
             or native.__qualname__ != f'Sampler.{method}' or not callable(native)):
         _fail('sampler entrypoint does not resolve to its native class implementation')
     return dict(runner_class=runner_class, sampler_class=sampler_class,
-                sampler_entrypoint=method,
-                sampler_sources=_observed_sources(package, route['sources']))
+                sampler_entrypoint=method)
 
 
 def collect_runtime_facts(runner):
@@ -583,15 +569,9 @@ class HybridResidualProfile:
     GPU dependencies are imported only by untimed runtime inspection methods.
     """
 
-    schema = 'hybrid-residual-native-local-v2'
+    schema = 'hybrid-residual-native-local'
     context_layers = ('attn_res',)
     rpc_method = 'native_profile_admission'
-    native_sources = dict.fromkeys(('models/kimi_k3/nvidia/model.py', 'models/kimi_k3/nvidia/kda.py',
-                      'models/kimi_k3/nvidia/mla.py', 'models/kimi_k3/nvidia/ops/attn_res.py'))
-    layout_sources = ('kimi_k3/nvidia/model.py', 'kimi_k3/nvidia/kda.py',
-        'kimi_k3/nvidia/mla.py', 'kimi_k3/nvidia/ops/attn_res.py', 'quantization/mxfp4.py',
-        'fused_moe/oracle/mxfp4.py', 'fused_moe/experts/deep_gemm_moe.py',
-        'fused_moe/modular_kernel.py', 'fused_moe/activation.py')
     # transformers 5.17 PreTrainedConfig deliberately removes generation
     # parameters. Only absence qualifies; changed explicit values still fail.
     removed_generation_fields = frozenset((
@@ -622,7 +602,7 @@ class HybridResidualProfile:
         if (type(config) is not dict or config.get('model_type') != 'kimi_k3'
                 or type(config.get('text_config')) is not dict):
             raise ValueError('Hybrid residual source requires its native nested wrapper')
-        cls.digest(config)
+        cls.canonical(config)
         text = config['text_config']
         depth = cls._positive(text.get('num_hidden_layers'), 'source depth')
         cls._positive(text.get('hidden_size'), 'hidden width')
@@ -677,7 +657,7 @@ class HybridResidualProfile:
     def validate_context_response(response):
         # Generic same-capture validation joins these counts to the CUDA
         # ledger; this source adapter additionally admits the native route.
-        calls = response.get('evidence', {}).get('per_call')
+        calls = response.get('routes', response.get('evidence', {}).get('per_call'))
         if not isinstance(calls, list) or not calls:
             raise ValueError('Missing native residual callable evidence')
         canonical_calls = [call for call in calls if call.get('canonical') is not None]
@@ -705,9 +685,8 @@ class HybridResidualProfile:
                 or any(type(n) is not int or n < 1 for n in engine_limits.values())
                 or (cache_bytes is not None and (type(cache_bytes) is not int or cache_bytes < 1))):
             raise ValueError('Hybrid residual requires positive limits and cache budget or automatic cache')
-        return dict(schema=cls.schema, original_config=copy.deepcopy(config),
-            original_config_sha256=cls.digest(config), engine_depth=depth,
-            native_sources=dict(cls.native_sources), engine_limits=copy.deepcopy(engine_limits),
+        return dict(schema=cls.schema, original_config=copy.deepcopy(config), engine_depth=depth,
+            engine_limits=copy.deepcopy(engine_limits),
             cache_bytes=cache_bytes, tp=1, pp=1, ep=1, dp=1)
 
     @classmethod
@@ -789,7 +768,7 @@ class HybridResidualProfile:
         contracts = preparation.get('actual_selected_backend_contracts', {})
         paths = {f'language_model.model.layers.{i}.block_sparse_moe.experts.routed_experts'
                  for i, layer in enumerate(stack) if layer.mlp == 'moe'}
-        if (preparation.get('policy') != 'native-mxfp4-dummy-bf16-cuda-row-chunks-v1'
+        if (preparation.get('policy') != PACKED_WEIGHT_POLICY
                 or preparation.get('complete') is not True or preparation.get('forward_verified') is not False
                 or preparation.get('postload', {}).get('structure_verified') is not True
                 or set(contracts) != paths):
@@ -974,8 +953,6 @@ class HybridResidualProfile:
     @classmethod
     def _observe_layout(cls, runner, preparation):
         import torch
-        import vllm
-        from pathlib import Path
         from vllm.model_executor.layers.linear import LinearBase
         model,config=runner.get_model(),runner.vllm_config
         language=model.language_model
@@ -993,15 +970,8 @@ class HybridResidualProfile:
             raise ValueError('Missing or ambiguous native input token buffer')
         input_tensor=modern if modern is not None else getattr(legacy,'gpu',None)
         cls._shape_dtype(input_tensor)
-        root=Path(vllm.__file__).parent
-        endpoint=_observed_sources(root, ('model_executor/layers/logits_processor.py',))
-        paths={name:('models/' if name.startswith('kimi_k3/') else 'model_executor/layers/')+name
-               for name in cls.layout_sources}
         parallel=config.parallel_config
-        observed=_observed_sources(root, paths.values())
-        facts=dict(endpoint_source_sha256=endpoint['model_executor/layers/logits_processor.py'],
-            source_hashes={name:observed[path] for name,path in paths.items()},
-            device_capability=list(torch.cuda.get_device_capability()),
+        facts=dict(device_capability=list(torch.cuda.get_device_capability()),
             parallel=[parallel.tensor_parallel_size,parallel.pipeline_parallel_size,parallel.data_parallel_size,
                 parallel.tensor_parallel_size*parallel.data_parallel_size if parallel.enable_expert_parallel else 1],
             enforce_eager=config.model_config.enforce_eager,model_dtype=str(config.model_config.dtype),
@@ -1032,17 +1002,12 @@ class HybridResidualProfile:
 
     @classmethod
     def inspect_runtime(cls, runner, descriptor):
-        import inspect
-        from pathlib import Path
         import torch
         import vllm
         from .dummy_weights import preparation_facts
         descriptor=cls.validate_descriptor(descriptor)
-        root=Path(vllm.__file__).resolve().parent
-        sources=_observed_sources(root, cls.native_sources)
         model=runner.get_model()
-        model_source=root/'models/kimi_k3/nvidia/model.py'
-        if Path(inspect.getfile(type(model))).resolve()!=model_source:
+        if _class(model) != 'vllm.models.kimi_k3.nvidia.model.KimiK3ForConditionalGeneration':
             raise ValueError('Actual hybrid residual model source differs')
         cfg=runner.vllm_config
         parallel,cache=cfg.parallel_config,cfg.cache_config
@@ -1050,7 +1015,7 @@ class HybridResidualProfile:
         for _,module in model.named_modules():
             name=type(module).__name__
             if name=='KimiDecoderLayer':
-                if Path(inspect.getfile(type(module))).resolve()!=model_source:
+                if _class(module) != 'vllm.models.kimi_k3.nvidia.model.KimiDecoderLayer':
                     raise ValueError('Foreign hybrid residual decoder implementation')
                 layers.append(dict(index=module.layer_idx,attention=type(module.self_attn).__name__,
                     is_moe=module.is_moe_layer,hidden=module.hidden_size,use_attn_res=module.use_attn_res,
@@ -1069,7 +1034,7 @@ class HybridResidualProfile:
         sampler=_sampler_facts(runner)
         sampler_route=_sampler_route(sampler['runner_class'],sampler['sampler_class'])
         sampler['sampled_token_dtype']=sampler_route['dtype']
-        facts=dict(schema=cls.schema,vllm_version=str(vllm.__version__),native_sources=sources,
+        facts=dict(schema=cls.schema,vllm_version=str(vllm.__version__),
             model_class=_class(model),model_type=cfg.model_config.hf_config.model_type,
             text_type=cfg.model_config.hf_text_config.model_type,
             text_config=copy.deepcopy(cfg.model_config.hf_text_config.to_dict()),

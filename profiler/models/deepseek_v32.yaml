@@ -95,14 +95,14 @@ shared:
 # skips. Its full-context coordinate must not inherit attention's old saturation.
 component_layouts:
   dsa_text_pipeline:
-    historical: legacy_modules_v1
+    historical: legacy-modules
     categories: [dense, attention]
     sites:
       - [shared, prologue]
       - [blocks, attn, full_attention, pre_attn]
       - [blocks, attn, full_attention, post_attn]
     variants:
-      legacy_modules_v1:
+      legacy-modules:
         observed:
           prefill: [embedding, layernorm, mla_qkv_a_proj, mla_a_layernorm,
                     mla_b_proj, rotary_emb, indexer_wq_b, indexer_wk_proj,
@@ -116,9 +116,9 @@ component_layouts:
                   mla_b_proj, rotary_emb, indexer_wq_b, indexer_wk_proj,
                   indexer_k_norm, indexer_rope_emb, indexer_q_rope_quant,
                   indexer, indexer_glue, attention, o_proj]
-      native_eager_tail_v1:
-        invocation_contract: site-scope-calls-v1
-        runtime_contract: native-dsa-eager-tail-v1
+      native-eager-tail:
+        invocation_contract: site-scope-calls
+        runtime_contract: native-dsa-eager-tail
         observed:
           prefill: [embedding_input_norm, decoder_residual_norm, mla_qkv_a_proj,
                     indexer_wk_proj, mla_norm_rope_cache, mla_q_b_proj,

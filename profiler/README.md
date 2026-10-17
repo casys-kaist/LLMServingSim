@@ -26,7 +26,7 @@ Dummy loading prepares supported native MXFP4 expert bytes and KDA derived
 buffers before vLLM's unchanged postload processing. Ordinary models retain
 their native initialization. Preparation receipts are not forward-validation
 certificates; see [dummy weights](../docs/docs/profiler/output-bundle.md#dummy-model-weight-preparation).
-Catalog `native_profile` selects a source-admitted adapter through the normal
+Catalog `native_profile` selects a runtime-admitted adapter through the normal
 `profile`, `slice` and `coverage` entry points. Shared category completion and
 callable publication validate full catalog coverage, runtime identities and
 partial CSVs before resume. Kimi-K3's hybrid/residual adapter derives prefix
@@ -60,7 +60,7 @@ geometry, backend modes and the actual native sampler route are checked before
 acquisition. Its combined attention/indexer tail retains full-context coordinates.
 See [native DSA acquisition](../docs/docs/profiler/output-bundle.md#native-dsa-acquisition)
 for supported modes and the separate duration-only trace boundary.
-Native MiniMax-M3 attention acquisition also records a source-checked per-TP
+Native MiniMax-M3 attention acquisition also records a runtime-checked per-TP
 lookup contract: Triton BF16 uses the configured selected-block count with the
 reviewed 128-token block layout. Initial/local blocks are included in that count;
 the shipped configuration gives a 2048 sparse-prefill cap.
@@ -97,14 +97,14 @@ not exact-version execution locks. Old rows are not relabelled as new acquisitio
 Ordinary layerwise categories and skew use per-call CUDA interval unions: streams
 on the same device share an interval union, while distinct module calls remain
 separate before averaging. CPU time and gaps are excluded. New CSVs contain
-coordinates and timings; `tp<N>/meta.yaml::measurements` records per-category
+coordinates and timings; variant-root `meta.yaml::per_tp[tp].measurements` records per-category
 method, dummy-input preparation, execution facts and runtime versions. Semantic
 worker/host mismatches, incompatible resumes and mixed-method TP-stable replication
 are rejected. Source hashes and exact library versions are provenance, not vetoes;
 actual API/backend, shape, dtype, layout and finite-output guards remain.
 Starting local acquisition beside TP-stable replicas preserves their source-TP
 provenance; local resume never relabels copied timings as locally measured rows.
-Native DP+EP components retain their separately versioned measurement contract.
+Native DP+EP components retain their separate measurement contract.
 Whole-block MoE uses the same fine token grid as dense layers instead of only
 powers of two. Expert-count coordinates and feasibility checks are unchanged;
 new sweeps extend compatible tables without changing runtime lookup.
@@ -151,6 +151,8 @@ profiler/                          Python package: python -m profiler
 │   ├── categories.py              per-category shot grids and measurement
 │   ├── attention_shape.py         shared attention geometry and feasibility
 │   ├── measurement.py             acquisition identity and timing protocols
+│   ├── bundle_metadata.py         locked updates to the variant-root metadata document
+│   ├── metadata_names.py          shared descriptive metadata names
 │   ├── component_layouts.py       runtime alternatives and coupled acquisition state
 │   ├── context_tables.py          category/structural-context publication and receipts
 │   ├── context_lookup.py          strict category loading and exact-context interpolation
@@ -505,8 +507,8 @@ SKEW_SEED=0                         # deterministic sampling seed.
 
 Crank any factor above 2.0 to coarsen that axis and cut profile time
 (each case has three independent contexts by default). Drop below 2.0
-for denser sampling. Actual per-TP plans are saved in `skew.meta.yaml`
-and copied into `meta.yaml::skew_profile.per_tp`.
+for denser sampling. Actual per-TP acquisition plans are saved in the
+variant-root `meta.yaml::per_tp[tp].skew` record.
 
 
 #### Measuring the machine: `profiler hardware`
@@ -680,7 +682,6 @@ profiled TP degree:
 
 ```text
 tp<N>/
-├── meta.yaml              per-category method, execution facts and acquisition provenance
 ├── dense.csv              layer, tokens, time_us
 ├── per_sequence.csv       layer, sequences, time_us
 ├── attention.csv          layer, prefill_chunk, prefill_key, n_decode,
@@ -689,10 +690,8 @@ tp<N>/
 ├── moe.csv                ep, tokens, activated_experts, time_us (whole-block MoE)
 ├── mtp.csv                layer, sequences, time_us (one drafter pass; opt-in)
 ├── skew.csv               ordered geometry and per-forward timings
-├── skew.meta.yaml         per-TP acquisition plan and completion status
 ├── skew_fit.csv           layer/query/prefill/leverage/N calibration buckets
-├── moe_components.json    published native TP/DP/EP component index (opt-in)
-└── moe_components/        contract-keyed native measurement bundles (opt-in)
+└── moe_components/        deployment-specific component CSVs and optional raw checkpoints
 ```
 
 Times are in microseconds. Files depend on the model and selected categories;
@@ -700,6 +699,21 @@ this overview lists key coordinates, not every CSV column. Acquisition identitie
 and runtime observations are metadata, not new timing columns. See the [output schema](../docs/docs/profiler/output-bundle.md)
 and [native MoE contract](../docs/docs/profiler/native-moe-components.md)
 for complete fields and component-bundle contents.
+
+All new profile metadata shares the variant-root `meta.yaml`. Its `per_tp[tp]`
+records hold measurements, category publications, contexts/callables, skew and
+native MoE entries. Existing root-only engine, lookup, layout and calibration
+sections stay in place. New acquisitions do not create standalone metadata JSON
+or YAML files beside their tables; historical sidecars have narrow read fallbacks,
+except `skew.meta.yaml`, which is no longer loaded. MoE publication retains
+settings and a compact conditioning summary, not individual control-point timings;
+quality checks still run and raw controls remain in acquisition checkpoints.
+Raw repetition checkpoints may remain for acquisition resume. The empty
+`.meta.lock` is concurrency control, not another metadata record.
+Saved method, policy and format labels use descriptive hyphen-separated names.
+Obsolete symbolic contracts require fresh acquisition, not metadata relabeling.
+Legacy file-layout reads still require current method contracts; actual
+library/model versions and numeric structural schemas are retained.
 
 `prefill_key` is query-weighted across prefill chunks; profiling and serving
 share its implementation. See the [attention schema](https://llmservingsim.ai/docs/profiler/output-bundle#attentioncsv)
@@ -779,7 +793,7 @@ batch.
 - `component_layouts.per_tp[tp]` — selected representation and coupled category
   states. Native DSA additionally retains the shared runtime identity and each
   category's live engine evidence; table presence alone cannot certify completion.
-- `skew_fit` — versioned identity, reference fingerprints, adaptive prefill
+- `skew_fit` — recognized calibration format, reference fingerprints, adaptive prefill
   partitions, supported N anchors, per-kernel/query defaults and table checksum.
 
 ## Skew profiling and calibration
@@ -825,7 +839,9 @@ requires an existing attention table. Existing raw rows are retained unless
 `--force` is explicit; incompatible acquisition methods are rejected rather
 than merged into a new sweep. `plan-skew` includes support additions and unresolved
 deficits in its preview. New acquisitions record completion
-and resolved limits in `tp<N>/skew.meta.yaml`. Refit rejects unfinished
+and resolved limits in root `meta.yaml::per_tp[tp].skew`. If all rows were saved
+before the completion update was interrupted, resume seals the record without
+new measurements or provenance. Refit rejects unfinished
 acquisitions and absent raw data
 and stale references are rejected at simulator startup. See the
 [skew guide](../docs/docs/profiler/skew-alpha-fit.md) for contracts and limits.

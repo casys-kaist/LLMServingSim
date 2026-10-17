@@ -10,14 +10,15 @@ import json
 import math
 from pathlib import Path
 
-from .context_tables import ContextDenseTable, _atomic, _identity, normalize_manifest
+from .context_tables import (ContextDenseTable, _identity, normalize_manifest,
+                             read_contract, read_namespace, update_namespace)
 from .context_lookup import FrozenContextLookup
-from .hooks.callable_workload import canonical, digest, measurement, normalize
+from .hooks.callable_workload import canonical, digest, measurement, normalize, workload_semantics
 from .hooks.callable_context import expected_counts
 from .hooks.cuda_timing import union_ns
 
 
-NATIVE_PROFILE_SCHEMA = 'native-profile-categories-v2'
+NATIVE_PROFILE_SCHEMA = 'native-profile-categories'
 
 
 def hybrid_residual_plan(config, tokens, *, iterations, warmups):
@@ -94,7 +95,7 @@ def hybrid_residual_plan(config, tokens, *, iterations, warmups):
                  'norm_weight: torch.Tensor, qk_weight: torch.Tensor, '
                  'output_norm_weight: torch.Tensor | None, num_blocks: int, '
                  'block_write_idx: int, eps: float, output_norm_eps: float) -> torch.Tensor')
-    work = dict(schema=1, scope=dict(kind='hybrid-residual-isolated-attn-res-v2',
+    work = dict(schema=1, scope=dict(kind='hybrid-residual-isolated-attn-res',
         execution_depth=depth, capacity=capacity,
         hidden=hidden, tp=1, pp=1, dtype='torch.bfloat16',
         allocation_limit_bytes=MAX_BYTES),
@@ -116,7 +117,7 @@ def profile_for(architecture):
     name = architecture.get('native_profile')
     if name is None:
         return None
-    if name == 'hybrid-residual-v1':
+    if name == 'hybrid-residual':
         from .hooks.runtime_admission import HybridResidualProfile
         return NativeProfile(name, architecture, HybridResidualProfile())
     raise ValueError('Unknown native acquisition profile: ' + str(name))
@@ -134,6 +135,7 @@ class NativeProfile:
         from .hooks.capture_scope_contract import normalize_callable
         self.name = name
         self.architecture = json.loads(canonical(architecture))
+        self.architecture['native_profile'] = name
         for entries in self.architecture['catalog'].values():
             for entry in entries.values():
                 if entry.get('callable') is not None:
@@ -180,7 +182,8 @@ class NativeProfile:
                 or scope['profile'] != self.name
                 or canonical(scope['architecture']) != canonical(self.architecture)):
             raise ValueError('Native acquisition scope/catalog differs')
-        if canonical(self.adapter.admit_runtime(scope['descriptor'], scope['runtime']['facts'])) != canonical(scope['runtime']):
+        admitted = self.adapter.admit_runtime(scope['descriptor'], scope['runtime']['facts'])
+        if canonical(admitted) != canonical(scope['runtime']):
             raise ValueError('Native runtime response differs from its source admission')
 
     def validate_capture(self, scope, measured, catalog, iterations, warmup):
@@ -215,10 +218,8 @@ class NativeProfile:
             iterations=args.measurement_iterations, warmups=1,
             runtime_versions={key: identity[key] for key in ('torch', 'vllm')})
         if fired:
-            from .writer import record_category_measurement
-            record_category_measurement(Path(directory) / 'callables', 'dense_context', identity,
-                                        replace=replace)
-            _atomic(Path(directory) / 'callable_categories.json', canonical(record) + '\n')
+            update_namespace(Path(directory) / 'callables', 'callables',
+                             lambda old: dict(old or {}, options=record))
         return fired
 
 
@@ -227,7 +228,7 @@ def validate_response(work, response, stamp):
 
     Generic ownership/count/union checks do not certify a model-specific route
     or logical tensor sizes. Such a consumer must additionally audit the saved
-    native activity names against its pinned backend/source contract.
+    native activity names against its admitted backend contract.
     """
     if (type(response) is not dict or set(response) !=
             {'schema', 'workload_sha256', 'scope_sha256', 'source', 'rows', 'evidence'}
@@ -344,30 +345,37 @@ def acquire(llm, directory, workloads, catalog, scope_contexts, *, replace=False
     The caller owns runtime loading, resource guards and explicit GPU authority.
     This API does not boot an engine, import target modules or select points.
     """
-    works, manifest, stamps, empty, contract = _plan(workloads, catalog, scope_contexts)
     directory = Path(directory)
+    works, manifest, stamps, empty, contract = _plan(workloads, catalog, scope_contexts)
+    saved = read_callable_record(directory)
+    if saved is not None and not replace:
+        if _plan_semantics(saved['plan']) != _plan_semantics(contract):
+            raise ValueError('Isolated workload acquisition contract changed')
     table = ContextDenseTable(directory, manifest, empty, stamps)
     complete = table.preload(replace=replace)
-    plan_path = directory / 'callable_workloads.json'
-    if plan_path.exists() and not replace:
-        if plan_path.read_text() != canonical(contract) + '\n':
-            raise ValueError('Isolated workload acquisition contract changed')
-    elif any(directory.glob('*.csv')) and not replace:
+    if saved is None and any(directory.glob('*.csv')) and not replace:
         raise ValueError('Cannot retrofit a workload contract onto existing timings')
+    retained_shots = {}
+    # Validate retained shots before firing anything. If a historical partial
+    # acquisition gains its first root record, carry all validated completions
+    # forward together; never strand earlier shots behind the root-first reader.
+    for tokens, work in sorted(works.items()):
+        if (tokens,) in complete:
+            response = _saved_response(directory, saved, tokens)
+            _verify_saved(table, tokens, work, response, stamps[tokens])
+            retained_shots[str(tokens)] = (response if response.get('kind') == 'callable-completion'
+                else _compact_receipt(table, tokens, work, response, stamps[tokens]))
     from .categories import ContextDensePoint
     from .writer import DedupSink
     sink = DedupSink(directory / 'dense.csv', ['layer', 'tokens'], empty)
     if replace:
         # Invalidate completion before replacing any rows. Old evidence files
         # are harmless: only the current manifest and complete receipts count.
-        _atomic(plan_path, canonical(contract) + '\n')
+        update_namespace(directory, 'callables', lambda old: dict(plan=contract, shots={}))
         table.flush(sink)
     fired = False
     for tokens, work in sorted(works.items()):
-        evidence_path = directory / ('callable_evidence_' + str(tokens) + '.json')
         if (tokens,) in complete:
-            response = _read_response(evidence_path)
-            _verify_saved(table, tokens, work, response, stamps[tokens])
             continue
         raw = llm.collective_rpc('fire_callable', args=(work, catalog, scope_contexts))
         if type(raw) not in (list, tuple) or len(raw) != 1:
@@ -375,16 +383,100 @@ def acquire(llm, directory, workloads, catalog, scope_contexts, *, replace=False
         response = raw[0]
         validate_response(work, response, stamps[tokens])
         table.validate_rows(tokens, response['rows'])
-        # Evidence precedes CSV/receipt. A crash here leaves the shot incomplete;
-        # never adopt old rows just because a standalone diagnostic exists.
-        _atomic(plan_path, canonical(contract) + '\n')
-        _atomic(evidence_path, canonical(response) + '\n')
         points = [ContextDensePoint(row['layer'], tokens, row['context'], row['context_tokens'],
                                    row['microseconds']) for row in response['rows']]
         table.accept_shot(tokens, points, sink)
+        receipt = _compact_receipt(table, tokens, work, response, stamps[tokens])
+        retained_shots[str(tokens)] = receipt
+        # Compact evidence precedes CSV completion. A crash cannot publish a
+        # complete shot until the table transaction verifies its exact digest.
+        def publish(old):
+            old = dict(old or {})
+            old.update(plan=contract, shots=dict(retained_shots))
+            return old
+        update_namespace(directory, 'callables', publish)
         table.flush(sink)
         fired = True
     return fired
+
+
+def _plan_semantics(plan):
+    from .measurement import semantic_identity
+    value = semantic_identity(plan)
+    value['workloads'] = [workload_semantics(work) for work in plan['workloads']]
+    return value
+
+
+def read_callable_record(directory):
+    """Read root metadata first; old JSON plans remain read-only fallbacks."""
+    record = read_namespace(directory, 'callables')
+    if record is not None:
+        if not {'plan', 'shots'} <= set(record) or set(record) - {'plan', 'shots', 'options'}:
+            raise ValueError('Invalid callable metadata')
+        if type(record['plan']) is not dict or type(record['shots']) is not dict:
+            raise ValueError('Invalid callable plan/receipts')
+        return record
+    path = Path(directory) / 'callable_workloads.json'
+    return dict(plan=read_contract(path), shots=None) if path.exists() else None
+
+
+def read_callable_options(directory):
+    record = read_callable_record(Path(directory) / 'callables')
+    if record is not None and record['shots'] is not None:
+        if type(record.get('options')) is not dict:
+            raise ValueError('Missing callable acquisition options')
+        return record['options']
+    return read_contract(Path(directory) / 'callable_categories.json')
+
+
+def _saved_response(directory, record, tokens):
+    if record is None:
+        raise ValueError('Missing callable acquisition plan')
+    if record['shots'] is None:
+        return _read_response(Path(directory) / ('callable_evidence_' + str(tokens) + '.json'))
+    response = record['shots'].get(str(tokens))
+    if type(response) is not dict:
+        raise ValueError('Missing compact callable receipt')
+    return response
+
+
+def _compact_receipt(table, tokens, work, response, stamp):
+    routes = {canonical(dict(canonical=call['canonical'], descendant_counts=call['descendant_counts']))
+              for call in response['evidence']['per_call'] if call['canonical'] is not None}
+    return dict(schema=1, kind='callable-completion', workload_sha256=digest(workload_semantics(work)),
+        scope_sha256=digest(workload_semantics(dict(scope=work['scope']))['scope']),
+        measurement=stamp, csv_shot_sha256=table._shot_hash(tokens),
+        contexts=[dict(layer=key[0], context=key[1], context_tokens=key[2],
+                       invocations=count * work['iterations'])
+                  for key, count in sorted(expected_counts(work['expected_contexts']).items())],
+        device_capability=response['evidence']['device_capability'],
+        routes=[json.loads(route) for route in sorted(routes)])
+
+
+def _verify_compact(table, tokens, work, response, stamp):
+    if (set(response) != {'schema', 'kind', 'workload_sha256', 'scope_sha256', 'measurement',
+                         'csv_shot_sha256', 'contexts', 'device_capability', 'routes'}
+            or type(response['schema']) is not int or response['schema'] != 1
+            or response['kind'] != 'callable-completion'
+            or response['workload_sha256'] != digest(workload_semantics(work))
+            or response['scope_sha256'] != digest(workload_semantics(dict(scope=work['scope']))['scope'])
+            or response['measurement'] != stamp or response['csv_shot_sha256'] != table._shot_hash(tokens)):
+        raise ValueError('Compact callable recipe, identity or CSV digest differs')
+    required = {key: count * work['iterations'] for key, count in expected_counts(work['expected_contexts']).items()}
+    if expected_counts(response['contexts']) != required:
+        raise ValueError('Compact callable physical invocation counts differ')
+    capability = response['device_capability']
+    if type(capability) is not list or len(capability) != 2 or any(type(x) is not int or x < 0 for x in capability):
+        raise ValueError('Invalid actual device capability')
+    routes = response['routes']
+    if (type(routes) is not list or not routes or any(type(route) is not dict or
+            set(route) != {'canonical', 'descendant_counts'} or type(route['canonical']) is not str or
+            type(route['descendant_counts']) is not dict or not route['descendant_counts'] or
+            any(type(name) is not str or not name or type(count) is not int or count <= 0
+                for name, count in route['descendant_counts'].items()) for route in routes)
+            or {route['canonical'] for route in routes} != {key[0] for key in required}
+            or len({canonical(route) for route in routes}) != len(routes)):
+        raise ValueError('Invalid compact native kernel route summaries')
 
 
 def _read_response(path):
@@ -396,6 +488,9 @@ def _read_response(path):
 
 
 def _verify_saved(table, tokens, work, response, stamp):
+    if response.get('kind') == 'callable-completion':
+        _verify_compact(table, tokens, work, response, stamp)
+        return
     validate_response(work, response, stamp)
     table.validate_rows(tokens, response['rows'])
     for row in response['rows']:
@@ -422,25 +517,33 @@ class CallableLookup:
     """Scope-bound immutable exact lookup; does not provide tensor sizes."""
     _lookup: FrozenContextLookup
     scope_sha256: str
+    _receipts: tuple
 
     def __init__(self, directory, workloads, catalog, scope_contexts, *, context_measurements):
         # Serving supplies independently admitted bundle identities, as with
         # FrozenContextLookup. Never import Torch/vLLM or infer stamps from rows.
         if context_measurements is None:
             raise ValueError('Exact loading requires independently admitted acquisition identities')
-        works, manifest, stamps, empty, contract = _plan(workloads, catalog, scope_contexts,
-                                                       context_measurements)
+        works, manifest, stamps, empty, contract = _plan(workloads, catalog, scope_contexts, context_measurements)
         directory = Path(directory)
-        if (directory / 'callable_workloads.json').read_text() != canonical(contract) + '\n':
+        saved = read_callable_record(directory)
+        if saved is None or _plan_semantics(saved['plan']) != _plan_semantics(contract):
             raise ValueError('Loaded workload scope/identity differs')
         table = ContextDenseTable(directory, manifest, empty, stamps)
         if table.preload() != {(tokens,) for tokens in works}:
             raise ValueError('Incomplete isolated callable acquisition')
+        receipts = []
         for tokens, work in works.items():
-            _verify_saved(table, tokens, work, _read_response(directory / ('callable_evidence_' + str(tokens) + '.json')),
-                          stamps[tokens])
+            response = _saved_response(directory, saved, tokens)
+            _verify_saved(table, tokens, work, response, stamps[tokens])
+            receipts.append((tokens, canonical(response)))
+        object.__setattr__(self, '_receipts', tuple(receipts))
         object.__setattr__(self, '_lookup', FrozenContextLookup.load(directory, manifest, empty, stamps))
         object.__setattr__(self, 'scope_sha256', digest(next(iter(works.values()))['scope']))
+
+    def receipt(self, tokens):
+        """Return an isolated copy of validated route/device metadata."""
+        return json.loads(dict(self._receipts)[tokens])
 
     def exact(self, query):
         if not isinstance(query, ExactQuery) or query.scope_sha256 != self.scope_sha256:

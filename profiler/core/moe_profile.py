@@ -1,4 +1,4 @@
-"""Versioned native MoE acquisition; legacy whole-block tables stay intact."""
+"""Native MoE acquisition; legacy whole-block tables stay intact."""
 from dataclasses import asdict, replace
 import csv
 import fcntl
@@ -14,8 +14,9 @@ from .config import HOST_ENGINE_DEFAULTS, load_architecture, probe_moe_params
 from .moe_deployment import MoeTarget
 from .moe_geometry import ExpertPlacement
 from .moe_conditioning import expert_conditioning
+from .bundle_metadata import read_tp, update_tp, update_bundle
 
-SCHEMA = 'moe-components-v1'
+SCHEMA = 'moe-components'
 KEYS = ('component', 'mode', 'tokens', 'activated_experts', 'local_assignments')
 
 
@@ -24,14 +25,50 @@ def fingerprint(value):
                                      allow_nan=False).encode()).hexdigest()
 
 
-def atomic_json(path, value):
-    temporary = path.with_suffix(path.suffix+'.tmp')
-    with temporary.open('w') as stream:
-        json.dump(value, stream, indent=2, allow_nan=False)
-        stream.write('\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+_OBSERVATION_FIELDS = {'vllm_version', 'torch_version', 'cuda_version', 'source_sha256',
+                       'sources', 'planning_source_sha256', 'model_config_sha256',
+                       'engine_effective', 'observations'}
+
+
+def _contract_observations(contract):
+    """Small acquisition context; it does not claim any completed row count."""
+    value = {key: item for key, item in contract.items() if key in _OBSERVATION_FIELDS}
+    region = contract.get('expert_region')
+    if isinstance(region, dict):
+        value['expert_region'] = {key: item for key, item in region.items()
+                                  if key in _OBSERVATION_FIELDS}
+    if isinstance(contract.get('gpu'), dict) and 'uuid' in contract['gpu']:
+        value['gpu'] = dict(uuid=contract['gpu']['uuid'])
+    return value
+
+
+def _contract_conditions(contract):
+    """Select numerical conditions independently of execution observations."""
+    observations = _OBSERVATION_FIELDS
+    value = {key: item for key, item in contract.items() if key not in observations}
+    if isinstance(value.get('expert_region'), dict):
+        value['expert_region'] = {key: item for key, item in value['expert_region'].items()
+                                  if key not in observations}
+    if isinstance(value.get('gpu'), dict):
+        value['gpu'] = {key: item for key, item in value['gpu'].items() if key != 'uuid'}
+    return value
+
+
+def semantic_contract(contract):
+    """Numerical acquisition identity without runtime-version restrictions."""
+    return _contract_conditions(contract)
+
+
+def _replace_entry(previous, entry):
+    block = dict(schema=SCHEMA, entries=[]) if previous is None else previous
+    if (not isinstance(block, dict) or block.get('schema') != SCHEMA
+            or not isinstance(block.get('entries'), list)):
+        raise ValueError('Unknown native MoE metadata schema')
+    matching = [item for item in block['entries'] if item['target'] == entry['target']]
+    if len(matching) > 1:
+        raise ValueError('Duplicate native MoE deployment contracts')
+    retained = [item for item in block['entries'] if item['target'] != entry['target']]
+    return dict(block, schema=SCHEMA, entries=retained + [{**(matching[0] if matching else {}), **entry}])
 
 
 def grid(maximum):
@@ -96,9 +133,17 @@ def validate_result(result, iterations):
 class MeasurementStore:
     """Exclusive, durable raw repetitions; incomplete data is never published."""
     def __init__(self, parent, contract, points):
+        if contract.get('schema') != SCHEMA:
+            raise ValueError('Unknown native MoE measurement schema')
         self.contract = contract
-        self.identity = fingerprint(contract)
-        self.folder = Path(parent)/self.identity
+        self._incoming_observations = _contract_observations(self.contract)
+        self._context_recorded = True
+        self.identity = fingerprint(semantic_contract(contract))
+        target = MoeTarget(**contract['target'])
+        self.tp_dir = Path(parent).parent
+        if self.tp_dir.name != f'tp{target.tp}':
+            raise ValueError('MoE target TP differs from its table directory')
+        self.folder = Path(parent)/f'dp{target.dp}_ep{target.ep}_rank{target.rank}_sp{int(target.sequence_parallel)}'
         self.folder.mkdir(parents=True, exist_ok=True)
         self.lock = (self.folder/'writer.lock').open('a')
         try:
@@ -110,12 +155,30 @@ class MeasurementStore:
             self.points = {point_key(p): p for p in points}
             if not self.points or len(self.points) != len(points):
                 raise ValueError("Empty or duplicate measurement plan")
-            path = self.folder/'contract.json'
-            if path.exists():
-                if json.loads(path.read_text()) != contract:
-                    raise ValueError("Corrupt measurement contract")
-            else:
-                atomic_json(path, contract)
+            missing = object()
+            metadata = read_tp(self.tp_dir, 'moe_components', missing)
+            if metadata is not missing:
+                if (not isinstance(metadata, dict) or metadata.get('schema') != SCHEMA
+                        or not isinstance(metadata.get('entries'), list)):
+                    raise ValueError('Unknown native MoE metadata schema')
+                existing = [entry for entry in metadata['entries'] if entry['target'] == vars(target)]
+                if len(existing) > 1:
+                    raise ValueError('Duplicate native MoE deployment contracts')
+                if existing and semantic_contract(existing[0]['contract']) != semantic_contract(contract):
+                    raise ValueError('Native MoE measurement conditions changed; use a new output root')
+                if existing:
+                    # Reused timings keep the original acquisition observations.
+                    # A later runtime is recorded only if it produces new work.
+                    self.contract = existing[0]['contract']
+                    contexts = existing[0].get('acquisition_contexts', [])
+                    if not isinstance(contexts, list) or any(not isinstance(item, dict) for item in contexts):
+                        raise ValueError('Invalid native MoE acquisition contexts')
+                    self._context_recorded = (
+                        self._incoming_observations == _contract_observations(self.contract)
+                        or self._incoming_observations in contexts)
+                if (existing and existing[0]['coverage'].get('complete')
+                        and not (self.folder/'samples.jsonl').exists()):
+                    raise ValueError('Published MoE data has no acquisition checkpoints; use a new output root to remeasure')
             self.rows = {}
             raw = self.folder/'samples.jsonl'
             if raw.exists():
@@ -166,6 +229,23 @@ class MeasurementStore:
     def append(self, point, repeat, result):
         row = dict(contract_id=self.identity, point=point, round=repeat, result=result)
         self._validate(row)
+        if not self._context_recorded:
+            def record_context(block):
+                entries = [entry for entry in block['entries']
+                           if entry['target'] == self.contract['target']]
+                if len(entries) != 1:
+                    raise ValueError('Native MoE acquisition metadata changed during collection')
+                entry = dict(entries[0])
+                contexts = list(entry.get('acquisition_contexts', []))
+                if self._incoming_observations not in contexts:
+                    contexts.append(self._incoming_observations)
+                entry['acquisition_contexts'] = contexts
+                return _replace_entry(block, entry)
+            # The result is already validated. Persist its execution context
+            # before its raw row: interruption can leave an unused context,
+            # never a durable row whose runtime observations have been lost.
+            update_tp(self.tp_dir, 'moe_components', record_context)
+            self._context_recorded = True
         with (self.folder/'samples.jsonl').open('a') as stream:
             stream.write(json.dumps(row, allow_nan=False)+'\n')
             stream.flush()
@@ -173,10 +253,10 @@ class MeasurementStore:
 
     def publish(self):
         expected = len(self.points)*self.rounds
-        status = dict(schema=SCHEMA, contract_id=self.identity, complete=len(self.rows)==expected,
+        status = dict(schema=SCHEMA, complete=len(self.rows)==expected,
                       completed_rounds=len(self.rows), expected_rounds=expected, points=len(self.points))
         if status['complete'] and self.contract.get('expert_conditioning'):
-            comparisons=[]
+            summary = dict(checked_points=0, failed_points=0, max_relative_change=0.0)
             tolerance=self.contract['expert_conditioning']['quality_relative_tolerance']
             for key,point in self.points.items():
                 if point['component']!='experts': continue
@@ -184,10 +264,11 @@ class MeasurementStore:
                 controls=[v for r in range(self.rounds) for v in self.rows[key,r]['result']['conditioning_control']['per_forward_us']]
                 high,low=statistics.median(selected),statistics.median(controls)
                 change=abs(high/low-1)
-                comparisons.append(dict(point=point,selected_us=high,control_us=low,
-                                        relative_change=change,supported=change<=tolerance))
-            status['conditioning_controls']=comparisons
-            status['quality_supported']=bool(comparisons) and all(c['supported'] for c in comparisons)
+                summary['checked_points'] += 1
+                summary['failed_points'] += int(not change <= tolerance)
+                summary['max_relative_change'] = max(summary['max_relative_change'], change)
+            status['conditioning_summary'] = summary
+            status['quality_supported'] = summary['checked_points'] > 0 and summary['failed_points'] == 0
             status['complete']=status['quality_supported']
         if status['complete']:
             path = self.folder/'components.csv'
@@ -203,7 +284,10 @@ class MeasurementStore:
                 os.fsync(stream.fileno())
             temporary.replace(path)
             status['table_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
-        atomic_json(self.folder/'coverage.json', status)
+        entry = dict(target=self.contract['target'],
+            path=str((self.folder/'components.csv').relative_to(self.tp_dir)),
+            contract=self.contract, coverage=status)
+        update_tp(self.tp_dir, 'moe_components', lambda previous: _replace_entry(previous, entry))
         return status
 
 
@@ -229,7 +313,6 @@ def validate_request(arch, args):
 def run_components(arch_path, args, tps, variant_root):
     from . import logger as log
     from .engine import spin_up, spin_down
-    from .writer import persist_moe_component_meta
 
     arch = load_architecture(arch_path)
     validate_request(arch, args)
@@ -244,17 +327,20 @@ def run_components(arch_path, args, tps, variant_root):
     engine_args = replace(args, tp_degrees=[1], moe_ep_degrees=(1,), profile_mtp=False)
     budget = args.max_num_batched_tokens or HOST_ENGINE_DEFAULTS['max_num_batched_tokens']
     variant_root.mkdir(parents=True, exist_ok=True)
-    llm, kwargs, temporary = spin_up(engine_args, 1)
-    index_entries = {}
+    def record_bundle(meta):
+        for key, value in (('model', args.model), ('hardware', args.hardware),
+                           ('variant', args.effective_variant)):
+            if key in meta and meta[key] != value:
+                raise ValueError('Native MoE output differs from the existing bundle')
+            meta[key] = value
+    update_bundle(variant_root, record_bundle)
+    llm, _, temporary = spin_up(engine_args, 1)
     try:
         for target in targets:
             native = llm.collective_rpc('moe_component_initialize', args=(asdict(target), budget))[0]
             contract = dict(native, model=args.model, hardware=args.hardware, variant=args.effective_variant,
-                model_config_sha256=fingerprint(args.model_config),
                 protocol=dict(rounds=args.moe_rounds, iterations=args.measurement_iterations,
-                              representative='median_of_forward_medians', timing='cuda_kernel_sum'),
-                engine_effective={k:v for k,v in kwargs.items() if k not in ('model','tokenizer')},
-                planning_source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+                              representative='median_of_forward_medians', timing='cuda_kernel_sum'))
             contract = json.loads(json.dumps(contract, default=str))
             points = list(points_for(contract))
             contract['point_plan_sha256'] = fingerprint(points)
@@ -287,22 +373,10 @@ def run_components(arch_path, args, tps, variant_root):
                         log.info("Native MoE rank=%d: %d/%d points", target.rank, index+1, len(points))
                 status = store.publish()
                 if not status['complete']:
-                    failed = [c for c in status.get('conditioning_controls', []) if not c['supported']]
-                    raise RuntimeError(f"Native MoE acquisition not publishable: {len(failed)} conditioning controls failed; see {store.folder/'coverage.json'}")
-                index_entries.setdefault(target.tp, []).append(dict(target=asdict(target),
-                    path=str(store.folder.relative_to(variant_root/f'tp{target.tp}')),
-                    contract_id=store.identity, table_sha256=status['table_sha256']))
+                    failed = status.get('conditioning_summary', {}).get('failed_points', 0)
+                    raise RuntimeError(f"Native MoE acquisition not publishable: {failed} conditioning controls failed; see {variant_root/'meta.yaml'}")
             finally:
                 store.close()
                 llm.collective_rpc('moe_component_release')
-        for tp, entries in index_entries.items():
-            path = variant_root/f'tp{tp}'/'moe_components.json'
-            prior = json.loads(path.read_text()) if path.exists() else dict(schema=SCHEMA, entries=[])
-            if prior['schema'] != SCHEMA:
-                raise ValueError("Unknown existing MoE component index schema")
-            replaced = {(e['target']['dp'], e['target']['rank']) for e in entries}
-            retained = [e for e in prior['entries'] if (e['target']['dp'],e['target']['rank']) not in replaced]
-            atomic_json(path, dict(schema=SCHEMA, entries=retained+entries))
-        persist_moe_component_meta(args, variant_root, sorted(index_entries))
     finally:
         spin_down(llm, temporary)

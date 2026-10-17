@@ -12,8 +12,8 @@ import json
 from pathlib import Path
 
 
-NATIVE_DSA = 'native-dsa-eager-tail-v1'
-CONTEXTUAL_PROFILE = 'contextual-native-logical-v2'
+NATIVE_DSA = 'native-dsa-eager-tail'
+CONTEXTUAL_PROFILE = 'contextual-native-logical'
 
 
 def _canonical(value):
@@ -350,8 +350,9 @@ class ContextualProfileBundle:
     schema = CONTEXTUAL_PROFILE
 
     def __init__(self, directory, architecture, config):
-        from profiler.core.callable_profile import CallableLookup, NATIVE_PROFILE_SCHEMA, profile_for
-        from profiler.core.context_tables import read_contract, category_record_path
+        from profiler.core.callable_profile import (CallableLookup, NATIVE_PROFILE_SCHEMA, profile_for,
+                                                    read_callable_options)
+        from profiler.core.context_tables import read_category_record
         from profiler.core.context_lookup import CATEGORY_KEY_FIELDS, load_category_record
         from profiler.core.hooks.callable_workload import measurement, digest
         from profiler.core.hooks.capture_scope_contract import normalize_contexts
@@ -387,7 +388,7 @@ class ContextualProfileBundle:
                 catalog[name] = dict(binding, within=entry.get('within'), not_within=entry.get('not_within'),
                     tp_stable=entry.get('tp_stable', False), occurrences=occurrences.get(name, 1),
                     normalization=entry.get('normalization') or ('invocations' if category == 'moe' else 'parent'))
-            iterations = read_contract(category_record_path(directory, category))['contract']['identity']['iterations']
+            iterations = read_category_record(directory, category)['contract']['identity']['iterations']
             if type(iterations) is not int or iterations < 1:
                 raise ValueError('Invalid category repetition count')
             contract = load_category_record(directory, category, expected_key_fields=CATEGORY_KEY_FIELDS[category],
@@ -407,14 +408,14 @@ class ContextualProfileBundle:
                     semantic_identity(config)):
                 raise ValueError('Category belongs to another independently supplied model configuration')
             for name, value in scope['runtime']['facts']['logical_sizes'].items():
-                if name in facts and _canonical(facts[name]) != _canonical(value):
+                if name in facts and _canonical(semantic_identity(facts[name])) != _canonical(semantic_identity(value)):
                     raise ValueError('Native tensor layout changed across categories: ' + name)
                 facts[name] = value
             records.append(contract)
             versions.append({key: contract['identity'][key] for key in ('torch', 'vllm')})
         if not records:
             raise ValueError('Missing acquired categories')
-        options = read_contract(directory / 'callable_categories.json')
+        options = read_callable_options(directory)
         if (set(options) != {'schema', 'profile', 'tokens', 'iterations', 'warmups', 'runtime_versions'}
                 or options['schema'] != NATIVE_PROFILE_SCHEMA or options['profile'] != profile.name):
             raise ValueError('Callable acquisition uses a different profile format')
@@ -432,8 +433,10 @@ class ContextualProfileBundle:
         call_dir = directory / 'callables'
         self._lookup = CallableLookup(call_dir, works, catalog, contexts, context_measurements=identities)
         for work in works:
-            response = read_contract(call_dir / ('callable_evidence_' + str(work['shot_tokens']) + '.json'))
-            if response['evidence']['device_capability'] != facts.get('device_capability'):
+            response = self._lookup.receipt(work['shot_tokens'])
+            capability = (response['device_capability'] if response.get('kind') == 'callable-completion'
+                          else response['evidence']['device_capability'])
+            if capability != facts.get('device_capability'):
                 raise ValueError('Callable and ordinary acquisitions ran on different device capabilities')
             profile.adapter.validate_context_response(response)
         roles = profile.adapter.roles(config)

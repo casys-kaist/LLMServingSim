@@ -8,7 +8,6 @@ from .batch import assemble_scheduler_output
 from .dummy_cache import initialize_dummy_cache
 
 
-HISTORY_PROTOCOL = "vllm-dummy-kv-query-state-v1"
 HISTORY_SEED = 0
 
 

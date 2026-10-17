@@ -54,8 +54,10 @@ GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation an
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
 acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
-contracts. New CSVs hold coordinates and timings, with descriptive methods
-and runtime provenance in metadata; actual backend/layout checks govern admission.
+contracts. New CSVs hold coordinates and timings; the variant-root `meta.yaml`
+holds methods, execution facts and compact publication summaries, including per-TP metadata.
+Saved method and format names are descriptive.
+Actual backend/layout checks govern admission, not source hashes or folder names.
 CSV publication checks protect resume after an interrupted replacement without
 changing measured timings.
 Whole-block MoE sweeps condition expert IDs while preserving native

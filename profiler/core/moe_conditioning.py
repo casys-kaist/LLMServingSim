@@ -1,5 +1,6 @@
 """Deterministic full-position weight reuse control, independent of timings."""
 import math
+from .metadata_names import MOE_CONDITIONING_POLICY
 
 
 def expert_conditioning(contract, active, minimum_iterations):
@@ -9,7 +10,7 @@ def expert_conditioning(contract, active, minimum_iterations):
             or minimum_iterations < 1):
         raise ValueError('Invalid expert conditioning geometry')
     policy = contract['expert_conditioning']
-    if policy['schema'] != 'rotated-weight-cycles-v2':
+    if policy['schema'] != MOE_CONDITIONING_POLICY:
         raise ValueError('Unknown expert conditioning protocol')
     if (type(policy['capacity_multiple']) is not int or policy['capacity_multiple'] < 1
             or not 0 < policy['quality_relative_tolerance'] < 1

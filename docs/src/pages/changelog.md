@@ -12,9 +12,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 - Keep new profiling CSVs limited to coordinates and timings; store descriptive
   collector, CUDA-union aggregation, dummy-input preparation and runtime facts in
-  per-category metadata. Retain semantic acquisition and native API/backend/layout
+  the variant-root `meta.yaml`, with per-TP measurement, category, contextual,
+  callable, skew and native MoE records. Replace new metadata sidecars with shared
+  root updates while retaining narrow historical reads and unchanged timing CSVs.
+  Publish compact MoE conditioning summaries rather than individual control points
+  and timings; preserve quality checks, acquisition settings and CSV integrity.
+  Stop loading `skew.meta.yaml`; skew acquisition and calibration metadata live
+  in the root document.
+  Use descriptive stored method, policy and format names without old-name aliases;
+  retain actual library/model versions and numeric structural schemas.
+  Keep raw repetition checkpoints where acquisition resume needs them.
+  Retain semantic acquisition and native API/backend/layout
   checks without using source-file hashes or exact library versions as execution
-  vetoes. Preserve historical measurements and completed-table integrity checks.
+  vetoes or folder identities. Preserve historical measurements and completed-table
+  integrity checks; table paths locate data rather than defining compatibility.
+  Share strict metadata loading with serving without changing numerical behavior.
 - Select native profiles through architecture catalogs, sharing category completion,
   exact-context callable acquisition and local duration replay. Derive Kimi-K3's
   prefix, residual roles and tensor geometry from the supplied configuration and
@@ -58,7 +70,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   checksum before publication, preventing interrupted forced remeasurement from
   accepting old timings under new metadata. Resume matching pending data without
   restamping older metadata; reject mismatched generations. Measurement timing
-  and category-coverage requirements are unchanged.
+  and category-coverage requirements are unchanged. Seal fully saved skew plans
+  after interrupted completion without new measurement provenance. Preserve MoE
+  no-op runtime observations; record later validated acquisition contexts separately
+  from completed-row counts.
 - Normalize DeepSeek/GLM native sparse-cache labels onto the catalog attention
   axis without changing sparse-indexer selection or native execution. Preserve
   TP-stable rows' source acquisition metadata when local measurement begins or
@@ -71,7 +86,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   Previously mis-shaped measurements require remeasurement, not restamping.
 - Prepare native MXFP4 dummy expert weights and KDA derived buffers before
   unchanged vLLM postload processing. Bound staging memory, validate supported
-  source/layout contracts and record preparation separately from forward checks;
+  native API/layout contracts and record preparation separately from forward checks;
   ordinary models retain native initialization. Changed acquisition identities
   require remeasurement.
 - Validate native KDA recurrent metadata without requiring GDN-only prefill
@@ -85,7 +100,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   and flat-model behavior, and retain the authoritative engine's resolved text
   config in per-TP metadata. Changed acquisition identities require remeasurement.
 - Bind new MiniMax-M3 sparse-prefill lookup caps to the measured native backend
-  per TP. The source-checked vLLM 0.31 Triton BF16 contract uses the configured
+  per TP. The native vLLM 0.31 Triton BF16 contract uses the configured
   selected-block count with 128-token blocks (2048 for the shipped config);
   unmarked historical tables retain 2176. Recognize the current ordinary
   acquisition protocol alongside supported historical ordinary/skew protocols

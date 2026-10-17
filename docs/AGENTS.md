@@ -21,7 +21,19 @@ generated experiment results. Review the staged diff before committing.
 
 Describe profiling methods directly: collector, CUDA interval aggregation,
 normalization and synthetic input preparation. New CSVs hold coordinates and
-timings; per-category metadata records methods and observed runtime versions.
+timings; the variant-root `meta.yaml` records methods, observed runtime versions
+and publication evidence. New per-TP records live under `per_tp[tp]`; do not
+document new standalone contract/category/context/callable/skew metadata files.
+Raw repetition checkpoints are acquisition data, not an alternative metadata store.
+Document compact MoE conditioning summaries separately from raw control records.
+Skew metadata is root-only; do not promise a `skew.meta.yaml` read fallback.
+Failure-only diagnostics are optional debugging artifacts, not required simulator
+inputs or material to commit with a profile bundle.
+Use descriptive method/policy/format labels; shared acquisition policy constants
+live in `metadata_names.py`.
+Do not promise old-name aliases. Distinguish legacy file-layout reads from method
+compatibility; preserve real library/model versions, native API identifiers and
+numeric structural schemas.
 Do not document source-file hashes or exact library versions as execution vetoes.
 Keep semantic/API/backend/layout guards and table-integrity checks distinct from
 provenance. Historical timings are never upgraded by restamping metadata, and

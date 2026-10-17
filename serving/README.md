@@ -24,7 +24,7 @@ MiniMax-M3 indexer traces use independent BF16 query/cache bytes and int32
 per-head block selections. Indexer and sparse-attention rows retain each
 request's cached history, applying the sparse byte cap before summing.
 These are logical tensor bytes; see the [scope and formulas](../docs/docs/reference/trace-format.md#minimax-m3-logical-bytes).
-Separately, new source-checked MiniMax-M3 profiles derive their sparse-prefill
+Separately, new runtime-checked MiniMax-M3 profiles derive their sparse-prefill
 lookup cap from the configured selected-block count and reviewed 128-token
 block layout in their per-TP native contract (2048 for the shipped config);
 unmarked historical tables retain
@@ -41,7 +41,7 @@ accuracy claim. Matrix payload bytes follow the admitted source's FP8/BF16
 precision, not a universal one-byte assumption. See the [native trace boundary](../docs/docs/simulator/trace-generation.md#native-dsa-duration-replay).
 
 Catalog-selected contextual profiles also require explicit duration replay and
-complete source-admitted category tables. The common loader validates their
+complete runtime-admitted category tables. The common loader validates their
 catalog/runtime identity against the independently loaded source configuration.
 Kimi-K3's hybrid/residual sizing derives dimensions and roles from that config
 and observed layouts, without copying one layer's residual contexts across
@@ -118,13 +118,20 @@ of hardware-specific operation curves; `{}` disables that inheritance too.
 See the [cluster reference](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
 for the schema and backend restrictions. Rebuild ASTRA-Sim after updating.
 
-When a deployment-matched `moe_components.json` is installed, DP+EP execution
+When variant-root metadata contains a deployment-matched
+`per_tp[tp].moe_components` entry, DP+EP execution
 uses separate local routing, gathered expert and local finalization timings.
 The full padded DP token vector determines each stage's shape; recorded dtypes
 determine the hidden/top-k collective payloads. Missing coverage warns and retains
 the legacy EP table, while corrupt or out-of-support installed data is rejected.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
+Table paths locate data without defining execution identity. Historical standalone
+metadata layouts have read fallbacks only under current method contracts; new profiles centralize
+category, context/callable and deployment records in the root `meta.yaml`.
+Skew metadata is read from that root document, never `skew.meta.yaml`.
+Serving uses the shared strict metadata reader; this changes no numerical lookup
+or simulation behavior.
 Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
 Update recursive submodules first; a parent repository commit pins backend and
 converter versions but does not replace an installed binary or Python package.
@@ -384,11 +391,12 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   prefill_chunk / prefill_key / n_decode / kv_decode bracketed by its two
   neighbouring profiled values and blended linearly), and 2D for MoE.
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — apply a fitted correction
-  between the unchanged mean/max attention lookups. Versioned calibration
+  between the unchanged mean/max attention lookups. Calibration
   selects supported N anchors within kernel/query/prefill/lever partitions;
   it does not interpolate neighboring alpha values or fit at runtime.
   Missing cells use the same kernel/query fallback, missing kernel/query data
-  means zero correction. Enabled unversioned fits are rejected; rebuild them
+  means zero correction. Enabled fits without a recognized calibration format
+  are rejected; rebuild them
   with `profiler refit-skew`. Disabled bundles remain unchanged.
 - `_hydrate_skew_fit_tables()` — validate profile identity, attention/table
   fingerprints, lookup code and saturation semantics before loading cells.
@@ -450,7 +458,7 @@ These tensor contracts are independent of measured bandwidth and latency.
 
 ### `moe_components.py`
 
-Loads versioned native MoE component tables, validates deployment and acquisition
+Loads native MoE component tables, validates deployment and acquisition
 contracts, and caches bounded interpolation over their measured coordinates.
 
 ### `moe_execution.py`

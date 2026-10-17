@@ -1,6 +1,6 @@
 """Bounded declared native-function workloads using the common CUDA collector.
 
-Only already-loaded, source-pinned functions may run. Recipes are plain data,
+Only already-loaded, declared functions may run. Recipes are plain data,
 not executable expressions. This is isolated synthetic-input acquisition, not
 an engine forward or a claim about full-model memory/working-set behavior.
 """
@@ -168,6 +168,12 @@ def source_identity(module, function):
                 signature=str(inspect.signature(function)))
 
 
+def workload_semantics(work):
+    """Execution recipe, excluding descriptive source observations."""
+    from profiler.core.measurement import semantic_identity
+    return semantic_identity({key: value for key, value in work.items() if key != 'source'})
+
+
 def measurement(workload, catalog, scope_contexts, *, runtime_versions=None):
     work, contexts = normalize(workload, catalog, scope_contexts)
     from profiler.core.measurement import layerwise_measurement, semantic_identity
@@ -175,7 +181,7 @@ def measurement(workload, catalog, scope_contexts, *, runtime_versions=None):
                                  expected_contexts=work['expected_contexts'], runtime_versions=runtime_versions)
     # Source observations remain workload metadata. Tensor geometry, argument
     # recipes and invocation counts define which timings can be reused.
-    semantic_work = semantic_identity({key: value for key, value in work.items() if key != 'source'})
+    semantic_work = workload_semantics(work)
     return dict(measurement_protocol=base['measurement_protocol'] + '-isolated-native-callable',
                 measurement_sha256=digest(dict(base=base, workload=semantic_work)))
 

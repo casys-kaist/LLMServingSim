@@ -77,7 +77,7 @@ doesn't.
 
 ### Native Kimi profiling
 
-Catalog `native_profile: hybrid-residual-v1` selects Kimi-K3's adapter through
+Catalog `native_profile: hybrid-residual` selects Kimi-K3's adapter through
 the same `profile`, `slice` and `coverage` CLI, under a narrower
 [native execution contract](./output-bundle#native-kimi-acquisition). For a small
 acquisition on a device supporting the admitted native backend, inside the
@@ -299,9 +299,11 @@ measured degrees, or use a comma-separated list. `--out` selects an alternate
 profile root. Only derived fit tables and skew-fit metadata are changed.
 The normal profiler's metadata writer invokes this same compiler automatically.
 
-The new table is versioned and tied to its attention references. Rebuild after
+The new table records its calibration format and attention references. Rebuild after
 changing reference data or lookup semantics; serving rejects stale fits.
-Enabled unversioned fits are rejected until rebuilt. Disabled bundles remain unchanged.
+Enabled fits without a recognized calibration format are rejected until rebuilt.
+The current descriptive name is `runtime-skew-calibration`.
+Disabled bundles remain unchanged.
 See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 
 ## Resume vs force
@@ -319,6 +321,11 @@ the current identity or files measured with a different method require a
 separate output root or explicit `--force`; they are not silently mixed with
 new timings. See [acquisition identity](./output-bundle#cuda-activity-and-acquisition-identity).
 Fully skipped ordinary categories retain their previous measurement timestamp.
+New acquisition metadata is kept in the variant-root `meta.yaml`, with per-TP
+records under `per_tp[tp]`, rather than metadata files beside the tables.
+Supported historical sidecars other than `skew.meta.yaml` remain readable;
+skew acquisition and calibration use root metadata only. Resume does not restamp
+observations as a new measurement or derive compatibility from a folder name.
 
 For coupled component layouts, acquire every affected category before simulation.
 Qwen's packed GDN core includes the formerly separate norm, so new `dense` and

@@ -18,9 +18,7 @@ import os
 from pathlib import Path
 import tempfile
 
-import yaml
-
-SCHEMA = "component-layouts-v1"
+SCHEMA = "component-layouts"
 REGIMES = ("prefill", "decode", "mixed")
 MEASUREMENT_FIELDS = ("measurement_protocol", "measurement_sha256")
 
@@ -227,11 +225,11 @@ def validate_definitions(architecture):
                     raise ValueError(f"Unknown component in {name}.{label}")
             contract = variant.get("invocation_contract")
             runtime = variant.get("runtime_contract")
-            if runtime is not None and (runtime != "native-dsa-eager-tail-v1"
-                    or contract != "site-scope-calls-v1"):
+            if runtime is not None and (runtime != "native-dsa-eager-tail"
+                    or contract != "site-scope-calls"):
                 raise ValueError("Runtime admission requires a known explicit scope-call contract")
             if contract is not None:
-                if contract != "site-scope-calls-v1" or not site_aware or label == group["historical"]:
+                if contract != "site-scope-calls" or not site_aware or label == group["historical"]:
                     raise ValueError("Scope-call contracts require an explicit nonhistorical site variant")
                 first = set(observations[REGIMES[0]])
                 if any(set(observations[regime]) != first for regime in REGIMES):
@@ -397,7 +395,7 @@ def resolved_text_config(vllm_config):
 def expected_scope_calls(architecture, choices, resolved_config):
     """Derive physical call units from selected sites and the live reduced stack.
 
-    Only an explicit ``site-scope-calls-v1`` variant opts in. These are aggregate
+    Only an explicit ``site-scope-calls`` variant opts in. These are aggregate
     per-forward counts, not a decoder-layer bijection: compensating missing and
     duplicate calls on different layers are indistinguishable. Concrete depth
     is intentionally absent from the shared per-layer acquisition identity.
@@ -725,32 +723,20 @@ def validate_shot_components(architecture, choices, category, regime, measured_l
 
 def _read_meta(root):
     """An invalid metadata file must not be treated as an old, unmarked bundle."""
-    path = Path(root) / "meta.yaml"
-    if not path.exists():
-        return {}
-    class UniqueLoader(yaml.SafeLoader):
-        pass
-    def mapping(loader, node):
-        result = {}
-        for key_node, value_node in node.value:
-            key = loader.construct_object(key_node)
-            if key in result:
-                raise ValueError(f"Repeated metadata key {key!r} in {path}")
-            result[key] = loader.construct_object(value_node)
-        return result
-    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-    value = yaml.load(path.read_text(), Loader=UniqueLoader)
-    if not isinstance(value, dict):
-        raise ValueError(f"Invalid metadata mapping: {path}")
-    return value
+    from .bundle_metadata import read_bundle
+    return read_bundle(root)
 
 
-def _publish(root, metadata):
-    from profiler.core.skew_calibration import atomic_yaml
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    atomic_yaml(root / "meta.yaml", metadata)
-    _sync_directory(root)
+def _publish(root, metadata, tp):
+    from .bundle_metadata import update_bundle
+    value = metadata['component_layouts']['per_tp'][tp]
+    def publish(current):
+        block = current.setdefault('component_layouts', dict(schema=SCHEMA, per_tp={}))
+        if block.get('schema') != SCHEMA:
+            raise ValueError('Unknown component layout metadata schema')
+        block['per_tp'].pop(str(tp), None)
+        block['per_tp'][tp] = value
+    update_bundle(root, publish)
 
 
 def _sync_directory(path):
@@ -805,7 +791,7 @@ def _required_categories(architecture, choices):
     groups = architecture.get("component_layouts") or {}
     required = set().union(*(set(group["categories"]) for group in groups.values()))
     if selected_runtime_contract(architecture, choices) is not None:
-        # validate_definitions currently admits only native-dsa-eager-tail-v1.
+        # validate_definitions currently admits only native-dsa-eager-tail.
         required |= {"dense", "attention", "per_sequence", "moe"}
         if any(not architecture["catalog"].get(name) for name in required):
             raise ValueError("The selected runtime contract lacks a required category")
@@ -943,7 +929,7 @@ def begin_category(tp_root, architecture, choices, category, measurement,
                 _category_content(root, architecture, value, sibling,
                                   allow_partial=state['state'] == 'writing')
         _validate_record(architecture, value)
-        _publish(root.parent, metadata)
+        _publish(root.parent, metadata, tp)
         return value
     record = value["categories"][category]
     if record["state"] != "pending" and record.get("measurement") != measurement and not replace:
@@ -957,7 +943,7 @@ def begin_category(tp_root, architecture, choices, category, measurement,
                               allow_partial=state["state"] == "writing")
     if replace or record["state"] == "pending":
         value["categories"][category] = {"state": "pending"}
-        _publish(root.parent, metadata)
+        _publish(root.parent, metadata, tp)
         # TP-stable rows belong to their source degree, not this category's
         # acquisition. A reset must not erase or recertify those replicas.
         owned = set().union(*(_members(group) for group in groups.values()))
@@ -966,7 +952,7 @@ def begin_category(tp_root, architecture, choices, category, measurement,
         _clear_category(root / f"{category}.csv", preserve_layers=replicated)
     value["categories"][category] = dict(state="writing", measurement=dict(measurement))
     _validate_record(architecture, value)
-    _publish(root.parent, metadata)
+    _publish(root.parent, metadata, tp)
     return value
 
 
@@ -1186,7 +1172,8 @@ def complete_category(tp_root, architecture, category):
     if block is None:
         raise ValueError("Missing component-layout acquisition record")
     metadata["component_layouts"] = block
-    value = block["per_tp"][int(root.name.removeprefix("tp"))]
+    tp = int(root.name.removeprefix("tp"))
+    value = block["per_tp"][tp]
     if category not in value['categories']:
         return value
     record = value["categories"][category]
@@ -1194,7 +1181,7 @@ def complete_category(tp_root, architecture, category):
         raise ValueError(f"Category {category} was never started")
     _category_content(root, architecture, value, category)
     record["state"] = "complete"
-    _publish(root.parent, metadata)
+    _publish(root.parent, metadata, tp)
     return value
 
 

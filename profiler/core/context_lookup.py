@@ -16,7 +16,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from .context_tables import (CATEGORY_SCHEMA, ContextDenseTable, canonical,
-                             category_record_path, read_contract, _identity)
+                             read_category_record, _identity)
 from .measurement import measurement_token, measurement_compatibility
 
 
@@ -142,7 +142,7 @@ def load_category_record(directory, category, *, expected_key_fields,
     from the persisted plan. Every coordinate must cover the independently
     reconstructed identity's complete catalog.
     """
-    saved = read_contract(category_record_path(directory, category))
+    saved = read_category_record(directory, category)
     if (type(saved) is not dict or set(saved) != {'contract', 'status', 'csv_sha256'}
             or saved['status'] != 'complete'):
         raise ValueError('Category is not complete: ' + category)

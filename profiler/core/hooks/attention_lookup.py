@@ -1,12 +1,8 @@
 """Untimed inspection of the actual reviewed sparse indexer/attend instances."""
-import inspect
-from pathlib import Path
-
 from profiler.core import attention_lookup as contract
 
 
 def runtime_semantic(runner, profile_tp=1):
-    import vllm
     cfg = runner.vllm_config.model_config.hf_config.to_dict()
     if cfg.get('model_type') not in ('minimax_m3_vl', 'minimax_m3'):
         return None
@@ -26,12 +22,6 @@ def runtime_semantic(runner, profile_tp=1):
         name = lambda obj: type(obj).__module__ + '.' + type(obj).__name__
         if name(indexer) != contract.INDEXER or name(attend) != contract.ATTEND:
             raise ValueError('Unreviewed selected indexer/attention implementation')
-        root = Path(inspect.getfile(type(module))).resolve().parent.parent
-        sources = {relative: contract.checksum(root / relative) for relative in contract.SOURCES}
-        # Prove that the selected classes came from those checked source files.
-        if (Path(inspect.getfile(type(indexer))).resolve() != root / 'common/indexer.py'
-                or Path(inspect.getfile(type(attend))).resolve() != root / 'common/sparse_attention.py'):
-            raise ValueError('Selected native class source differs')
         buffer = module.topk_indices_buffer
         if (buffer is None or buffer is not indexer.topk_indices_buffer
                 or buffer.ndim != 3 or str(buffer.dtype) != 'torch.int32'
@@ -42,8 +32,8 @@ def runtime_semantic(runner, profile_tp=1):
                 or attend.block_size != indexer.block_size
                 or attend.use_fp8_kv or str(module.kv_cache_torch_dtype) != 'torch.bfloat16'):
             raise ValueError('Native selected-block storage/layout differs')
-        source = dict(vllm_version=vllm.__version__, indexer_class=name(indexer),
-            attend_class=name(attend), sha256=sources, topk_blocks=indexer.topk_blocks,
+        source = dict(indexer_class=name(indexer),
+            attend_class=name(attend), topk_blocks=indexer.topk_blocks,
             block_size=indexer.block_size, init_blocks=indexer.init_blocks,
             local_blocks=indexer.local_blocks, topk_width=buffer.shape[-1],
             indexer_dtype=indexer.indexer_kv_dtype, kv_dtype='bfloat16', score_type=indexer.score_type)
@@ -61,6 +51,6 @@ def verify(runner, expected):
     if expected is not None:
         contract.validate_semantic(expected)
     value = runtime_semantic(runner, expected['profile_tp'] if expected is not None else 1)
-    if value != expected:
+    if contract.semantic_facts(value) != contract.semantic_facts(expected):
         raise ValueError('Live attention lookup semantics differ from requested identity')
     return contract.digest(value) if value is not None else None

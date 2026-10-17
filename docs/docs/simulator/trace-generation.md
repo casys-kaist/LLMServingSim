@@ -83,7 +83,7 @@ On first load, the simulator also:
    `--max-num-batched-tokens` and `--max-num-seqs` against the
    profiled sweep bounds. If you exceed them, you get a one-shot
    warning that lookups will **extrapolate** rather than clamp.
-2. Validates and hydrates versioned skew calibration from `skew_fit.csv`.
+2. Validates and hydrates supported skew calibration from `skew_fit.csv`.
    Enabled legacy fits are rejected; rebuild with `profiler refit-skew`.
 
 ### Runtime-selected components
@@ -129,11 +129,15 @@ keep their previous lookup, sizes and execution path.
 ### Native Kimi duration replay
 
 Catalog `native_profile` selects the shared contextual bundle loader; Kimi-K3's
-source-admitted hybrid/residual adapter connects its ordinary category tables
+runtime-admitted hybrid/residual adapter connects its ordinary category tables
 and original-depth AttnRes contexts to the same Python trace API. Loading checks
 completed plans, independent catalog coverage, CSV hashes, semantic capture/runtime
 contracts and observed native tensor layouts against the original source config.
-Recorded source hashes and exact library versions are provenance, not execution locks.
+Observed library versions and historical source hashes are provenance, not execution locks.
+New bundles load category, context and callable records from the variant-root
+`meta.yaml::per_tp[tp]`; timing CSVs keep their existing coordinates. Supported
+historical metadata layouts have read fallbacks. Directory names locate data,
+not compatible runtime semantics, and metadata relocation is not remeasurement.
 A catalog or a partial CSV directory alone is not sufficient.
 See [native acquisition](../profiler/output-bundle#native-kimi-acquisition).
 
@@ -283,7 +287,9 @@ A stale fit raises with instructions to run `profiler refit-skew`. After
 loading, lookup is an in-memory partition selection and binary search;
 it never refits or searches raw measurements in the simulation loop.
 
-Enabled unversioned fits require rebuilding; disabled bundles are unchanged. Skipping skew
+Enabled fits without a recognized calibration format require rebuilding;
+The current accepted format is `runtime-skew-calibration`.
+Disabled bundles are unchanged. Skipping skew
 acquisition does not remove an existing calibration; a bundle with no enabled
 fit uses zero correction. Neither endpoint reduction nor these empirical
 buckets uniquely describe all request distributions, so validate changes

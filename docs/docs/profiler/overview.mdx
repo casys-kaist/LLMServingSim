@@ -47,7 +47,7 @@ folder under `profiler/perf/<hardware>/<model>/<variant>/` with one
 
 ```
 perf/<hardware>/<model>/<variant>/
-├── meta.yaml                       # engine flags, sweep specs, skew_fit summary
+├── meta.yaml                       # all profile metadata, including per-TP records
 └── tp<N>/
     ├── dense.csv                   # token-count → latency
     ├── per_sequence.csv            # seq-count → latency
@@ -63,8 +63,8 @@ simulator multiplies by 1000 and rounds to ns at load time.
 
 Schema details on **[Output bundle](./output-bundle)**.
 
-Explicit-DP [native MoE profiling](./native-moe-components) adds a versioned
-component index and deployment-specific tables alongside this bundle. It
+Explicit-DP [native MoE profiling](./native-moe-components) adds deployment
+records to the root metadata and deployment-specific CSV tables. It
 preserves global top-k and separates local routing, gathered expert work and
 local finalization, with independently measured eager/graph GPU timings.
 

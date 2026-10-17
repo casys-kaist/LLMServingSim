@@ -54,6 +54,8 @@ LLMServingSim/
 │   │   ├── skew_calibration.py # Offline reference-aligned fit + supported-N lookup
 │   │   ├── skew_plan.py        # Dynamic heterogeneous distribution coverage
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
+│   │   ├── bundle_metadata.py  # Locked variant-root metadata updates
+│   │   ├── metadata_names.py   # Shared descriptive metadata names
 │   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
 │   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
@@ -724,12 +726,13 @@ Coverage remains a kernel-work audit, not a union-latency percentage.
 
 New ordinary CSVs contain coordinates and `time_us`, not provenance columns.
 Record per-category acquisition identities, method descriptions and actual runtime
-versions in `tp<N>/meta.yaml::measurements`; preserve earlier acquisitions when
+versions in variant-root `meta.yaml::per_tp[tp].measurements`; preserve earlier acquisitions when
 extending compatible tables. Describe the PyTorch/Kineto collector, per-invocation
 device-active union, normalization and dummy input preparation directly, without
 numbered protocol branding. Resume compares semantic catalog, geometry, method
 and execution contracts, not source-file hashes or exact library versions.
-Those versions and any observed source hashes are provenance, not execution vetoes.
+Those versions are provenance, not execution vetoes. Historical source hashes
+remain observations; new runtime admission does not collect source-file hashes.
 Actual API, backend, shape, dtype, layout, finite-output and coverage guards remain.
 Missing or incompatible acquisition metadata requires a separate output root or
 explicit remeasurement with `--force`; never restamp historical measurements.
@@ -739,9 +742,30 @@ metadata to the local method while retaining each replica's source-TP identity.
 Validate preserved rows against that source record during local resume; copying
 TP1 rows never claims a local measurement or completed local coverage.
 Fully skipped categories do not acquire a new measurement timestamp. Skew records
-its per-forward method, contexts and runtime observations in `skew.meta.yaml`;
+its per-forward method, contexts and runtime observations in root `per_tp[tp].skew`;
 CPU `plan-skew` uses the same semantic projection without importing Torch/vLLM.
+Do not read `skew.meta.yaml`; acquisition and calibration use root metadata only.
 Native DP+EP component contracts and skew-fit invalidation remain separate.
+
+Use the variant-root `meta.yaml` for all new profile metadata. Per-TP measurements,
+category publication, context/callable records, skew acquisition and native MoE
+records belong under `per_tp[tp]`; do not create metadata sidecars beside CSVs.
+Already-central `engine_resolved.per_tp`, `attention_lookup.per_tp`,
+`component_layouts.per_tp` and `skew_fit.per_tp` retain their existing locations.
+The empty `.meta.lock` coordinates metadata writers; it is not a measurement
+record. Preserve unrelated sections on updates. Narrow legacy reads do not
+authorize restamping historical measurements or infer identity from directories.
+Raw repetition checkpoints may support acquisition resume; failure-only error
+records and diagnostic traces may support debugging. They are optional, not
+always-on metadata/evidence files or simulator inputs, and are not committed
+experiment artifacts.
+
+Saved policy, method and format names use descriptive hyphen-separated labels,
+not numbered suffixes. `metadata_names.py` holds shared names, not old-name aliases.
+Obsolete symbolic contracts require fresh acquisition, not renaming stored records.
+Legacy file-layout fallbacks still require current method contracts; unmarked
+historical mainstream tables retain their existing reads. Real library/model
+versions and numeric structural schema fields remain unchanged.
 
 `hooks/history.py` prepares query request state and completes asynchronous output.
 `hooks/dummy_cache.py` initializes assigned attention pages
@@ -837,7 +861,8 @@ shot is reacquired in full. Old publication schemas and changed execution semant
 require fresh acquisition, never relabeled measurements or inferred completion.
 Preparation elapsed times remain engine telemetry but do not participate in
 runtime identity. Keep actual layout checks and table-integrity hashes; source
-file hashes describe acquisition provenance rather than pinning execution.
+file hashes in historical records do not pin execution. New admission records
+retain actual backend/layout and version observations, not source-file digests.
 Unscoped runner GPU work remains visible as coverage gaps; complete model
 boundaries do not imply complete step-time accounting or a zero-gap CLI result.
 
@@ -851,8 +876,12 @@ Schema-3 callable contexts preserve declared scalar arguments and tensor
 metadata, never values or CPU duration. Contextual dense rows cannot enter
 the token-only sink. The hybrid/residual planner uses original-depth source roles
 through the unchanged native function, not the reduced engine's pooled calls.
-Its isolated synthetic arguments, native ABI, per-call activity evidence
-and completion receipts are retained under `callables/`. Lookup validates
+Its isolated synthetic arguments, native ABI and CUDA call evidence are validated
+before publication. Root `per_tp[tp]` retains category records under `categories`,
+context contracts/receipts under `contexts.{ordinary,callables}`, and callable
+options, plans and compact per-shot summaries under `callables.callables`.
+Keep `callables/dense_context.csv` as timing data; do not write new raw CUDA
+ledger/evidence JSON files. Historical sidecars remain read fallbacks. Lookup validates
 them once, then interpolates tokens only within an identical structural context,
 without cross-context fallback or extrapolation. Keep the fixed allocation
 bound explicit; do not silently reduce context capacity to fit it.
@@ -916,7 +945,7 @@ kernels. Small probes do not certify unmeasured shapes, backends or deployments.
 Discovery uses fixed `runner._COVERAGE_REGIMES`, not limits-adapted probes; small
 engine envelopes can reject discovery even when their requested grid is valid.
 
-`meta.yaml.component_layouts` (`component-layouts-v1`, per TP) is the sole authority.
+`meta.yaml.component_layouts` (`component-layouts`, per TP) is the sole authority.
 Publish `pending` before clearing, `writing` with identity, then `complete` only
 after row validation. Changed shared identity requires explicit force across
 coupled categories; changed representation/definition requires fresh output.
@@ -933,10 +962,10 @@ is recovery, not locking. See the output-bundle guide for the full publication r
 Site-scoped alternatives name existing `blocks`/`shared` paths. Apply replacements
 once; a `layer0` prefix may be consumed only at absolute target layer 0 by the
 declared active prologue endpoint after its expected prefix matches. Never remove
-an MTP or later-layer norm by analogy. `site-scope-calls-v1` checks actual canonical
+an MTP or later-layer norm by analogy. `site-scope-calls` checks actual canonical
 calls and timing divisors against the resolved prefix before publishing each shot.
 
-`native-dsa-eager-tail-v1` binds original source configuration and logical TP/EP
+`native-dsa-eager-tail` binds original source configuration and logical TP/EP
 to live native runtime facts. Keep configured FP8/BF16 matrix widths separate
 from BF16 activations;
 do not shrink model width, emulate another TP or accept skipped/shared indexers.
@@ -968,7 +997,7 @@ shots, including early in a new run. `DedupSink.flush(clear=False)` retains
 all rows, acquisition identities and duplicate counts; writing only the most
 recent rows would erase earlier progress. Stage the measurement metadata until
 the replacement CSV is serialized and fsynced. Publish
-`measurements.<category>.publication` with `state: pending` and the intended
+root `per_tp[tp].measurements.<category>.publication` with `state: pending` and the intended
 `csv_sha256`, replace the CSV and fsync its directory, then mark the publication
 `complete`. Apply the same ordering to later checkpoints and TP-stable replication.
 Resume validates the CSV against either state's checksum: matching pending data
@@ -1002,7 +1031,7 @@ errors through the host CoverageReport and CLI exit status.
 Untimed recurrent warmup checks must bind each query/history pair to its own
 assigned state pages, including reused backend metadata. The audited ordinary
 GDN contract uses cache mode `none`. Native vLLM 0.31 KDA has a separate,
-source-checked contract: it consumes the complete non-speculative view, including
+native API/metadata contract: it consumes the complete non-speculative view, including
 the decode prefix of a mixed batch, and does not populate GDN's prefill-only
 views. Keep state-page, query/history, initial-state and token-conservation checks
 for both. Reject unsupported APIs/schemas and active speculative, checkpoint,
@@ -1024,8 +1053,10 @@ method metadata; incompatible rows require remeasurement, not relabelling.
 Raw skew CSV rows preserve ordered requests, query roles and actual times;
 metadata records repetitions and method. Complete kernel sets and sufficient repetitions are required
 for resume. Failed acquisition raises after checkpointing instead of silently
-publishing partial coverage. `skew.meta.yaml` records the actual per-TP plan,
+publishing partial coverage. Root `per_tp[tp].skew` records the actual per-TP plan,
 resolved limits and completion; metadata must not fabricate this from defaults.
+If all planned skew rows were saved before a completion-update interruption,
+resume may seal that record without new timings or acquisition provenance.
 `profiler plan-skew` previews the same plan and outstanding cases on CPU from
 an existing bundle's resolved engine limits. Both `plan-skew` and
 `profile --only-skew` accept an independent positive TP selection such as
@@ -1047,13 +1078,15 @@ Unsupported cells use their own kernel/query pooled fallback; missing
 kernel/query data means zero correction. No cross-model, hardware, TP or
 query borrowing is permitted.
 
-Only `runtime-skew-calibration-v1` tables can be enabled. Remove, rather than
+Only the supported `runtime-skew-calibration` format can be enabled. Remove, rather than
 revive, old inline alpha and legacy bucket lookup code. Disabled bundles need
 no migration; the RTX4090 bundle remains untouched. The normal writer and
 CPU-only `profiler refit-skew` use the same compiler. Identity, attention,
 table, lookup-code and saturation fingerprints are checked before execution.
-An empty rebuild is an error and must not enable a disabled fit. A sidecar
-marked incomplete also blocks rebuilding until acquisition is resumed.
+An empty rebuild is an error and must not enable a disabled fit. A root skew
+record marked incomplete also blocks rebuilding until acquisition is resumed.
+Repeat-level skew CSVs require complete root acquisition metadata; unmarked
+historical tables retain their existing behavior.
 `--skip-skew` skips new acquisition, not existing data; `--only-skew` requires
 existing attention references before GPU work begins.
 
@@ -1641,7 +1674,8 @@ when the selected alpha is zero. New calibration tables use a kernel/query/
 prefill/lever partition and binary search over supported N anchors.
 `_hydrate_skew_fit_tables` validates and loads the table once; no fitting,
 measurement-neighbor interpolation or file access occurs per batch.
-Enabled unversioned fits are rejected with a `profiler refit-skew` instruction.
+Enabled fits without a recognized calibration format are rejected with a
+`profiler refit-skew` instruction. The current format is `runtime-skew-calibration`.
 Disabled skew bundles, including RTX4090, bypass calibration unchanged.
 
 Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
@@ -2273,18 +2307,28 @@ Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
 capability. `defer_moe_finalize` is a request flag in 0.28 and a request method
 in 0.31, not a stable execution-mode predicate. Reject an unknown/non-boolean
 API; never invoke the request method or silently assume finalization is local.
-The component source fingerprint changes the acquisition contract automatically;
-do not restamp old component measurements after an adapter change.
+Check actual native APIs, geometry, dtypes, backend and conditioning semantics;
+source-file hashes and exact versions are not acquisition admission or grouping
+keys. Do not restamp historical measurements after a semantic adapter change.
 
-The index `tp<N>/moe_components.json` selects immutable contracts containing
-rank ownership, native backend, dtypes, source fingerprints, coverage and CSV
-checksums. `moe_components` metadata is separately owned; a MoE refresh must not
+Root `per_tp[tp].moe_components` selects deployment entries containing semantic
+contracts, observations, coverage and CSV checksums. Paths locate tables; folder
+names do not establish contract identity. No new index/contract/coverage JSON
+sidecars are written. `moe_components` metadata is separately owned; a MoE refresh must not
 restamp attention/skew or the main engine. Individual CUDA activities are counted
 once per forward, in separate eager/graph measurements. No CPU duration is added.
+No-op resume preserves original runtime observations. Record distinct later
+`acquisition_contexts` only after validating new work; this list is not a count
+of durable or completed measurement rows.
 Expert measurements rotate positions and L2-sized weight banks, compare B/2B
 under identical complete-cycle work, independently verify graph outputs and
 require the recorded stability gate before publication. Those rules condition
 the measurement; they do not prove full-model cache equivalence.
+Publish only `coverage.conditioning_summary` with `checked_points`,
+`failed_points` and `max_relative_change`; retain the tolerance in
+`contract.expert_conditioning`. Individual control points and timings belong to
+raw resume checkpoints, not published metadata. Preserve runtime observations,
+geometry, dtypes, parallelism, backend, completion and the CSV integrity check.
 
 Serving automatically consumes matching tables for the supported modular,
 unquantized DP+EP path. Local components use token interpolation, experts use

@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 import math
 
 from .skew_measurement import MARKER
+from ..metadata_names import EAGER_ATTRIBUTION
 
 
 class NativeOwnershipError(ValueError):
@@ -86,4 +87,4 @@ def extract_eager_forwards(kineto, iterations):
     return dict(per_forward_us=values, cuda_kernel_counts=[dict(c) for c in counts],
                 conservation_delta_us={'component':sum(values)-total},
                 excluded_gpu_annotations=excluded, logical_thread_id_mismatches=dict(thread_mismatches),
-                attribution='native_eager_launch_correlation_v1')
+                attribution=EAGER_ATTRIBUTION)

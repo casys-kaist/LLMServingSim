@@ -11,13 +11,14 @@ from dataclasses import asdict
 
 from .hooks.callable_context import expected_counts, validate_context_text
 from .measurement import FIELDS, measurement_token, measurement_compatibility, semantic_identity
+from .bundle_metadata import read_tp, update_tp
 
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
-CATEGORY_SCHEMA = 'category-acquisition-v1'
+CATEGORY_SCHEMA = 'category-acquisition'
 
 
 def read_contract(path):
@@ -34,6 +35,59 @@ def category_record_path(directory, category):
             any(char not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for char in category)):
         raise ValueError('Invalid acquisition category name')
     return Path(directory) / ('category_' + category + '.json')
+
+
+def metadata_namespace(directory):
+    directory = Path(directory)
+    return (directory.parent, 'callables') if directory.name == 'callables' else (directory, 'ordinary')
+
+
+def read_namespace(directory, section):
+    tpdir, namespace = metadata_namespace(directory)
+    records = read_tp(tpdir, section, {})
+    if type(records) is not dict:
+        raise ValueError('Invalid ' + section + ' metadata')
+    if namespace not in records:
+        return None
+    if type(records[namespace]) is not dict:
+        raise ValueError('Invalid ' + section + ' namespace')
+    return records[namespace]
+
+
+def update_namespace(directory, section, mutator):
+    tpdir, namespace = metadata_namespace(directory)
+    def update(records):
+        records = {} if records is None else dict(records)
+        records[namespace] = mutator(records.get(namespace))
+        return records
+    return update_tp(tpdir, section, update)
+
+
+def read_category_record(directory, category):
+    """Prefer the root publication; historical JSON is a read-only fallback."""
+    path = category_record_path(directory, category)
+    records = read_tp(directory, 'categories', {})
+    if type(records) is not dict:
+        raise ValueError('Invalid category publication metadata')
+    if category in records:
+        return records[category]
+    return read_contract(path) if path.exists() else None
+
+
+def read_context_record(directory):
+    """Read root context state without creating files; retain old sidecar reads."""
+    record = read_namespace(directory, 'contexts')
+    if record is not None:
+        if set(record) != {'contract', 'receipts'}:
+            raise ValueError('Invalid context metadata record')
+        return record
+    directory = Path(directory)
+    manifest = directory / 'dense_context_manifest.json'
+    receipts = directory / 'dense_context_shots.json'
+    if not manifest.exists():
+        return None
+    return dict(contract=read_contract(manifest),
+                receipts=read_contract(receipts) if receipts.exists() else None)
 
 
 class CategoryRecord:
@@ -70,13 +124,11 @@ class CategoryRecord:
             identity=identity, measurement=measurement, key_fields=fields,
             expected_keys=sorted(self.keys))
         csv_path = self.directory / category.sink_filename
-        if self.path.exists() and not replace:
-            old = read_contract(self.path)
+        old = read_category_record(directory, category.name)
+        if old is not None and not replace:
             old_contract = old.get('contract', {})
             current = json.loads(canonical(self.contract))
-            old_comparison = semantic_identity(old_contract)
-            new_comparison = semantic_identity(current)
-            if old_comparison != new_comparison:
+            if semantic_identity(old_contract) != semantic_identity(current):
                 raise ValueError('Category plan/runtime changed; use fresh output or explicit --force')
             self.contract = old_contract
             if old.get('status') not in ('writing', 'complete'):
@@ -95,7 +147,12 @@ class CategoryRecord:
         self.write('writing')
 
     def write(self, status, **fields):
-        _atomic(self.path, canonical(dict(contract=self.contract, status=status, **fields)) + '\n')
+        publication = dict(contract=self.contract, status=status, **fields)
+        def update(records):
+            records = {} if records is None else dict(records)
+            records[self.category.name] = publication
+            return records
+        update_tp(self.directory, 'categories', update)
 
     def resume_keys(self, sink):
         actual = set(sink._bucket)
@@ -214,14 +271,6 @@ class ContextDenseTable:
     def path(self):
         return self.directory / 'dense_context.csv'
 
-    @property
-    def manifest_path(self):
-        return self.directory / 'dense_context_manifest.json'
-
-    @property
-    def receipts_path(self):
-        return self.directory / 'dense_context_shots.json'
-
     def _shot_hash(self, tokens):
         values = dict(ordinary=[(name, format(self.ordinary_values[(name, tokens)], '.6g'))
                                for name in self.shots[tokens]['ordinary_layers']],
@@ -239,8 +288,9 @@ class ContextDenseTable:
         if replace:
             return set()
         files_exist = self.path.exists() or (self.directory / 'dense.csv').exists()
-        if self.manifest_path.exists():
-            if self.manifest_path.read_text() != canonical(self.contract) + '\n':
+        metadata = read_context_record(self.directory)
+        if metadata is not None:
+            if semantic_identity(metadata['contract']) != semantic_identity(self.contract):
                 raise ValueError('Context manifest or acquisition identity changed')
         elif files_exist:
             raise ValueError('Context tables have no independent persisted manifest')
@@ -282,8 +332,8 @@ class ContextDenseTable:
                     _positive_time(row['time_us'])
                     self.ordinary_keys.add(key)
                     self.ordinary_values[key] = float(row['time_us'])
-        if self.receipts_path.exists():
-            receipt = json.loads(self.receipts_path.read_text())
+        if metadata is not None and metadata['receipts'] is not None:
+            receipt = metadata['receipts']
             if (not isinstance(receipt, dict) or set(receipt) != {'context_manifest_sha256', 'shots'}
                     or receipt['context_manifest_sha256'] != self.sha256
                     or not isinstance(receipt['shots'], dict)):
@@ -359,7 +409,11 @@ class ContextDenseTable:
     def flush(self, ordinary_sink):
         # Persist the independent contract first. A crash between table writes
         # leaves an incomplete shot, which resume reacquires in full.
-        _atomic(self.manifest_path, canonical(self.contract) + '\n')
+        previous = read_context_record(self.directory)
+        retained = (previous['receipts'] if previous is not None
+                    and semantic_identity(previous['contract']) == semantic_identity(self.contract) else None)
+        update_namespace(self.directory, 'contexts', lambda _current:
+            dict(contract=self.contract, receipts=retained))
         if ordinary_sink._bucket:
             ordinary_sink.flush(clear=False)
         else:
@@ -373,8 +427,10 @@ class ContextDenseTable:
             writer.writerow(dict(layer=layer, tokens=tokens, context=context, context_tokens=actual,
                 time_us=format(value, '.6g')))
         _atomic(self.path, stream.getvalue())
-        _atomic(self.receipts_path, canonical(dict(context_manifest_sha256=self.sha256,
-            shots={str(key[0]): self.receipts[key[0]] for key in sorted(self.complete_keys())})) + '\n')
+        receipt = dict(context_manifest_sha256=self.sha256,
+            shots={str(key[0]): self.receipts[key[0]] for key in sorted(self.complete_keys())})
+        update_namespace(self.directory, 'contexts', lambda _current:
+            dict(contract=self.contract, receipts=receipt))
 
     def exact(self, *, shot_tokens, layer, context, context_tokens):
         """Read a planned exact coordinate only; no nearest-token fallback."""

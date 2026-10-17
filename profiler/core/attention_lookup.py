@@ -9,15 +9,10 @@ import json
 from pathlib import Path
 import re
 
-import yaml
-
-SCHEMA = 'native-attention-lookup-v1'
-RULE = 'minimax-triton-total-selected-blocks-v1'
-MARKER = '|native-attention-lookup-v1:'
+SCHEMA = 'native-attention-lookup'
+RULE = 'minimax-triton-total-selected-blocks'
 INDEXER = 'vllm.models.minimax_m3.common.indexer.MiniMaxM3IndexerTritonImpl'
 ATTEND = 'vllm.models.minimax_m3.common.sparse_attention.MiniMaxM3SparseTritonImpl'
-SOURCES = ('nvidia/model.py', 'common/indexer.py', 'common/sparse_attention.py',
-           'common/ops/index_topk.py', 'common/ops/sparse_attn.py')
 
 
 def semantic_facts(value):
@@ -41,8 +36,9 @@ def checksum(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def _mapping(value, keys):
-    if not isinstance(value, dict) or set(value) != set(keys):
+def _mapping(value, keys, optional=()):
+    if (not isinstance(value, dict) or not set(keys) <= set(value)
+            or set(value) - set(keys) - set(optional)):
         raise ValueError('Malformed attention lookup contract')
 
 
@@ -64,9 +60,12 @@ def protocol_digest(value):
         raise ValueError('Invalid attention row protocol')
     if 'native-attention-lookup' not in value:
         return None
-    if value.count(MARKER) != 1:
+    parts = value.split('|')
+    if len(parts) != 2:
         raise ValueError('Unknown native attention row protocol')
-    _, recorded = value.split(MARKER)
+    name, separator, recorded = parts[1].partition(':')
+    if not separator or name != SCHEMA:
+        raise ValueError('Unknown native attention row protocol')
     return _sha(recorded)
 
 
@@ -84,9 +83,10 @@ def validate_semantic(value, config=None, architecture=None):
     if type(value['profile_tp']) is not int or value['profile_tp'] < 1:
         raise ValueError('Invalid attention profile TP')
     source = value['source']
-    _mapping(source, ('vllm_version', 'indexer_class', 'attend_class', 'sha256',
+    _mapping(source, ('indexer_class', 'attend_class',
                      'topk_blocks', 'block_size', 'init_blocks', 'local_blocks',
-                     'topk_width', 'indexer_dtype', 'kv_dtype', 'score_type'))
+                     'topk_width', 'indexer_dtype', 'kv_dtype', 'score_type'),
+             optional=('vllm_version', 'sha256'))
     if (source['indexer_class'] != INDEXER or source['attend_class'] != ATTEND
             or source['indexer_dtype'] != 'bf16' or source['kv_dtype'] != 'bfloat16'
             or source['score_type'] != 'max'):
@@ -127,11 +127,8 @@ def validate_semantic(value, config=None, architecture=None):
 
 
 def metadata(root):
-    path = Path(root) / 'meta.yaml'
-    result = yaml.safe_load(path.read_text()) if path.exists() else {}
-    if not isinstance(result, dict):
-        raise ValueError('Invalid profile metadata')
-    return result
+    from .bundle_metadata import read_bundle
+    return read_bundle(root)
 
 
 def records(meta):
@@ -212,10 +209,10 @@ def check_rows(path, semantic_sha=None, measurement=None):
 def check_skew(folder, semantic_sha, *, allow_pending=False):
     check_rows(Path(folder) / 'skew.csv', semantic_sha)
     if semantic_sha is not None:
-        status = Path(folder) / 'skew.meta.yaml'
-        if not status.exists():
+        from .bundle_metadata import read_tp
+        state = read_tp(folder, 'skew')
+        if state is None:
             raise ValueError('Missing native skew completion record')
-        state = yaml.safe_load(status.read_text())
         if (not isinstance(state, dict) or type(state.get('completed')) is not bool
                 or (state.get('attention_lookup_sha256') or
                     protocol_digest(state.get('measurement_protocol', ''))) != semantic_sha):
@@ -268,11 +265,13 @@ def semantic_for_table(path, config, architecture):
     return entries.get(tp), cap_for(entries, tp, config)
 
 
-def _save(root, meta, entries):
-    from .skew_calibration import atomic_yaml
-    meta['attention_lookup'] = dict(schema=SCHEMA, per_tp=entries)
-    Path(root).mkdir(parents=True, exist_ok=True)
-    atomic_yaml(Path(root) / 'meta.yaml', meta)
+def _save(root, tp, record):
+    from .bundle_metadata import update_bundle
+    def publish(meta):
+        entries = records(meta)
+        entries[tp] = record
+        meta['attention_lookup'] = dict(schema=SCHEMA, per_tp=entries)
+    update_bundle(root, publish)
 
 
 def begin(folder, semantic, measurement, *, replace=False):
@@ -295,7 +294,8 @@ def begin(folder, semantic, measurement, *, replace=False):
         raise ValueError('Requested attention measurement lacks semantic identity')
     if not replace:
         if previous is not None:
-            if semantic_facts(previous['semantic']) != semantic_facts(semantic) or previous['measurement'] != measurement:
+            if (semantic_facts(previous['semantic']) != semantic_facts(semantic)
+                    or previous['measurement'] != measurement):
                 raise ValueError('Attention resume geometry/measurement changed; remeasure')
             if previous['completed'] and checksum(folder / 'attention.csv') != previous['attention_sha256']:
                 raise ValueError('Attention resume seal changed')
@@ -305,7 +305,7 @@ def begin(folder, semantic, measurement, *, replace=False):
             check_rows(folder / 'attention.csv', sha, measurement)
     entries[tp] = dict(semantic=semantic, semantic_sha256=sha, measurement=measurement,
                        completed=False, attention_sha256=None)
-    _save(root, meta, entries)
+    _save(root, tp, entries[tp])
 
 
 def complete(folder):
@@ -317,7 +317,7 @@ def complete(folder):
     path = folder / 'attention.csv'
     check_rows(path, record['semantic_sha256'], record['measurement'])
     record.update(completed=True, attention_sha256=checksum(path))
-    _save(root, meta, entries)
+    _save(root, tp, record)
 
 
 def acquire(llm, config, architecture, tp):

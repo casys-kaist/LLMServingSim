@@ -5,9 +5,6 @@ Only the post-dispatch expert region is measured; gate, transport and finalize
 remain separate. Backend selection and workspace aliasing belong to vLLM.
 """
 from dataclasses import asdict
-import hashlib
-import inspect
-from pathlib import Path
 
 
 class NativeExpertRegion:
@@ -47,9 +44,8 @@ class NativeExpertRegion:
         self.w13, self.w2 = convert_to_unquantized_kernel_format(backend, config, w13, w2)
         self.experts = cls(config, FUSED_MOE_UNQUANTIZED_CONFIG)
         self.impl = mk.FusedMoEKernelModularImpl(None, self.experts)
-        sources = (type(self), cls, mk.FusedMoEKernelModularImpl)
         self.contract = dict(
-            schema="native-modular-expert-region-v1", vllm_version=vllm.__version__,
+            schema="native-modular-expert-region", vllm_version=str(vllm.__version__),
             backend=backend.value, expert_class=f"{cls.__module__}.{cls.__name__}",
             expert_parallel_config=asdict(parallel), global_experts=config.num_experts,
             global_top_k=config.experts_per_token, local_experts=local_e,
@@ -57,8 +53,6 @@ class NativeExpertRegion:
             hidden_dim=config.hidden_dim, intermediate_size=inter,
             activation=str(config.activation), input_dtype=str(config.in_dtype),
             weight_dtype=str(w13.dtype), workspace="native_shared_manager",
-            sources={f"{c.__module__}.{c.__name__}": hashlib.sha256(
-                Path(inspect.getfile(c)).read_bytes()).hexdigest() for c in sources},
             excluded=["gate_routing", "collectives", "prepare_finalize", "shared_experts", "cpu_time"])
 
     def bind(self, hidden, ids, weights, *, output_alias=None):

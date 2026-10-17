@@ -14,7 +14,7 @@ import random
 from .hooks.batch import Shot
 
 
-SCHEMA = "heterogeneous-skew-sweep-v1"
+SCHEMA = "heterogeneous-skew-sweep"
 FAMILIES = ("bimodal", "outliers", "trimodal", "ramp", "lognormal", "pareto", "near_uniform", "uniform")
 
 

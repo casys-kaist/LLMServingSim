@@ -10,7 +10,7 @@ histories. It does not replace `attention.csv`, change attention interpolation,
 or fit benchmark request latencies. The default profiler compiles a small
 lookup table offline; simulation only selects an already fitted bucket.
 
-Enabled fits must use `runtime-skew-calibration-v1`. Legacy lookup and inline
+Enabled fits must use the supported `runtime-skew-calibration` format. Legacy lookup and inline
 coefficients are no longer supported; rebuild old enabled bundles. Disabled
 bundles, including RTX4090, are unchanged. Rebuilding is not an accuracy guarantee. The broader shipped Llama TP1 and
 Qwen3-32B TP2 raw data are retained measurements, not a completed run of the
@@ -39,7 +39,7 @@ ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
 CPU time and GPU gaps remain excluded. Worker and host semantic identities bind
 the effective serialized attention selectors/normalization and full capture
-contexts. `skew.meta.yaml` records the descriptive method and observed runtime
+contexts. Variant-root `meta.yaml::per_tp[tp].skew` records the descriptive method and observed runtime
 versions; exact versions and source-file hashes are not execution vetoes.
 Changed acquisition semantics require remeasurement, not restamping.
 
@@ -163,7 +163,7 @@ included in the measured CUDA interval union.
 The plan streams batches rather than allocating the full Cartesian product.
 Raw checkpoints are replaced atomically. Successful cases survive failures;
 incomplete kernel sets, missing repetitions or a changed protocol need
-measurement. A failed run raises and keeps `skew.meta.yaml::completed: false`,
+measurement. A failed run raises and keeps root `per_tp[tp].skew.completed: false`,
 rather than reporting success with missing cases. CPU refitting also rejects
 an acquisition marked incomplete; resume it before rebuilding. Acquisition status and actual
 resolved bounds are recorded per TP, not reconstructed from CLI defaults.
@@ -271,6 +271,11 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B \
 The command requires the local model config, `meta.yaml`, `attention.csv`
 and `skew.csv`. A bundle with no raw skew measurements is an error: its
 metadata stays unchanged and a disabled calibration is not enabled.
+Skew acquisition and calibration records are read from the root `meta.yaml`;
+`skew.meta.yaml` is not loaded by acquisition, refitting or runtime lookup.
+Refitting requires a present root acquisition record to be marked complete.
+Repeat-level data without that record is rejected; unmarked historical skew
+tables retain their existing behavior.
 Omit `--tp` to rebuild every measured TP; use `--out` for an
 alternate profile root. It writes only derived fit tables and the skew-fit
 metadata, preserving other categories and metadata fields. Keep a copy before

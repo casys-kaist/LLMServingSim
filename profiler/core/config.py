@@ -556,8 +556,8 @@ class ComponentLayoutVariant(BaseModel):
     observed: dict[str, list[str]]
     replace: dict[str, list[str]] = Field(default_factory=dict)
     layer0: list[ComponentLayoutLayer0] | None = None
-    invocation_contract: Literal["site-scope-calls-v1"] | None = None
-    runtime_contract: Literal["native-dsa-eager-tail-v1"] | None = None
+    invocation_contract: Literal["site-scope-calls"] | None = None
+    runtime_contract: Literal["native-dsa-eager-tail"] | None = None
 
 
 class ComponentLayoutGroup(BaseModel):
@@ -601,7 +601,7 @@ class Architecture(BaseModel):
     # own block sequence for it.
     mtp: MtpSection | None = None
     component_layouts: dict[str, ComponentLayoutGroup] = Field(default_factory=dict)
-    native_profile: Literal['hybrid-residual-v1'] | None = None
+    native_profile: Literal['hybrid-residual'] | None = None
 
     # ------------------------------------------------------------------
     # Validation

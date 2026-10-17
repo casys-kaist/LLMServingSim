@@ -13,10 +13,10 @@ import time
 from itertools import chain
 
 import pandas as pd
-import yaml
 
 from . import logger as log
-from .skew_calibration import atomic_yaml, measurement_shape
+from .skew_calibration import measurement_shape
+from .bundle_metadata import read_tp, write_tp
 from .skew_plan import iter_cases
 from .skew_support import complete_plan
 
@@ -32,7 +32,8 @@ def layout_contract_for_skew(arch, choices, *, runtime=None):
     from . import component_layouts as layouts
     architecture = arch.model_dump(exclude_none=True)
     groups = architecture.get("component_layouts") or {}
-    if not any("attention" in group["categories"] and choices[name] != group["historical"]
+    if not any("attention" in group["categories"]
+               and choices[name] != group["historical"]
                for name, group in groups.items()):
         return None
     contract = dict(architecture=architecture, selections=choices,
@@ -45,7 +46,8 @@ def layout_contract_for_skew(arch, choices, *, runtime=None):
     from .hooks.runtime_admission import validate_descriptor
     descriptor = validate_descriptor(runtime['descriptor'])
     digest = runtime['runtime_sha256']
-    if (descriptor['schema'] != schema or not isinstance(digest, str) or len(digest) != 64
+    if (descriptor['schema'] != schema
+            or not isinstance(digest, str) or len(digest) != 64
             or any(char not in '0123456789abcdef' for char in digest)):
         raise ValueError('Invalid native skew runtime identity')
     contract['runtime'] = dict(descriptor=descriptor, runtime_sha256=digest)
@@ -58,7 +60,8 @@ def recorded_contract_for_skew(tp_root, arch, choices, args, *, logical_tp, logi
     from . import component_layouts as layouts
     architecture = arch.model_dump(exclude_none=True)
     groups = architecture.get('component_layouts') or {}
-    if not any('attention' in group['categories'] and choices[name] != group['historical']
+    if not any('attention' in group['categories']
+               and choices[name] != group['historical']
                for name, group in groups.items()):
         return None
     root = Path(tp_root)
@@ -79,8 +82,7 @@ def recorded_contract_for_skew(tp_root, arch, choices, args, *, logical_tp, logi
     from .hooks.runtime_admission import profile_descriptor
     descriptor = profile_descriptor(layouts.selected_runtime_contract(architecture, choices),
         args.model_config, args.hf_overrides, logical_tp=logical_tp, logical_ep=logical_ep)
-    if json.dumps(descriptor, sort_keys=True, allow_nan=False) != json.dumps(
-            saved['invariant_facts']['descriptor'], sort_keys=True, allow_nan=False):
+    if descriptor != saved['invariant_facts']['descriptor']:
         raise ValueError('Requested skew source configuration differs from paired references')
     return layout_contract_for_skew(arch, choices, runtime=dict(
         descriptor=descriptor, runtime_sha256=saved['runtime_sha256']))
@@ -122,11 +124,13 @@ def capture_catalog_for_skew(catalog, contract):
     arch = Architecture.model_validate(contract["architecture"])
     architecture = arch.model_dump(exclude_none=True)
     choices = contract["selections"]
-    if layout_contract_for_skew(arch, choices, runtime=contract['runtime']) != contract:
+    rebuilt = layout_contract_for_skew(arch, choices, runtime=contract['runtime'])
+    if rebuilt != contract:
         raise ValueError("Skew layout descriptor differs from its selected architecture")
     unsupported = [name for name, group in architecture["component_layouts"].items()
-                   if "attention" in group["categories"] and choices[name] != group["historical"]
-                   and group["variants"][choices[name]].get("invocation_contract") != "site-scope-calls-v1"]
+                   if "attention" in group["categories"]
+                   and choices[name] != group["historical"]
+                   and group["variants"][choices[name]].get("invocation_contract") != "site-scope-calls"]
     if unsupported:
         raise NotImplementedError("Skew acquisition requires a same-shot layout/invocation contract "
                                   f"({', '.join(unsupported)}); use --skip-skew")
@@ -158,8 +162,10 @@ def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sh
 
 
 def _measurement_metadata(path):
-    metadata = Path(path).parent / 'skew.meta.yaml'
-    return (yaml.safe_load(metadata.read_text()) or {}) if metadata.exists() else {}
+    current = read_tp(Path(path).parent, 'skew', {})
+    if not isinstance(current, dict):
+        raise ValueError('Expected per-TP skew metadata mapping')
+    return current
 
 def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
     """Merge ``new_rows`` with any existing CSV and rewrite atomically.
@@ -316,6 +322,13 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     if not plan['cases']:
         log.info("TP=%d skew: empty plan; preserving existing artifacts", tp)
         return None
+    if (plan['reusable_cases'] == plan['cases'] and out.exists()
+            and _measurement_metadata(out).get('completed') is True):
+        log.info('TP=%d skew: all planned cases already measured; preserving metadata', tp)
+        return None
+    # A crash can leave every validated row durable but its completion record
+    # pending. Run the normal skip-only publication path to seal that record;
+    # it performs no measurements and adds no acquisition provenance.
     plan.update(enabled=True, tp=tp, measurement_protocol=measured_protocol,
                 measurement_sha256=fingerprint,
                 attention_lookup_sha256=attention_sha,
@@ -336,7 +349,6 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     if component_layout_contract is not None:
         plan["component_layout_sha256"] = component_layout_contract["layout_sha256"]
         plan['runtime'] = runtime
-    status = Path(tp_root) / "skew.meta.yaml"
     Path(tp_root).mkdir(parents=True, exist_ok=True)
     if args.force and out.exists():
         out.unlink()  # Explicit --force discards this category's old acquisition.
@@ -346,7 +358,7 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     support = plan["support_completion"]
     log.info("TP=%d skew: %d reference-selected additions; %d cells remain below support floor",
              tp, len(extra), len(support["remaining_deficits"]))
-    atomic_yaml(status, plan)
+    write_tp(tp_root, 'skew', plan)
     rows, fired, skipped = [], 0, 0
     started, initialized = time.monotonic(), False
     try:
@@ -405,7 +417,7 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                          tp, fired + skipped, total, fired / elapsed,
                          remaining * elapsed / fired / 60)
                 plan.update(measured_cases=fired, reused_cases=skipped, remaining_cases=remaining)
-                atomic_yaml(status, plan)
+                write_tp(tp_root, 'skew', plan)
     finally:
         if rows:
             _flush_rows(out, rows)
@@ -413,6 +425,6 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 remaining_cases=0, elapsed_seconds=time.monotonic() - started)
     if attention_sha is not None:
         plan['skew_sha256'] = lookup_contract.checksum(out)
-    atomic_yaml(status, plan)
+    write_tp(tp_root, 'skew', plan)
     log.success("skew -> %s", out)
     return out

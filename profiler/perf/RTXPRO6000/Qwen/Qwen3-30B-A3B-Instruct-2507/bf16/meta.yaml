@@ -8,9 +8,7 @@ architecture: qwen3
 architecture_sha256: 09b91fc5b2056bac024b5de9f166786814fe636b2eebd68b4217e861e599554a
 model: Qwen/Qwen3-30B-A3B-Instruct-2507
 variant: bf16
-tp_degrees:
-- 1
-- 2
+tp_degrees: [1, 2]
 category_provenance:
   dense:
     vllm_version: 0.28.0
@@ -66,8 +64,7 @@ attention_grid:
   n_decode: 0, 1-256 x2
   kv: 0, 16-16384 x1.5
   prefill_key: 0, 16-17408 x1.5
-  decode_q_lens:
-  - 1
+  decode_q_lens: [1]
 measurement_iterations: 3
 skew_profile:
   enabled: true
@@ -78,13 +75,7 @@ skew_profile:
     kvs: 2.0
   grid:
     n: 2-256 x2
-    ratio:
-    - 0.0625
-    - 0.125
-    - 0.25
-    - 0.5
-    - 0.75
-    - 0.9
+    ratio: [0.0625, 0.125, 0.25, 0.5, 0.75, 0.9]
     pc: 0, 16-2048 x2
     kp: 0, 512-8192 x2
     kvs: 128-16384 x2
@@ -93,7 +84,7 @@ skew_fit:
   enabled: true
   per_tp:
     1:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity:
         hardware: RTXPRO6000
         model: Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -112,43 +103,19 @@ skew_fit:
       dropped_rows:
         unusable_reference_gap: 15
       axes:
-        pc_bins:
-        - -1
-        - 1
-        - 256
-        - 1024
-        - 1000000000
-        pc_labels:
-        - pc0
-        - pc1
-        - pc2
-        - pc3
-        lev_bins:
-        - 0.0
-        - 0.25
-        - 0.75
-        - 1.5
-        - 3.0
-        - 1000000000.0
-        lev_labels:
-        - lev0
-        - lev1
-        - lev2
-        - lev3
-        - lev4
-      alpha_clip:
-      - -0.2
-      - 1.0
+        pc_bins: [-1, 1, 256, 1024, 1000000000]
+        pc_labels: [pc0, pc1, pc2, pc3]
+        lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
+        lev_labels: [lev0, lev1, lev2, lev3, lev4]
+      alpha_clip: [-0.2, 1.0]
       alpha_default_by_kernel:
         attention|q=1: 0.0684
       n_range_by_kernel:
-        attention|q=1:
-        - 2
-        - 256
+        attention|q=1: [2, 256]
       bucket_table: tp1/skew_fit.csv
       bucket_table_sha256: eb15c3d8a07da98b0615304ebbd1da8bd4ecf8353d7e058495a64592656a8d64
     2:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity:
         hardware: RTXPRO6000
         model: Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -167,46 +134,335 @@ skew_fit:
       dropped_rows:
         unusable_reference_gap: 125
       axes:
-        pc_bins:
-        - -1
-        - 1
-        - 256
-        - 1024
-        - 1000000000
-        pc_labels:
-        - pc0
-        - pc1
-        - pc2
-        - pc3
-        lev_bins:
-        - 0.0
-        - 0.25
-        - 0.75
-        - 1.5
-        - 3.0
-        - 1000000000.0
-        lev_labels:
-        - lev0
-        - lev1
-        - lev2
-        - lev3
-        - lev4
-      alpha_clip:
-      - -0.2
-      - 1.0
+        pc_bins: [-1, 1, 256, 1024, 1000000000]
+        pc_labels: [pc0, pc1, pc2, pc3]
+        lev_bins: [0.0, 0.25, 0.75, 1.5, 3.0, 1000000000.0]
+        lev_labels: [lev0, lev1, lev2, lev3, lev4]
+      alpha_clip: [-0.2, 1.0]
       alpha_default_by_kernel:
         attention|q=1: 0.0773
       n_range_by_kernel:
-        attention|q=1:
-        - 2
-        - 256
+        attention|q=1: [2, 256]
       bucket_table: tp2/skew_fit.csv
       bucket_table_sha256: d2e07dbc593c22d2ccf202ae1b30d4e16a9d2607fe3e89629e48601c57069558
-moe_components:
-  schema: moe-components-v1
-  per_tp:
-    1:
-      index: tp1/moe_components.json
-      sha256: 1d89a1720d701c6fcf1d1b98fa244290a93de493178fd5dbad214364ea586134
+per_tp:
+  '1':
+    moe_components:
+      schema: moe-components
+      entries:
+      - target:
+          tp: 1
+          dp: 2
+          ep: 2
+          rank: 0
+          sequence_parallel: false
+        path: moe_components/dp2_ep2_rank0_sp0/components.csv
+        contract:
+          target:
+            tp: 1
+            dp: 2
+            ep: 2
+            rank: 0
+            sequence_parallel: false
+          expert_parallel_config:
+            tp_size: 1
+            pcp_size: 1
+            dp_size: 2
+            ep_size: 2
+            tp_rank: 0
+            pcp_rank: 0
+            dp_rank: 0
+            ep_rank: 0
+            sp_size: 1
+            use_ep: true
+            all2all_backend: allgather_reducescatter
+            enable_eplb: false
+          local_token_budget: 2048
+          maximum_expert_tokens: 4096
+          global_experts: 128
+          global_top_k: 8
+          local_experts: 64
+          placement: linear
+          expert_map: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+            36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+            54, 55, 56, 57, 58, 59, 60, 61, 62, 63, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1]
+          acquisition_processes: 1
+          acquisition_tp: 1
+          acquisition_dp: 1
+          measurement_execution: single_rank_emulation
+          collective_execution: none
+          schema: moe-components
+          expert_region:
+            schema: native-modular-expert-region
+            vllm_version: 0.28.0
+            backend: TRITON
+            expert_class: vllm.model_executor.layers.fused_moe.experts.triton_moe.TritonExperts
+            expert_parallel_config:
+              tp_size: 1
+              pcp_size: 1
+              dp_size: 2
+              ep_size: 2
+              tp_rank: 0
+              pcp_rank: 0
+              dp_rank: 0
+              ep_rank: 0
+              sp_size: 1
+              use_ep: true
+              all2all_backend: allgather_reducescatter
+              enable_eplb: false
+            global_experts: 128
+            global_top_k: 8
+            local_experts: 64
+            expert_map: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+              17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+              34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+              51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1]
+            hidden_dim: 2048
+            intermediate_size: 768
+            activation: MoEActivation.SILU
+            input_dtype: torch.bfloat16
+            weight_dtype: torch.bfloat16
+            workspace: native_shared_manager
+            excluded: [gate_routing, collectives, prepare_finalize, shared_experts,
+              cpu_time]
+          components: [gate_routing, experts, finalize_copy]
+          modes: [eager, graph]
+          topk_ids_dtype: torch.int32
+          topk_weights_dtype: torch.float32
+          hidden_dim: 2048
+          intermediate_size: 768
+          input_dtype: torch.bfloat16
+          gate_weight_bytes: 524288
+          expert_weight_bytes: 603979776
+          activation: MoEActivation.SILU
+          measurement_context: native-rotated-expert-weights
+          expert_conditioning:
+            schema: rotated-weight-cycles
+            l2_bytes: 134217728
+            capacity_multiple: 2
+            minimum_banks: 2
+            quality_relative_tolerance: 0.03
+            representative: higher_bank_control
+            local_components: isolated_warm
+            warmup_complete_cycles: 3
+          routing_stimulus: balanced_local_histogram_with_full_global_topk
+          graph_attribution: native-graph-launch-correlation
+          graph_memory_pool: independent_per_variant
+          eager_attribution: native-eager-launch-correlation
+          graph_output_reference: independent_pre_capture_clone
+          torch_version: 2.13.0+cu130
+          cuda_version: '13.0'
+          synthetic_expert_weights: true
+          gpu:
+            name: NVIDIA RTX PRO 6000 Blackwell Server Edition
+            uuid: 7cb2946b-b80a-6932-b7cd-4ce7e1f38400
+            total_memory: 101976440832
+            capability: [12, 0]
+          excluded: [collectives, cpu_time, launch_gaps, shared_experts]
+          model: Qwen/Qwen3-30B-A3B-Instruct-2507
+          hardware: RTXPRO6000
+          variant: bf16
+          protocol:
+            rounds: 3
+            iterations: 3
+            representative: median_of_forward_medians
+            timing: cuda_kernel_sum
+          engine_effective:
+            load_format: dummy
+            enforce_eager: true
+            skip_tokenizer_init: true
+            enable_prefix_caching: false
+            generation_config: vllm
+            tensor_parallel_size: 1
+            gpu_memory_utilization: 0.1
+            max_num_batched_tokens: 2176
+            max_num_seqs: 128
+            hf_overrides:
+              num_hidden_layers: 1
+              intermediate_size: 6144
+              num_attention_heads: 32
+              num_key_value_heads: 4
+              vocab_size: 151936
+            max_model_len: 16384
+            worker_extension_cls: profiler.core.hooks.extension.Extension
+          point_plan_sha256: 830929ccd94c95a9f90435a2664d27ac316bb42b00fd1d9d49ae3220cc269779
+        coverage:
+          schema: moe-components
+          complete: true
+          completed_rounds: 1542
+          expected_rounds: 1542
+          points: 514
+          conditioning_summary:
+            checked_points: 426
+            failed_points: 0
+            max_relative_change: 0.02073964879386503
+          quality_supported: true
+          table_sha256: a40b266d7f17bb72928b576ed21eae59a489e15ad9f9ed0218f3f856862fe9e8
+      - target:
+          tp: 1
+          dp: 2
+          ep: 2
+          rank: 1
+          sequence_parallel: false
+        path: moe_components/dp2_ep2_rank1_sp0/components.csv
+        contract:
+          target:
+            tp: 1
+            dp: 2
+            ep: 2
+            rank: 1
+            sequence_parallel: false
+          expert_parallel_config:
+            tp_size: 1
+            pcp_size: 1
+            dp_size: 2
+            ep_size: 2
+            tp_rank: 0
+            pcp_rank: 0
+            dp_rank: 1
+            ep_rank: 1
+            sp_size: 1
+            use_ep: true
+            all2all_backend: allgather_reducescatter
+            enable_eplb: false
+          local_token_budget: 2048
+          maximum_expert_tokens: 4096
+          global_experts: 128
+          global_top_k: 8
+          local_experts: 64
+          placement: linear
+          expert_map: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4, 5,
+            6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+            43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+            61, 62, 63]
+          acquisition_processes: 1
+          acquisition_tp: 1
+          acquisition_dp: 1
+          measurement_execution: single_rank_emulation
+          collective_execution: none
+          schema: moe-components
+          expert_region:
+            schema: native-modular-expert-region
+            vllm_version: 0.28.0
+            backend: TRITON
+            expert_class: vllm.model_executor.layers.fused_moe.experts.triton_moe.TritonExperts
+            expert_parallel_config:
+              tp_size: 1
+              pcp_size: 1
+              dp_size: 2
+              ep_size: 2
+              tp_rank: 0
+              pcp_rank: 0
+              dp_rank: 1
+              ep_rank: 1
+              sp_size: 1
+              use_ep: true
+              all2all_backend: allgather_reducescatter
+              enable_eplb: false
+            global_experts: 128
+            global_top_k: 8
+            local_experts: 64
+            expert_map: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2,
+              3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+              22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+              39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+              56, 57, 58, 59, 60, 61, 62, 63]
+            hidden_dim: 2048
+            intermediate_size: 768
+            activation: MoEActivation.SILU
+            input_dtype: torch.bfloat16
+            weight_dtype: torch.bfloat16
+            workspace: native_shared_manager
+            excluded: [gate_routing, collectives, prepare_finalize, shared_experts,
+              cpu_time]
+          components: [gate_routing, experts, finalize_copy]
+          modes: [eager, graph]
+          topk_ids_dtype: torch.int32
+          topk_weights_dtype: torch.float32
+          hidden_dim: 2048
+          intermediate_size: 768
+          input_dtype: torch.bfloat16
+          gate_weight_bytes: 524288
+          expert_weight_bytes: 603979776
+          activation: MoEActivation.SILU
+          measurement_context: native-rotated-expert-weights
+          expert_conditioning:
+            schema: rotated-weight-cycles
+            l2_bytes: 134217728
+            capacity_multiple: 2
+            minimum_banks: 2
+            quality_relative_tolerance: 0.03
+            representative: higher_bank_control
+            local_components: isolated_warm
+            warmup_complete_cycles: 3
+          routing_stimulus: balanced_local_histogram_with_full_global_topk
+          graph_attribution: native-graph-launch-correlation
+          graph_memory_pool: independent_per_variant
+          eager_attribution: native-eager-launch-correlation
+          graph_output_reference: independent_pre_capture_clone
+          torch_version: 2.13.0+cu130
+          cuda_version: '13.0'
+          synthetic_expert_weights: true
+          gpu:
+            name: NVIDIA RTX PRO 6000 Blackwell Server Edition
+            uuid: 7cb2946b-b80a-6932-b7cd-4ce7e1f38400
+            total_memory: 101976440832
+            capability: [12, 0]
+          excluded: [collectives, cpu_time, launch_gaps, shared_experts]
+          model: Qwen/Qwen3-30B-A3B-Instruct-2507
+          hardware: RTXPRO6000
+          variant: bf16
+          protocol:
+            rounds: 3
+            iterations: 3
+            representative: median_of_forward_medians
+            timing: cuda_kernel_sum
+          engine_effective:
+            load_format: dummy
+            enforce_eager: true
+            skip_tokenizer_init: true
+            enable_prefix_caching: false
+            generation_config: vllm
+            tensor_parallel_size: 1
+            gpu_memory_utilization: 0.1
+            max_num_batched_tokens: 2176
+            max_num_seqs: 128
+            hf_overrides:
+              num_hidden_layers: 1
+              intermediate_size: 6144
+              num_attention_heads: 32
+              num_key_value_heads: 4
+              vocab_size: 151936
+            max_model_len: 16384
+            worker_extension_cls: profiler.core.hooks.extension.Extension
+          point_plan_sha256: 830929ccd94c95a9f90435a2664d27ac316bb42b00fd1d9d49ae3220cc269779
+        coverage:
+          schema: moe-components
+          complete: true
+          completed_rounds: 1542
+          expected_rounds: 1542
+          points: 514
+          conditioning_summary:
+            checked_points: 426
+            failed_points: 0
+            max_relative_change: 0.011342984898676356
+          quality_supported: true
+          table_sha256: cf50541225abd750034c7fd7e17f4857a3f79a0ca4c9f9ffd25973f21e2e2b6f
       measured_at: '2026-10-02T00:20:04+00:00'
       vllm_version: 0.28.0

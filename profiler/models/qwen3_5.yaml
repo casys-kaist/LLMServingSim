@@ -68,15 +68,15 @@ shared:
 
 component_layouts:
   gated_delta_net_core:
-    historical: legacy_kernel_components_v1
+    historical: legacy-kernel-components
     categories: [dense, linear_attention]
     variants:
-      legacy_kernel_components_v1:
+      legacy-kernel-components:
         observed:
           prefill: [gdn_conv_prefill, gdn_post_conv, gdn_prefill, gdn_norm]
           decode: [gdn_conv_decode, gdn_decode, gdn_norm]
           mixed: [gdn_conv_prefill, gdn_post_conv, gdn_prefill, gdn_decode_mixed, gdn_norm]
-      operator_core_with_norm_v1:
+      operator-core-with-norm:
         observed:
           prefill: [gdn_core]
           decode: [gdn_core]

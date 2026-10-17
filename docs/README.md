@@ -68,10 +68,10 @@ whose backend-specific metadata does not retain query boundaries.
 Skew timing documentation separates launch-correlated kernel ownership from
 latency: CPU scopes identify the launching module but contribute no time.
 The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
-defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, acquisition identity columns and
+defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, root acquisition metadata and
 interrupted-start recovery and catalog/runtime-bound skew resume; existing tables
 are not automatically converted.
-It distinguishes GDN and source-checked KDA warmup metadata contracts without
+It distinguishes GDN and native KDA warmup metadata contracts without
 equating a metadata check with complete model or serving support.
 The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
 catalog-declared TP output reductions and their activation-sized payloads.
@@ -93,8 +93,20 @@ dimensions. Its CLI and trace guides distinguish original-width prefix acquisiti
 and standalone residual calls from full-model GPU execution, retaining native API/ABI
 checks and local duration-only limits. Changed execution semantics require fresh
 acquisition; historical artifacts cannot be relabeled into the new contracts.
-New CSVs retain coordinates and timings only; per-category metadata describes the
-collector, CUDA-union aggregation, dummy inputs and observed runtime versions.
+New CSVs retain coordinates and timings only; the variant-root `meta.yaml`
+describes the collector, CUDA-union aggregation, dummy inputs and observed runtime
+versions. Its `per_tp[tp]` records centralize measurement, category, contextual,
+callable, skew and native MoE metadata; existing root-only sections stay in place.
+New acquisitions write no standalone metadata sidecars. Historical reads retain
+narrow fallbacks except for `skew.meta.yaml`, which is no longer loaded.
+MoE metadata publishes settings and compact conditioning summaries, not individual
+control-point timings; raw repetitions may remain as acquisition checkpoints.
+Optional failure diagnostics are debugging artifacts, not metadata or required
+simulator inputs; public profile bundles do not include experimental diagnostics.
+Saved symbolic method/policy/format labels are descriptive; `metadata_names.py`
+holds shared names, not old-name aliases. Legacy file-layout fallbacks still
+require current method contracts. Real versions and numeric structural schemas
+are unchanged.
 Source hashes and exact versions are provenance, not execution vetoes. Actual
 API/backend, shape, dtype and layout guards remain mandatory.
 The trace and hybrid guides cover
@@ -104,7 +116,7 @@ The [native DSA contract](docs/profiler/output-bundle.md#native-dsa-acquisition)
 connects site-aware components, four-category completion and live source/runtime
 admission. The trace guide limits that representation to explicit local duration
 replay, keeping its 788-byte cache facts separate from legacy capacity accounting
-and deriving sampler output width from the actual source-checked native route.
+and deriving sampler output width from the actual inspected native route.
 The [trace byte reference](docs/reference/trace-format.md#minimax-m3-logical-bytes)
 defines MiniMax-M3 indexer query/cache dtypes, per-head selections and exact
 per-request history accounting, separately from physical memory traffic and
