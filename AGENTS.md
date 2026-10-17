@@ -1138,10 +1138,14 @@ query reads its whole causal window.
 
 `stack.probe_key_saturation` reads `index_topk` for DeepSeek/GLM. For MiniMax-M3
 it retains the committed tables' historical lookup rule, including the initial
-and local block adjustment (17 x 128 = 2176). That compatibility rule is not
-a native vLLM 0.31 selection contract; changing it requires a separate
-runtime-bound lookup review. The catalog's `key_saturates` says which entries
-are subject to the bound. That
+and local block adjustment (17 x 128 = 2176). New native acquisitions instead
+use `attention_lookup.py` and `meta.yaml.attention_lookup.per_tp`: the inspected
+vLLM 0.31 Triton indexer/attend pair selects 16 total blocks of 128, giving 2048
+for `sparse_attention` prefill lookup only. Initial/local blocks are part of that
+total, not an addition. Exact selected classes, installed source hashes, BF16
+indexer/KV storage, selection-buffer layout and model/catalog parameters must
+match; speculative acquisition and unreviewed backends/layouts are refused.
+The catalog's `key_saturates` says which entries are subject to the bound. That
 is a per-**kernel** property, not a per-model one: M3 is sparse only from its
 fourth layer on, and a sparse model's `indexer` scores the whole KV to make
 the selection and never saturates (52 -> 101 us from kv 2048 to 16384).
@@ -1151,6 +1155,22 @@ grid, so a capped column would collapse the indexer's large-key rows onto a
 single cell. `BatchCtx` carries the mean both ways because the clip is per
 sequence and must precede the mean -- `mean(min(x, cap))` is not
 `min(mean(x), cap)`.
+
+Native row protocols bind the per-TP semantic digest to the acquisition identity.
+Pending records cannot be consumed; completed attention tables carry a checksum.
+Missing contracts for marked rows, changed bytes or unknown schemas fail closed.
+Never relabel historical rows, add a contract after acquisition, or change the
+historical helper/fingerprint to migrate existing fits. Refresh in a separate
+root, or explicitly remeasure the affected category. Serving, skew fitting,
+support completion and `plan-skew` share this resolver and select each TP's cap
+without mutating the shared cached database. Decode-history coordinates remain
+uncapped. Partial non-attention refreshes preserve the authoritative contract.
+Native skew publication also checks row identity and completion; a zero-case
+plan creates no skew artifact, changes no existing artifact even with `--force`,
+and contributes no new skew provenance or fit trigger to the caller.
+TP1 prefix acquisition and boundary checks do not certify multi-TP deployment,
+memory capacity, a full grid or end-to-end benchmark accuracy. See the
+[public contract](docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
 
 **The same flag governs the skew guard.** `alpha` is where a skewed batch
 lands on the line between the two uniform attention-table lookups. That line

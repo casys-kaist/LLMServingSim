@@ -701,6 +701,14 @@ def persist_meta(
         layout_records = metadata_records(variant_root, yaml.safe_load(stream))
     if layout_records is not None:
         meta["component_layouts"] = layout_records
+    # Attention acquisition owns this record; engine-only/partial refreshes
+    # must preserve it, never reconstruct or seal old rows from new facts.
+    from profiler.core import attention_lookup as lookup_contract
+    lookup_meta = lookup_contract.metadata(variant_root)
+    with Path(arch_path).open() as stream:
+        lookup_contract.resolve(variant_root, args.model_config, yaml.safe_load(stream), meta=lookup_meta)
+    if 'attention_lookup' in lookup_meta:
+        meta['attention_lookup'] = lookup_meta['attention_lookup']
     variant_root.mkdir(parents=True, exist_ok=True)
     out = variant_root / "meta.yaml"
     from profiler.core.skew_calibration import atomic_yaml

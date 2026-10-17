@@ -146,8 +146,19 @@ def _fire_one_category(
         capture_catalog = {**catalog_slice, **probes}
         layout_sha256 = layouts.layout_identity(architecture, choices)
     from .measurement import layerwise_measurement
+    from . import attention_lookup as lookup_contract
+    attention_semantic = (lookup_contract.acquire(llm, args.model_config,
+                          arch.model_dump(exclude_none=True), tp) if category.name == 'attention' else None)
+    attention_sha = lookup_contract.digest(attention_semantic) if attention_semantic is not None else None
     measurement = layerwise_measurement(capture_catalog, args.measurement_iterations,
-        scope_contexts=scope_contexts, component_layout_sha256=layout_sha256)
+        scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
+        attention_lookup_sha256=attention_sha)
+    all_shots = list(category.compose_shots(arch, args, limits, tp))
+    if not all_shots:
+        log.warning('category %s produced no shots for tp=%d; skipping', category.label, tp)
+        return False
+    if attention_semantic is not None:
+        lookup_contract.begin(out_dir, attention_semantic, measurement, replace=wipe)
     if layout_context is not None:
         # The shared probe catalog provides one version/source/repetition
         # identity across coupled categories; each CSV still stamps its
@@ -177,14 +188,6 @@ def _fire_one_category(
             )
 
     # Retain the planned shots for progress totals and resume filtering.
-    all_shots = list(category.compose_shots(arch, args, limits, tp))
-    if not all_shots:
-        log.warning(
-            "category %s produced no shots for tp=%d; skipping",
-            category.label, tp,
-        )
-        return False
-
     if prior_keys:
         shots = [s for s in all_shots if category.shot_key(s) not in prior_keys]
         skipped = len(all_shots) - len(shots)
@@ -197,6 +200,8 @@ def _fire_one_category(
         shots = all_shots
 
     if not shots:
+        if attention_semantic is not None:
+            lookup_contract.complete(out_dir)
         if layout_context is not None:
             layouts.complete_category(out_dir, architecture, category.name)
         log.info("%s: nothing to do (all shots already measured)", category.label)
@@ -213,12 +218,18 @@ def _fire_one_category(
             raw = llm.collective_rpc(
                 "fire",
                 args=(shot.as_dict(), capture_catalog, category.name,
-                      args.measurement_iterations, scope_contexts, layout_sha256),
+                      args.measurement_iterations, scope_contexts, layout_sha256, attention_semantic),
             )
             # collective_rpc returns one result per worker (one per
             # TP rank). The timings are identical across ranks; take
             # rank 0's.
+            if not raw:
+                raise ValueError('No worker timings returned')
             timings_dicts = raw[0]
+            if attention_semantic is not None and any(not worker_rows or any(
+                    any(row.get(k) != v for k, v in measurement.items()) for row in worker_rows)
+                    for worker_rows in raw):
+                raise ValueError('Worker attention lookup acquisition identity differs')
             if not timings_dicts or any(
                     any(d.get(k) != v for k, v in measurement.items())
                     for d in timings_dicts):
@@ -261,6 +272,8 @@ def _fire_one_category(
                 )
 
     sink.flush()
+    if attention_semantic is not None:
+        lookup_contract.complete(out_dir)
     if layout_context is not None:
         layouts.complete_category(out_dir, architecture, category.name)
     log.success("%s → %s", category.label, sink.path)
@@ -404,8 +417,8 @@ def run_full(
                 if not args.skip_skew and any(
                         c.name == "attention" for c in by_depth[depth]):
                     from profiler.core.skew import sample_skew
-                    sample_skew(llm, arch, args, limits, tp, tp_root)
-                    skew_measured = True
+                    if sample_skew(llm, arch, args, limits, tp, tp_root) is not None:
+                        skew_measured = True
             finally:
                 spin_down(llm, tmpdir)
 

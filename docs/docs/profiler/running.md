@@ -606,6 +606,16 @@ rules do not establish the indexer's cost outside its measured support.
 Profile the intended range and validate any extrapolation separately.
 :::
 
+For new MiniMax-M3 attention measurements, the inspected native backend also
+owns the [per-TP lookup contract](./output-bundle.md#native-attention-lookup-contract).
+The reviewed vLLM 0.31 Triton BF16 path uses 16 total selected blocks of 128
+tokens; initial/local blocks are included, giving a 2048 sparse-prefill cap.
+Record the full raw context range for the indexer and diagnostics; do not clip
+the acquisition grid to this cap. Historical unmarked profiles retain 2176.
+Use a fresh variant root or explicitly remeasure incompatible attention rows;
+changing metadata cannot convert them. Native contract checks are separate
+from context coverage, capacity admission and end-to-end accuracy validation.
+
 ### `--profile-mtp` — profiling the drafter
 
 A model that drafts with itself keeps its MTP module out of the ordinary

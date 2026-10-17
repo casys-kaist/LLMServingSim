@@ -36,6 +36,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Bind new MiniMax-M3 sparse-prefill lookup caps to the measured native backend
+  per TP. The source-checked vLLM 0.31 Triton BF16 contract selects 16 blocks of
+  128 tokens (2048); unmarked historical tables retain 2176. Preserve raw CSV
+  coordinates and timings, reject incomplete or mismatched contracts, and share
+  the resolver across serving, skew planning and fitting. Empty skew plans do
+  not publish a new acquisition or replace existing artifacts.
 - Correct MiniMax-M3 indexer trace bytes for its independent BF16 query/cache
   dtype and int32 per-head block selections. Preserve exact request histories
   and cap sparse-attention bytes per request before summing. Profile latencies,

@@ -22,7 +22,7 @@ from .skew_support import complete_plan
 PROTOCOL = "kineto-context-scoped-dummy-kv-skew-per-forward-v9"
 
 
-def measurement_fingerprint(scope_contexts=None, *, catalog):
+def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sha256=None):
     """Bind raw timings to effective selectors, normalization and runtime stack."""
     from importlib import metadata
     from .hooks.capture_scope_contract import normalize_contexts
@@ -48,7 +48,11 @@ def measurement_fingerprint(scope_contexts=None, *, catalog):
         value.update((hooks / name).read_bytes())
     if contexts.get('callables'):
         value.update((hooks / 'callable_scopes.py').read_bytes())
-    identity = dict(protocol=PROTOCOL, catalog=catalog, scope_contexts=contexts,
+    from .attention_lookup import protocol
+    if attention_lookup_sha256 is not None:
+        for path in (hooks.parent / 'attention_lookup.py', hooks / 'attention_lookup.py'):
+            value.update(path.read_bytes())
+    identity = dict(protocol=protocol(PROTOCOL, attention_lookup_sha256), catalog=catalog, scope_contexts=contexts,
                     versions=versions)
     value.update(json.dumps(identity, sort_keys=True,
                            separators=(',', ':'), allow_nan=False).encode())
@@ -113,17 +117,24 @@ def _flush_rows(csv_path: Path, new_rows: list[dict]) -> pd.DataFrame:
 
 
 
-def _existing_keys(path, layers, rounds, iterations, *, block_size=None, scope_contexts=None):
+def _existing_keys(path, layers, rounds, iterations, *, block_size=None, scope_contexts=None,
+                   attention_lookup_sha256=None):
     """A partial kernel set or an under-repeated shot is still unfinished."""
     if not path.exists():
         return set()
+    if attention_lookup_sha256 is not None:
+        from .attention_lookup import check_skew
+        check_skew(path.parent, attention_lookup_sha256, allow_pending=True)
     grouped = {}
-    fingerprint = measurement_fingerprint(scope_contexts, catalog=layers)
+    from .attention_lookup import protocol
+    expected_protocol = protocol(PROTOCOL, attention_lookup_sha256)
+    fingerprint = measurement_fingerprint(scope_contexts, catalog=layers,
+                                          attention_lookup_sha256=attention_lookup_sha256)
     for row in pd.read_csv(path, low_memory=False).fillna("").to_dict("records"):
         key = measurement_shape(row)[4]
         if row.get("case_id") and row["case_id"] != key:
             raise ValueError("Stored skew identity disagrees with its request geometry")
-        if (row.get("measurement_protocol") != PROTOCOL
+        if (row.get("measurement_protocol") != expected_protocol
                 or row.get("measurement_sha256") != fingerprint
                 or (block_size is not None and int(row.get("block_size") or 0) != block_size)
                 or int(row.get("rounds") or 0) < rounds
@@ -141,7 +152,10 @@ def _existing_keys(path, layers, rounds, iterations, *, block_size=None, scope_c
 
 
 def sample_skew(llm, arch, args, limits, tp, tp_root):
-    """Measure the dynamic plan; failures preserve completed cases and raise."""
+    """Return its CSV path, or None for an empty plan without changing artifacts.
+
+    Failures preserve completed cases and raise.
+    """
     if args.skew_rounds < 1 or args.measurement_iterations < 1:
         raise ValueError("Positive skew repetition counts required")
     out = Path(tp_root) / "skew.csv"
@@ -152,6 +166,14 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
     scope_contexts = contexts_from_architecture(arch)
     from .categories import _entry_dict
     catalog = _entry_dict(arch.catalog.attention, arch)
+    from . import attention_lookup as lookup_contract
+    architecture = arch.model_dump(exclude_none=True)
+    record, _ = lookup_contract.semantic_for_table(attention, args.model_config, architecture)
+    live = lookup_contract.acquire(llm, args.model_config, architecture, tp)
+    if live != (record['semantic'] if record else None):
+        raise ValueError('Skew runtime differs from the attention acquisition contract')
+    attention_sha = record['semantic_sha256'] if record else None
+    measured_protocol = lookup_contract.protocol(PROTOCOL, attention_sha)
     from serving.core import trace_generator as tg
     table = tg._build_attention_tables_by_layer(tg._read_category_csv(str(attention), None))
     for name in catalog:
@@ -159,8 +181,9 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
             raise ValueError(f"Missing exact attention query slices for {name}")
     if out.exists() and not args.force:
         recorded = pd.read_csv(out, low_memory=False).fillna('')
-        expected = dict(measurement_protocol=PROTOCOL,
-                        measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
+        expected = dict(measurement_protocol=measured_protocol,
+                        measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog,
+                                                                  attention_lookup_sha256=attention_sha),
                         block_size=limits.block_size)
         if any(k not in recorded or not (recorded[k] == v).all() for k, v in expected.items()):
             raise ValueError(
@@ -168,12 +191,16 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 'use a separate output root or --force to remeasure')
     prior = set() if args.force else _existing_keys(
         out, catalog, args.skew_rounds, args.measurement_iterations, block_size=limits.block_size,
-        scope_contexts=scope_contexts)
+        scope_contexts=scope_contexts, attention_lookup_sha256=attention_sha)
     log.info("TP=%d skew: checking reference-cell support before acquisition", tp)
     plan, extra = complete_plan(args, limits, attention, arch, prior,
                                existing_csv=None if args.force else out)
-    plan.update(enabled=True, tp=tp, measurement_protocol=PROTOCOL,
-                measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
+    if not plan['cases']:
+        log.info("TP=%d skew: empty plan; preserving existing artifacts", tp)
+        return None
+    plan.update(enabled=True, tp=tp, measurement_protocol=measured_protocol,
+                measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog,
+                                                          attention_lookup_sha256=attention_sha),
                 scope_contexts=scope_contexts, completed=False, measured_cases=0)
     status = Path(tp_root) / "skew.meta.yaml"
     Path(tp_root).mkdir(parents=True, exist_ok=True)
@@ -198,9 +225,15 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 initialized = True
             by_layer = {name: [] for name in catalog}
             for _ in range(args.skew_rounds):
-                result = llm.collective_rpc("skew_measure", args=(
-                    shot.as_dict(), catalog, args.measurement_iterations, scope_contexts))[0]
-                if (result.get('measurement_protocol') != PROTOCOL
+                worker_results = llm.collective_rpc("skew_measure", args=(
+                    shot.as_dict(), catalog, args.measurement_iterations, scope_contexts, live))
+                if not worker_results or any(
+                        item.get('measurement_protocol') != measured_protocol
+                        or item.get('measurement_sha256') != plan['measurement_sha256']
+                        for item in worker_results):
+                    raise ValueError('Worker skew acquisition identities disagree')
+                result = worker_results[0]
+                if (result.get('measurement_protocol') != measured_protocol
                         or result.get('measurement_sha256') != plan['measurement_sha256']):
                     raise ValueError('Worker skew timings do not match the requested acquisition method')
                 forwards = result["per_forward_us"]
@@ -216,7 +249,7 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
                 rows.append(dict(layer=name, case_id=key,
                     requests_json=json.dumps(shot.requests, separators=(",", ":")),
                     n_prefill=shot.n_prefill, decode_q_len=shot.decode_q_len,
-                    family=family, measurement_protocol=PROTOCOL,
+                    family=family, measurement_protocol=measured_protocol,
                     measurement_sha256=plan["measurement_sha256"],
                     block_size=limits.block_size,
                     rounds=args.skew_rounds, timed_forwards=args.measurement_iterations,
@@ -238,6 +271,8 @@ def sample_skew(llm, arch, args, limits, tp, tp_root):
             _flush_rows(out, rows)
     plan.update(completed=True, measured_cases=fired, reused_cases=skipped,
                 remaining_cases=0, elapsed_seconds=time.monotonic() - started)
+    if attention_sha is not None:
+        plan['skew_sha256'] = lookup_contract.checksum(out)
     atomic_yaml(status, plan)
     log.success("skew -> %s", out)
     return out

@@ -272,6 +272,61 @@ not mutate a bundle while a simulation reads it. Atomic file replacement and
 directory synchronization provide interruption safety, not locking or a live
 multi-file transaction. These checks do not establish end-to-end model accuracy.
 
+## Native attention lookup contract
+
+New MiniMax-M3 attention acquisitions record
+`meta.yaml.attention_lookup` with schema `native-attention-lookup-v1` and an
+independent `per_tp` record for each measured TP. This is acquisition-owned
+backend evidence, not a user-supplied cap or a reinterpretation of old data.
+
+The supported contract is the source-checked **vLLM 0.31.0 NVIDIA Triton** pair
+`MiniMaxM3IndexerTritonImpl` / `MiniMaxM3SparseTritonImpl`, using BF16 indexer
+and attention KV storage, max-score selection, and a contiguous int32 selection
+buffer with **16 total blocks of 128 tokens**. Initial/local blocks occupy that
+total; they do not enlarge it. Acquisition inspects the actual selected objects,
+buffer layout, model/catalog parameters and exact installed source hashes, and
+requires worker agreement. Another implementation, source revision, layout,
+storage precision or speculative path needs a separately reviewed contract; a matching
+model name or version label alone is insufficient.
+
+The resulting **2048** cap applies only to `sparse_attention` prefill lookup:
+cap each request's effective key before taking the query-weighted mean. Dense
+attention and the indexer remain uncapped, as do decode-history coordinates.
+Producer rows keep their raw coordinates and measured timings, including above
+the cap; those rows still describe real acquisition work, not the chosen lookup
+anchor. A cap does not assert identical latency at every larger history.
+It is also separate from logical trace-byte accounting and physical KV capacity.
+
+Each per-TP record contains `semantic`, its `semantic_sha256`, the ordinary
+`measurement` identity, `completed`, and `attention_sha256`. The row's
+`measurement_protocol` binds the semantic digest; the acquisition fingerprint
+also covers the relevant source. Publication marks the record pending before
+accepting rows and seals the completed attention CSV. Consumers reject pending
+records, unknown schemas, missing metadata for marked rows, altered checksums,
+mixed identities, or model/catalog/TP mismatches. Completion describes the
+selected acquisition plan, not proof of a full grid or arbitrary context range.
+
+Unmarked historical tables retain their existing lookup semantics: **2176**
+for the shipped MiniMax-M3 configuration. Do not add a contract to historical
+rows, rewrite their keys or automatically change their timings/fits. Use a fresh
+root, or explicitly remeasure incompatible attention data. A compatible resume
+reuses rows without timing them again; interrupted native publication must be
+resumed before consumption. Unrelated category refreshes preserve the contract.
+Keep one writer per variant root and published bundles immutable.
+
+Serving, skew fitting, support completion and `plan-skew` share the per-TP
+resolver. Native skew rows bind the same semantics and require a matching
+completed `skew.meta.yaml` checksum before fitting. A zero-case skew plan creates
+no new skew file or completion claim, does not itself trigger a fit, and leaves
+existing artifacts intact,
+even with `--force`; it contributes no new skew provenance. Other nonempty TP
+acquisitions are still recorded.
+
+The bounded native validation covers TP1 BF16 prefix acquisition on SM120 and
+consumer behavior around the selection boundary. It does not establish full-grid
+coverage, multi-TP deployment, model-capacity admission or end-to-end benchmark
+accuracy. Inspect the actual bundle's plan and measured support before use.
+
 ## `dense.csv`
 
 ```
@@ -686,6 +741,7 @@ and completion from each measured TP's `skew.meta.yaml`.
 | --- | --- |
 | `engine_effective.max_num_batched_tokens` / `.max_num_seqs` | One-shot warning when the runtime CLI exceeds the sweep bounds, since lookups will extrapolate |
 | `skew_fit.enabled` | Whether to apply any skew correction at all |
+| `attention_lookup.per_tp[tp]` | Validate native attention semantics, row identity and completion checksum; select the matching TP's sparse-prefill cap |
 | `skew_fit.per_tp[tp].schema` | Required versioned calibration schema |
 | `skew_fit.per_tp[tp].identity`, `.reference`, `.bucket_table_sha256` | Validate bundle identity, attention/reference implementation, saturation contract and table bytes |
 | `skew_fit.per_tp[tp].axes`, `.bucket_table` | Load partitions and supported N anchors once |

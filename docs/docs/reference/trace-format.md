@@ -126,11 +126,14 @@ of causal reads within a prefill chunk. KV capacity is accounted separately
 and is not reduced by the sparse read cap. This layout does not establish
 support for nondefault runtime indexer dtypes or whole-model TP deployments.
 
-Latency-table coordinates and stored timings are unchanged. In particular,
-the committed MiniMax tables retain their historical lookup cap of 2176,
-separate from the existing 2048-position byte cap for the shipped config.
-That historical lookup rule does not certify native vLLM 0.31 selection
-semantics at long contexts.
+Raw latency-table coordinates and stored timings are unchanged. Unmarked
+historical MiniMax tables retain their 2176 prefill-lookup cap, separately from
+the 2048-position byte cap for the shipped config. New source-checked native
+Triton BF16 acquisitions instead record a per-TP 2048 sparse-prefill lookup cap
+in their [attention contract](../profiler/output-bundle.md#native-attention-lookup-contract).
+This selects the consumer coordinate without clipping producer rows, dense
+attention, indexer lookup or decode-history coordinates. Neither lookup rule
+reduces KV capacity or establishes whole-model deployment support.
 
 ## Memory locations
 

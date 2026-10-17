@@ -49,13 +49,21 @@ class Extension:
         from .skew_measurement import initialize
         return initialize(self.model_runner)
 
-    def skew_measure(self, shot_dict, catalog, iterations=3, scope_contexts=None):
+    def attention_lookup_contract(self, profile_tp):
+        from .attention_lookup import runtime_semantic
+        return runtime_semantic(self.model_runner, profile_tp)
+
+    def skew_measure(self, shot_dict, catalog, iterations=3, scope_contexts=None,
+                     attention_lookup_semantic=None):
         from .capture_scope_contract import normalize_contexts
         normalize_contexts(scope_contexts, catalog)
         if type(iterations) is not int or iterations < 1:
             raise ValueError('A positive timed-forward count is required')
         from .skew_measurement import measure
-        return measure(self.model_runner, shot_dict, catalog, iterations, scope_contexts=scope_contexts)
+        from .attention_lookup import verify
+        attention_lookup_sha256 = verify(self.model_runner, attention_lookup_semantic)
+        return measure(self.model_runner, shot_dict, catalog, iterations, scope_contexts=scope_contexts,
+                       attention_lookup_sha256=attention_lookup_sha256)
 
     def fire(
         self,
@@ -65,6 +73,7 @@ class Extension:
         iterations: int = 3,
         scope_contexts: dict[str, Any] | None = None,
         component_layout_sha256: str | None = None,
+        attention_lookup_semantic: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one profiling shot and return per-layer timings.
 
@@ -88,8 +97,15 @@ class Extension:
         # Reject malformed contracts before sampler mutation, cache setup,
         # warmup or any measured GPU work.
         from profiler.core.measurement import layerwise_measurement
+        attention_lookup_sha256 = None
+        if kind == 'attention':
+            from .attention_lookup import verify
+            attention_lookup_sha256 = verify(self.model_runner, attention_lookup_semantic)
+        elif attention_lookup_semantic is not None:
+            raise ValueError('Attention lookup identity on another category')
         acquisition = layerwise_measurement(slice_, iterations, scope_contexts=scope_contexts,
-                                           component_layout_sha256=component_layout_sha256)
+                                           component_layout_sha256=component_layout_sha256,
+                                           attention_lookup_sha256=attention_lookup_sha256)
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a

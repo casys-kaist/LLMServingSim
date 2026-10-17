@@ -64,6 +64,8 @@ for MiniMax-M3 query/cache accounting, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
 vLLM's default communication backend selection and explicit overrides;
 the benchmark retains its two disabled communication-fusion passes.
+MiniMax-M3's [native attention lookup contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-attention-lookup-contract)
+binds new sparse-prefill lookups to the measured backend per TP; historical bundles retain their original semantics.
 Profiler precision labels keep checkpoint quantization separate from floating
 activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
 before acquiring an alternate precision.

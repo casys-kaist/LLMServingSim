@@ -740,9 +740,14 @@ def main(argv: list[str] | None = None) -> int:
             planned = dataclasses.replace(profile_args,
                 attention_max_kv=profile_args.attention_max_kv or
                                  metadata.get("attention_grid", {}).get("max_kv") or limits.max_model_len)
+            from profiler.core.attention_lookup import semantic_for_table
+            lookup_record, _ = semantic_for_table(root / f"tp{tp}" / "attention.csv",
+                model_config, architecture.model_dump(exclude_none=True))
+            attention_sha = lookup_record['semantic_sha256'] if lookup_record else None
             completed = set() if planned.force else _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
                                        planned.skew_rounds, planned.measurement_iterations,
-                                       block_size=limits.block_size, scope_contexts=scope_contexts)
+                                       block_size=limits.block_size, scope_contexts=scope_contexts,
+                                       attention_lookup_sha256=attention_sha)
             plans[tp], _ = complete_plan(planned, limits, root / f"tp{tp}" / "attention.csv",
                 architecture, completed, existing_csv=None if planned.force else root / f"tp{tp}" / "skew.csv")
         print(json.dumps(plans, indent=2))

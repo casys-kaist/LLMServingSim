@@ -124,6 +124,12 @@ Profiling and runtime use the same helper in `profiler/core/attention_shape.py`.
 This preserves the continuous causal convention and does not claim that one
 coordinate fully determines heterogeneous attention latency. For saturating
 kernels, each effective key is capped before the weighted mean.
+For new native MiniMax-M3 tables, the cap comes from the validated per-TP
+[attention contract](../profiler/output-bundle.md#native-attention-lookup-contract):
+2048 for the reviewed Triton BF16 sparse kernel. Unmarked historical tables
+retain 2176. Dense attention, the indexer and decode-history coordinates are
+unchanged. Each trace context selects its TP's cap without overwriting the
+shared cached bundle; invalid or unfinished native contracts are not fallbacks.
 
 Ordinary dense, per-sequence and attention grids can **extrapolate** beyond
 measured support, reducing confidence; missing attention corners also have

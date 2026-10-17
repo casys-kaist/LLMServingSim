@@ -78,6 +78,16 @@ not agree. A coefficient fitted against one pair cannot be assumed to
 compensate the other. Prefill coordinates use the shared query-weighted helper,
 including catalog-specific prefill key saturation. Decode references retain
 the runtime lookup's history semantics.
+For native MiniMax-M3 acquisitions, serving, `plan-skew`, support completion
+and fitting use the same validated per-TP
+[attention contract](./output-bundle.md#native-attention-lookup-contract).
+The reviewed Triton BF16 sparse-prefill cap is 2048; unmarked historical tables
+retain 2176. Marked raw skew rows also require matching semantic/acquisition
+identity and a completed checksum. Missing or stale contracts cannot silently
+fall back to historical semantics. A zero-case skew plan writes no new skew
+file or completion claim and does not itself trigger a fit; existing artifacts
+remain untouched even with
+`--force`, and other nonempty TP acquisitions retain their provenance.
 
 Both references must have an exact attention `layer` and `decode_q_len`
 slice. Offline fitting refuses to substitute another query length.

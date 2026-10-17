@@ -184,6 +184,11 @@ step is silently a no-op if the source is set to anything else.
   defaults and subcommand scope with the complete reference and directory
   README index before release. Verify wrapper forwarding with engines disabled.
   Keep the root README as a link to those references, not a duplicate flag list.
+- **Runtime contracts**: distinguish measured per-TP backend semantics from
+  historical compatibility rules. A native attention lookup cap is neither a
+  rewrite of raw CSV coordinates nor a KV-capacity limit; document publication
+  checks and supported source/layout scope without generalizing a bounded probe
+  into full-grid, distributed-deployment or benchmark validation.
 - **Code blocks**: always specify the language (` ```bash `, ` ```python `,
   ` ```yaml `). The site's Prism config preloads bash, python, json, yaml.
 - **Images**: under `static/img/`, reference as `/img/<file>.png`.

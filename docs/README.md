@@ -82,6 +82,9 @@ The [trace byte reference](docs/reference/trace-format.md#minimax-m3-logical-byt
 defines MiniMax-M3 indexer query/cache dtypes, per-head selections and exact
 per-request history accounting, separately from physical memory traffic and
 the historical latency-lookup cap.
+The [native attention contract](docs/profiler/output-bundle.md#native-attention-lookup-contract)
+separates new per-TP MiniMax-M3 backend semantics from unchanged historical tables,
+and defines publication, resume and skew-consumer checks without deployment claims.
 Coverage accounts for native kernels, copies and memsets, including work outside
 module scopes. The architecture guide also documents child exclusions for raw
 kernel wildcards and rejection of overlapping canonical activity claims.

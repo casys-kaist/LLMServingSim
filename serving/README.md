@@ -19,6 +19,11 @@ MiniMax-M3 indexer traces use independent BF16 query/cache bytes and int32
 per-head block selections. Indexer and sparse-attention rows retain each
 request's cached history, applying the sparse byte cap before summing.
 These are logical tensor bytes; see the [scope and formulas](../docs/docs/reference/trace-format.md#minimax-m3-logical-bytes).
+Separately, new source-checked MiniMax-M3 profiles select a 2048 sparse-prefill
+lookup cap from their per-TP native contract; unmarked historical tables retain
+2176. Dense/indexer and decode-history coordinates remain uncapped. Incomplete,
+unknown or mismatched native contracts are rejected before lookup; see the
+[bundle contract](../docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
 
 ## Layout
 

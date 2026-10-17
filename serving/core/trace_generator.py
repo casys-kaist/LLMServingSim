@@ -512,13 +512,19 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
                 _stack_module().text_config(model_config))
             if model_config else None),
     }
-    for entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).values():
+    from profiler.core import attention_lookup as lookup_contract
+    lookup_records = lookup_contract.resolve(root, model_config, arch, meta=meta)
+    perf_db["key_saturation_by_tp"] = {
+        tp: lookup_contract.cap_for(lookup_records, tp, model_config) for tp in available_tps}
+    for tp, entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).items():
         if not isinstance(entry, dict) or not entry.get("calibration"):
             continue
+        if int(tp) in lookup_records:
+            lookup_contract.check_skew(os.path.join(root, f'tp{int(tp)}'), lookup_records[int(tp)]['semantic_sha256'])
         reference = entry["reference"]
         saturation = {k: bool(v.get("key_saturates"))
                       for k, v in (arch["catalog"].get("attention") or {}).items()}
-        if (reference["key_saturation"] != perf_db["key_saturation"]
+        if (reference["key_saturation"] != perf_db["key_saturation_by_tp"].get(int(tp), perf_db["key_saturation"])
                 or reference["saturation_by_layer"] != saturation):
             raise ValueError("Attention window/catalog changed; run profiler refit-skew")
     _perf_db_cache[cache_key] = perf_db
@@ -1191,6 +1197,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
     tp_needed = {max(int(tp_size), 1)}
     perf_db = _load_perf_db(hardware, model, variant, tp_needed, model_type,
                             model_config=config)
+    perf_db = dict(perf_db, key_saturation=perf_db["key_saturation_by_tp"][max(int(tp_size), 1)])
     if gate is not None:
         _require_attention_parallelism(perf_db["architecture"], tp_size, pp_size,
                                       local_ep, ep_total)

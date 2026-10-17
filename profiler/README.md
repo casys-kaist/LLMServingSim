@@ -32,6 +32,11 @@ Per-TP metadata rejects incomplete or incompatible publication; unmarked histori
 tables keep their original decomposition. Use one writer per variant root and keep
 published bundles immutable. See the
 [layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
+Native MiniMax-M3 attention acquisition also records a source-checked per-TP
+lookup contract: Triton BF16, 16 selected blocks of 128 tokens, gives a 2048
+sparse-prefill cap. Unmarked historical tables retain 2176; raw coordinates
+and timings are never relabeled. See the
+[native attention contract](../docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
 The bundled acquisition hooks target NVIDIA CUDA. Another accelerator requires
 an audited acquisition adapter, not just a different image or hardware label;
 see [adding hardware](../docs/docs/profiler/adding-hardware.md).
@@ -118,6 +123,7 @@ profiler/                          Python package: python -m profiler
 │   ├── skew_plan.py               dynamic distribution coverage and feasibility
 │   ├── skew_support.py            reference-only completion of lookup support
 │   ├── writer.py                  CSV and metadata persistence
+│   ├── attention_lookup.py        per-TP native attention semantics and table seals
 │   ├── stack.py                   shared checkpoint-derived layer composition
 │   ├── catalog_path.py            shared model-type and catalog resolution
 │   ├── logger.py                  Rich-based logging and progress
@@ -135,6 +141,7 @@ profiler/                          Python package: python -m profiler
 │       ├── operator_scopes.py     exact native operator launch ownership
 │       ├── callable_scopes.py     declared function/method ownership and restoration
 │       ├── recurrent_metadata.py  recurrent query/history and state-page checks
+│       ├── attention_lookup.py    inspect selected native sparse backend and storage
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
 │       └── moe_hook.py            whole-block forced routing
@@ -711,6 +718,10 @@ batch.
   strings for the `chunks` / `n_decode` / `kv` axes, plus the separate
   `decode_q_lens` table selections. Only an attention sweep rewrites this grid.
 - `skew_profile` — actual per-TP dynamic plans, resolved capacity and completion.
+- `attention_lookup.per_tp[tp]` — native attention semantics, acquisition identity
+  and completed table checksum. Only matching new measurements establish this
+  contract; other category refreshes preserve it. Empty skew plans publish no
+  new skew provenance and preserve existing files, including with `--force`.
 - `skew_fit` — versioned identity, reference fingerprints, adaptive prefill
   partitions, supported N anchors, per-kernel/query defaults and table checksum.
 

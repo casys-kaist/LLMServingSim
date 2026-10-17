@@ -99,7 +99,8 @@ def _verified_builder_outputs(runner, requests, state_layers):
                 del builder.build
 
 
-def measure(runner, shot_dict, catalog, iterations=3, *, scope_contexts=None):
+def measure(runner, shot_dict, catalog, iterations=3, *, scope_contexts=None,
+            attention_lookup_sha256=None):
     """Capture individual forwards through the common eager CUDA collector."""
     import torch
     from .batch import Shot
@@ -107,6 +108,7 @@ def measure(runner, shot_dict, catalog, iterations=3, *, scope_contexts=None):
     from .runner_capture import capture, verified_warmup
     from .sampler_shim import wrap_sampler_for_profiling
     from profiler.core.skew import PROTOCOL, measurement_fingerprint
+    from profiler.core.attention_lookup import protocol
     from .capture_scope_contract import normalize_contexts
 
     scope_contexts = normalize_contexts(scope_contexts, catalog)
@@ -139,7 +141,9 @@ def measure(runner, shot_dict, catalog, iterations=3, *, scope_contexts=None):
             raise ValueError(f"Per-forward attribution does not conserve {name}")
     audit = measured["audit"]
     return dict(per_forward_us=forwards, aggregate_us=aggregate,
-                measurement_protocol=PROTOCOL, measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog),
+                measurement_protocol=protocol(PROTOCOL, attention_lookup_sha256),
+                measurement_sha256=measurement_fingerprint(scope_contexts, catalog=catalog,
+                                                          attention_lookup_sha256=attention_lookup_sha256),
                 conservation_delta_us=deltas,
                 cuda_kernel_counts=audit["per_forward_activity_counts"],
                 excluded_gpu_annotations=audit["excluded_annotations"],

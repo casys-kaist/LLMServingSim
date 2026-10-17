@@ -140,11 +140,12 @@ def fit_csv(skew_csv, attention_csv, identity, architecture, key_saturation=None
 def fit_bundle(variant_root, identity, model_config, tp_degrees=None):
     """Compile measured TP folders automatically, without starting an engine."""
     from serving.core.utils import _load_architecture
-    from .stack import probe_key_saturation, text_config
+    from .stack import text_config
     root = Path(variant_root)
     config = text_config(model_config)
     architecture = _load_architecture(config["model_type"])
-    cap = probe_key_saturation(config)
+    from . import attention_lookup as lookup_contract
+    lookup_records = lookup_contract.resolve(root, model_config, architecture)
     available = sorted(int(p.name[2:]) for p in root.glob("tp*")
                        if p.is_dir() and p.name[2:].isdigit() and (p/"skew.csv").exists())
     wanted = available if tp_degrees is None else sorted(set(tp_degrees))
@@ -159,6 +160,9 @@ def fit_bundle(variant_root, identity, model_config, tp_degrees=None):
         if not (folder / "skew.csv").exists():
             raise FileNotFoundError(f"Missing skew measurements at {folder}")
         fit_identity = dict(identity, tp=tp)
+        record = lookup_records.get(tp)
+        lookup_contract.check_skew(folder, record['semantic_sha256'] if record else None)
+        cap = lookup_contract.cap_for(lookup_records, tp, model_config)
         table = fit_csv(folder/"skew.csv", folder/"attention.csv", fit_identity, architecture, cap)
         output = folder / "skew_fit.csv"
         write_table(output, table)

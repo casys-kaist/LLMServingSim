@@ -29,6 +29,13 @@ the same modules: vLLM 0.31 uses a native DeepSeek-V3.2 path under
 acquisitions require matching live coverage and execution contracts; the launcher
 upgrade alone does not establish them.
 
+MiniMax-M3's new source-checked vLLM 0.31 Triton BF16 acquisition records a
+[per-TP attention contract](../../profiler/output-bundle.md#native-attention-lookup-contract):
+16 total selected blocks of 128 give a 2048 sparse-prefill lookup cap. The
+historical unmarked tables retain 2176. Raw producer coordinates, indexer
+history and decode lookup remain unchanged; selecting a native cap does not
+certify a full grid, distributed deployment, KV capacity or benchmark accuracy.
+
 :::caution[The `attention` category holds more than one kernel, and they are not interchangeable]
 Every lookup is keyed by kernel name, and so is the skew alpha. On
 MiniMax-M3 the same batch fits alphas of 0.24 / 0.74 / -0.01 for
