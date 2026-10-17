@@ -180,10 +180,16 @@ unset to inherit the CLI defaults.
 For supported unquantized local or DP+EP models, MoE acquisition defaults to
 [native components](./native-moe-components) at DP1, preserving global expert
 IDs and top-k. `--dp` selects other target degrees for `profile` or
-`slice --group moe`; EP is TP*DP. Each rank is emulated on one physical GPU,
-with communication modeled separately. In either shell template,
-`DP_DEGREES="1,2"` selects local and DP+EP targets and `MOE_ROUNDS` controls
-repeated contexts. DP1 omits native no-op prepare/finalize and DP collectives;
+`slice --group moe`; EP is TP*DP. Optional `--ep` filters those full-EP targets;
+omission keeps all, and unmatched degrees fail before engine startup. It does not
+infer TP/DP values or enable tensor-sharded experts. A MoE slice matches only
+`--tp-refresh`; other categories retain their ordinary TP sweep.
+Each rank is emulated on one physical GPU, with communication modeled separately.
+In either shell template, `DP_DEGREES="1,2"` selects local and DP+EP targets,
+`EP_DEGREES` forwards `--ep`, and `MOE_ROUNDS` controls repeated contexts.
+For a mixed dense/MoE `profile-all.sh` job list, put explicit `--dp`/`--ep`
+in each MoE job's extra arguments, not global variables that also reach dense jobs.
+DP1 omits native no-op prepare/finalize and DP collectives;
 TP>1 still means full EP, not tensor-sharded experts.
 
 New component measurements are eager only, without isolated CUDA graph capture.
@@ -195,7 +201,7 @@ themselves establish full-model accuracy.
 
 Omitted DP does not affect dense models, coverage, ordinary category slices or
 skew-only runs. A full `--profile-mtp` run acquires target components separately
-from its drafter pass. Explicit `--dp` still cannot be combined with
+from its drafter pass. Explicit `--dp` or `--ep` cannot be combined with
 `--only-skew` or `--profile-mtp`. Native contracts are immutable: use a fresh
 `OUT_ROOT` to remeasure instead of `FORCE`.
 
@@ -488,7 +494,7 @@ and existing attention references without starting vLLM. Engine-limit flags
 do not replace those saved limits in a plan preview.
 
 `slice` additionally requires `--tp-refresh N` and `--group G`; include `N`
-in `--tp`. `--dp` is supported only for `profile` or `slice --group moe`.
+in `--tp`. `--dp` and `--ep` are supported only for `profile` or `slice --group moe`.
 `--profile-mtp` with `slice` requires `--group mtp`. `--only-skew` selects
 the skew-only path of `profile`; it is not a slice category.
 
@@ -512,6 +518,7 @@ flags for any non-empty value, including `0`; unset them to disable.
 | `--num-hidden-layers` | category/checkpoint-derived minimal stack | `NUM_HIDDEN_LAYERS` |
 | `--hf-override KEY=VALUE` | none | `HF_OVERRIDES` (array) |
 | `--dp` | automatic DP1 for MoE acquisition | `DP_DEGREES` |
+| `--ep` | all full-EP targets (TP*DP); optional comma-separated filter | `EP_DEGREES` |
 | `--moe-rounds` | `3` | `MOE_ROUNDS` |
 | `--moe-grid-factor` | `2.0` | `MOE_GRID_FACTOR` |
 | `--profile-mtp` | off | `PROFILE_MTP=1` |

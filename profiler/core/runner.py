@@ -381,14 +381,15 @@ def run_full(
     log.banner(args, variant_root)
 
     component_args = None
-    if not args.only_skew and (args.moe_dp_degrees is not None
+    if not args.only_skew and (args.dp_degrees is not None or args.ep_degrees is not None
                               or any(declares_moe(holder) for holder in (
                                   args.model_config or {},
                                   (args.model_config or {}).get("text_config") or {}))):
-        from .moe_profile import validate_request
+        from .moe_profile import resolve_targets
         component_args = dataclasses.replace(
-            args, moe_dp_degrees=args.moe_dp_degrees or (1,), profile_mtp=False)
-        validate_request(arch, component_args)
+            args, dp_degrees=(1,) if args.dp_degrees is None else args.dp_degrees,
+            profile_mtp=False)
+        resolve_targets(arch, component_args, args.tp_degrees)
 
     last_engine_kwargs: dict[str, Any] | None = None
     # Keyed by TP, not a single "last": the engine resolves a different
@@ -592,11 +593,12 @@ def run_slice(
 
     if group == "moe":
         from .moe_profile import run_components
-        component_args = dataclasses.replace(args, moe_dp_degrees=args.moe_dp_degrees or (1,))
+        component_args = dataclasses.replace(
+            args, dp_degrees=(1,) if args.dp_degrees is None else args.dp_degrees)
         run_components(arch_path, component_args, [tp], variant_root)
         return
-    if args.moe_dp_degrees is not None:
-        raise ValueError("Explicit DP applies only to the MoE slice")
+    if args.dp_degrees is not None or args.ep_degrees is not None:
+        raise ValueError("Explicit DP/EP applies only to the MoE slice")
 
 
     category_cls = CATEGORY_BY_NAME[group]

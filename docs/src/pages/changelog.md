@@ -11,7 +11,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 ### Changed
 
 - Make eager native MoE component profiling the default at DP1, with full-EP
-  deployment targets, a configurable doubling grid and independent input-row,
+  deployment targets selected through `--tp`, `--dp` and optional `--ep`,
+  a configurable doubling grid and independent input-row,
   active-expert and assignment axes. Remove isolated CUDA graph capture, its unused collector and
   whole-block acquisition; retain historical table reads until remeasurement.
   Use routing-policy work counts and cached physical-coordinate interpolation

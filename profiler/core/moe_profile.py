@@ -316,7 +316,7 @@ class MeasurementStore:
 
 
 def validate_request(arch, args):
-    if args.moe_dp_degrees is None or not probe_moe_params(args.model_config or {}):
+    if args.dp_degrees is None or not probe_moe_params(args.model_config or {}):
         raise ValueError("Native component profiling requires a MoE checkpoint and resolved DP")
     if not arch.catalog.moe or len(arch.catalog.moe) != 1:
         raise NotImplementedError("One catalog MoE block is required for this component adapter")
@@ -324,8 +324,11 @@ def validate_request(arch, args):
         raise ValueError("Native contracts are immutable; use a new output root instead of --force")
     if args.profile_mtp or args.only_skew:
         raise ValueError("Native components do not profile a drafter or skew")
-    if any(type(dp) is not int or dp < 1 for dp in args.moe_dp_degrees):
+    if not args.dp_degrees or any(type(dp) is not int or dp < 1 for dp in args.dp_degrees):
         raise ValueError("Native component target DP degrees must be positive integers")
+    if args.ep_degrees is not None and (not args.ep_degrees or any(
+            type(ep) is not int or ep < 1 for ep in args.ep_degrees)):
+        raise ValueError("Native component target EP degrees must be positive integers")
     if args.moe_rounds < 1 or args.measurement_iterations < 1:
         raise ValueError("Measurement repetitions must be positive")
     if not math.isfinite(args.moe_grid_factor) or args.moe_grid_factor <= 1:
@@ -336,21 +339,41 @@ def validate_request(arch, args):
             raise NotImplementedError("Native component acquisition currently supports unquantized experts")
 
 
+def resolve_targets(arch, args, tps):
+    """Plan full-EP targets and reject unsupported selections before engine boot."""
+    validate_request(arch, args)
+    tps = tuple(tps)
+    if not tps or any(type(tp) is not int or tp < 1 for tp in tps):
+        raise ValueError("Native component target TP degrees must be positive integers")
+    pairs = sorted({(tp, dp) for tp in tps for dp in args.dp_degrees})
+    if args.ep_degrees is not None:
+        requested = set(args.ep_degrees)
+        available = {tp*dp for tp, dp in pairs}
+        missing = requested - available
+        if missing:
+            raise ValueError(
+                f"Requested --ep degrees {sorted(missing)} do not match the selected "
+                f"TP*DP targets {sorted(available)}. Set --tp/--dp accordingly; "
+                "a MoE slice uses --tp-refresh, not every session TP degree. "
+                "Only full expert parallelism (EP=TP*DP) is supported.")
+        pairs = [(tp, dp) for tp, dp in pairs if tp*dp in requested]
+    entry = next(iter(arch.catalog.moe.values()))
+    if (any(tp > 1 and dp > 1 for tp, dp in pairs)
+            and entry.sequence_parallel is None):
+        raise ValueError("TP+DP requires an audited MoE sequence_parallel catalog binding")
+    experts, _ = probe_moe_params(args.model_config)
+    if any(tp*dp > experts for tp, dp in pairs):
+        raise ValueError("Requested EP degree exceeds the global expert count")
+    return [MoeTarget(tp, dp, tp*dp, rank, bool(entry.sequence_parallel and tp>1 and dp>1))
+            for tp, dp in pairs for rank in range(tp*dp)]
+
+
 def run_components(arch_path, args, tps, variant_root):
     from . import logger as log
     from .engine import spin_up, spin_down
 
     arch = load_architecture(arch_path)
-    validate_request(arch, args)
-    entry = next(iter(arch.catalog.moe.values()))
-    if (any(tp > 1 for tp in tps) and any(dp > 1 for dp in args.moe_dp_degrees)
-            and entry.sequence_parallel is None):
-        raise ValueError("TP+DP requires an audited MoE sequence_parallel catalog binding")
-    targets = [MoeTarget(tp, dp, tp*dp, rank, bool(entry.sequence_parallel and tp>1 and dp>1))
-               for tp in tps for dp in args.moe_dp_degrees for rank in range(tp*dp)]
-    experts, _ = probe_moe_params(args.model_config)
-    if any(target.ep > experts for target in targets):
-        raise ValueError("Requested EP degree exceeds the global expert count")
+    targets = resolve_targets(arch, args, tps)
     engine_args = replace(args, tp_degrees=[1], profile_mtp=False)
     budget = args.max_num_batched_tokens or HOST_ENGINE_DEFAULTS['max_num_batched_tokens']
     variant_root.mkdir(parents=True, exist_ok=True)

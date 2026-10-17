@@ -1100,7 +1100,8 @@ def _moe_ep_slice(by_ep, ep, perf_db):
             "ep_size=%d was not profiled for the MoE block (have %s); using "
             "%d. An EP rank runs E/ep experts and k/ep of a token's expert "
             "assignments, so the wrong slice misprices every MoE layer -- "
-            "re-profile with --moe-ep-degrees including %d.",
+            "acquire native components with --ep %d and matching --tp/--dp "
+            "(EP=TP*DP) where supported; legacy whole-block acquisition is unavailable.",
             ep, have, nearest, ep,
         )
     return by_ep[nearest]

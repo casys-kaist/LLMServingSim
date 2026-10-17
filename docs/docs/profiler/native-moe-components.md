@@ -51,6 +51,16 @@ and its `--moe-ep-degrees` option have been removed. To refresh TP2,
 use `--tp 1,2 --tp-refresh 2`; the existing CLI still requires TP1 in its
 session list, but a slice measures only the selected degree.
 
+`--ep` accepts an optional comma-separated filter over those full-EP targets.
+Omit it to acquire every TP/DP combination. For example,
+`--tp 1,2 --dp 1,2 --ep 2` in a full profile acquires MoE components for TP1/DP2
+and TP2/DP1, both EP2; ordinary categories still run at TP1 and TP2.
+For a TP2-only MoE slice, use `--tp 1,2 --tp-refresh 2 --dp 1 --ep 2`.
+Every explicit EP degree must match the selected TP times DP; unmatched degrees
+fail before engine startup. EP selection does not infer additional TP/DP values
+or enable tensor-sharded experts. Both shell templates forward `TP_DEGREES`,
+`DP_DEGREES` and `EP_DEGREES` as `--tp`, `--dp` and `--ep`.
+
 The profiler uses **one physical GPU**, not TP times DP processes. It retains
 the checkpoint's global expert count and top-k, resolves each target rank's
 expert map through vLLM, and builds local expert weights in the native layout.

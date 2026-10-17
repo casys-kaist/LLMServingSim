@@ -190,8 +190,8 @@ The [collective-link schema](docs/reference/cluster-config.md#collective-specifi
 documents optional per-operation analytical Ring links and configuration
 precedence, without changing collective payloads or the common fallback.
 The [native MoE guide](docs/profiler/native-moe-components.md) describes default-DP1
-single-rank acquisition, publication checks, component lookup and supported
-execution contracts. It distinguishes measured GPU work from analytical transport.
+single-rank acquisition, uniform TP/DP/EP selectors, publication checks, component
+lookup and supported execution contracts. It distinguishes measured GPU work from analytical transport.
 Deferred finalization is checked through the effective vLLM capability;
 an unsupported API cannot silently become a supported component contract.
 The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)

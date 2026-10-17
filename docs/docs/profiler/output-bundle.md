@@ -682,6 +682,7 @@ produces.
 ## Native DP+EP components
 
 Native MoE acquisition defaults to DP1; `--dp` selects other target degrees.
+Optional `--ep` filters the supported TP*DP targets without changing their geometry.
 It publishes root `per_tp[tp].moe_components` metadata
 and deployment-specific `components.csv` tables. Contracts and coverage live in
 that root record, not standalone index/contract/coverage JSON files.

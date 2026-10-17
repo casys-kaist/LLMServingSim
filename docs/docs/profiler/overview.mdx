@@ -65,7 +65,8 @@ simulator multiplies by 1000 and rounds to ns at load time.
 Schema details on **[Output bundle](./output-bundle)**.
 
 [Native MoE profiling](./native-moe-components) is the default for MoE models,
-at DP1 unless `--dp` selects other target degrees. It adds deployment records
+at DP1 unless `--dp` selects other target degrees; optional `--ep` filters
+the resulting TP*DP targets. It adds deployment records
 to the root metadata and component CSVs, preserving global top-k and separating
 local routing, gathered expert work and applicable finalization. New measurements
 are eager only, without isolated graph capture. Expert points cover tokens,

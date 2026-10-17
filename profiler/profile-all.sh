@@ -69,6 +69,7 @@ for job in "${JOBS[@]}"; do
     cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
     cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
     [[ -n "${DP_DEGREES:-}" ]]            && cmd+=(--dp "$DP_DEGREES")
+    [[ -n "${EP_DEGREES:-}" ]]            && cmd+=(--ep "$EP_DEGREES")
     [[ -n "${MOE_ROUNDS:-}" ]]            && cmd+=(--moe-rounds "$MOE_ROUNDS")
     # Optional globals, only when set.
     [[ -n "${TP_DEGREES:-}" ]]             && cmd+=(--tp "$TP_DEGREES")

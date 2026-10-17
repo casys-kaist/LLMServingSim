@@ -91,9 +91,11 @@ HARDWARE="RTXPRO6000"
 # --- MoE target parallelism -------------------------------------------------
 # MoE profiling defaults to eager native components at DP=1 on one physical GPU.
 # EP is TP * DP; global expert IDs and top-k are retained. DP_DEGREES selects
-# other targets. Explicit --dp cannot be combined with ONLY_SKEW or PROFILE_MTP.
+# other targets; EP_DEGREES optionally selects their EP values. Explicit --dp/--ep
+# cannot be combined with ONLY_SKEW or PROFILE_MTP.
 # Native contracts are immutable: use a new OUT_ROOT instead of FORCE.
 # DP_DEGREES="1,2"                # --dp; comma-separated target DP degrees
+# EP_DEGREES="2"                  # --ep; select matching TP*DP targets (omitted: all)
 # MOE_ROUNDS=3                    # independent native measurement contexts
 # MOE_GRID_FACTOR=2.0             # spacing for tokens, active experts and assignments
 
@@ -211,6 +213,7 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
 [[ -n "${DP_DEGREES:-}" ]]             && cmd+=(--dp "$DP_DEGREES")
+[[ -n "${EP_DEGREES:-}" ]]             && cmd+=(--ep "$EP_DEGREES")
 [[ -n "${MOE_ROUNDS:-}" ]]             && cmd+=(--moe-rounds "$MOE_ROUNDS")
 [[ -n "${MOE_GRID_FACTOR:-}" ]]        && cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)

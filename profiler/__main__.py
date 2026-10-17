@@ -187,13 +187,19 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "support this. Pair it with the coverage subcommand "
                         "first: the drafter's kernels show up as unbound "
                         "until a catalog binds them.")
-    p.add_argument("--dp", default=None, dest="moe_dp_degrees",
+    p.add_argument("--dp", default=None, dest="dp_degrees",
                    help="Target DP degrees for native MoE component profiling, "
                         "comma separated. Experts retain global top-k and IDs; "
                         "EP is TP*DP. DP=1 measures local modular components without DP collectives. "
                         "The profiler still uses one physical GPU. "
                         "Defaults to DP=1 for MoE profiling. Only profile or "
                         "slice --group moe accept this option.")
+    p.add_argument("--ep", default=None, dest="ep_degrees",
+                   help="Target EP degrees for native MoE components, comma separated. "
+                        "Defaults to all TP*DP targets. When set, selects matching "
+                        "targets without changing TP/DP or expert tensor sharding. "
+                        "Every requested EP must match a selected TP*DP. Only profile "
+                        "or slice --group moe accept this option; a slice uses --tp-refresh.")
     p.add_argument("--moe-rounds", type=int, default=3,
                    help="Independent measurement contexts per native MoE point.")
     p.add_argument("--moe-grid-factor", type=float, default=2.0,
@@ -454,14 +460,22 @@ def _build_profile_args(
 ) -> ProfileArgs:
     if not math.isfinite(ns.moe_grid_factor) or ns.moe_grid_factor <= 1:
         raise ValueError("--moe-grid-factor must be finite and greater than 1")
-    raw_dp = getattr(ns, "moe_dp_degrees", None)
-    dp_degrees = None
-    if raw_dp is not None:
-        dp_degrees = tuple(sorted({int(value.strip()) for value in raw_dp.split(",")}))
-        if not dp_degrees or min(dp_degrees) < 1:
-            raise ValueError("DP degrees must be positive integers")
+    degrees = {}
+    for name in ("dp", "ep"):
+        raw = getattr(ns, f"{name}_degrees", None)
+        if raw is None:
+            degrees[name] = None
+            continue
+        try:
+            values = tuple(sorted({int(value.strip()) for value in raw.split(",")}))
+        except ValueError:
+            raise ValueError(f"--{name} requires comma-separated positive integers") from None
+        if not values or min(values) < 1:
+            raise ValueError(f"--{name} degrees must be positive integers")
+        degrees[name] = values
+    if any(value is not None for value in degrees.values()):
         if ns.cmd != "profile" and not (ns.cmd == "slice" and ns.group == "moe"):
-            raise ValueError("--dp is only supported for profile or slice --group moe")
+            raise ValueError("--dp and --ep are only supported for profile or slice --group moe")
         if getattr(ns, "only_skew", False) or getattr(ns, "profile_mtp", False):
             raise ValueError("Native MoE profiling cannot be combined with skew-only or MTP")
         if ns.moe_rounds < 1 or ns.measurement_iterations < 1:
@@ -483,7 +497,8 @@ def _build_profile_args(
         max_model_len=getattr(ns, "max_model_len", None),
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
         profile_mtp=bool(getattr(ns, "profile_mtp", False)),
-        moe_dp_degrees=dp_degrees,
+        dp_degrees=degrees["dp"],
+        ep_degrees=degrees["ep"],
         moe_rounds=ns.moe_rounds,
         moe_grid_factor=ns.moe_grid_factor,
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),

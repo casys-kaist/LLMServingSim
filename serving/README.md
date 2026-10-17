@@ -133,6 +133,8 @@ historical balanced-total eager/graph tables keep their original lookup.
 Within-rank expert-load imbalance is still approximated, not an extra measured axis.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
+Missing historical EP coverage warns with the native `--ep` and matching
+`--tp`/`--dp` acquisition options; it does not change the fallback latency.
 Table paths locate data without defining execution identity. Historical standalone
 metadata layouts have read fallbacks only under current method contracts; new profiles centralize
 category, context/callable and deployment records in the root `meta.yaml`.

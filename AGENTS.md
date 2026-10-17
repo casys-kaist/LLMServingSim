@@ -1360,7 +1360,7 @@ the three attention factor settings, covering four shape axes: the KV factor
 controls both prefill-key and decode-KV. The editable `profile.sh` leaves
 optional settings unset and forwards only explicit nonempty values, so the
 CLI owns its defaults. Keep every `profile` option reachable from the template,
-including `DP_DEGREES` (`--dp`), `MOE_ROUNDS` and explicit logging; do not
+including `DP_DEGREES` (`--dp`), `EP_DEGREES` (`--ep`), `MOE_ROUNDS` and explicit logging; do not
 silently enable a TP sweep or native DP acquisition. The separate multi-model
 `profile-all.sh` remains an explicitly configured campaign, not a default-parity
 wrapper. What picks sqrt(2)
@@ -2288,6 +2288,12 @@ geometry and head rows remain separate from model-forward padding.
 ### Native local and DP+EP component profiles
 
 MoE acquisition defaults to native DP1 components; `--dp` selects other degrees.
+Use `tp_degrees`, `dp_degrees` and `ep_degrees` for internal settings, with
+`--tp`, `--dp`, `--ep` and corresponding uppercase shell variables. Optional
+EP degrees filter the supported TP/DP targets; they never change expert sharding
+or infer additional TP/DP degrees. Omitted EP keeps every target. Reject unmatched
+EP degrees before any engine starts; a slice matches only `--tp-refresh`.
+The filter affects only MoE components, not ordinary categories at the other TPs.
 The removed whole-block path no longer shrinks global expert count/top-k.
 The target is full EP=TP*DP with
 DP>=1, independently of the one-GPU acquisition process. `MoeTarget` is shared
@@ -2428,7 +2434,7 @@ floors at 1 only one expert plus that fixed cost is left.
 
 These are historical reduced-expert measurements, not the current acquisition
 plan or runtime estimate. `--moe-ep-degrees` and its config-slicing path were
-removed. New component sweeps use `--tp`, `--dp` and unchanged global top-k;
+removed. New component sweeps use `--tp`, `--dp`, optional `--ep` and unchanged global top-k;
 unsupported native adapters fail rather than falling back to old acquisition.
 
 The simulator picks the table for the instance's **total** EP degree and falls

@@ -91,8 +91,8 @@ and build entry points live separately under [scripts/](../scripts/README.md).
 Use `python -m profiler --help` for the full subcommand list. The model
 profiling flags below are available through `profile.sh`: unset optional
 variables inherit CLI defaults rather than maintaining a second default set.
-Most names are the flag in capitals with underscores; TP/DP use `TP_DEGREES` /
-`DP_DEGREES`, repeated overrides use `HF_OVERRIDES`, and logging uses
+Most names are the flag in capitals with underscores; TP/DP/EP use `TP_DEGREES` /
+`DP_DEGREES` / `EP_DEGREES`, repeated overrides use `HF_OVERRIDES`, and logging uses
 `LOG_LEVEL` or `VERBOSITY`. Hardware characterization runs separately as
 `python -m profiler hardware --hardware <hw> --npus 2`; it defaults to INFO
 logging and accepts an explicit `--log-level` override.
@@ -126,7 +126,7 @@ not run profiling, replace CSVs or certify eager timings as graph timings.
 | **precision / naming** | `--dtype`, `--kv-cache-dtype`, `--variant` |
 | **engine limits** | `--max-num-batched-tokens`, `--max-num-seqs`, `--block-size`, `--gpu-memory-utilization`, `--max-model-len` |
 | **model shape** | `--num-hidden-layers`, `--hf-override KEY=VALUE` (repeatable) |
-| **MoE parallelism** | Native DP1 components by default; `--dp` selects target degrees with EP=TP*DP; `--moe-rounds` controls repetitions and `--moe-grid-factor` (default `2`) spaces all three expert axes |
+| **MoE parallelism** | Native DP1 components by default; `--dp` selects target degrees with EP=TP*DP; optional `--ep` filters those targets; `--moe-rounds` controls repetitions and `--moe-grid-factor` (default `2`) spaces all three expert axes |
 | **drafter (MTP)** | `--profile-mtp` (a flag — the engine boots at N=1 so the CSV holds one pass) |
 | **attention grid** | `--attention-max-kv`, `--attention-chunk-factor`, `--attention-kv-factor`, `--attention-n-factor`, `--attention-decode-q-lens` |
 | **linear attention** | `--linear-attn-chunk` |
@@ -147,7 +147,7 @@ Changed acquisition identities require fresh measurements, not renamed rows.
 
 The table covers `profile`, `slice`, `coverage` and `plan-skew`; not every
 accepted option affects every command. `plan-skew` reads saved engine limits
-and does not boot an engine. `--dp` is valid only for `profile` or
+and does not boot an engine. `--dp` and `--ep` are valid only for `profile` or
 `slice --group moe`; `--profile-mtp` with `slice` requires `--group mtp`.
 
 `refit-skew` instead accepts `--hardware`, `--variant`, `--tp`, `--out` and
@@ -160,6 +160,10 @@ Use `--help` on any subcommand for its accepted options.
 Native MoE components use one physical GPU to emulate each deployment rank,
 preserving global expert IDs and top-k. MoE acquisition defaults to DP1;
 `DP_DEGREES="1,2"` adds local and DP+EP targets in the shell templates.
+`EP_DEGREES` (`--ep`) optionally filters their TP*DP values; omission keeps all.
+It does not infer TP/DP settings or enable tensor-sharded experts. Every explicit
+EP degree must match a target, using only `--tp-refresh` for a MoE slice.
+Other profiling categories keep the session's TP sweep unchanged.
 Contracts are immutable and resumable: use a new output root to remeasure,
 rather than `--force`. Expert forward counts can exceed
 `--measurement-iterations` to cover matched weight cycles. `MOE_ROUNDS` and

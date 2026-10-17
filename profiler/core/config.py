@@ -871,9 +871,11 @@ class ProfileArgs:
             ``engine.resolve_attention_max_kv``) before any grid is composed --
             so every reader downstream, including the meta the run records,
             sees one concrete number and never ``None``.
-        moe_dp_degrees: Target DP degrees for native MoE components. None
+        dp_degrees: Target DP degrees for native MoE components. None
             selects DP1 automatically for MoE acquisition; other categories
             and coverage are unaffected. EP is TP times DP.
+        ep_degrees: Optional EP filter over those TP/DP targets. None keeps
+            every target; an explicit degree must match a selected TP times DP.
         profile_mtp: When set, boot with ``speculative_config`` so the drafter
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
@@ -929,12 +931,17 @@ class ProfileArgs:
     # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
-    moe_dp_degrees: tuple[int, ...] | None = None
+    dp_degrees: tuple[int, ...] | None = None
     """Target DP degrees for native, separately timed MoE components.
 
     None selects DP1 automatically for MoE acquisition. This is target metadata, not
     the number of actual profiler processes. EP is resolved as TP times DP.
     DP1 measures local gate/routing and experts without DP dispatch/combine.
+    """
+    ep_degrees: tuple[int, ...] | None = None
+    """Optional full-EP target filter. None selects all TP times DP targets.
+
+    This does not change expert tensor sharding or infer additional TP/DP degrees.
     """
     moe_rounds: int = 3
     moe_grid_factor: float = 2.0
