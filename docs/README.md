@@ -78,6 +78,10 @@ and require compatible acquisition identities for resume.
 The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.
+The [trace byte reference](docs/reference/trace-format.md#minimax-m3-logical-bytes)
+defines MiniMax-M3 indexer query/cache dtypes, per-head selections and exact
+per-request history accounting, separately from physical memory traffic and
+the historical latency-lookup cap.
 Coverage accounts for native kernels, copies and memsets, including work outside
 module scopes. The architecture guide also documents child exclusions for raw
 kernel wildcards and rejection of overlapping canonical activity claims.

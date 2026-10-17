@@ -58,7 +58,9 @@ contracts. Whole-block MoE sweeps condition expert IDs while preserving native
 routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
 See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
-declared TP output reductions and runtime-selected hybrid components, and the
+declared TP output reductions and runtime-selected hybrid components,
+the [trace byte reference](https://llmservingsim.ai/docs/reference/trace-format#minimax-m3-logical-bytes)
+for MiniMax-M3 query/cache accounting, and the
 [bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
 vLLM's default communication backend selection and explicit overrides;
 the benchmark retains its two disabled communication-fusion passes.

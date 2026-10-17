@@ -1350,6 +1350,14 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
         inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
                                        kv_len=kv_len_for_sizes,
                                        parallel=ctx.tp_size, fp=ctx.fp)
+    elif (layer_name in ("indexer", "sparse_attention")
+          and get_config(ctx.model).get("model_type") == "minimax_m3_vl"):
+        # Preserve individual histories: the indexer scans each whole cache,
+        # while sparse attention caps each request before summing its reads.
+        histories = [*bctx.batch.prefill_k_list, *bctx.batch.decode_k_list]
+        inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
+                                       kv_lens=histories,
+                                       parallel=ctx.tp_size, fp=ctx.fp)
     else:
         length = bctx.lm_head_len if category == "per_sequence" else bctx.total_len
         inp, wt, out = calculate_sizes(ctx.model, layer_name, length,

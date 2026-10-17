@@ -783,12 +783,17 @@ def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
 
 
 # calculate the per-rank input, weight, output size of each layer
-def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2):
+def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2,
+                    kv_lens=None):
     """Calculate input, weight, and output tensor sizes for a given layer.
 
     Args:
         parallel: parallelism degree for weight/activation sharding.
             For dense layers this is TP; for MoE experts this is EP.
+        kv_lens: exact per-request cached histories for MiniMax-M3's
+            indexer and sparse_attention only; a list or tuple of nonnegative
+            integers, mutually exclusive with kv_len. Sparse attention caps
+            each history before summing; the indexer sums them uncapped.
     """
     config = get_config(model)
     n_embd = config['hidden_size']
@@ -847,6 +852,23 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     m3_idx_heads = sparse_cfg.get("sparse_num_index_heads") or 0
     m3_topk_blocks = sparse_cfg.get("sparse_topk_blocks") or 0
     m3_block = sparse_cfg.get("sparse_block_size") or 0
+    is_m3 = config.get("model_type") == "minimax_m3_vl"
+    if kv_lens is not None:
+        if (not is_m3 or layer_name not in ("indexer", "sparse_attention")
+                or kv_len is not None or not isinstance(kv_lens, (list, tuple))
+                or any(type(n) is not int or n < 0 for n in kv_lens)):
+            raise ValueError("Per-request KV histories require MiniMax attention and nonnegative integer lengths")
+    if is_m3 and layer_name in ("indexer", "sparse_attention"):
+        if (type(parallel) is not int or parallel < 1
+                or any(type(n) is not int or n < 1 for n in
+                       (m3_idx_dim, m3_idx_heads, m3_topk_blocks, m3_block, kv_head))
+                or m3_idx_heads != kv_head
+                or type(length) is not int or length < 0
+                or (kv_len is not None and (type(kv_len) is not int or kv_len < 0))):
+            raise ValueError("Invalid MiniMax sparse indexer geometry")
+        if ((kv_head >= parallel and kv_head % parallel)
+                or (kv_head < parallel and parallel % kv_head)):
+            raise ValueError("Invalid MiniMax KV/index-head TP partition")
     # ``rotary_dim`` = head_dim * partial_rotary_factor; only that slice is
     # rotated.
     m3_rope_dim = config.get("rotary_dim") or head_dim
@@ -1059,7 +1081,20 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = 0
         output_size = length * (idx_q + scales * 4 + idx_heads * 4)
 
+    elif layer_name == "indexer" and is_m3:
+        # The index query matches its independent BF16 index-cache dtype,
+        # including when main KV or model weights use another precision.
+        # Native top-k output is [tokens, local index heads, topk blocks].
+        local_heads = max(1, kv_head // p)
+        kv = sum(kv_lens) if kv_lens is not None else (kv_len if kv_len is not None else length)
+        input_size = (length * local_heads + kv) * m3_idx_dim * 2
+        weight_size = 0
+        output_size = length * local_heads * m3_topk_blocks * 4
+
     elif layer_name == "indexer":
+        if not is_mla or any(type(n) is not int or n < 1 for n in
+                             (idx_heads, idx_head_dim, idx_topk)):
+            raise ValueError("Unknown sparse indexer layout")
         # ``SparseAttnIndexer``: scores every cached index key against this
         # step's fp8 queries and returns the top-k token ids. The read over
         # the KV is what makes it an attention-category layer, and it is the
@@ -1131,18 +1166,6 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = (q_dim // p) * n_embd * fp
         output_size = length * n_embd * fp
 
-    elif layer_name == "indexer":
-        # M3's lightning indexer scores **blocks**, not tokens: it reads its
-        # own key-only side cache over the whole KV and returns the top
-        # ``sparse_topk_blocks`` block ids. The side cache is one vector per
-        # token (``MLAAttentionSpec`` with ``num_kv_heads = 1``), so it is
-        # replicated across ranks rather than sharded.
-        kv = kv_len if kv_len is not None else length
-        input_size = (length * (kv_head // p) * m3_idx_dim * fp
-                      + kv * m3_idx_dim * fp)
-        weight_size = 0
-        output_size = length * m3_topk_blocks * 4  # int32 block ids
-
     elif layer_name == "sparse_attention":
         # Attention over the selected blocks only, which is what caps the work:
         # at most ``sparse_topk_blocks * sparse_block_size`` keys are read
@@ -1151,6 +1174,8 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         # ``kv_bytes_per_token_per_layer``.
         kv = kv_len if kv_len is not None else length
         read = min(kv, m3_topk_blocks * m3_block) if m3_block else kv
+        if kv_lens is not None:
+            read = sum(min(history, m3_topk_blocks * m3_block) for history in kv_lens)
         input_size = ((n_head // p) * length * head_dim * fp
                       + (kv_head // p) * read * head_dim * fp * 2)
         weight_size = 0

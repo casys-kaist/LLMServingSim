@@ -15,6 +15,11 @@ attention-wide sequence-parallel deployments fail before trace emission.
 Publish a complete bundle and keep it unchanged while readers use it. See the
 [layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
 
+MiniMax-M3 indexer traces use independent BF16 query/cache bytes and int32
+per-head block selections. Indexer and sparse-attention rows retain each
+request's cached history, applying the sparse byte cap before summing.
+These are logical tensor bytes; see the [scope and formulas](../docs/docs/reference/trace-format.md#minimax-m3-logical-bytes).
+
 ## Layout
 
 ```text

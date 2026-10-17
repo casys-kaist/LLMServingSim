@@ -97,6 +97,41 @@ contain a space.
 | `comm_size` | int | Collective message size in bytes. Usually `0` when `comm_type` is `NONE`, but **not always**: on a `PREFILL` trace, `qkv_proj` carries the per-layer P/D KV transfer here while keeping `comm_type` at `NONE` (see [below](#comm_size-without-a-collective)) |
 | `misc` | string | Misc tag (sub-batch interleaving, etc.; usually `NONE`) |
 
+### MiniMax-M3 logical bytes
+
+The canonical `indexer` row uses MiniMax-M3's own layout, separately from the
+DeepSeek/GLM indexer layout. With the supported default indexer dtype, both its
+query and key-only cache are BF16, independently of the main KV cache and
+weight precision. Its selected block indices are int32 per local index head.
+For `T` forward tokens, `H` local index heads, index width `D`, `K` selected
+blocks per head, and each request's already cached history `h_i`:
+
+| Field | Bytes |
+| --- | --- |
+| Indexer input | `2 * D * (T * H + sum(h_i))` |
+| Indexer weights | `0` |
+| Indexer output | `4 * T * H * K` |
+
+The trace retains the exact cached histories of prefill and decode requests.
+The indexer includes every cached index key. For `sparse_attention`, the
+cached-history term instead uses `sum(min(h_i, C))`, where
+`C = sparse_topk_blocks * sparse_block_size`. The cap applies to each request
+before summing. For example, histories of 100 and 3000 tokens with `C = 2048`
+contribute 2148 cached positions, rather than capping their combined history
+at 2048. Decode histories are not reconstructed from a floored mean.
+
+These fields account for logical query tensors and preexisting cached history.
+They do not measure kernel DRAM transactions, tiling, workspace or the number
+of causal reads within a prefill chunk. KV capacity is accounted separately
+and is not reduced by the sparse read cap. This layout does not establish
+support for nondefault runtime indexer dtypes or whole-model TP deployments.
+
+Latency-table coordinates and stored timings are unchanged. In particular,
+the committed MiniMax tables retain their historical lookup cap of 2176,
+separate from the existing 2048-position byte cap for the shipped config.
+That historical lookup rule does not certify native vLLM 0.31 selection
+semantics at long contexts.
+
 ## Memory locations
 
 The `input_loc`, `weight_loc`, and `output_loc` fields use one of:

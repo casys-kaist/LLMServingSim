@@ -1136,10 +1136,12 @@ then 139.3 at 2048 and 138.3 at 8192 -- flat from exactly `index_topk`. The
 same sweep on Llama rises throughout (8.5, 18.8, 51.2, 181.1), because a dense
 query reads its whole causal window.
 
-`stack.probe_key_saturation` reads the bound off the checkpoint -- `index_topk`
-for DeepSeek/GLM, `sparse_topk_blocks` x `sparse_block_size` plus the
-always-included initial and local blocks for MiniMax-M3 (17 x 128 = 2176) --
-and the catalog's `key_saturates` says which entries are subject to it. That
+`stack.probe_key_saturation` reads `index_topk` for DeepSeek/GLM. For MiniMax-M3
+it retains the committed tables' historical lookup rule, including the initial
+and local block adjustment (17 x 128 = 2176). That compatibility rule is not
+a native vLLM 0.31 selection contract; changing it requires a separate
+runtime-bound lookup review. The catalog's `key_saturates` says which entries
+are subject to the bound. That
 is a per-**kernel** property, not a per-model one: M3 is sparse only from its
 fourth layer on, and a sparse model's `indexer` scores the whole KV to make
 the selection and never saturates (52 -> 101 us from kv 2048 to 16384).
@@ -1825,6 +1827,19 @@ kv_dim = kv_head * head_dim      # NOT n_embd // group
 `(input, weight, output)` bytes **per rank** for one canonical layer, and
 **raises** on a name it does not know — so a catalog entry without a formula
 here makes the model unsimulable, not merely mis-sized.
+
+MiniMax-M3's canonical `indexer` is resolved before the separate DeepSeek
+formula. Its index query and key-only cache use their independent BF16 dtype;
+its output is int32 `[tokens, local index heads, topk blocks]`. The trace passes
+exact prefill and decode cached histories through `kv_lens` for M3 `indexer`
+and `sparse_attention` only: the indexer sums them whole, while sparse attention
+sums `min(history, sparse_topk_blocks * sparse_block_size)` per request.
+Do not reconstruct those histories from a floored decode mean or cap their
+sum once. These are logical query plus preexisting-cache bytes, not kernel
+DRAM transactions, workspace, capacity or causal-prefill read multiplicity.
+The existing byte cap and historical lookup cap remain separate; this sizing
+rule does not establish arbitrary runtime indexer dtypes or whole-model TP
+correctness. Unknown indexer layouts and malformed M3 geometry are refused.
 
 `get_weight()` walks the architecture yaml's blocks and the checkpoint's own
 per-layer composition (`utils.get_architecture` / `utils.get_layer_stack`), one

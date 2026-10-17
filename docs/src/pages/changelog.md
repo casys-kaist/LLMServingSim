@@ -36,6 +36,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Correct MiniMax-M3 indexer trace bytes for its independent BF16 query/cache
+  dtype and int32 per-head block selections. Preserve exact request histories
+  and cap sparse-attention bytes per request before summing. Profile latencies,
+  lookup coordinates and KV capacity accounting are unchanged.
 - Preserve native routing weights and scaling in whole-block MoE profiling,
   changing only the synthetic expert IDs. Keep native routing GPU work and
   reject bypassed hooks; changed ordinary acquisition identities require remeasurement.
