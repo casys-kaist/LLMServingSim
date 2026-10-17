@@ -7,6 +7,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Reorganize the profiler README around a short overview and topic-based
+  measurement, execution-scope and resume sections, retaining CLI and support details.
 - Keep new profiling CSVs limited to coordinates and timings; store descriptive
   collector, CUDA-union aggregation, dummy-input preparation and runtime facts in
   the variant-root `meta.yaml`, with per-TP measurement, category, contextual,

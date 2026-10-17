@@ -2624,6 +2624,10 @@ The repo has two documentation surfaces with deliberate scope:
 When you add a new feature with user-visible behavior, document it on the
 website (not the README).
 
+Start directory READMEs with a short introduction to their purpose, inputs and
+outputs, plus links to the main usage sections. Put detailed measurement rules,
+model-specific limits and recovery contracts under topic headings after the
+usage entry points; do not accumulate change descriptions in the introduction.
 Directory READMEs use `## Layout` for source trees and `## Output schema` for
 generated bundles. Use `text` fences, `├──` / `└──` / `│` connectors and four-column
 nesting; keep explanations outside trees and label selected inventories as such.

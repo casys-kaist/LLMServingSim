@@ -191,7 +191,9 @@ step is silently a no-op if the source is set to anything else.
 ## Conventions
 
 - **README structure**: follow the root AGENTS.md layout/tree conventions and
-  the contributor guide's README and Markdown formatting section. Keep roadmap
+  the contributor guide's README and Markdown formatting section. Keep the opening
+  introduction brief and place detailed contracts under topic headings after usage
+  entry points, rather than appending implementation changes to the introduction. Keep roadmap
   announcements distinct from implemented and validated behavior.
 - **Language**: English only. Match the rest of the LLMServingSim repo.
 - **Changelog**: edit the root source, not the generated page. Keep each change

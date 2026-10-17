@@ -69,6 +69,10 @@ arbitrary; each has bitten the project at least once.
 
 ## README and Markdown formatting
 
+- Start directory READMEs with a short introduction covering purpose, inputs and
+  outputs, with links to the main usage sections. Place detailed measurement rules,
+  model-specific limits and recovery contracts under topic headings after the
+  usage entry points; do not grow the introduction with each implementation change.
 - Use `## Layout` for source-directory trees and `## Output schema` for generated
   bundles. Label selected inventories instead of implying that they list every file.
 - Use `text` code fences and `├──`, `└──`, `│` tree connectors with four-column

@@ -51,7 +51,8 @@ rebuild ASTRA-Sim and Chakra together; see the
 [update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
 
 GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation and comparison
-against recorded benchmarks are CPU-only. See the
+against recorded benchmarks are CPU-only. Start with the
+[profiler README](profiler/README.md#overview) for local usage, and see the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
 acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
 contracts. New CSVs hold coordinates and timings; the variant-root `meta.yaml`

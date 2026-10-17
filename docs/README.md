@@ -45,7 +45,9 @@ acquired profile. Keep GPU recording separate from CPU-only comparison in setup
 instructions. The root README is a short entry point; detailed contracts live
 in the guides below. Follow the shared
 [README formatting conventions](docs/contributor/conventions.md#readme-and-markdown-formatting)
-for directory trees and examples. Root Latest News entries link shipped changes
+for directory trees and examples. Directory introductions stay short; detailed
+contracts belong under topic headings after the usage entry points.
+Root Latest News entries link shipped changes
 to their PR and label future backend/model work as in progress.
 
 The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
