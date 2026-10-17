@@ -40,6 +40,10 @@ def _packed_attention_pages(layer, spec, num_blocks):
                 or spec.cache_role != SparseCacheRole.SPARSE):
             raise ValueError('Unsupported fp8_ds_mla spec')
     elif spec.cache_role == SparseCacheRole.INDEXER:
+        # Typed floating-point index caches use the ordinary backend layout.
+        # INDEXER is a cache role, not a promise of opaque DeepSeek byte records.
+        if spec.dtype.is_floating_point:
+            return None
         # This exact backend consumes FP8 D128 plus one FP32 scale/token.
         # Other indexer formats (including V4/MXFP4) must not fall through.
         backend = layer.get_attn_backend()
@@ -182,8 +186,13 @@ def _attention_pages(layer, spec, cache_dtype, num_blocks, used_blocks):
     if not hasattr(backend, "get_kv_cache_shape"):
         # vLLM 0.31 exposes typed logical [B,H,N,C] views, independently of
         # the physical layout/strides. C is bytes in the common shape API.
-        from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
-        if cache.ndim != 4 or cache.shape[0] % num_blocks:
+        from vllm.v1.kv_cache_interface import MLAAttentionSpec, compute_layer_kv_cache_shape_bytes
+        # A key-only cache may bind the same storage with its singleton head
+        # axis squeezed. Restore that logical axis only for shape validation.
+        squeezed_head = (cache.ndim == 3 and isinstance(spec, MLAAttentionSpec)
+                         and spec.num_heads == 1 and cache.dtype == spec.dtype
+                         and cache.is_floating_point())
+        if (cache.ndim != 4 and not squeezed_head) or cache.shape[0] % num_blocks:
             raise ValueError("Invalid logical KV cache view")
         factor = cache.shape[0] // num_blocks
         if factor < 1 or spec.block_size % factor:
@@ -191,8 +200,20 @@ def _attention_pages(layer, spec, cache_dtype, num_blocks, used_blocks):
         expected = compute_layer_kv_cache_shape_bytes(
             spec, num_blocks, spec.block_size // factor)
         actual = (*cache.shape[:-1], cache.shape[-1] * cache.element_size())
+        if squeezed_head:
+            actual = (actual[0], 1, *actual[1:])
         if actual != tuple(expected):
             raise ValueError(f"Logical KV cache shape mismatch: {actual} != {expected}")
+        if squeezed_head:
+            # Shape alone cannot establish that logical page IDs own disjoint
+            # storage. Allow padded/permuted strides, but require every next
+            # axis to begin beyond the extent of the faster varying axes.
+            extent = 1
+            for stride, size in sorted((stride, size) for size, stride in
+                                       zip(cache.shape, cache.stride()) if size > 1):
+                if stride < extent:
+                    raise ValueError("Overlapping or unsupported typed KV cache strides")
+                extent += (size - 1) * stride
         return cache.narrow(0, 0, used_blocks * factor), 0
     shape = backend.get_kv_cache_shape(
         -1, spec.storage_block_size, spec.num_kv_heads, spec.head_size,

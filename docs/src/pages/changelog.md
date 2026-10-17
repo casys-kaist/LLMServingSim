@@ -43,8 +43,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   overrides. Treat explicit `dtype=auto` like omission; require intentional
   labels for ambiguous HF precision/nested overrides. Existing data is unchanged.
 - Initialize supported NVIDIA packed MLA/indexer history with vLLM dummy payloads
-  and native scale/layout rules. Preserve null/unassigned pages and ordinary
-  floating-cache behavior; unsupported packed formats remain rejected.
+  and native scale/layout rules. Route floating MLA indexer caches through typed
+  shape and non-overlapping-stride validation for views that omit a singleton
+  head axis, allowing padded and permuted storage. Preserve
+  null/unassigned pages; unsupported packed formats remain rejected.
 - Restore the missing TP AllReduce after Qwen GDN's output projection through
   a catalog declaration. Use the full projection output at activation dtype;
   stored profile timings and TP1 traces are unchanged.

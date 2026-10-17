@@ -81,8 +81,11 @@ Recurrent caches use zero-start state, not synthetic historical recurrence.
 Supported NVIDIA packed MLA/indexer caches use floating dummy payloads from the
 same vLLM initializer, packed with the native format's deterministic scales and
 layout. Only assigned pages are written, in bounded source chunks outside timing;
-unknown packed formats still fail explicitly. Ordinary floating-cache behavior is
-unchanged. See [packed attention history](../docs/docs/profiler/output-bundle.md#packed-attention-history).
+unknown packed formats still fail explicitly. Floating MLA indexer caches use
+the typed path, including three-dimensional views that omit a singleton head
+axis; dtype and logical shape must match the cache spec, and strides must pass
+the non-overlap check. Padded and permuted views are allowed. See
+[packed attention history](../docs/docs/profiler/output-bundle.md#packed-attention-history).
 Dummy values do not claim to reproduce trained KV content.
 Measured decode requests also preserve their prompt/output boundary. V1 registers
 query tokens as output state; V2 receives a separate prompt length and full token

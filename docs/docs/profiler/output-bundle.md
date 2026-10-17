@@ -199,8 +199,16 @@ is outside warmup and measured query work. No native forward or trained-weight
 KV generation is used; the result is synthetic history, not trained KV statistics
 or a guarantee of representative data-dependent sparse selection.
 
-The ordinary floating-cache path is unchanged. Older runtimes without the
-sparse-role capability retain that path; this does not enable their unsupported
+Floating MLA indexer caches use the ordinary typed-cache path. A three-dimensional
+`[blocks, tokens, channels]` view may omit the head axis when the spec declares
+one KV head and the same floating dtype; shape validation restores that axis
+before checking the backend's logical geometry. Existing four-dimensional typed
+views remain supported. Squeezed views must also pass a non-overlap stride check:
+in ascending stride order, each non-singleton axis starts beyond the extent of
+the preceding axes. Padded and permuted views that satisfy this rule are allowed.
+This does not relax opaque `uint8` layout checks.
+Older runtimes without the sparse-role capability retain the typed path;
+this does not enable their unsupported
 opaque formats. NVFP4, other packed layouts and ROCm/FNUZ packed acquisition
 remain unsupported. Preparation support alone does not certify model catalog
 coverage, trace composition or benchmark accuracy. Changes to this initializer

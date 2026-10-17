@@ -479,6 +479,10 @@ seed `1234`, with a local generator per tensor; low-precision rounding can reach
 an endpoint. Initialization repeats before each context, outside warmup and CUDA
 timing, without modifying unassigned pages. FP8 views are initialized in bounded
 slabs, each using that same per-tensor seed, to bound the temporary conversion.
+Floating MLA indexer caches follow this typed path, including three-dimensional
+views that omit a singleton head axis when their dtype and shape match the spec.
+These views must pass a non-overlap stride check; padding and axis permutations
+are allowed when logical elements occupy separate storage.
 Supported packed MLA/indexer layouts initialize floating payloads through the
 same helper and then write native-format scales and bytes; the initializer is
 never applied indiscriminately to integer storage. This preparation uses bounded

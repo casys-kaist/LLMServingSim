@@ -736,8 +736,16 @@ randomly, substitute unit scales or run a native forward to generate this histor
 
 Dispatch by the verified cache spec/backend contract, not the model name. Check
 dtype, head/state geometry, sparse role, explicit shuffle mode and byte strides;
-unknown packed formats remain refusals. A runtime without the sparse-role
-capability retains the original typed-cache resolver. Preserve null/unassigned
+unknown packed formats remain refusals. Floating `MLAAttentionSpec` indexer
+caches use the typed resolver. A three-dimensional `[blocks, tokens, channels]`
+view may omit the head axis only when the spec has one KV head and matching
+floating dtype; restore that singleton axis for logical shape validation.
+Require non-overlapping strides for this squeezed view: in ascending stride
+order, each non-singleton axis must start beyond the preceding axes' extent.
+Allow padded and permuted views that pass this check.
+Keep existing four-dimensional typed views and strict opaque-byte checks.
+A runtime without the sparse-role capability retains the original typed-cache
+resolver. Preserve null/unassigned
 pages and block padding, including when layer views share backing storage.
 Bound floating-source chunks independently of total cache capacity; quantization
 temporaries add a bounded multiple, so the source cap is not a peak-memory claim.

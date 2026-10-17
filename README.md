@@ -53,7 +53,7 @@ rebuild ASTRA-Sim and Chakra together; see the
 GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation and comparison
 against recorded benchmarks are CPU-only. See the
 [profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
-acquisition, assigned-page dummy history, declarative scopes and resume/bundle
+acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
 contracts. Whole-block MoE sweeps condition expert IDs while preserving native
 routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
 See the
