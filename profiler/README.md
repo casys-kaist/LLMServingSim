@@ -111,6 +111,10 @@ new sweeps extend compatible tables without changing runtime lookup.
 Ordinary categories save periodic atomic checkpoints between completed shots.
 Resume preserves earlier rows and their acquisition identities; publish a
 bundle only after the requested sweeps have completed.
+Metadata seals each new CSV publication with its intended data checksum. Resume
+rejects an interrupted replacement whose CSV and metadata disagree; a matching
+pending publication is reusable without rewriting it. These are data-integrity
+checks, not source/version locks or changes to measurement timing.
 Attention resume keys retain the CSV's full-precision query-weighted prefill
 coordinate; fractional coordinates do not trigger redundant acquisition.
 History-bearing shots initialize assigned attention pages with vLLM's

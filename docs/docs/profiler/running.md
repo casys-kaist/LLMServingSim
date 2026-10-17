@@ -335,9 +335,13 @@ modify a bundle while simulation reads it. See the
 [layout contract](./output-bundle#runtime-selected-component-layouts).
 
 Ordinary sweeps checkpoint accumulated rows atomically between completed
-shots, including near the start of a new acquisition. A worker failure or
-interruption leaves the last checkpoint intact; resume skips its completed
-coordinates and remeasures work since that checkpoint. Checkpoint writes retain
+shots, including near the start of a new acquisition. Resume skips completed
+coordinates in a compatible checkpoint and remeasures work since that checkpoint.
+An interrupted CSV/metadata replacement must also pass the
+[publication checksum check](./output-bundle#cuda-activity-and-acquisition-identity):
+matching pending data can resume without rewriting the record; mismatched data
+require fresh output or explicit `--force`. In particular, old rows cannot be
+reused under new forced-acquisition metadata. Checkpoint writes retain
 earlier rows and acquisition identities rather than replacing them with just
 the latest samples. Use a separate output root for a new bundle and finish the
 requested sweep before using its table in simulation: a partial checkpoint is

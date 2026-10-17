@@ -51,6 +51,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Bind ordinary CSV replacement and TP-stable replication to a pending data
+  checksum before publication, preventing interrupted forced remeasurement from
+  accepting old timings under new metadata. Resume matching pending data without
+  restamping older metadata; reject mismatched generations. Measurement timing
+  and category-coverage requirements are unchanged.
 - Normalize DeepSeek/GLM native sparse-cache labels onto the catalog attention
   axis without changing sparse-indexer selection or native execution. Preserve
   TP-stable rows' source acquisition metadata when local measurement begins or

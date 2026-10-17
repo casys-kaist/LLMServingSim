@@ -966,8 +966,18 @@ to historical unmarked bundles.
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains
 all rows, acquisition identities and duplicate counts; writing only the most
-recent rows would erase earlier progress. Failed worker calls or interrupted
-writes leave the previous checkpoint available for compatible resume. This
+recent rows would erase earlier progress. Stage the measurement metadata until
+the replacement CSV is serialized and fsynced. Publish
+`measurements.<category>.publication` with `state: pending` and the intended
+`csv_sha256`, replace the CSV and fsync its directory, then mark the publication
+`complete`. Apply the same ordering to later checkpoints and TP-stable replication.
+Resume validates the CSV against either state's checksum: matching pending data
+are reusable, while mismatches require fresh output or explicit `--force`.
+Checking/preloading neither finalizes pending metadata nor stamps older metadata
+that lacks a publication record. Keep these data-generation seals separate from
+source/version provenance and category-coverage completion. A prior checkpoint
+is resumable only with compatible metadata; never accept old CSV bytes under a
+new forced-acquisition identity after an interrupted replacement. This
 does not turn a partially acquired table into a completed simulation bundle:
 finish the requested sweep before adopting it. Checkpoint I/O is outside the
 CUDA timing context and does not add simulated CPU time.

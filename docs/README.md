@@ -136,6 +136,10 @@ Its whole-block MoE section documents the shared fine token grid and the
 distinction between acquisition resolution and runtime interpolation.
 The resume guide also distinguishes atomic progress checkpoints from complete
 bundles ready for simulation and documents exact fractional attention-key matching.
+CSV-generation seals detect interrupted metadata/data replacement, including
+forced refresh and TP-stable replication. Matching pending data can resume;
+mismatches require explicit remeasurement or fresh output. These checks do not
+change timings or introduce source/version locks.
 The [runtime guide](docs/profiler/running.md#expected-runtime) distinguishes CLI
 default inheritance in the single-model template, explicit TP/DP options and
 multiplicative attention-grid costs; a stage ETA is not a complete-bundle

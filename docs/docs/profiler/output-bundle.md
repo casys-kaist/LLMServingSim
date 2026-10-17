@@ -118,6 +118,23 @@ output root or explicitly refresh the category with `--force`; never restamp old
 rows. No-op sweeps preserve prior provenance. Compatible additions retain earlier
 acquisition observations; TP-stable replication rejects mixed timing methods.
 
+Each new ordinary CSV publication also records
+`measurements.<category>.publication` with a `state` and `csv_sha256`. The writer
+first serializes and flushes the replacement CSV, records the intended checksum
+as `pending`, atomically replaces the CSV, then marks that publication `complete`.
+Later checkpoints and TP-stable replication use the same ordering. This prevents
+an interrupted forced refresh from presenting old CSV bytes as a new acquisition.
+
+Resume checks the saved CSV against its publication checksum. A matching `pending`
+record means the saved bytes match the intended generation and can be reused; reading it does
+not finalize the record. A mismatched pending or complete record is rejected:
+use fresh output or explicitly remeasure with `--force`. Metadata without a
+publication record remains readable under its existing compatibility rules and
+is not retrospectively stamped by a no-op read. These checks bind saved data to
+metadata, not source files or runtime versions, and change no measured timings.
+Publication `complete` certifies that CSV generation, not completion of the
+requested acquisition grid or any separate category-coverage contract.
+
 Skew uses the same CUDA interval accounting normalized per measured forward.
 `skew.meta.yaml` retains its semantic identity, capture contexts, descriptive
 method and observed runtime versions; new skew CSVs hold coordinates and timings.

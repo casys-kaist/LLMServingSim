@@ -56,6 +56,8 @@ against recorded benchmarks are CPU-only. See the
 acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
 contracts. New CSVs hold coordinates and timings, with descriptive methods
 and runtime provenance in metadata; actual backend/layout checks govern admission.
+CSV publication checks protect resume after an interrupted replacement without
+changing measured timings.
 Whole-block MoE sweeps condition expert IDs while preserving native
 routing weights; see the [table contract](https://llmservingsim.ai/docs/profiler/output-bundle#moecsv-legacy-whole-block-moe-profiles).
 Recurrent warmup checks respect native metadata layouts without adding CPU time;

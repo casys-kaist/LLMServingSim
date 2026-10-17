@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import csv
 import datetime
+import hashlib
 import math
 import os
 import platform
@@ -58,8 +59,7 @@ def category_measurement(directory, category):
     return (data or {}).get('measurements', {}).get(category)
 
 
-def record_category_measurement(directory, category, identity, *, replace=False):
-    """Record actual acquisition facts without relabeling previous measurements."""
+def _measurement_metadata(directory, category, identity, *, replace=False):
     path = Path(directory) / 'meta.yaml'
     data = (yaml.safe_load(path.read_text()) if path.exists() else {}) or {}
     records = data.setdefault('measurements', {})
@@ -77,8 +77,48 @@ def record_category_measurement(directory, category, identity, *, replace=False)
         records[category] = dict(identity=identity, measurement=token, acquisitions=[identity])
         if previous is not None and previous.get('replicated'):
             records[category]['replicated'] = previous['replicated']
+    return data
+
+
+def record_category_measurement(directory, category, identity, *, replace=False):
+    """Record facts for an already acquired table; sinks publish facts with CSVs."""
+    data = _measurement_metadata(directory, category, identity, replace=replace)
     from .context_tables import _atomic
-    _atomic(path, yaml.safe_dump(data, sort_keys=False))
+    _atomic(Path(directory) / 'meta.yaml', yaml.safe_dump(data, sort_keys=False))
+
+
+def _validate_publication(path, record):
+    publication = (record or {}).get('publication')
+    if publication is None:
+        return  # Previously acquired metadata is not retrospectively stamped.
+    if (not isinstance(publication, dict) or set(publication) != {'state', 'csv_sha256'}
+            or publication['state'] not in ('pending', 'complete')
+            or not isinstance(publication['csv_sha256'], str)
+            or publication['csv_sha256'] != hashlib.sha256(path.read_bytes()).hexdigest()):
+        raise ValueError(f'{path} does not match its published measurement generation; '
+                         'use fresh output or explicitly remeasure with --force')
+
+
+def _publish_csv(temporary, path, metadata=None):
+    """Seal intended bytes before replacing the CSV, then mark completion."""
+    from .context_tables import _atomic
+    meta_path = path.parent / 'meta.yaml'
+    if metadata is None:
+        metadata = (yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {}) or {}
+    record = metadata.get('measurements', {}).get(path.stem)
+    if record is not None:
+        record['publication'] = dict(state='pending',
+            csv_sha256=hashlib.sha256(temporary.read_bytes()).hexdigest())
+        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
+    temporary.replace(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    if record is not None:
+        record['publication']['state'] = 'complete'
+        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
 
 class DedupSink:
     """Accumulates Points, averages duplicates, flushes a sorted CSV.
@@ -113,6 +153,13 @@ class DedupSink:
         # column order is deterministic (matches insertion in the
         # writer).
         self._fieldnames: list[str] | None = None
+        self._measurement_update = None
+
+    def stage_measurement(self, identity, *, replace=False):
+        """Defer provenance publication until its exact CSV bytes are ready."""
+        if measurement_token(identity) != self.measurement:
+            raise ValueError('Staged acquisition differs from the sink measurement')
+        self._measurement_update = (identity, replace)
 
     # ------------------------------------------------------------------
     # Input
@@ -150,7 +197,7 @@ class DedupSink:
     # Resume support
     # ------------------------------------------------------------------
 
-    def preload(self, *, preserve_layers=()) -> int:
+    def preload(self, *, preserve_layers=(), preserve_only=False) -> int:
         """Seed the in-memory bucket from any existing CSV at
         ``out_path``. Returns the number of rows ingested (0 when
         the file is missing or empty).
@@ -172,6 +219,7 @@ class DedupSink:
             if not field_order:
                 return 0
             saved = category_measurement(self.out_path.parent, self.out_path.stem)
+            _validate_publication(self.out_path, saved)
             plain = not any(k in field_order for k in MEASUREMENT_FIELDS)
             if self.measurement is not None and plain:
                 contextual = (self.out_path.parent / 'dense_context_manifest.json').exists()
@@ -201,6 +249,8 @@ class DedupSink:
                 self._fieldnames = ordered
             for row in reader:
                 preserve = row.get("layer") in preserve_layers
+                if preserve_only and not preserve:
+                    continue
                 recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
                 if self.measurement is not None and plain and saved is not None:
                     if preserve:
@@ -328,12 +378,13 @@ class DedupSink:
                 writer.writerows(rows)
                 f.flush()
                 os.fsync(f.fileno())
-            tmp.replace(self.out_path)
-            directory_fd = os.open(self.out_path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            metadata = None
+            if self._measurement_update is not None:
+                identity, replace = self._measurement_update
+                metadata = _measurement_metadata(self.out_path.parent, self.out_path.stem,
+                                                 identity, replace=replace)
+            _publish_csv(tmp, self.out_path, metadata)
+            self._measurement_update = None
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -894,6 +945,9 @@ def _replicate_layer_file(
 
     source_record = category_measurement(src.parent, src.stem)
     destination_record = category_measurement(dst.parent, dst.stem)
+    _validate_publication(src, source_record)
+    if dst.exists():
+        _validate_publication(dst, destination_record)
     if source_record is not None or destination_record is not None:
         if source_record is None or (dst_rows if dst.exists() else []) and destination_record is None:
             raise ValueError('TP-stable replication cannot infer historical measurement semantics')
@@ -922,9 +976,8 @@ def _replicate_layer_file(
         for k in key_fields
     ))
 
-    _write_csv_rows(dst, merged)
+    metadata = None
     if source_record is not None:
-        from .context_tables import _atomic
         meta_path = dst.parent / 'meta.yaml'
         metadata = (yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {}) or {}
         record = metadata.setdefault('measurements', {}).setdefault(dst.stem,
@@ -933,7 +986,7 @@ def _replicate_layer_file(
         record.setdefault('replicated', {}).update({name: dict(source_tp=1,
             identity=source_record['identity'], measurement=source_record['measurement'])
             for name in sorted(layer_whitelist)})
-        _atomic(meta_path, yaml.safe_dump(metadata, sort_keys=False))
+    _write_csv_rows(dst, merged, metadata=metadata)
     log.debug(
         "replicated %d tp_stable rows into %s", len(src_stable), dst
     )
@@ -948,7 +1001,7 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]], *, metadata=None) -> None:
     rows = list(rows)
     if not rows:
         return
@@ -960,7 +1013,9 @@ def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-        temporary.replace(path)
+            f.flush()
+            os.fsync(f.fileno())
+        _publish_csv(temporary, path, metadata)
     finally:
         temporary.unlink(missing_ok=True)
 

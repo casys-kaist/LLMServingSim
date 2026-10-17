@@ -242,7 +242,7 @@ def _fire_one_category(
         replicated = {name for name, entry in catalog_slice.items()
                       if entry.get("tp_stable") and name not in probes}
     if not wipe or replicated:
-        preloaded = sink.preload(preserve_layers=replicated)
+        preloaded = sink.preload(preserve_layers=replicated, preserve_only=wipe)
         if preloaded:
             prior_keys = sink.prior_shot_keys()
             log.info(
@@ -334,8 +334,7 @@ def _fire_one_category(
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
             if done == 1:
-                from .writer import record_category_measurement
-                record_category_measurement(out_dir, category.name, identity, replace=wipe)
+                sink.stage_measurement(identity, replace=wipe)
             bar.advance(1)
             if done == 1 or done % 100 == 0 or time.monotonic() >= checkpoint_at:
                 # Retain the complete accumulator, including duplicate counts:
