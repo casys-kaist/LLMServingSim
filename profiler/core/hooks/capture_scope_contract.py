@@ -23,7 +23,7 @@ def normalize_callable(declaration):
     if fields is None:
         raise ValueError('Callable kind must be function or method')
     required = {'name', 'kind'} | fields
-    if not required <= set(declaration) or set(declaration) - required - {'within'}:
+    if not required <= set(declaration) or set(declaration) - required - {'within', 'context'}:
         raise ValueError('Callable declaration has missing or incompatible target fields')
     result = dict(declaration)
     _names([result['name']])
@@ -43,6 +43,9 @@ def normalize_callable(declaration):
             result['within'] = _names(value, methods=True)
             if not result['within']:
                 raise ValueError('Callable within alternatives cannot be empty')
+    if 'context' in result:
+        from .callable_context import normalize_context
+        result['context'] = normalize_context(result['context'])
     return result
 
 
@@ -100,20 +103,23 @@ def normalize_contexts(contexts=None, catalog=None):
         if callable_names:
             if callable_names != set(declarations):
                 raise ValueError('Callable bindings require full declared capture contexts')
-            contexts.update(schema=2, callables=list(declarations.values()))
+            contexts.update(schema=3 if any('context' in value for value in declarations.values()) else 2,
+                            callables=list(declarations.values()))
     if not isinstance(contexts, dict) or type(contexts.get('schema')) is not int:
         raise ValueError('Unsupported capture-context schema')
     schema = contexts['schema']
-    fields = {'schema', 'methods', 'operators'} | ({'callables'} if schema == 2 else set())
-    if schema not in (1, 2) or set(contexts) != fields:
+    fields = {'schema', 'methods', 'operators'} | ({'callables'} if schema in (2, 3) else set())
+    if schema not in (1, 2, 3) or set(contexts) != fields:
         raise ValueError('Invalid capture-context schema fields')
     result = dict(schema=schema, methods=_names(contexts['methods'], methods=True),
                   operators=_names(contexts['operators']))
     available = {}
-    if schema == 2:
+    if schema in (2, 3):
         result['callables'] = _callables(contexts['callables'])
         if not result['callables']:
             raise ValueError('Empty callable contexts must use schema 1')
+        if any('context' in value for value in result['callables']) != (schema == 3):
+            raise ValueError('Argument/layout contexts require capture schema 3 exactly')
         available = {value['name']: value for value in result['callables']}
         if set(available) & set(result['operators']):
             raise ValueError('Callable names collide with native operator contexts')

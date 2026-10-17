@@ -37,6 +37,10 @@ class Extension:
         from .dummy_weights import preparation_facts
         return preparation_facts(self.model_runner.get_model())
 
+    def kimi_runtime_admission(self, descriptor):
+        from .kimi_runtime import inspect_runtime
+        return inspect_runtime(self.model_runner, descriptor)
+
     def component_runtime_admission(self, descriptor, shot_dict=None):
         """Read and validate an explicitly declared native execution contract."""
         from .runtime_admission import validate_descriptor, collect_runtime_facts, admit_runtime
@@ -90,6 +94,7 @@ class Extension:
         component_layout_sha256: str | None = None,
         attention_lookup_semantic: dict[str, Any] | None = None,
         component_layout_contract: dict[str, Any] | None = None,
+        kimi_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one profiling shot and return per-layer timings.
 
@@ -131,9 +136,20 @@ class Extension:
             runtime_sha256 = admitted['runtime_sha256']
             if runtime_sha256 != runtime['runtime_sha256']:
                 raise ValueError('Live component runtime changed before this shot')
+        native_profile_sha256 = None
+        if kimi_contract is not None:
+            from profiler.core import kimi_acquisition as kimi
+            kimi.validate_scope(kimi_contract)
+            native_profile_sha256 = kimi.digest(kimi_contract)
+            cached = getattr(self, '_kimi_profile_scope', None)
+            if cached != native_profile_sha256:
+                observed = self.kimi_runtime_admission(kimi_contract['descriptor'])
+                if kimi.canonical(observed) != kimi.canonical(kimi_contract['runtime']):
+                    raise ValueError('Actual native Kimi runtime differs before acquisition')
+                self._kimi_profile_scope = native_profile_sha256
         acquisition = layerwise_measurement(slice_, iterations, scope_contexts=scope_contexts,
             component_layout_sha256=component_layout_sha256, runtime_sha256=runtime_sha256,
-            attention_lookup_sha256=attention_lookup_sha256)
+            attention_lookup_sha256=attention_lookup_sha256, native_profile_sha256=native_profile_sha256)
 
         # vLLM 0.28's V2 model runner -- which every dense model takes --
         # holds a sampler that is not an nn.Module, so it never becomes a
@@ -165,7 +181,7 @@ class Extension:
         # expert setup in the first timed call. Use separate contexts so both
         # warmup and timed execution must actually consume forced routing.
         with force_moe_routing(route):
-            verified_warmup(self.model_runner, shot,
+            warmup = verified_warmup(self.model_runner, shot,
                             lambda: complete_forward(self.model_runner, _fresh_batch()))
 
         # -- measured runs (N iterations, averaged) -------------------
@@ -173,6 +189,8 @@ class Extension:
             measured = capture(self.model_runner,
                                lambda: complete_forward(self.model_runner, _fresh_batch()),
                                slice_, iterations, scope_contexts=scope_contexts)
+        if kimi_contract is not None:
+            kimi.validate_capture(kimi_contract, measured, slice_, iterations, warmup)
         if invocation_contract is not None:
             architecture, choices, expected = invocation_contract
             from profiler.core.categories import _split_linear_attention_shot
@@ -187,6 +205,11 @@ class Extension:
                                  f'saving timings: {sorted(missing)}')
         return [dict(layer=name, microseconds=value, **acquisition)
                 for name, value in measured["layer_us"].items()]
+
+    def fire_callable(self, workload, catalog, scope_contexts):
+        """Run a declared native callable with independently planned contexts."""
+        from .callable_workload import execute
+        return execute(workload, catalog, scope_contexts)
 
     def coverage(
         self,

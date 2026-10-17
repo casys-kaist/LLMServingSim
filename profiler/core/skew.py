@@ -157,7 +157,7 @@ def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sh
     hooks = Path(__file__).parent / "hooks"
     value = hashlib.sha256()
     value.update(Path(__file__).read_bytes())
-    for name in ('engine.py', 'config.py', 'stack.py'):
+    for name in ('engine.py', 'config.py', 'stack.py', 'kimi_profile.py'):
         value.update((hooks.parent / name).read_bytes())
     for name in ("skew_measurement.py", "activity_collector.py", "runner_capture.py", "cuda_timing.py", "timings.py",
                  "batch.py", "sampler_shim.py", "history.py", "dummy_cache.py", "cache_pages.py",
@@ -166,6 +166,8 @@ def measurement_fingerprint(scope_contexts=None, *, catalog, attention_lookup_sh
         value.update((hooks / name).read_bytes())
     if contexts.get('callables'):
         value.update((hooks / 'callable_scopes.py').read_bytes())
+    if contexts['schema'] == 3:
+        value.update((hooks / 'callable_context.py').read_bytes())
     from .attention_lookup import protocol
     if attention_lookup_sha256 is not None:
         for path in (hooks.parent / 'attention_lookup.py', hooks / 'attention_lookup.py'):

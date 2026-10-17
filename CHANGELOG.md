@@ -7,12 +7,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Add source-admitted Kimi-K3 category profiling and local duration trace replay.
+  Preserve joined multi-stream MLA timing, separate native KDA components and
+  original-layer AttnRes contexts, and reject incomplete or incompatible tables.
+  This does not certify distributed serving, resident capacity or benchmark accuracy.
 - Add runtime-admitted native DeepSeek-V3.2 profiling with site-aware component
   boundaries and coordinated dense, head, attention and MoE tables. Preserve
   historical decompositions; expose explicit duration-only trace replay with
   native sampler output widths, rejecting unsupported serving/capacity modes.
 - Allow catalogs to declare exact function/method capture boundaries and timing
-  normalization without model-specific collector code. Derive latency only from CUDA activity,
+  normalization, including explicit argument/layout contexts and isolated native
+  callable acquisition, without model-specific collector code. Derive latency only from CUDA activity,
   report unavailable targets and actual per-forward calls separately from timing
   divisors, and reject incompatible acquisition resumes.
 - Preserve runtime ownership through common direct methods and exact native

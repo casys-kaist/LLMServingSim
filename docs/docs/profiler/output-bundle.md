@@ -62,7 +62,7 @@ remember to use μs.
 
 ## CUDA activity and acquisition identity
 
-New ordinary layerwise measurements use `kineto-context-scoped-cuda-union-dummy-kv-query-v7`.
+New ordinary layerwise measurements use `kineto-context-scoped-cuda-union-dummy-weights-query-v8`.
 The common PyTorch/Kineto collector records explicit dynamic module scopes and
 native CUDA activities without Python stacks, tensor shapes or memory snapshots.
 For each raw module invocation, merge overlapping CUDA intervals on the same
@@ -99,7 +99,8 @@ the numerical columns shown in the examples below. The fingerprint binds the
 timing and shape-construction implementations, catalog, full-architecture scope
 contexts, repetitions and library versions. Declared callable targets use the
 schema-2 context contract and add `callable_scopes.py` to the source fingerprint;
-catalogs without them retain schema 1. Shared capture-source changes still
+explicit scalar/tensor-layout contexts use schema 3 and add their extraction
+contract. Catalogs without callable declarations retain schema 1. Shared capture-source changes still
 change acquisition identities for either schema. A selected component layout also
 contributes its identity and shared layout implementation. Host and
 worker identities must agree before writing. These columns are stored
@@ -149,8 +150,9 @@ non-speculative query/state view, including mixed batches' decode prefix, rather
 than filling GDN's prefill-only views. Both paths retain query/history, state-page,
 initial-state and token-conservation checks; neither changes the native forward.
 Unknown sources/schemas and active speculative, checkpoint, RecoverSSM or optional
-FlashInfer metadata paths fail explicitly. This check is outside timing and is
-not a claim of complete Kimi catalog, acquisition-grid or serving support.
+FlashInfer metadata paths fail explicitly. This check is outside timing and alone
+does not establish model support; Kimi acquisition has the additional
+[native contract](#native-kimi-acquisition) below.
 Its source is part of both acquisition fingerprints: old rows remain readable,
 but an incompatible acquisition cannot resume them by relabeling metadata. MTP
 acquisition requires every entry in its category slice: partially captured
@@ -350,6 +352,58 @@ These tables currently support only explicit
 The native 656-byte main cache plus 132-byte index cache is not silently passed
 to the legacy 708-byte capacity model. This does not certify full-grid coverage,
 serving memory feasibility, distributed execution or benchmark accuracy.
+
+### Native Kimi acquisition
+
+`kimi_k3.yaml` covers the source-checked vLLM 0.31 Kimi-K3 text path on SM120:
+BF16 activations, native MXFP4/SITU experts, eager execution and local TP/PP/DP/EP1.
+The original nested checkpoint configuration is preserved. Ordinary acquisition
+executes its first four decoder layers, or two for MoE, retaining the original
+widths, expert count and top-k. Another source, device/backend, precision or
+distributed deployment requires a new admitted contract, not just a catalog alias.
+
+The ordinary `profile` and `slice` commands use the existing category grids. A
+full Kimi run requires explicit `--skip-skew`; Kimi skew and MTP are not supported.
+See the [bounded invocation](./running#native-kimi-profiling). Each TP directory
+contains the five ordinary CSVs plus `kimi_<category>.json`. Each record binds the
+planned row keys, native runtime, capture identity, completion status and CSV hash.
+An incomplete shot is remeasured as a whole. A completed table with changed data,
+sources or bindings is refused; do not relabel it to resume another acquisition.
+Dummy-weight preparation elapsed times remain telemetry in engine metadata, not
+execution invariants or GPU latency inputs.
+
+Two boundaries need particular care:
+
+- **MLA:** the q-LoRA phase joins native attention and gate work that may execute
+  concurrently on separate streams. Its measured device interval union is one
+  `attention` component; the gate application and output projection are separate
+  dense components. Adding separate costs for the concurrent branches would
+  double-count their overlap.
+- **AttnRes:** original layer position changes the number of residual blocks and
+  optional inputs. A four-layer engine cannot measure the full 93-layer context
+  set. The dense pass also calls the unchanged native AttnRes function separately,
+  with the original stack's 187 ordered roles and 25 distinct structural contexts
+  at each dense token point. This does not execute all 93 model layers on the GPU.
+
+`kimi_contexts.json` records that residual plan. Under `callables/attn_res/`,
+`dense_context.csv` stores context-specific microseconds, alongside its manifest,
+completion receipts and per-token native-activity evidence. The generic collector
+is the same lightweight PyTorch/Kineto path; no CPU scope duration enters the
+table. Explicit finite synthetic tensors supply the standalone function's inputs;
+source, shape, strides, optional inputs and physical invocation counts are checked.
+Allocation is bounded to 512 MiB of declared input tensors per shot, with at most
+16 timed iterations and four warmups. Larger plans fail before engine startup.
+
+The consumer requires every category and residual context to be complete and
+compatible. Ordinary tables retain their existing interpolation. AttnRes uses an
+immutable context lookup and linear interpolation in tokens **within that exact
+context**; it neither searches neighboring contexts nor extrapolates beyond the
+measured token range. This supports [local duration replay](../simulator/trace-generation#native-kimi-duration-replay),
+not resident-memory admission, whole-workload accuracy or CUDA-graph equivalence.
+Coverage still reports unscoped runner GPU work, including input/state updates
+and host/device copies, separately from these layer components. It can therefore
+exit nonzero even when all declared model boundaries executed. Do not suppress
+those gaps or interpret model-boundary coverage as complete step-time accounting.
 
 ## Native attention lookup contract
 

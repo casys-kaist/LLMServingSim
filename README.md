@@ -61,6 +61,8 @@ the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#
 states their scope separately from model support.
 Source-checked packed-weight and derived-buffer preparation is also untimed;
 see the [dummy-weight contract](https://llmservingsim.ai/docs/profiler/output-bundle#dummy-model-weight-preparation).
+Kimi-K3 has a bounded native profiling and duration-trace path with separate
+residual contexts; see its [scope and requirements](https://llmservingsim.ai/docs/profiler/output-bundle#native-kimi-acquisition).
 See the
 [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
 declared TP output reductions and runtime-selected hybrid components,

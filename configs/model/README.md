@@ -61,8 +61,9 @@ dimensional fields.
 | `deepseek-ai/DeepSeek-V3.2-Exp.json` | MoE, **MLA + sparse** | 61 | 7168 | 128 | 128 | 256E / top-8 |
 | `zai-org/GLM-5.json` | MoE, **MLA + sparse** | 78 | 6144 | 64 | 64 | 256E / top-8 |
 | `MiniMaxAI/MiniMax-M3.json` | MoE, **block-sparse** | 60 | 6144 | 64 | 4 | 128E / top-4 |
+| `moonshotai/Kimi-K3.json` | MoE, **KDA + MLA + AttnRes** | 93 | 7168 | 96 | MLA latent | 896E / top-16 |
 
-The last four are not uniform stacks, which is the point of
+The hybrid and sparse configurations are not uniform stacks, which is the point of
 `profiler/core/stack.py`:
 
 | File | Layer composition | Drafter |
@@ -71,6 +72,13 @@ The last four are not uniform stacks, which is the point of
 | `DeepSeek-V3.2-Exp` | 3 dense MLP + 58 MoE, sparse attention on all 61 | 1 MTP module |
 | `GLM-5` | 3 dense MLP + 75 MoE, sparse attention on all 78 | 1 MTP module |
 | `MiniMax-M3` | 3 dense MLP + 57 MoE, sparse attention on 57 | 7 MTP modules |
+| `Kimi-K3` | 69 KDA + 24 MLA; 1 dense MLP + 92 MoE | not admitted by this profiler path |
+
+Kimi-K3 stays nested with its original one-based attention schedule and
+`num_experts_per_token` alias. Only engine construction trims the decoder prefix;
+the stored checkpoint and trace layer order stay intact. Its current native path
+is bounded local profiling and explicit duration replay, not full serving or
+benchmark validation. See [native Kimi acquisition](../../docs/docs/profiler/output-bundle.md#native-kimi-acquisition).
 
 > **`MiniMax-M3.json` must stay nested**, keeping its `text_config`
 > key: vLLM's `MiniMaxM3Config` is a wrapper that builds its backbone

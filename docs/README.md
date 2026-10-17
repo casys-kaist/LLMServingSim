@@ -85,6 +85,11 @@ and require compatible acquisition identities for resume.
 The [dummy-weight contract](docs/profiler/output-bundle.md#dummy-model-weight-preparation)
 separates source-checked packed/derived initialization and postload layout
 observations from forward correctness or model support.
+The [native Kimi contract](docs/profiler/output-bundle.md#native-kimi-acquisition)
+connects ordinary category completion with exact residual-context publication.
+Its CLI and trace guides distinguish original-width prefix acquisition and
+standalone native residual calls from full-model GPU execution, and limit trace
+integration to source-admitted local duration replay rather than serving capacity.
 The trace and hybrid guides cover
 packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
 small acquisition probes are not full-grid or deployment certification.

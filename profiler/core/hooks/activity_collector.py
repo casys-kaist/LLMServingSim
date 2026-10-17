@@ -603,7 +603,12 @@ def coverage_report(result):
         unique_cuda_activities=len(identities))
     if 'callable_audit' in result:
         report['callable_audit'] = result['callable_audit']
-    report['canonical_invocations'] = canonical_invocation_counts(result)
+    report['canonical_invocations'] = (result['context_source_invocations']
+        if 'context_source_invocations' in result else canonical_invocation_counts(result))
+    if 'context_samples' in result:
+        report['context_samples'] = result['context_samples']
+        report['per_forward_context_samples'] = result['per_forward_context_samples']
+        report['context_admission'] = 'diagnostic only; not a persisted expected-context manifest'
     return report
 
 
@@ -612,7 +617,7 @@ Scopes = ScopedModules
 
 def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREFIX,
             strict_coverage=False, strict_model_coverage=False, require_complete=False,
-            return_events=False, scope_contexts=None):
+            return_events=False, scope_contexts=None, expected_contexts=None, context_diagnostic=False):
     """Collect ``callback(index)`` eagerly without adding warmups or padding.
 
     ``roots`` is a mapping of existing modules, supplied by a runner adapter.
@@ -629,6 +634,15 @@ def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREF
     from .method_scopes import RuntimeMethodScopes
     from .operator_scopes import extract_with_operators
     contexts = normalize_contexts(scope_contexts, catalog)
+    if contexts['schema'] == 3 or expected_contexts is not None:
+        from .callable_context import contextual_catalog, expected_counts
+        selected = contextual_catalog(catalog, contexts)
+        if expected_contexts is not None:
+            expected = expected_counts(expected_contexts)
+            if {key[0] for key in expected} != set(selected):
+                raise ValueError('Expected contexts differ from the contextual catalog')
+        elif selected and not context_diagnostic:
+            raise ValueError('Context acquisition needs its independent expected-context manifest')
     started = time.perf_counter()
     if contexts.get('callables'):
         from .callable_scopes import DeclaredCallableScopes
@@ -664,6 +678,12 @@ def collect(roots, iterations, callback, catalog, *, forward_prefix=FORWARD_PREF
     result['collection_seconds'] = finished-started
     result.setdefault('metadata', metadata)
     result['scope_contexts'] = contexts
+    if (contexts['schema'] == 3 and selected) or expected_contexts is not None:
+        from .callable_context import split_context_timings
+        # Preserve the physical invocation audit before removing pooled rows.
+        result['context_source_invocations'] = canonical_invocation_counts(result)
+        split_context_timings(result, catalog, contexts, iterations,
+                              expected_contexts, diagnostic=context_diagnostic)
     if return_events:
         result['native_cpu_events'], result['native_gpu_events'] = cpu, gpu
     return result

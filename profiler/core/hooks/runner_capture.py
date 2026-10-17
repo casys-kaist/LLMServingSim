@@ -65,11 +65,17 @@ def verified_warmup(runner, shot, fire):
     if not checked or not finite or not all(finite):
         raise ValueError('Warmup geometry/finite-value control failed; no timings may be saved')
     torch.cuda.synchronize()
+    return dict(requests=[list(row) for row in shot.requests],
+                checked_attention_layers=sorted(set(checked)),
+                finite_output_tensors=len(finite), finite=True)
 
 
 def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnostic=False,
-            scope_contexts=None):
-    """Collect native GPU activities without Python stacks or tensor shapes.
+            scope_contexts=None, expected_contexts=None):
+    """Collect native GPU activities without Python stacks or global shape tracing.
+
+    Schema-3 callable declarations may record explicit argument/layout metadata;
+    tensor contents and CPU scope durations never become timing samples.
 
     Model roots come from the runner interfaces, not architecture names. This
     function does not change padding, weights, samplers or backend selection.
@@ -85,9 +91,11 @@ def capture(runner, fire, catalog, iterations, *, forward_prefix=None, diagnosti
         raise ValueError('Layer acquisition requires enforce_eager; graph components use their own contract')
     result = collect(roots_from_runner(runner, sampler_adapter=wrap_sampler_for_profiling),
                      iterations, lambda _index: fire(), catalog,
-                     forward_prefix=forward_prefix or FORWARD_PREFIX, scope_contexts=scope_contexts)
+                     forward_prefix=forward_prefix or FORWARD_PREFIX, scope_contexts=scope_contexts,
+                     expected_contexts=expected_contexts, context_diagnostic=diagnostic)
     values = result['layer_us']
-    if not values or any(not math.isfinite(v) or v <= 0 for v in values.values()):
+    if ((not values and not result.get('context_samples'))
+            or any(not math.isfinite(v) or v <= 0 for v in values.values())):
         raise ValueError('Capture contains no valid canonical GPU timings')
     forwards = result['per_forward_layers_us']
     if len(forwards) != iterations or any(

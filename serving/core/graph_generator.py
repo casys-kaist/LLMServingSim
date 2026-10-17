@@ -141,7 +141,8 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
 
     if trace.byte_contract is not None:
         from .component_sizes import NATIVE_DSA
-        if trace.byte_contract != NATIVE_DSA or num_npus != 1 or enable_local_offloading:
+        from .kimi_sizes import SCHEMA as KIMI_LOGICAL
+        if trace.byte_contract not in (NATIVE_DSA, KIMI_LOGICAL) or num_npus != 1 or enable_local_offloading:
             raise NotImplementedError('Native logical tensor annotations require single-rank duration replay without local weight offloading')
 
     cwd = os.getcwd()

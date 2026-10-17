@@ -79,9 +79,15 @@ class TimingSample:
 
     layer: str
     microseconds: float
+    context: str | None = None
+    context_tokens: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.context is None and self.context_tokens is None:
+            del result['context']
+            del result['context_tokens']
+        return result
 
 
 # ---------------------------------------------------------------------------

@@ -1323,7 +1323,7 @@ def _layer_category(perf_db, layer_name):
 
 
 def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer_num=None,
-                comm_type='NONE', comm_size=0, input_loc='LOCAL', output_loc='LOCAL'):
+                comm_type='NONE', comm_size=0, input_loc='LOCAL', output_loc='LOCAL', source_role=None):
     """Emit a single trace layer: lookup latency, compute sizes, format, track power."""
     category = _layer_category(ctx.perf_db, layer_name)
     if category is None:
@@ -1333,7 +1333,10 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             f"profiler/models/<model_type>.yaml or remove it from the block order."
         )
 
-    if category == "per_sequence":
+    if layer_name == 'attn_res' and _is_kimi_native(ctx):
+        source_role = source_role or ('final' if layer_num is None else None)
+        latency_ns = ctx.component_sizes.residual(bctx.total_len, source_role, layer_num)
+    elif category == "per_sequence":
         latency_ns = _lookup_per_sequence(ctx.perf_db, layer_name, ctx.tp_size, bctx.lm_head_len)
     elif category == "attention":
         latency_ns = _lookup_attention_with_skew(
@@ -1368,7 +1371,9 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
         latency_ns = _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
     # Size calculation uses the same canonical layer names.
-    if layer_name == 'attention':
+    if _is_kimi_native(ctx):
+        inp, wt, out = ctx.component_sizes.sizes_for(bctx, layer_name, source_role, layer_num)
+    elif layer_name == 'attention':
         kv_len_for_sizes = bctx.kv_prefill + bctx.n_decode * bctx.kv_decode_mean
         inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
                                        kv_len=kv_len_for_sizes,
@@ -1682,9 +1687,12 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
             rank_latency_ns = _lookup_moe(
                 ctx.perf_db, ep_total, local_tokens,
                 max(activated_experts, 1))
-            rank_inp, rank_wt, rank_out = calculate_sizes(
-                ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp,
-                component_sizes=ctx.component_sizes)
+            if _is_kimi_native(ctx):
+                rank_inp, rank_wt, rank_out = ctx.component_sizes.sizes_for(bctx, 'moe')
+            else:
+                rank_inp, rank_wt, rank_out = calculate_sizes(
+                    ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp,
+                    component_sizes=ctx.component_sizes)
             max_rank_latency_ns = max(max_rank_latency_ns, rank_latency_ns)
 
             lines.append(("expert", str(rank_latency_ns), 'LOCAL', str(rank_inp),
@@ -1858,6 +1866,14 @@ def _selected_component_sizes(perf_db, tp, config):
         return cache[tp]
     from profiler.core.component_layouts import metadata_records, selected_runtime_contract
     architecture = perf_db['architecture']
+    if config.get('model_type') == 'kimi_k3':
+        if tp != 1:
+            raise NotImplementedError('Native Kimi category profiles support TP1 only')
+        from .kimi_bundle import KimiBundle
+        selected = KimiBundle(os.path.join(perf_db['root'], 'tp1'), architecture)
+        selected.validate_config(config)
+        cache[tp] = selected
+        return selected
     if not architecture.get('component_layouts'):
         cache[tp] = None
         return None
@@ -1949,9 +1965,17 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag)
 
 
-def _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
+def _is_kimi_native(ctx):
+    return getattr(ctx.component_sizes, 'schema', None) == 'kimi-k3-native031-logical-v1'
+
+
+def _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag, source_role=None):
     """Emit an already resolved sequence without applying substitutions twice."""
     for layer_name in layers:
+        if layer_name == 'attn_res' and _is_kimi_native(ctx):
+            _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
+                        source_role=source_role)
+            continue
         if layer_name == "attention":
             if ctx.enable_attn_offloading:
                 _emit_pim_attention(ctx, bctx, lines, power_acc, layer_num, batch_tag)
@@ -2011,7 +2035,7 @@ def _block_copy_key(ctx, block_mode_on, *layer_nums):
     for all 61 of DeepSeek-V3.2's. Several layer numbers for the interleaved
     path, whose block straddles a boundary.
     """
-    if block_mode_on:
+    if block_mode_on or _is_kimi_native(ctx):
         return None
     if ctx.is_moe and not ctx.gate.block_copy:
         return None
@@ -2030,14 +2054,14 @@ def _block_copy_key(ctx, block_mode_on, *layer_nums):
 def _emit_pre_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_tag='NONE'):
     _emit_resolved_sequence(ctx, bctx, layer_num,
                            _resolved_block_sequence(ctx, layer_num, "pre_attn"),
-                           lines, power_acc, batch_tag)
+                           lines, power_acc, batch_tag, source_role='pre_attn')
 
 
 def _emit_post_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_id_str, batch_tag='NONE'):
     # Attention post-processing, from this layer's own block.
     _emit_resolved_sequence(ctx, bctx, layer_num,
                            _resolved_block_sequence(ctx, layer_num, "post_attn"),
-                           lines, power_acc, batch_tag)
+                           lines, power_acc, batch_tag, source_role='post_attn')
     # MLP: whichever this layer runs. Resolved per layer, not per model --
     # DeepSeek-V3.2 and GLM-5 run a dense MLP for their first
     # ``first_k_dense_replace`` layers and MoE for the rest, and a model-level
@@ -2627,7 +2651,8 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     if num_experts_cfg:
         gate = GateRouter(
             node_id, instance_id, num_experts_cfg,
-            num_experts_per_tok=config.get('num_experts_per_tok', 1),
+            num_experts_per_tok=(_stack_module().expert_top_k(config)
+                if config.get('model_type') == 'kimi_k3' else config.get('num_experts_per_tok', 1)),
             routing_policy=expert_routing_policy,
             seed=42,
             block_copy=enable_block_copy,

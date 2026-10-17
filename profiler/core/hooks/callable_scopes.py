@@ -126,6 +126,10 @@ class DeclaredCallableScopes(RuntimeMethodScopes):
                 if rule in target['rules']:
                     raise ValueError('Duplicate callable target declaration')
                 target['rules'].append(rule)
+                if 'context' in declaration:
+                    from .callable_context import bind_signature
+                    target.setdefault('context_signatures', {})[index] = bind_signature(
+                        function, declaration['context'])
                 self._resolved_declarations.add(index)
             self._resolution.append(dict(name=name, resolved=index in self._resolved_declarations,
                                          reasons=sorted(set(reasons))))
@@ -162,7 +166,7 @@ class DeclaredCallableScopes(RuntimeMethodScopes):
         return best[0][1:]
 
     @contextmanager
-    def _semantic_scope(self, index, owner_id):
+    def _semantic_scope(self, index, owner_id, context_data=None):
         from torch.profiler import record_function
         declaration = self.declarations[index]
         name = declaration['name']
@@ -176,6 +180,8 @@ class DeclaredCallableScopes(RuntimeMethodScopes):
                 summary_name=name, thread_id=threading.get_native_id(), paths=[], completed=False,
                 scope_kind='callable', semantic_name=name, declaration=index,
                 runtime_owner_id=owner_id, normalization_context_only=True))
+            if context_data is not None:
+                self._calls[-1].update(context_data)
             self._callable_counts[index] += 1
         scope = record_function(base.CALL_PREFIX + str(call_id))
         scope.__enter__()
@@ -196,7 +202,13 @@ class DeclaredCallableScopes(RuntimeMethodScopes):
         chosen = self._select(target)
         if chosen is None:
             return original(*args, **kwargs)
-        with self._semantic_scope(*chosen):
+        context_data = None
+        declaration = self.declarations[chosen[0]]
+        if 'context' in declaration:
+            from .callable_context import extract_context
+            context_data = extract_context(target['context_signatures'][chosen[0]],
+                                           declaration['context'], args, kwargs)
+        with self._semantic_scope(*chosen, context_data=context_data):
             return original(*args, **kwargs)
 
     def __enter__(self):

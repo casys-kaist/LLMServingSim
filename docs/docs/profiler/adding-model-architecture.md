@@ -489,6 +489,45 @@ the capture implementation does not convert old rows to the new identity.
 Declaring a boundary alone adds neither a model catalog nor simulator sizing or
 trace support for a new component.
 
+#### Explicit argument and tensor-layout contexts
+
+When a callable's work changes with structural arguments, declare them under
+`callable.context` instead of averaging distinct roles into one dense row:
+
+```yaml
+context:
+  fields:
+    num_blocks: {argument: num_blocks, operation: int}
+    delta_present: {argument: delta, operation: present}
+  tensors:
+    prefix: {argument: prefix, token_axis: 0}
+    delta: {argument: delta, optional: true, token_axis: 0}
+    blocks: {argument: blocks, token_axis: 0}
+```
+
+Fields accept exact Python integers or presence checks. Tensor declarations
+record shape, stride, dtype and storage offset, not contents. A declared token
+axis becomes `$tokens` in the structural key; its actual size is stored separately.
+All declared token axes must agree, and one must belong to a required tensor.
+Arguments must occur explicitly in the native callable signature. Context-bearing
+entries require `normalization: invocations` and use capture-contract schema 3;
+ordinary callables retain schema 2, catalogs without callables schema 1.
+
+Such rows are not pooled into the ordinary dense timing. An acquisition planner
+must declare every expected context and invocation count before capture. The
+isolated callable API validates the unchanged native target, each forward's calls
+and its CUDA ledger before atomically publishing rows and completion receipts.
+The immutable lookup matches the structural context exactly and interpolates
+only its token axis, refusing missing contexts and out-of-range tokens. A
+declaration alone does not supply that planner or simulator integration. The
+[Kimi acquisition](./output-bundle#native-kimi-acquisition) provides both for
+its source-derived residual roles.
+
+Concurrent branches require a different treatment: choose a joined native
+boundary if their separate costs would overlap in an additive trace. Kimi's
+MLA q-LoRA phase uses that rule; its KDA projections/core/output remain separate
+under the admitted eager execution contract.
+
 ### Declaring alternative component layouts
 
 Use `component_layouts` when the runtime changes a block's decomposition, not

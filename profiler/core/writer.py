@@ -92,6 +92,8 @@ class DedupSink:
     def coalesce(self, point: Point) -> None:
         """Accept one Point; average on key collision."""
         d = asdict(point)
+        if "context" in d or "context_tokens" in d:
+            raise ValueError("Contextual points require the separate context table")
         if self._fieldnames is None:
             # Preserve dataclass field declaration order; put time_us
             # last regardless of where it appears in the dataclass.

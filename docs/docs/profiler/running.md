@@ -66,6 +66,35 @@ the catalogs' declared `model_types:` aliases. See
 **[Adding a model architecture](./adding-model-architecture)** if it
 doesn't.
 
+### Native Kimi profiling
+
+Kimi-K3 uses the same `profile`, `slice` and `coverage` CLI, under a narrower
+[native execution contract](./output-bundle#native-kimi-acquisition). For a small
+acquisition on a compatible SM120 device inside the vLLM 0.31 container:
+
+```bash
+python -m profiler profile moonshotai/Kimi-K3 --hardware RTXPRO6000 \
+  --tp 1 --dtype bfloat16 --max-model-len 1024 \
+  --max-num-batched-tokens 16 --max-num-seqs 2 \
+  --attention-max-kv 128 --gpu-memory-utilization 0.68 \
+  --measurement-iterations 2 --skip-skew --out /runs/kimi-profile
+```
+
+The small token range is an acquisition example, not a recommended accuracy grid.
+Reserve sufficient device memory for original-width prefix engines and bound host
+memory as described in the resource-safety guide. Do not shrink the model geometry
+to make a failed native acquisition appear supported. Engine context limits must
+also accommodate the native MLA chunk workspace; an extremely short model length
+can be incompatible with its hybrid block alignment even for a small token shot.
+
+The dense pass includes isolated native AttnRes contexts for all original layer
+roles. Ordinary categories and residual contexts resume together, with partial
+shots remeasured and incompatible identities refused. Explicit `--skip-skew` is
+required for a full run. TP>1, native DP/EP acquisition, MTP, shape overrides and
+non-BF16 activation/KV paths are not admitted by this contract. Use `coverage`
+with the same model/device and sufficient engine limits to inspect actual CUDA
+ownership; it does not prove end-to-end serving accuracy.
+
 ### Characterise the machine first (once per hardware)
 
 Before profiling any model on a new machine, measure what the hardware

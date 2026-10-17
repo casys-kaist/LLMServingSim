@@ -783,7 +783,7 @@ leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
 remain fresh prompts. The ordinary acquisition protocol is
-`kineto-context-scoped-cuda-union-dummy-kv-query-v7`.
+`kineto-context-scoped-cuda-union-dummy-weights-query-v8`.
 
 ### Runtime contexts and coordinated component layouts
 
@@ -797,12 +797,49 @@ decode conv/norm buffers copy their native parameter transforms after floating
 initialization, rather than receiving independent random values. Preparation,
 postload structure and measured-forward validity are separate facts. The main
 engine persists the preparation receipt; both acquisition fingerprints cover
-the adapters. This is not a complete Kimi catalog or serving-support contract.
+the adapters. Preparation alone does not certify a forward or serving support.
+
+Kimi-K3's admitted local eager path uses the original nested checkpoint and
+source schedule. Ordinary categories retain their existing planners; the MoE
+category uses a two-layer prefix with one routed block, while the other
+categories reach both attention types. Keep model widths, expert count and
+top-k native. A completed category requires every planned layer/coordinate,
+matching source/runtime identities and an unchanged CSV, not any one row per
+shot. A partial shot is reacquired in full. Do not relabel old measurements.
+Preparation elapsed times remain engine telemetry but do not participate in
+runtime identity. Keep actual source/layout and sampled-byte hashes invariant.
+Unscoped runner GPU work remains visible as coverage gaps; complete model
+boundaries do not imply complete step-time accounting or a zero-gap CLI result.
+
+KDA's projections and recurrent core are separate. Native MLA's q-LoRA phase
+joins concurrently executing gate and attention branches; its per-call device
+union must remain one atomic cost. This concurrent boundary is the exception
+to splitting independent scaling axes: independently adding the branches
+double-counts overlap. The gate application and output projection remain separate.
+
+Schema-3 callable contexts preserve declared scalar arguments and tensor
+metadata, never values or CPU duration. Contextual dense rows cannot enter
+the token-only sink. Kimi AttnRes acquisition uses original-depth source roles
+through the unchanged native function, not the reduced engine's pooled calls.
+Its isolated synthetic arguments, source pins, per-call native activity evidence
+and completion receipts are retained under `callables/attn_res`. Lookup validates
+them once, then interpolates tokens only within an identical structural context,
+without cross-context fallback or extrapolation. Keep the fixed allocation
+bound explicit; do not silently reduce context capacity to fit it.
+
+Kimi's trace adapter requires complete ordinary and residual tables, local
+TP1/PP1/EP1 eager text execution and explicit `duration_replay_only=True`.
+Source-role residuals disable transformer-block copying. Logical byte triples
+are not resident capacity or traffic. Distributed, graph-padded, speculative,
+offloaded, prefix-cached, power and roofline execution remain unsupported;
+do not present bounded profiling/trace readiness as full-depth GPU execution
+or end-to-end accuracy. Kimi skew acquisition is not enabled by this path.
 
 `capture_scope_contract.py` projects the whole architecture to ordinary, coverage
 and skew RPCs, preserving exclusions across category slices and including them
 in host/worker identities. Methods/operators use schema 1; explicit callable
-declarations add schema-2 `callables`, including inactive alternatives. Common
+declarations add schema-2 `callables`, including inactive alternatives, and
+argument/layout declarations use schema 3. Common
 `embed_input_ids`/`compute_logits` method scopes provide runtime ancestry for direct
 calls, not independently bindable costs or arbitrary-method instrumentation.
 Restore exact instance state; reject foreign replacement, async/generator methods

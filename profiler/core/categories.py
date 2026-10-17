@@ -50,6 +50,15 @@ class DensePoint:
 
 
 @dataclass(frozen=True)
+class ContextDensePoint:
+    layer: str
+    tokens: int
+    context: str
+    context_tokens: int
+    microseconds: float
+
+
+@dataclass(frozen=True)
 class SequencePoint:
     layer: str
     sequences: int
@@ -113,7 +122,7 @@ class ExpertPoint:
 
 # Union alias for writer.py's benefit.
 Point = (
-    DensePoint | SequencePoint | MtpPoint | AttentionPoint | LinearAttentionPoint
+    DensePoint | ContextDensePoint | SequencePoint | MtpPoint | AttentionPoint | LinearAttentionPoint
     | ExpertPoint
 )
 
@@ -287,6 +296,14 @@ class DenseCategory(Category):
         # together — total_tokens is just the sum across requests.
         total_tokens = sum(new for new, _ in shot.requests)
         for sample in timings:
+            if sample.context is not None or sample.context_tokens is not None:
+                from .hooks.callable_context import validate_context_text
+                validate_context_text(sample.context)
+                if type(sample.context_tokens) is not int or sample.context_tokens < 1:
+                    raise ValueError('Context tokens must be a positive integer')
+                yield ContextDensePoint(sample.layer, total_tokens, sample.context,
+                                        sample.context_tokens, sample.microseconds)
+                continue
             yield DensePoint(
                 layer=sample.layer,
                 tokens=total_tokens,

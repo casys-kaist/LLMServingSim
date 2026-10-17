@@ -126,6 +126,39 @@ This connects measured durations to trace/Chakra execution, not full serving
 capacity, workload accuracy or another deployment. Unmarked historical bundles
 keep their previous lookup, sizes and execution path.
 
+### Native Kimi duration replay
+
+The source-admitted Kimi-K3 bundle connects its five ordinary category tables
+and full-depth AttnRes context table to the same Python trace API. Loading checks
+their completed plans, CSV hashes, capture/source identities and observed native
+tensor layouts; a catalog or a partial CSV directory alone is not sufficient.
+See [native acquisition](../profiler/output-bundle#native-kimi-acquisition).
+
+`generate_trace(..., duration_replay_only=True)` walks the original 93-layer
+schedule: 69 KDA layers, 24 MLA layers, one dense MLP and 92 MoE blocks. AttnRes
+is selected by original layer and pre-attention/post-attention/final role, then
+linearly interpolated only within that exact context's measured token range.
+All other components retain their category lookup. Transformer-block copying is
+disabled for this representation because changing layer position changes the
+residual context. The joined MLA q-LoRA component preserves concurrent branches;
+KDA input projection, auxiliary projection, core and output projection are separate.
+
+Replay requires local TP1/PP1/EP1, no DP, unpadded eager q=1 requests within the
+recorded engine envelope and no prefix reuse, speculation, P/D, offloading, PIM,
+power or roofline calculation. Default serving refuses this bundle: the duration
+path does not provide resident-weight or hybrid-cache capacity admission, and
+there is no CLI flag bypassing that requirement.
+
+`kimi_sizes.py` supplies logical input/weight/output annotations from validated
+native layouts. Packed expert scales are included and the full expert tensor
+axis is retained; active expert counts do not masquerade as resident weights.
+Derived aliases and the actual sampler ID width are accounted for. Persistent
+KV/recurrent states, routing metadata and scratch workspaces are outside these
+triples. They describe component boundaries, not traffic or allocator residency.
+Chakra and ASTRA replay the measured durations without treating those annotations
+as a complete memory model. This integration is not a full-model GPU benchmark
+or an accuracy claim for distributed serving.
+
 ## Per-category lookup
 
 Each layer in the model's architecture YAML is tagged with a

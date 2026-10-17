@@ -179,10 +179,8 @@ def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
         (hf_cfg[k] for k in MOE_NUM_EXPERTS_KEYS if k in hf_cfg),
         None,
     )
-    top_k = next(
-        (hf_cfg[k] for k in MOE_TOP_K_KEYS if k in hf_cfg),
-        None,
-    )
+    from .stack import expert_top_k
+    top_k = expert_top_k(hf_cfg)
     if num_experts is None or top_k is None:
         return None
     return (int(num_experts), int(top_k))
@@ -203,11 +201,13 @@ class CallableScope(BaseModel):
     owner: str | None = None
     path: str | None = None
     within: str | list[str] | None = None
+    context: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _check_target(self):
         from .hooks.capture_scope_contract import normalize_callable
-        normalize_callable(self.model_dump(exclude_none=True))
+        normalized = normalize_callable(self.model_dump(exclude_none=True))
+        self.context = normalized.get('context')
         return self
 
 
@@ -611,6 +611,9 @@ class Architecture(BaseModel):
             if name in seen:
                 raise ValueError(f"Layer name {name!r} appears twice in catalog")
             seen.add(name)
+            if entry.callable is not None and entry.callable.context is not None:
+                if kind != 'dense' or entry.normalization != 'invocations':
+                    raise ValueError('Context-bearing callables currently require dense/invocations')
             if entry.attention_sequence_parallel and (
                     kind != "moe" or entry.sequence_parallel is not True):
                 raise ValueError("attention_sequence_parallel requires a sequence-parallel MoE entry")

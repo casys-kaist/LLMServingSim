@@ -161,6 +161,8 @@ class NativeDSASizes:
 
 def validate_local_trace(ctx):
     """Refuse byte-consuming modes before creating any native trace rows."""
+    if getattr(ctx.component_sizes, 'schema', None) == 'kimi-k3-native031-logical-v1':
+        return ctx.component_sizes.validate_local_trace(ctx)
     if getattr(ctx, 'duration_replay_only', False) is not True:
         raise NotImplementedError(
             'Native DSA supports explicit duration_replay_only=True trace replay only; '
@@ -186,6 +188,8 @@ def validate_local_trace(ctx):
 
 
 def validate_actual_batch(ctx, bctx):
+    if getattr(ctx.component_sizes, 'schema', None) == 'kimi-k3-native031-logical-v1':
+        return ctx.component_sizes.validate_actual_batch(ctx, bctx)
     if bctx.decode_q_len != 1:
         raise NotImplementedError('Native DSA multi-query decode is not admitted')
     if bctx.total_len != bctx.prefill_chunk+bctx.n_decode:

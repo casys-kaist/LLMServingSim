@@ -107,6 +107,75 @@ def _experts(cfg: dict[str, Any]) -> int:
     return 0
 
 
+def expert_top_k(cfg: dict[str, Any], default: int | None = None) -> int | None:
+    """One top-k across profiler and serving; refuse conflicting aliases.
+
+    KimiLinearConfig calls this num_experts_per_token (vLLM 0.31
+    models/kimi_k3/nvidia/model.py:570), unlike DeepSeek/Qwen/Mixtral.
+    Declared values must be positive integers, not bools or coerced strings.
+    """
+    values = [(name, cfg[name]) for name in
+              ("num_experts_per_tok", "num_experts_per_token", "moe_k") if name in cfg]
+    if not values:
+        return default
+    if any(type(value) is not int or value < 1 for _, value in values):
+        raise ValueError("Expert top-k must be a positive integer")
+    if len({value for _, value in values}) != 1:
+        raise ValueError("Conflicting expert top-k aliases: " + repr(values))
+    return values[0][1]
+
+
+def _kimi_attn_types(cfg: dict[str, Any], n: int) -> list[str]:
+    """Kimi's original one-based schedule, restricted to a leading prefix.
+
+    vLLM 0.31 kimi_linear.py:157-161 selects KDA by membership in
+    ``kda_layers``; kimi_k3/nvidia/model.py:881-928 takes MLA otherwise.
+    The full list validation below is deliberately stricter than that predicate:
+    an inconsistent checkpoint must not silently acquire a different stack.
+    ``num_hidden_layers`` is the original depth, never inferred from list maxima.
+    This describes attention/MLP composition, not AttnRes execution coverage.
+    """
+    depth = cfg.get("num_hidden_layers")
+    if type(depth) is not int or depth < 1:
+        raise ValueError("Kimi num_hidden_layers must be a positive integer")
+    if type(n) is not int or not 1 <= n <= depth:
+        raise ValueError("Kimi prefix must be within the original model depth")
+
+    linear = cfg.get("linear_attn_config")
+    if linear is None:
+        expected = [FULL_ATTENTION] * depth
+    else:
+        if not isinstance(linear, dict):
+            raise ValueError("Kimi linear_attn_config must be a mapping or null")
+        schedules = {}
+        for key in ("kda_layers", "full_attn_layers"):
+            values = linear.get(key)
+            if not isinstance(values, list):
+                raise ValueError(f"Kimi {key} must be an explicit list")
+            if any(type(value) is not int or not 1 <= value <= depth for value in values):
+                raise ValueError(f"Kimi {key} must contain one-based indices within the original depth")
+            if len(values) != len(set(values)):
+                raise ValueError(f"Kimi {key} repeats an index")
+            schedules[key] = set(values)
+        kda, full = schedules["kda_layers"], schedules["full_attn_layers"]
+        if kda & full or kda | full != set(range(1, depth + 1)):
+            raise ValueError("Kimi attention lists must partition the original decoder stack")
+        expected = ["linear_attention" if index in kda else FULL_ATTENTION
+                    for index in range(1, depth + 1)]
+
+    # Native Kimi does not dispatch on these generic keys. Accept redundant
+    # declarations only when they agree, rather than letting them take precedence.
+    if "layer_types" in cfg and cfg["layer_types"] != expected:
+        raise ValueError("Kimi layer_types contradicts its native attention schedule")
+    if "full_attention_interval" in cfg:
+        interval = cfg["full_attention_interval"]
+        if type(interval) is not int or interval < 1 or any(
+                kind != ("linear_attention" if (index + 1) % interval else FULL_ATTENTION)
+                for index, kind in enumerate(expected)):
+            raise ValueError("Kimi full_attention_interval contradicts its native attention schedule")
+    return expected[:n]
+
+
 def _attn_types(cfg: dict[str, Any], n: int) -> list[str]:
     """Attention type per layer.
 
@@ -118,6 +187,8 @@ def _attn_types(cfg: dict[str, Any], n: int) -> list[str]:
       ``transformers_utils/configs/qwen3_5.py``:
       ``"linear_attention" if bool((i + 1) % interval) else "full_attention"``.
     """
+    if cfg.get("model_type") in ("kimi_k3", "kimi_linear"):
+        return _kimi_attn_types(cfg, n)
     declared = cfg.get("layer_types")
     if isinstance(declared, list) and declared:
         # A config may declare more entries than the (possibly shrunk) layer
@@ -227,13 +298,27 @@ def _sparse_flags(cfg: dict[str, Any], n: int) -> list[bool]:
     ]
 
 
-def resolve_stack(cfg: dict[str, Any]) -> list[LayerSpec]:
+def resolve_stack(cfg: dict[str, Any], *, prefix_layers: int | None = None) -> list[LayerSpec]:
     """One :class:`LayerSpec` per decoder layer, in order.
 
-    Empty when the config declares no layer count.
+    Empty when a non-Kimi config declares no layer count. A prefix never
+    changes the source configuration or hides malformed later Kimi layers.
     """
-    cfg = text_config(cfg)
+    if cfg.get("model_type") == "kimi_k3" and "text_config" in cfg:
+        inner = cfg["text_config"]
+        if not isinstance(inner, dict):
+            raise ValueError("Kimi text_config must be an explicit mapping")
+        cfg = dict(inner, model_type="kimi_linear")
+    else:
+        cfg = text_config(cfg)
     n = _num_layers(cfg)
+    if cfg.get("model_type") in ("kimi_k3", "kimi_linear"):
+        if type(cfg.get("num_hidden_layers")) is not int or n < 1:
+            raise ValueError("Kimi num_hidden_layers must be a positive integer")
+    if prefix_layers is not None:
+        if type(prefix_layers) is not int or not 1 <= prefix_layers <= n:
+            raise ValueError("prefix_layers must be within the original depth")
+        n = prefix_layers
     if n == 0:
         return []
     attn = _attn_types(cfg, n)

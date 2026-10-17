@@ -25,6 +25,12 @@ Dummy loading prepares supported native MXFP4 expert bytes and KDA derived
 buffers before vLLM's unchanged postload processing. Ordinary models retain
 their native initialization. Preparation receipts are not forward-validation
 certificates; see [dummy weights](../docs/docs/profiler/output-bundle.md#dummy-model-weight-preparation).
+Kimi-K3 uses a source-admitted local eager path through the normal `profile`,
+`slice` and `coverage` entry points. It keeps joined multi-stream MLA timing,
+separate KDA components and full-depth residual contexts; all categories must
+complete before opt-in duration trace replay. See
+[native Kimi acquisition](../docs/docs/profiler/output-bundle.md#native-kimi-acquisition)
+for supported modes, the required `--skip-skew`, memory bounds and resume rules.
 Dense catalog entries can declare `tp_output_reduction: all_reduce`, including
 Qwen's GDN output projection. This describes simulator communication, not a new
 profiling measurement; see the [catalog fields](../docs/docs/profiler/adding-model-architecture.md#catalog-entry-fields).
@@ -131,6 +137,12 @@ profiler/                          Python package: python -m profiler
 │   ├── attention_shape.py         shared attention geometry and feasibility
 │   ├── measurement.py             acquisition identity and timing protocols
 │   ├── component_layouts.py       runtime alternatives and coupled acquisition state
+│   ├── context_tables.py          atomic structural-context rows and completion receipts
+│   ├── context_lookup.py          immutable context lookup and within-context interpolation
+│   ├── callable_profile.py        isolated native-call acquisition and reload validation
+│   ├── kimi_acquisition.py        Kimi category admission and complete-table publication
+│   ├── kimi_profile.py            source checkpoint, prefix and residual-role contracts
+│   ├── kimi_callable.py           original-depth native residual argument plans
 │   ├── hardware.py                device facts and NCCL link calibration
 │   ├── moe_profile.py             native DP+EP component acquisition
 │   ├── moe_deployment.py          TP/DP/EP ownership and token domains

@@ -258,6 +258,10 @@ def fuse_engine_kwargs(
     # 5. Sharding wins.
     kwargs["hf_overrides"] = _deep_merge(hf_overrides, sharded_overrides)
 
+    if args.model_config.get("model_type") == "kimi_k3":
+        # Only the text backbone is acquired; do not allocate vision weights.
+        kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}
+
     # 6. Wire the worker extension.
     kwargs["worker_extension_cls"] = "profiler.core.hooks.extension.Extension"
 
@@ -292,8 +296,20 @@ def _materialize_config(
     apart from the decoder depth.
     """
     written = copy.deepcopy(model_config)
+    if model_config.get("model_type") in ("kimi_k3", "kimi_linear"):
+        from .kimi_profile import materialize_prefix
+        written = materialize_prefix(model_config, kwargs.get("hf_overrides") or {})
     inner = written.get("text_config")
     overrides = kwargs.get("hf_overrides") or {}
+    if model_config.get("model_type") in ("kimi_k3", "kimi_linear"):
+        # Native config construction reapplies top-level overrides. Forward the
+        # already validated prefix schedule, never the original full-depth list.
+        native_text = written.get("text_config", written)
+        overrides = copy.deepcopy(overrides)
+        for key in ("linear_attn_config", "layer_types"):
+            if key in overrides and key in native_text:
+                overrides[key] = copy.deepcopy(native_text[key])
+        kwargs["hf_overrides"] = overrides
     if isinstance(inner, dict):
         for key, value in overrides.items():
             if key in inner or key == "num_hidden_layers":
