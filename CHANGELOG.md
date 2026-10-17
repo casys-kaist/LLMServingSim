@@ -37,6 +37,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Record source-qualified per-engine KV capacities at benchmark startup,
+  distinguishing vLLM 0.31's DP aggregate from an individual scheduler pool.
+  Preserve raw fields and report unsupported or incomplete observations explicitly.
 - Apply nested backbone overrides through the materialized config without
   assigning them again to wrapper properties. Preserve root/shared overrides
   and flat-model behavior, and retain the authoritative engine's resolved text

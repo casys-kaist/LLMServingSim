@@ -139,9 +139,11 @@ model*. Serving two precisions of one model is two **model configs**.
 > `0.9` is fine. When a run does hit the ceiling the default is wrong: the
 > simulator does not model vLLM's activation peak or CUDA context, so `0.9`
 > here buys more KV cache than `0.9` does in vLLM. Read
-> `kv_cache.num_gpu_blocks` from the bench run's `meta.json` and pick the
-> `mem_util` whose startup "KV Cache Initialization" line reports the same
-> block count. On the bundled RTX 4090 example that is `0.833919`, and it is
+> each rank's complete `kv_cache.capacity.per_engine` observation from a new
+> bench run's `meta.json` and match its instance's startup block count through
+> `mem_util`. Do not treat a DP frontend aggregate as one pool. Historical
+> single-engine references retain `kv_cache.num_gpu_blocks`.
+> On the bundled RTX 4090 example the matched value is `0.833919`, and it is
 > the difference between -20.7% and +0.6% on TTFT mean.
 
 **`npu_mem.mem_util` is the nested CLI override.** The other runtime overrides are plain instance keys;

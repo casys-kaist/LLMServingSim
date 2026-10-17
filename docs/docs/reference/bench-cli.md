@@ -88,21 +88,22 @@ comparison is not apples-to-apples.
 | `--max-model-len` | int | `None` | vLLM `max_model_len`. `None` uses the model's own maximum |
 | `--dtype` | string | `bfloat16` | Model dtype |
 | `--kv-cache-dtype` | string | `auto` | vLLM `kv_cache_dtype` |
-| `--kv-cache-memory-bytes` | int | `None` | Explicit per-GPU KV cache budget for capacity-matched controls. `None` retains automatic memory profiling. Equal memory utilization need not resolve to equal cache capacity across boots; verify `kv_cache.num_gpu_blocks` for every compared run |
+| `--kv-cache-memory-bytes` | int | `None` | Explicit per-GPU KV cache budget for capacity-matched controls. `None` retains automatic memory profiling. Verify complete `kv_cache.capacity.per_engine` observations; equal utilization does not guarantee equal blocks, and a DP client scalar can be an aggregate |
 | `--seed` | int | `42` | Sampling seed |
 | `--load-format` | string | `auto` | vLLM `load_format`. `dummy` skips checkpoint reads and initializes random weights. For dense models, fixed-input/fixed-output-length replay makes this useful for controlled performance diagnostics, not automatically interchangeable end-to-end truth. Verify the resolved backend and KV block count on every boot. MoE routing can depend on real weights and activations, so dummy weights need a separate routing control. The load format is recorded in `meta.json` |
 | `--skip-tokenizer-init` | flag | off | Boot without loading a tokenizer; replay supplies token IDs directly. For a local config-only diagnostic, create a separate model directory containing `config.json`, pass that directory as `--model`, and use `--load-format dummy`. The benchmark does not materialize the repository's named JSON files into that layout for you. Real-weight runs still require checkpoint weights |
 | `--enforce-eager` | flag | off | Run vLLM eager, with `torch.compile` and CUDA graphs off. Leave it off when comparing with the default compiled target. An eager reference helps isolate execution-mode effects because ordinary layerwise acquisition requires module boundaries, while native MoE component tables can include graph timings. Record and match the target mode; graph padding alone does not reproduce graph kernel fusion. Saved in `meta.json` |
 | `--record-gate-stats` | flag | off | Observe distinct-expert counts between explicit workload start/end markers and write `gate_stats.json` for `--expert-routing-policy CUSTOM`. Concentrated routing is retained; counts do not identify warmup. Requires the `VLLM_MOE_ACTIVATED_LOG` source patch from `scripts/docker-vllm.sh` and **`--enforce-eager`**, because `.unique()` is not graph-capturable. The curve describes the recorded weights and inputs, not all deployments. Instrumented latency is marked diagnostic and rejected by `bench validate`. Dense models produce no curve and warn |
-| `--resolve-only` | flag | off | Boot the engine, write `meta.json`, and exit without replaying. What that buys is the one number a latency comparison depends on before any of it means anything: `kv_cache.num_gpu_blocks`, which vLLM only settles at boot after subtracting the activation peak and CUDA context. Cheap with `--load-format dummy`, so a config can be checked against the simulator's block count in a minute. `requests.jsonl` and `timeseries.csv` are not written — there is no run to record |
+| `--resolve-only` | flag | off | Boot the engine, write resolved settings and KV capacity metadata, then exit without replay. Match complete per-engine observations to simulator instances; the raw DP client count need not describe one engine. Dummy loading avoids checkpoint reads but does not certify a real-weight capacity. No `requests.jsonl` or `timeseries.csv` is written |
 
 :::note[Defaults differ from `python -m serving`]
 `bench run` defaults `--dtype` to `bfloat16` outright, where the
 simulator resolves it from the model config's `torch_dtype`. `bench`
 also has no `--block-size`: vLLM picks the KV block size itself, and
-the value it settled on is recorded in `meta.json` under
-`kv_cache.block_size`. Read it back and pass it to the simulator as
-`--block-size` if you want the two to line up.
+values it settled on are recorded in `meta.json`. For new DP runs use the
+corresponding complete `kv_cache.capacity.per_engine` entry, including its
+block size. Historical single-engine references retain `kv_cache.block_size`.
+Pass the matched value to the simulator as `--block-size` or an instance override.
 :::
 
 ### Workload and output
@@ -125,7 +126,7 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
 <output-dir>/
   meta.json          run metadata plus what vLLM *resolved*: kv_cache
                      (num_gpu_blocks, block_size, num_kv_tokens,
-                     gpu_memory_utilization), hardware (device name,
+                     gpu_memory_utilization, qualified capacity), hardware (device name,
                      total memory, UUID, CPU affinity, allowed NUMA nodes,
                      CUDA / torch versions), and
                      resolved_config -- the whole VllmConfig, one key
@@ -143,12 +144,29 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
                      gate_stats.json was reduced from
 ```
 
-`meta.json`'s `kv_cache.num_gpu_blocks` is the number worth reading
-first: it is the KV capacity the simulator has to match, and the only
-place vLLM's activation peak shows up, since the rest of its memory
-budget is known up front. The simulator does not model that peak, so
-its capacity at the same `mem_util` is an upper bound. See
-**[KV cache and memory](/docs/simulator/scheduling/kv-cache-and-memory)**.
+### KV capacity metadata
+
+`kv_cache.capacity` schema 1 qualifies the preserved raw client fields. On the
+reviewed vLLM 0.31 startup path, `num_gpu_blocks` sums the connected DP engines
+and `block_size` is the last engine's READY value. The legacy `num_kv_tokens`
+product is arithmetic, not a general aggregate token capacity.
+
+When `capacity.status` is `complete`, `capacity.per_engine` contains directly
+observed DP ranks, scheduler block counts, block sizes, native token capacities
+and parallelism. Match each simulator instance to its rank; do not divide a
+client total by DP or assume equal hardware guarantees equal budgets. These are
+scheduler-pool counts, not tensor traffic or physical per-GPU memory measurements.
+The simulator does not model the activation peak, so equal `mem_util` values do
+not ensure equal capacity; see **[KV cache and memory](/docs/simulator/scheduling/kv-cache-and-memory)**.
+
+The observer retains bounded native READY payloads only while `AsyncLLM`
+constructs, restoring its callback before decoding or request submission. No
+worker RPC or request instrumentation is added. Unreviewed source/version,
+external or dynamic topologies and incomplete observations produce
+`status: unknown`, `per_engine: null` and a reason. Source hashes and the reviewed
+image digest identify the audit, not detected container provenance. Resolve-only
+uses the same contract. Startup facts do not track later elastic changes;
+historical runs keep their original fields and recorded-version semantics.
 
 The dataset is never modified — generation lives in
 `workloads/generators`.

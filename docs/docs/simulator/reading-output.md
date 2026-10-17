@@ -147,8 +147,11 @@ comparing against real vLLM: it reports the capacity the simulator
 derived from `npu_mem.mem_size * mem_util - weight`. vLLM also
 subtracts its activation peak and CUDA context, which the simulator
 does not model, so this is an upper bound on vLLM's capacity at the
-same utilization. `bench run`'s `meta.json::kv_cache.num_gpu_blocks`
-is the number to compare it against.
+same utilization. For new benchmarks, compare each instance against its rank
+in complete `meta.json::kv_cache.capacity.per_engine` observations. The raw
+vLLM 0.31 DP client count sums connected engines, not one instance's pool.
+Historical single-engine references retain `kv_cache.num_gpu_blocks`;
+see the [capacity metadata contract](/docs/reference/bench-cli#kv-capacity-metadata).
 
 Note the banner reports the **CLI** values for `Max num seqs` and
 `Max batched tokens`. Per-instance overrides are not echoed here, so on

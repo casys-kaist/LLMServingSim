@@ -34,6 +34,7 @@ from pathlib import Path
 from bench.core import gate_stats as gate_stats_mod
 from bench.core import logger as log
 from bench.core import recorder
+from bench.core.kv_cache_metadata import ReadyResponseCapture
 
 
 # Observe caller overrides without changing vLLM's communication selection.
@@ -91,21 +92,22 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    help="vLLM kv_cache_dtype.")
     p.add_argument("--kv-cache-memory-bytes", type=_positive_int, default=None,
                    help="Explicit per-GPU KV cache budget. Use for capacity-matched "
-                        "controls; verify resolved num_gpu_blocks in meta.json. "
+                        "controls; verify kv_cache.capacity.per_engine in meta.json. "
                         "None keeps vLLM's automatic memory profiling.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
     p.add_argument("--resolve-only", action="store_true", dest="resolve_only",
                    default=False,
                    help="Boot the engine, write meta.json, and exit without "
-                        "replaying the dataset. What that buys is the one "
-                        "number a simulator has to match before any latency "
-                        "comparison means anything: kv_cache.num_gpu_blocks, "
-                        "which vLLM only settles at boot after subtracting "
+                        "replaying the dataset. Compare each engine's observed "
+                        "kv_cache.capacity.per_engine block count; the raw "
+                        "kv_cache.num_gpu_blocks can sum multiple DP engines. "
+                        "vLLM settles capacity at boot after subtracting "
                         "the activation peak and CUDA context. Cheap with "
                         "--load-format dummy (one boot, no weights, no "
                         "replay), so a config can be checked against the "
-                        "simulator's block count in a minute. requests.jsonl "
+                        "simulator's block count. Unsupported observations are "
+                        "marked unknown. requests.jsonl "
                         "and timeseries.csv are not written -- there is no "
                         "run to record.")
     p.add_argument("--skip-tokenizer-init", action="store_true",
@@ -294,20 +296,28 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         for name in ("fuse_allreduce_rms", "fuse_gemm_comms")
     }}
 
-    with log.stage("Booting AsyncLLM"):
-        with log.capture_stdio():
-            engine = AsyncLLM.from_engine_args(
-                engine_args, stat_loggers=[BenchStatLogger]
-            )
+    ready_capture = ReadyResponseCapture()
+    engine = None
+    try:
+        with log.stage("Booting AsyncLLM"):
+            with log.capture_stdio():
+                with ready_capture:
+                    engine = AsyncLLM.from_engine_args(
+                        engine_args, stat_loggers=[BenchStatLogger]
+                    )
+    except BaseException:
+        if engine is not None:
+            engine.shutdown()
+        raise
     started_at = datetime.datetime.utcnow().isoformat() + "Z"
 
     if args.resolve_only:
-        # Nothing to replay: snapshot what the engine resolved and stop. Kept
-        # inside the try/finally-free path deliberately -- there are no request
-        # records to lose, so a failure here should surface, not be swallowed.
-        resolved_config = _resolved_config(engine)
-        kv_cache = _kv_cache_facts(engine)
-        engine.shutdown()
+        # Snapshot before shutdown, with the startup callback already restored.
+        try:
+            resolved_config = _resolved_config(engine)
+            kv_cache = _kv_cache_facts(engine, ready_capture)
+        finally:
+            engine.shutdown()
         recorder.write_meta(
             output_dir,
             model=args.model,
@@ -333,10 +343,10 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         # must not lose the facts needed to explain its memory conditions.
         try:
             resolved_config = _resolved_config(engine)
-            kv_cache = _kv_cache_facts(engine)
         except Exception as exc:
             log.warning("could not snapshot the resolved vLLM config: %s", exc)
-            resolved_config, kv_cache = {}, {}
+            resolved_config = {}
+        kv_cache = _kv_cache_facts(engine, ready_capture)
         recorder.write_engine_start(output_dir,
             model=args.model, started_at=started_at,
             dataset_path=str(args.dataset), dataset_hash=_hash_file(Path(args.dataset)),
@@ -373,8 +383,8 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         tick_seconds=args.tick_seconds,
         # What vLLM resolved, not what we asked for: defaults filled in,
         # max_model_len inferred, num_gpu_blocks profiled. kv_cache is pulled
-        # out of it because num_gpu_blocks is the number a simulator has to
-        # match, and the only place vLLM's activation peak becomes visible.
+        # out with its observed scope: a client can sum several DP engines.
+        # Capacity matching uses directly observed per-engine block counts.
         kv_cache=kv_cache,
         hardware=_hardware_facts(),
         resolved_config=resolved_config,
@@ -609,19 +619,21 @@ def _num_experts(engine) -> int:
     return 0
 
 
-def _kv_cache_facts(engine) -> dict:
-    """The KV cache vLLM actually allocated.
+def _kv_cache_facts(engine, ready_capture=None) -> dict:
+    """Raw client cache fields, with separately qualified startup capacities.
 
-    ``num_gpu_blocks`` is the number the simulator has to match, and it is the
-    only place the activation peak and CUDA context that vLLM subtracts become
-    visible: everything else in the budget is known up front.
+    DP clients can sum engine counts. The legacy ``num_kv_tokens`` product is
+    raw arithmetic, not verified aggregate capacity when block sizes differ.
+    Only complete ``capacity.per_engine`` observations support matching an
+    individual engine's block pool; unknown observations are not inferred.
     """
+    capacity = (ready_capture or ReadyResponseCapture()).snapshot(engine)
     cfg = getattr(engine, "vllm_config", None)
     if cfg is None:
-        return {}
+        return {"capacity": capacity}
     cache = getattr(cfg, "cache_config", None)
     if cache is None:
-        return {}
+        return {"capacity": capacity}
     blocks = getattr(cache, "num_gpu_blocks", None)
     block_size = getattr(cache, "block_size", None)
     facts = {
@@ -631,6 +643,7 @@ def _kv_cache_facts(engine) -> dict:
         "gpu_memory_utilization": getattr(cache, "gpu_memory_utilization", None),
         "enable_prefix_caching": getattr(cache, "enable_prefix_caching", None),
         "kv_cache_memory_bytes": getattr(cache, "kv_cache_memory_bytes", None),
+        "capacity": capacity,
     }
     if isinstance(blocks, int) and isinstance(block_size, int):
         facts["num_kv_tokens"] = blocks * block_size

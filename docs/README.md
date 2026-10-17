@@ -54,6 +54,11 @@ source patches. It separates optional observers from correctness fixes and
 keeps historical validation versions explicit; an environment upgrade is not
 model/backend certification or a remeasurement of the committed bundles.
 
+The [bench reference](docs/reference/bench-cli.md#kv-capacity-metadata) distinguishes
+raw client KV fields from source-qualified per-engine startup observations.
+Capacity-matching guides must preserve this distinction for DP runs and retain
+historical artifact semantics; unknown observations are not inferred budgets.
+
 The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
 current table contract, required measurement inputs, CPU-only rebuild command,
 dynamic acquisition, resumable repetitions, independent skew-only TP selection,

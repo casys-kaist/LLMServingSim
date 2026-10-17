@@ -69,6 +69,7 @@ LLMServingSim/
 │   ├── core/                   # internals
 │   │   ├── runner.py           # AsyncLLM driver, captures RequestStateStats
 │   │   ├── recorder.py         # writes meta.json / requests.jsonl / timeseries.csv
+│   │   ├── kv_cache_metadata.py # qualified per-engine startup READY capacities
 │   │   ├── stat_logger.py      # custom vLLM StatLoggerBase that fills timeseries
 │   │   ├── validate.py         # bench-vs-sim comparison entry point
 │   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
@@ -1644,8 +1645,11 @@ arrival time to avoid busy-looping.
   so the simulator's capacity is an upper bound at the same utilization. That only matters
   when a run **saturates** the KV cache: below the ceiling nothing is preempted and the
   configured capacity is invisible in the results. **For a run that does saturate,
-  calibrate `mem_util` so the block count matches `kv_cache.num_gpu_blocks` in the bench
-  run's `meta.json` before comparing latency at all.** On the bundled RTX 4090 example
+  calibrate `mem_util` so each instance's block count matches its observed engine
+  pool in the bench run's `meta.json` before comparing latency at all.** New runs
+  record `kv_cache.capacity.per_engine`; require its complete status rather than
+  interpreting a DP client aggregate as one pool. Historical single-engine
+  references retain their recorded `kv_cache.num_gpu_blocks`. On the bundled RTX 4090 example
   (24 GB, pinned at its ceiling) the matched value is `0.833919`, which moves TTFT mean
   from -20.7% to +0.6% and TPOT mean from +12.9% to +0.2% against the same vLLM run. The
   RTXPRO6000 examples peak at 58-97% of budget on a 96 GB card and stay at `0.9` --
@@ -2544,6 +2548,18 @@ diagnostic inputs while retaining legacy request/timeseries compatibility.
 `--kv-cache-memory-bytes` fixes an explicit per-GPU budget, but comparisons must
 still verify resolved block counts. Dummy weights do not establish equivalent
 backend selection, routing or scheduling for a real checkpoint.
+
+`bench/core/kv_cache_metadata.py` observes native READY payloads only during the
+standalone synchronous constructor. Restore the callback before decoding or
+request submission; add no worker RPC, request hook or simulated latency.
+The reviewed vLLM 0.31 client sums connected engine block counts and retains the
+last READY block size. Preserve those raw fields; their product is not generally
+an aggregate token capacity. Match each instance to its directly observed DP
+rank under complete `kv_cache.capacity.per_engine`, never an inferred division.
+Version/source/client/topology or completeness failures remain explicit unknowns.
+The reviewed image digest is audit provenance, not runtime image detection.
+These startup scheduler-pool facts neither measure physical per-GPU allocation
+nor track later elastic changes. Do not relabel historical benchmark metadata.
 
 Use `bench/core/validate.py::_bench_latencies`, the implementation shared by
 `bench validate` and committed summaries, rather than ad hoc metric formulas.

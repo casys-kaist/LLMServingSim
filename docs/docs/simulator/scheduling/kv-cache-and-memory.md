@@ -289,8 +289,12 @@ activation peak or CUDA context, `0.9` here buys noticeably more KV cache than
 `0.9` does in vLLM. More cache means less preemption, so the simulated run
 finishes early and every latency metric skews with it.
 
-Set it from the measured run in that case. `python -m bench run` records what
-vLLM actually resolved in `meta.json`:
+Set it from the measured run in that case. For new runs, use complete
+`kv_cache.capacity.per_engine` observations in `meta.json`, matching each
+simulator instance to the native DP rank. The raw vLLM 0.31 client block count
+sums connected engines; do not use it as one pool or infer an equal division.
+See the [capacity metadata contract](/docs/reference/bench-cli#kv-capacity-metadata).
+The historical single-engine RTX 4090 reference records:
 
 ```json
 "kv_cache": { "num_gpu_blocks": 2588, "block_size": 16, "num_kv_tokens": 41408 }

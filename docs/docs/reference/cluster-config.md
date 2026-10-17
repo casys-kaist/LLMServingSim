@@ -412,9 +412,12 @@ invisible. On a card with headroom, leave it at the default.
 When a run does saturate, the default is the wrong number: the simulator does
 not model vLLM's activation peak or CUDA context, so `0.9` here gives **more**
 KV cache than vLLM gets at the same fraction. Read
-`kv_cache.num_gpu_blocks` from the bench run's `meta.json` and pick the
-`mem_util` whose **KV Cache Initialization** banner reports that same block
-count. On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — that is
+each rank's complete `kv_cache.capacity.per_engine` observation from the new
+bench run's `meta.json` and match that instance's **KV Cache Initialization**
+block count through `mem_util`. Do not treat a DP client aggregate as one pool;
+see the [capacity metadata contract](bench-cli.md#kv-capacity-metadata).
+Historical single-engine references retain `kv_cache.num_gpu_blocks`.
+On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — the value is
 `0.833919`, and it takes the run from -20.7% TTFT / +12.9% TPOT to
 +0.6% / +0.2%. See [Validation](../validation) and
 [KV cache and memory](../simulator/scheduling/kv-cache-and-memory).

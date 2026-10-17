@@ -69,6 +69,12 @@ The example uses `mem_util: 0.833919` to reproduce those 2,588 blocks.
 This matches a recorded capacity, not a latency target; its current errors
 are listed in the result tables below.
 
+That JSON is the historical single-engine reference. For new DP benchmarks,
+use complete `kv_cache.capacity.per_engine` observations and match each
+instance to its native rank. vLLM 0.31's raw client block count sums connected
+engines; do not use it as one pool or divide it to infer unobserved capacities.
+See the [capacity metadata contract](/docs/reference/bench-cli#kv-capacity-metadata).
+
 The three RTXPRO6000 configurations stay at `0.9`, and the reason is not that
 they are far from the ceiling — Qwen3-32B's pool reaches 97% of its budget.
 It is that **neither side preempts a single request** on any of the three, so

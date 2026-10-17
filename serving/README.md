@@ -2,6 +2,11 @@
 
 LLMServingSim simulator core. Run as `python -m serving --cluster-config <...> [...]`.
 
+When comparing a new DP benchmark, match each instance's KV pool to the
+corresponding complete `kv_cache.capacity.per_engine` observation, not the
+frontend's aggregate block count. This does not change the simulator's memory
+formula; see the [capacity metadata contract](../docs/docs/reference/bench-cli.md#kv-capacity-metadata).
+
 Declared row-output projections, including Qwen's `gdn_out_proj`, carry their
 ordinary TP AllReduce at activation dtype. Stored latency rows are unchanged;
 TP1 emits no reduction. See [parallelism mechanics](../docs/docs/simulator/parallelism-mechanics.md).

@@ -14,6 +14,7 @@ bench/                         Python package: python -m bench
 ├── core/                       internals
 │   ├── runner.py               AsyncLLM driver, captures RequestStateStats
 │   ├── recorder.py             writes meta.json / requests.jsonl / timeseries.csv
+│   ├── kv_cache_metadata.py     qualified per-engine startup READY capacities
 │   ├── stat_logger.py          custom vLLM StatLoggerBase that fills timeseries
 │   ├── validate.py             bench-vs-sim comparison entry point
 │   ├── plots.py                throughput / running-waiting / latency-CDF helpers
@@ -182,8 +183,20 @@ bench/results/<run_id>/
 `--prefix NAME` prepends `NAME_` to each validation filename. `meta.json`
 includes the dataset hash, vLLM version, requested engine kwargs, wall-clock
 start/end, resolved `VllmConfig`, device placement and `kv_cache` fields.
-Match `kv_cache.num_gpu_blocks` and `block_size` to the simulator; equal
-memory-utilization settings alone do not account for vLLM's activation budget.
+For new runs, match each simulator instance to its rank in
+`kv_cache.capacity.per_engine` only when `capacity.status` is `complete`.
+The reviewed vLLM 0.31 client sums connected DP engines in the raw
+`kv_cache.num_gpu_blocks` and retains the last READY `block_size`; their
+`num_kv_tokens` product is not a general aggregate token capacity. Never divide
+the total by DP to invent per-engine budgets. Equal memory-utilization settings
+alone do not account for vLLM's activation budget.
+
+The bounded observer retains native READY payloads during engine construction
+and restores the callback before decoding or request submission. It adds no
+request instrumentation. Unsupported installed sources or topologies and
+incomplete observations record `status: unknown`, `per_engine: null` and a reason.
+These are startup scheduler-pool facts, not physical GPU memory or later elastic
+changes. Historical artifacts keep their original fields and version semantics.
 
 ## Latency definitions (sim ↔ bench)
 
