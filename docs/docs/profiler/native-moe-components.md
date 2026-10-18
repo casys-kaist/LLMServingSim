@@ -292,8 +292,11 @@ requires a complete matching component acquisition. Corrupt contracts,
 checksum mismatches and queries outside an installed table's supported geometry
 are errors rather than silently extrapolated measurements.
 Deployment selection caches both loaded tables and absent coverage for the run,
-avoiding repeated metadata reads on every MoE layer. Corrupt contracts are not
-cached as missing coverage. Restart the simulation after changing a bundle.
+sharing these caches through the persistent profile bundle rather than recreating
+them in each batch view. Table validation and interpolation-surface construction
+therefore occur once per deployment, keyed by TP, DP, rank and sequence-parallel
+mode. Corrupt contracts are not cached as missing coverage. Restart the simulation
+after changing a bundle; cache reuse does not change lookup or routing arithmetic.
 
 ## Runtime communication and limits
 

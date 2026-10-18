@@ -507,6 +507,8 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         "component_layout_catalogs": {},
         "component_layout_sequences": {},
         "component_layout_sites": {},
+        "native_moe_index_present": {},
+        "native_moe_components": {},
         # One LayerSpec per decoder layer, from the checkpoint's own config.
         # Empty only when the config declares no num_hidden_layers, which the
         # simulator has already failed on by the time it gets here.

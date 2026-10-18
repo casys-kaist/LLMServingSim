@@ -74,7 +74,8 @@ selectors and deployment-matched execution boundaries. New eager-only tables
 separate input rows, active local experts and local assignments. Token axes prefer
 serving capture sizes; uncovered token ranges and routing-work axes default to
 doubling, with required geometry boundaries retained. Historical
-whole-block and component tables remain readable until remeasurement. A separately
+whole-block and component tables remain readable until remeasurement. Serving
+reuses validated MoE lookup structures across batches. A separately
 admitted local path preserves native quantized experts and measures surrounding
 shared/wrapper work; its summed CUDA work durations do not model branch overlap.
 Recurrent warmup checks respect native metadata layouts without adding CPU time;

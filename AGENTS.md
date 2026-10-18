@@ -2363,6 +2363,11 @@ without that table requires a complete matching component acquisition.
 Cache missing deployment coverage for the lifetime of the simulation, just like
 loaded native tables: bundles are immutable during a run. Do not reread the same
 metadata on every layer. Corrupt contracts remain errors, never cached misses.
+Initialize `native_moe_index_present` and `native_moe_components` on the persistent
+perf DB before creating per-batch shallow copies. Otherwise the copies discard
+new cache entries and rebuild metadata and interpolation support every batch.
+Keep TP-specific attention caps on each view and native deployment keys separate;
+cache reuse changes host work, not measured latency or routing.
 
 Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
 capability. `defer_moe_finalize` is a request flag in 0.28 and a request method

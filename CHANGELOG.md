@@ -100,6 +100,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Retain native MoE deployment tables and interpolation support across batch
+  views, avoiding repeated metadata parsing and surface construction without
+  changing simulated timings, routing or coverage checks.
 - Preserve TP-stable replicas when starting or resuming ordinary higher-TP
   categories, not only coupled layouts. Copied rows keep their source identity
   and never substitute for unmeasured local shots.

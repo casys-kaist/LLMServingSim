@@ -101,6 +101,16 @@ The packed Qwen GDN core has its own tensor-size boundary, and declared row-outp
 projections carry ordinary TP reductions. These are independent of profile timing;
 see [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces).
 
+### Native MoE lookup reuse
+
+Native component tables are validated on first use for each TP/DP/rank and
+sequence-parallel target. The persistent perf DB owns both deployment-selection
+and table caches, so per-batch views share the same interpolation structures.
+TP-specific attention caps remain local to each view. Missing coverage is cached
+separately from invalid data, which still raises an error. This reuse changes
+host execution cost, not latency values, routing decisions or trace contents.
+Restart the simulation after replacing a bundle.
+
 ### Native DSA duration replay
 
 Native DeepSeek-V3.2 tables use site-aware sequences: a shared fused

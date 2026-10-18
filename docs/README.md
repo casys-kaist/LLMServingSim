@@ -57,8 +57,9 @@ work, including shared experts and latent transforms, under explicit capability
 and exact native-reference checks. Summed CUDA work durations do not model branch
 overlap or establish a new published benchmark result. Isolated component-engine
 KV budgets preserve requested limits and remain separate from main cache metadata.
-Its coverage-selection cache assumes immutable bundles during a simulation;
-missing coverage and corrupt installed data have different failure behavior.
+Its deployment tables and coverage-selection cache persist across batch views
+of an immutable bundle; missing coverage and corrupt installed data have
+different failure behavior.
 New acquisition defaults to DP1, measures eagerly without graph capture and uses
 configurable independent input-row, active-expert and assignment axes. Historical
 tables retain their reading semantics. MoE token axes prefer target graph

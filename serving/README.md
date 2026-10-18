@@ -17,7 +17,9 @@ are refused; historical unmarked tables retain their original decomposition.
 Packed GDN sizing follows its operator boundary, with persistent state accounted
 separately. Declared row-output reductions include Qwen's `gdn_out_proj`; unsupported
 attention-wide sequence-parallel deployments fail before trace emission.
-Publish a complete bundle and keep it unchanged while readers use it. See the
+Native MoE deployment tables and interpolation structures persist across batch
+views, with separate TP/DP/rank/sequence-parallel cache entries. Publish a complete
+bundle and keep it unchanged while readers use it. See the
 [layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
 
 MiniMax-M3 indexer traces use independent BF16 query/cache bytes and int32

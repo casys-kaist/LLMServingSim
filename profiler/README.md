@@ -711,7 +711,8 @@ remain independent geometric axes, since capture sizes do not determine routing.
 Conditioning and repeated measurements remain required; sampling
 alone does not establish an interpolation error bound or full-model accuracy.
 
-The simulator constructs the new tables' Delaunay support at load time and uses
+The simulator constructs each deployment table's Delaunay support on first use,
+retains it across batch views for that immutable bundle, and uses
 cached barycentric interpolation in physical N/A/M coordinates, with at most four
 measured points per query. This is table interpolation, not a fitted latency
 predictor. Historical balanced-assignment component tables retain their lookup.
