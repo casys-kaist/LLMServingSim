@@ -96,6 +96,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Preserve native attention head width through TP configuration file reloads,
+  including derived widths and nested text backbones. Check the actual native
+  reconstruction rather than an in-memory update; incorrectly shaped projection,
+  attention and skew tables require fresh acquisition, not metadata relabelling.
 - Bind ordinary CSV replacement and TP-stable replication to a pending data
   checksum before publication, preventing interrupted forced remeasurement from
   accepting old timings under new metadata. Resume matching pending data without

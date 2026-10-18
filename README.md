@@ -98,7 +98,8 @@ width per TP; historical bundles retain their original semantics.
 Profiler precision labels keep checkpoint quantization separate from floating
 activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
 before acquiring an alternate precision.
-Nested text-model overrides are materialized before native configuration loading;
+Nested text-model overrides and TP head-width preservation are checked through
+native configuration file reloads;
 see [configuration and TP emulation](https://llmservingsim.ai/docs/profiler/running#reduced-model-configurations).
 Native DeepSeek-V3.2 acquisition has an explicit
 [four-table runtime contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-dsa-acquisition).

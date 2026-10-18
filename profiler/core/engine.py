@@ -291,7 +291,7 @@ def _materialize_config(
     them to the wrapper can hit a read-only proxy property or create a second,
     conflicting value. Unrelated or independently declared wrapper overrides
     stay forwarded. Only keys the backbone already declares are touched,
-    apart from the decoder depth.
+    apart from the decoder depth and a scalar attention head-width override.
     """
     from .stack import materialize_prefix
     written = materialize_prefix(model_config, kwargs.get("hf_overrides") or {})
@@ -307,7 +307,10 @@ def _materialize_config(
     kwargs["hf_overrides"] = overrides
     if isinstance(inner, dict):
         for key, value in overrides.items():
-            if key in inner or key == "num_hidden_layers":
+            # A native scalar head width may be derived rather than declared
+            # in the raw text config. Materialize the TP-preservation pin in
+            # the backbone and consume it below like other text-only fields.
+            if key in inner or key in ("num_hidden_layers", "head_dim"):
                 inner[key] = copy.deepcopy(value)
     else:
         inner = written

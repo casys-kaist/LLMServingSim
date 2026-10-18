@@ -269,9 +269,16 @@ do not leave a dense branch at full width while reducing the routed branch.
 Resolve the unsharded local configuration through installed vLLM first, after
 user overrides and decoder-prefix materialization. `hooks/tp_shape.py` preserves
 the native head width when reducing the head count would otherwise change it;
-unsupported special-width changes fail rather than guessing. Nested text
+validate both the sharded candidate and any scalar-width pin by materializing
+and reloading the raw config through vLLM, not by updating an already resolved
+config object. A nested backbone can derive `head_dim` without declaring it in
+JSON; write an admitted pin into that backbone and consume the forwarded key.
+Unsupported special-width changes fail rather than guessing. Nested text
 fields and user shape overrides feed the same sharding step. Strict dimension
 divisibility remains; this does not add replicated-KV-head TP emulation.
+Incorrectly shaped timings require fresh acquisition, including affected dense
+projections, attention and skew; use a separate output root or explicit category
+replacement. Source edits alone do not invalidate ordinary/skew resume identities.
 Consume nested backbone-only overrides after materializing them in the local
 config; do not reapply them to wrapper properties that may be read-only.
 Keep independently declared root fields, including shared root/text token IDs,

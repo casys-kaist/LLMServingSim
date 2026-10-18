@@ -163,7 +163,10 @@ The output guide distinguishes recorded engine arguments from resolved dtypes;
 alternate profiler variants are not automatically selected by the simulator.
 Naming changes do not migrate prior data or bypass acquisition identities.
 TP emulation resolves local native configuration defaults and user overrides
-before sharding, preserving head width; acquisition records retain that geometry.
+before sharding, preserving head width through materialized-file reloads rather
+than in-memory updates. The running guide covers nested scalar-width pins and
+fresh acquisition of incorrectly shaped tables; source edits alone do not
+invalidate ordinary/skew resume keys.
 Its historical whole-block MoE section documents retained reads, not an available
 acquisition path. Native component grids and runtime interpolation are separate.
 The resume guide also distinguishes atomic progress checkpoints from complete

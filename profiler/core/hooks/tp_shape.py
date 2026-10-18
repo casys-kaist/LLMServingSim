@@ -18,10 +18,13 @@ def _converter(hf_config):
     return cls(hf_config, text), text
 
 
-def preserve_resolved_head_dim(original_hf_config, tp_overrides):
+def preserve_resolved_head_dim(original_hf_config, tp_overrides, *, reload_config):
     """Preserve native scalar head width, refusing an unaudited special case.
 
     User shape overrides must already be resolved in the original config.
+    ``reload_config`` must materialize the raw configuration and reload it
+    through vLLM, exactly as engine creation does. Updating a constructed
+    config retains derived defaults and cannot validate a new config file.
     Neither the original config nor the TP override dictionary is mutated.
     """
     # Initialize the public package first: converter-first imports are circular
@@ -33,8 +36,7 @@ def preserve_resolved_head_dim(original_hf_config, tp_overrides):
     before_converter, before_text = _converter(original)
     before = before_converter.get_head_size()
     result = copy.deepcopy(tp_overrides)
-    modified = copy.deepcopy(original)
-    modified.get_text_config().update(result)
+    modified = reload_config(result)
     after_converter, _ = _converter(modified)
     after = after_converter.get_head_size()
     evidence = dict(before_head_size=before, uncorrected_head_size=after,
@@ -57,7 +59,7 @@ def preserve_resolved_head_dim(original_hf_config, tp_overrides):
     if 'head_dim' in result:
         raise ValueError('Resolve explicit head_dim changes before TP emulation')
     result['head_dim'] = before
-    modified.get_text_config().update({'head_dim': before})
+    modified = reload_config(result)
     if _converter(modified)[0].get_head_size() != before:
         raise ValueError('Pinned head_dim does not preserve native resolved head size')
     evidence.update(corrected_head_size=before, added_override=True)
@@ -79,14 +81,23 @@ def resolved_tp_overrides(model_config, unsharded_overrides, tp, shard_fields,
 
     if type(tp) is not int or tp < 1:
         raise ValueError('TP must be a positive integer')
-    config_kwargs = {'hf_overrides': copy.deepcopy(unsharded_overrides)}
-    written = materialize(model_config, config_kwargs)
-    with tempfile.TemporaryDirectory(prefix='profiler_shape_') as directory:
-        path = Path(directory) / 'config.json'
-        path.write_text(json.dumps(written))
-        original = get_config(path, trust_remote_code=False, config_format='hf',
-                              hf_overrides_kw=config_kwargs['hf_overrides'],
-                              local_files_only=True)
+
+    def load_native(extra_overrides):
+        # Materialization consumes nested overrides. Start every candidate
+        # from fresh inputs, never the previous candidate's forwarded kwargs
+        # or a resolved config whose derived defaults are already populated.
+        config_kwargs = {'hf_overrides': {
+            **copy.deepcopy(unsharded_overrides), **copy.deepcopy(extra_overrides)}}
+        written = materialize(copy.deepcopy(model_config), config_kwargs)
+        with tempfile.TemporaryDirectory(prefix='profiler_shape_') as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps(written))
+            resolved = get_config(path, trust_remote_code=False, config_format='hf',
+                                  hf_overrides_kw=config_kwargs['hf_overrides'],
+                                  local_files_only=True)
+        return resolved, written
+
+    original, written = load_native({})
     text = original.get_text_config()
     raw = written.get('text_config')
     declared = raw if isinstance(raw, dict) else written
@@ -100,4 +111,13 @@ def resolved_tp_overrides(model_config, unsharded_overrides, tp, shard_fields,
         if value % tp:
             raise ValueError(f'model config field {name!r}={value} is not divisible by tp={tp}')
         fields[name] = value // tp
-    return preserve_resolved_head_dim(original, fields)[0]
+
+    def reload_config(overrides):
+        resolved, _ = load_native(overrides)
+        text = resolved.get_text_config()
+        for name, value in overrides.items():
+            if getattr(text, name, None) != value:
+                raise ValueError(f'Native configuration did not preserve TP override {name!r}={value!r}')
+        return resolved
+
+    return preserve_resolved_head_dim(original, fields, reload_config=reload_config)[0]

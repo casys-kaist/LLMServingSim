@@ -49,14 +49,23 @@ TP; see [engine metadata](./output-bundle#engine_resolved).
 For TP emulation, installed vLLM resolves the local unsharded configuration
 after user overrides. The profiler then shrinks declared TP dimensions while
 preserving the original attention head width. Otherwise a derived width can
-grow when the head count shrinks, as in Mixtral configurations without an
-explicit `head_dim`. Nested text fields follow the same resolution path.
+grow when the head count shrinks, as in Llama or Mixtral configurations without
+an explicit `head_dim`. Both the sharded candidate and any scalar-width pin are
+checked by materializing and reloading the raw configuration through vLLM.
+Updating an already constructed config is insufficient: it can retain a derived
+default that a new config file would recompute. The preserved width comes from
+the user's effective unsharded configuration, not a model-specific constant.
+Nested text fields follow the same resolution path; a required scalar `head_dim`
+pin is written inside the backbone even when its raw JSON omits the field, and
+is not forwarded again as an unrelated wrapper property.
 Separately declared `dense_intermediate_size` is reduced by TP as well, so
 hybrid dense/MoE stacks do not retain a full-width dense branch during emulation.
 Unsupported specialized width changes and non-divisible dimensions fail before
 engine construction; this does not add replicated-KV-head emulation.
 Old affected rows must be measured again in a separate output root or with an
-explicit category refresh. Changing their metadata is not a correction.
+explicit category refresh, including head-width-dependent projections, attention
+and raw skew used for calibration. Source edits alone do not invalidate existing
+ordinary/skew resume identities. Changing metadata is not a correction.
 
 ## Quick start
 

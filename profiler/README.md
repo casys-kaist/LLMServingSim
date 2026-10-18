@@ -682,9 +682,14 @@ duplicate assignments to wrapper properties. Root-only and shared root/text
 overrides stay forwarded; flat model configuration is unchanged.
 
 TP emulation resolves user overrides before sharding and preserves vLLM's
-unsharded attention head width; separately declared `dense_intermediate_size`
-is sharded alongside the other TP dimensions. Shape-construction changes invalidate acquisition
-resume; old incorrectly shaped rows need remeasurement, not metadata relabelling.
+unsharded attention head width. Sharded candidates and any width pin are checked
+after writing and reloading the raw config, so constructor-derived defaults
+cannot silently change the measured shape. Nested backbones receive a required
+scalar `head_dim` pin even when that field is absent from their raw JSON.
+Separately declared `dense_intermediate_size` is sharded alongside the other TP
+dimensions. Old incorrectly shaped projections, attention and skew need fresh
+measurement in a separate output root or explicit category replacement, not
+metadata relabelling; a source edit alone does not invalidate their resume keys.
 
 ### MoE measurement
 
