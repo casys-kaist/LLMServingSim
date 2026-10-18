@@ -369,16 +369,15 @@ Runtime versions are recorded provenance; historical source hashes are not exact
 execution admission. Actual native APIs, dtypes, layouts and backend modes must
 still satisfy the contract.
 
-The historical representation requires all four categories — `dense`,
-`per_sequence`, `attention`, `moe` — to be complete
-with matching identities and valid whole shots, even though the changed component
-sites principally span dense and attention. Missing head/MoE rows or engine
-evidence cannot be certified by completing attention alone. Compatible interrupted
-shots resume; incompatible old rows require fresh acquisition, never a metadata
-rewrite. New full acquisition is blocked by unsupported quantized MoE components;
-ordinary category slices and coverage remain available, but cannot replace its
-historical whole-block table. Skew uses the same selected attention components
-and runtime identity.
+New publication requires `dense`, `per_sequence` and `attention` to be complete
+with matching runtime identities, per-category engine evidence and valid whole
+shots. Native MoE components have a separate deployment contract and publication
+record; a fresh bundle requires that complete acquisition too, without waiting
+for a removed `moe.csv` acquisition. Completing attention alone cannot certify
+the head or MoE. Historical records that include a whole-block `moe` category
+retain their original completion checks. Compatible interrupted shots resume;
+incompatible old rows require fresh acquisition, never a metadata rewrite.
+Skew uses the same selected attention components and runtime identity.
 
 These tables currently support only explicit
 [duration trace replay](../simulator/trace-generation.md#native-dsa-duration-replay).
@@ -399,15 +398,19 @@ backends; a catalog alias alone cannot admit another native implementation.
 
 The independently supplied nested configuration defines widths, expert count,
 top-k, the decoder schedule and residual block geometry. Shared stack helpers
-derive the smallest prefix covering each category's axes. Historical whole-block
-MoE acquisition used the MLP axis. For the shipped configuration these are four
-decoder layers, or two for the historical MoE slice,
+derive the smallest prefix covering each category's axes. Native MoE acquisition
+uses the MLP axis. For the shipped configuration these are four
+decoder layers, or two for the MoE slice,
 without reducing widths or experts. No fixed checkpoint digest or decoder depth
 stands in for validating the supplied configuration and observed runtime.
 
-Ordinary category `slice` commands use the existing grids. New full Kimi profiles
-are blocked by unsupported quantized MoE components; historical whole-block
-measurements remain readable. Skew and MTP are not supported.
+Ordinary category `slice` commands use the existing grids. Full profiles require
+complete ordinary/contextual data and independently published native local MoE
+components, including measured wrapper work around the processed MXFP4 experts.
+The live adapter must admit the actual backend and capabilities; catalog presence
+does not establish support on another device. Explicit local DP1/EP1 selectors
+are allowed. Skew and MTP remain unsupported; full profiles require `--skip-skew`.
+Historical whole-block measurements remain readable under their original contract.
 See the [bounded invocation](./running#native-kimi-profiling). Each TP directory
 contains the ordinary CSVs; root `per_tp[tp].categories.<category>` stores its
 `contract`, publication `status` and completed `csv_sha256`. Shared `CategoryRecord`
@@ -702,9 +705,20 @@ These are separate from the legacy whole-block `moe.csv`: local gate/routing,
 gathered experts and local finalization have different token domains and
 eager measurements. New acquisition does not capture isolated CUDA graphs.
 Historical tables retain their recorded modes. Global expert count and top-k are preserved.
-DP1 records only `gate_routing` and `experts`, with verified identity preparation
+Modular DP1 records only `gate_routing` and `experts`, with verified identity preparation
 and aliased no-op finalization in `contract.local_execution`; no synthetic copy
 or zero-latency row is stored. Target-specific backend selection is retained.
+The separate live TP1/DP1/EP1 contract records `gate_routing`, `experts` and
+`wrapper`. It preserves native processed weights, backend and expert prepare/finalize
+work; the wrapper retains shared experts, latent transforms and combination work
+after excluding gate/router and routed-kernel activities. Exact native-method
+references and unchanged state are required outside timing. The metric is a sum
+of unique CUDA activity durations, not overlap-aware elapsed latency.
+Recorded gate dtype/width can differ from expert width. Physical expert weight
+bytes and cloned-bank allocation bytes are distinct, with wrapper weights counted
+outside gate/expert storage. The isolated engine's private KV-memory cap preserves
+requested limits and requires native capacity validation; its actual settings stay
+in the MoE contract's observations, never replacing main-engine cache facts.
 New expert tables sample physical tokens N, active local experts A and local
 assignments M using `--moe-grid-factor` (default `2`) and mandatory feasible
 geometry corners. The recorded `expert_sampling` contract identifies these axes
@@ -720,10 +734,13 @@ sizes do not determine active experts or assignments. The simulator
 precomputes Delaunay support at load time and caches barycentric interpolation
 in physical coordinates, using at most four measured rows per query. It fits no
 latency predictor. Historical balanced-assignment tables retain their existing
-lookup. Quantized and shared-expert acquisition remains unsupported.
+lookup. The live contract admits quantized/shared execution by actual capability;
+unsupported layouts or deployments are rejected rather than mapped to an old table.
 
 Matching tables are selected automatically, with deployment, dtype, coverage
-and checksum validation. See [Native MoE components](./native-moe-components)
+and checksum validation. Missing coverage can use legacy fallback only when a
+historical whole-block table exists; fresh bundles require complete matching
+components. See [Native MoE components](./native-moe-components)
 for the full schema, raw repetitions, resume and unsupported-path behavior.
 
 ## `moe.csv` (legacy whole-block MoE profiles)

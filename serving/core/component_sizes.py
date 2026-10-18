@@ -378,6 +378,11 @@ class ContextualProfileBundle:
                 occurrences[name] = max(occurrences.get(name, 0), count)
         records, facts, versions = [], {}, []
         for category, declared in architecture['catalog'].items():
+            # MoE is independently published by deployment. No ordinary MoE
+            # acquisition exists for new native bundles; its complete contract
+            # is checked when the trace selects the component table.
+            if category == 'moe':
+                continue
             ordinary = profile.ordinary_catalog(declared)
             if not ordinary:
                 continue

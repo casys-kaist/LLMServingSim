@@ -22,18 +22,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   Default geometric spacing to doubling except attention request counts, which
   retain square-root-of-two spacing. Add `--grid-factor` and target-only
   `--cudagraph` options; graph coordinates do not make timings graph measurements.
-- Make eager native MoE component profiling the default at DP1, with full-EP
-  deployment targets selected through `--tp`, `--dp` and optional `--ep`,
-  a configurable doubling grid and independent input-row,
-  active-expert and assignment axes. Remove isolated CUDA graph capture, its unused collector and
-  whole-block acquisition; retain historical table reads until remeasurement.
-  Use routing-policy work counts and cached physical-coordinate interpolation
-  for new tables without changing serving graph padding or communication costs.
-  Preserve global routing geometry and target-specific backend selection; omit
-  verified no-op boundaries and DP collectives while retaining TP output reduction.
-  Tensor-sharded and unsupported native backends retain their separate coverage limits.
-  Cache missing deployment coverage to avoid repeated per-layer metadata reads;
-  invalid installed tables still fail rather than silently falling back.
+- Default eager native MoE profiling to DP1, with deployment targets selected by
+  `--tp`, `--dp` and optional `--ep`, independent input-row/active-expert/assignment
+  grids and cached physical-coordinate interpolation. Remove isolated graph and
+  whole-block acquisition while preserving historical reads and modular DP+EP
+  behavior. Add a capability-admitted live TP1/DP1/EP1 path that retains native
+  processed quantized weights/backend and measures shared/latent wrapper work
+  separately from gate/routing and routed experts. Require exact native-method
+  output checks, unchanged state and storage-preserving conditioned banks.
+  Summed CUDA work durations do not model concurrent elapsed latency. Bound the
+  isolated engine's KV allocation without reducing requested limits or replacing
+  main cache metadata; native capacity checks remain mandatory. Fresh bundles
+  require complete matching components, and fallback requires an existing
+  whole-block table. See the [component contract](https://llmservingsim.ai/docs/profiler/native-moe-components).
 - Record completed worker CUDA-graph observations in new benchmarks and allow
   explicit CPU-only import into profile metadata. Reuse matching serving policies
   separately from eager acquisition settings; preserve explicit instance overrides
@@ -69,7 +70,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   semantics and publication schemas require fresh acquisition, not relabeling.
   This does not certify distributed serving, resident capacity or benchmark accuracy.
 - Add runtime-admitted native DeepSeek-V3.2 profiling with site-aware component
-  boundaries and coordinated dense, head, attention and MoE tables. Preserve
+  boundaries and coordinated dense, head and attention tables, plus independently
+  published native MoE components. Preserve historical whole-block completion
+  checks and Kimi's separate contextual completion; admit explicit local DP1/EP1
+  selectors without enabling distributed native execution. Preserve
   historical decompositions; expose explicit duration-only trace replay with
   native sampler output widths, rejecting unsupported serving/capacity modes.
 - Allow catalogs to declare exact function/method capture boundaries and timing

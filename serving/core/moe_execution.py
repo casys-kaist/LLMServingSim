@@ -20,6 +20,21 @@ def _warn(ctx, reason):
                      'EP table; DP/backend matching is not verified and accuracy may degrade.', reason)
 
 
+def _legacy_fallback(ctx, reason, *, warn=True):
+    """Only retained whole-block data can provide historical fallback."""
+    if 'legacy_moe_present' not in ctx.perf_db:
+        tps = ctx.perf_db['available_tps']
+        legacy_tp = 1 if 1 in tps else tps[0]
+        ctx.perf_db['legacy_moe_present'] = (
+            Path(ctx.perf_db['root']) / f'tp{legacy_tp}' / 'moe.csv').is_file()
+    if not ctx.perf_db['legacy_moe_present']:
+        raise MoeCoverageError('Native MoE components are required for this bundle: '
+                               + reason + '. Complete a matching native MoE acquisition.')
+    if warn:
+        _warn(ctx, reason)
+    return False
+
+
 def _collective(kind, dims, size):
     suffix = '' if dims is None else ':'+','.join(str(int(v)) for v in dims)
     return f'{kind}{suffix} {size}'
@@ -31,9 +46,8 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     if ctx.tp_size not in available:
         available[ctx.tp_size] = component_index(root) is not None
     if not available[ctx.tp_size]:
-        if ctx.dp_sum_total_len:
-            _warn(ctx, 'no DP-aware native component table is installed')
-        return False
+        return _legacy_fallback(ctx, 'no native component table is installed',
+                                warn=bool(ctx.dp_sum_total_len))
     counts = ctx.dp_token_counts
     if not counts:
         if ctx.dp_sum_total_len:
@@ -46,8 +60,7 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     if ctx.local_ep != ctx.tp_size or ctx.ep_total != ctx.tp_size*dp:
         if dp > 1:
             raise ValueError('Native MoE requires full TP*DP expert parallelism')
-        _warn(ctx, 'native tables cover full TP*DP expert parallelism, not tensor-sharded experts')
-        return False
+        return _legacy_fallback(ctx, 'native tables cover full TP*DP expert parallelism, not tensor-sharded experts')
     entries = ctx.perf_db['architecture']['catalog'].get('moe') or {}
     if len(entries) != 1:
         raise ValueError('Native MoE needs one unambiguous catalog component binding')
@@ -74,8 +87,7 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
                 # Invalid contracts still raise instead of becoming a fallback.
                 cache[key] = None
         if cache[key] is None:
-            _warn(ctx, f'TP={ctx.tp_size}, DP={dp}, EP={ctx.ep_total}, rank={rank}')
-            return False
+            return _legacy_fallback(ctx, f'TP={ctx.tp_size}, DP={dp}, EP={ctx.ep_total}, rank={rank}')
         tables.append(cache[key])
         domains.append(target.token_domains(counts))
     domain = domains[0]
@@ -83,8 +95,7 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
         raise ValueError('Local TP ranks disagree on the modeled token domains')
     if (ctx.gate.routing_policy not in ('BALANCED', 'CUSTOM')
             and any(not table.independent_assignments for table in tables)):
-        _warn(ctx, f'policy={ctx.gate.routing_policy} requires independently measured assignment counts')
-        return False
+        return _legacy_fallback(ctx, f'policy={ctx.gate.routing_policy} requires independently measured assignment counts')
     mode_value = getattr(bctx.batch, 'cudagraph_mode', 0)
     if mode_value not in (0,1,2):
         raise ValueError('Unknown model-forward execution mode')
@@ -94,6 +105,9 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     weight_loc = get_device(ctx.placement, layer_num, 'moe', 'weights')
     parts = []
     payloads = None
+    components = tables[0].components
+    if any(table.components != components for table in tables):
+        raise ValueError('MoE ranks disagree on their native component boundaries')
     for table in tables:
         contract = table.contract
         if dtype_bytes(contract['input_dtype']) != ctx.fp:
@@ -106,15 +120,18 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
         pairs = routing.local_assignments[table.target.rank]
         active = routing.activated_experts[table.target.rank]
         mode = table.execution_mode(bool(mode_value))
-        times = (table.local_ns('gate_routing', mode, local),
-                 table.expert_ns(mode, gathered, active, pairs))
-        if dp > 1:
-            times += (table.local_ns('finalize_copy', mode, local),)
+        times = tuple(table.expert_ns(mode, gathered, active, pairs) if name == 'experts'
+                      else table.local_ns(name, mode, local) for name in components)
         gate_bytes = contract.get('gate_weight_bytes')
         expert_bytes = contract.get('expert_weight_bytes')
         if type(gate_bytes) is not int or type(expert_bytes) is not int:
             raise ValueError('Native MoE profile must record measured component weight sizes')
-        parts.append((times, gate_bytes, expert_bytes))
+        weights = dict(gate_routing=gate_bytes, experts=expert_bytes,
+                       finalize_copy=0, wrapper=contract.get('wrapper_weight_bytes', 0))
+        widths = dict(gate_routing=contract.get('gate_hidden_dim', h),
+                      experts=contract.get('expert_hidden_dim', h), finalize_copy=h, wrapper=h)
+        parts.append((times, tuple(weights[name] for name in components),
+                      tuple(widths[name] for name in components)))
     group_size = ctx.ep_total if sp else dp
     if dp == 1:
         dispatch_dims = None
@@ -147,18 +164,24 @@ def emit_native_components(ctx, bctx, lines, power_acc, layer_num, batch_id, bat
     if dp > 1:
         phases = [(0,'moe_gate_routing',dispatch), (1,'moe_experts',combine),
                   (2,'moe_finalize_copy',restore)]
+    elif 'wrapper' in components:
+        # Wrapper activities can surround the routed call in the live model.
+        # This serial replay preserves their summed native CUDA activity duration;
+        # the boundary does not claim overlap or allocator-accurate lifetimes.
+        phases = [(0,'moe_gate_routing',dispatch), (1,'moe_experts','NONE 0'),
+                  (2,'moe_wrapper',restore)]
     for phase, name, end in phases:
-        for local_rank, (times, gate_bytes, expert_bytes) in enumerate(parts):
+        for local_rank, (times, weights, widths) in enumerate(parts):
             lines.append((f'EXPERT {local_rank} NONE 0',))
             rows = gathered if phase == 1 else local
-            weights = gate_bytes if phase == 0 else expert_bytes if phase == 1 else 0
-            lines.append((name,str(times[phase]),'LOCAL',str(rows*h*ctx.fp),weight_loc,
-                          str(weights),'LOCAL',str(rows*h*ctx.fp),'NONE','0',batch_tag))
+            activation_bytes = rows*widths[phase]*ctx.fp
+            lines.append((name,str(times[phase]),'LOCAL',str(activation_bytes),weight_loc,
+                          str(weights[phase]),'LOCAL',str(activation_bytes),'NONE','0',batch_tag))
         lines.append((f'EXPERT END {end}',))
     if power_acc is not None:
         power_acc.npu_latencies_ns.append(max(sum(p[0]) for p in parts))
         if weight_loc != 'LOCAL':
-            power_acc.dram_weight_bytes += sum(g+e for _,g,e in parts)
+            power_acc.dram_weight_bytes += sum(sum(weights) for _,weights,_ in parts)
         power_acc.link_data_bytes += sum(total_ring_data(s,group_size,collective='allgather') for s in dispatch_sizes)
         if dp > 1:
             power_acc.link_data_bytes += total_ring_data(combine_size,group_size,collective='reducescatter')

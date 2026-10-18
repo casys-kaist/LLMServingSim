@@ -783,16 +783,16 @@ def _measurement(value):
 def _required_categories(architecture, choices):
     """Every CSV the selected contract must certify, not just rewritten nodes.
 
-    The native duration contract consumes the head and whole-block MoE table
-    too. They use the same publication state machine; engine facts alone do
-    not certify their CSV identity or a completed acquisition. Historical
-    layouts keep exactly their previous coupled categories and identities.
+    The native duration contract consumes the head too. Native MoE components
+    have their own deployment contract and complete-table publication; they
+    must not leave this ordinary-category acquisition waiting for moe.csv.
+    Historical layouts keep their previous coupled categories and identities.
     """
     groups = architecture.get("component_layouts") or {}
     required = set().union(*(set(group["categories"]) for group in groups.values()))
     if selected_runtime_contract(architecture, choices) is not None:
         # validate_definitions currently admits only native-dsa-eager-tail.
-        required |= {"dense", "attention", "per_sequence", "moe"}
+        required |= {"dense", "attention", "per_sequence"}
         if any(not architecture["catalog"].get(name) for name in required):
             raise ValueError("The selected runtime contract lacks a required category")
     return required
@@ -805,6 +805,11 @@ def _validate_record(architecture, value):
         raise ValueError("Stale/invalid component-layout acquisition contract; use a fresh output bundle")
     _measurement(value["acquisition"])
     required = _required_categories(architecture, value["selections"])
+    # Existing native whole-block acquisitions remain readable under their
+    # original, fully checked publication record. New records omit that table.
+    if (selected_runtime_contract(architecture, value['selections']) is not None
+            and 'moe' in value['categories']):
+        required.add('moe')
     if set(value["categories"]) != required:
         raise ValueError("Incomplete component-layout acquisition contract; use a fresh output bundle")
     runtime_schema = selected_runtime_contract(architecture, value['selections'])

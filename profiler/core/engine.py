@@ -337,9 +337,20 @@ def _materialize_config(
     return written
 
 
+def _private_engine_overrides(value):
+    """Bound isolated acquisition cache allocation without changing workloads."""
+    if value is None:
+        return {}
+    if (type(value) is not dict or set(value) != {'kv_cache_memory_bytes'}
+            or type(value['kv_cache_memory_bytes']) is not int
+            or value['kv_cache_memory_bytes'] < 1):
+        raise ValueError('Private engine overrides require positive integer kv_cache_memory_bytes only')
+    return dict(value)
+
+
 def spin_up(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
-    *, native_profile=None,
+    *, native_profile=None, engine_overrides=None,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -359,7 +370,9 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
+    overrides = _private_engine_overrides(engine_overrides)
     kwargs = fuse_engine_kwargs(args, tp, stack_axes, native_profile=native_profile)
+    kwargs.update(overrides)
     from .hooks.dummy_weights import validate_execution_scope
     validate_execution_scope(args.model_config, tp=tp, moe_ep=1,
                              profile_mtp=args.profile_mtp, kwargs=kwargs)

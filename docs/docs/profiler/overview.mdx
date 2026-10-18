@@ -75,8 +75,10 @@ active local experts and local assignments; `--moe-grid-factor` defaults to
 anchor token rows after DP/SP transformation; active experts and assignments
 retain their own axes. [Sampling policy](./running#sampling-policy) distinguishes
 observed captures from derived candidates, while acquisition stays eager.
-Quantized and shared-expert paths remain unsupported for
-new component acquisition. Historical `moe.csv` reads remain available; the
+A capability-admitted live TP1/DP1/EP1 path preserves native quantized weights
+and adds surrounding shared/wrapper work. Its summed CUDA durations do not
+reproduce concurrent branch overlap. Unsupported APIs and layouts still fail.
+Historical `moe.csv` reads remain available; the
 whole-block acquisition path has been removed.
 
 ## How it fits the bigger picture

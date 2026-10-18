@@ -631,11 +631,12 @@ class HybridResidualProfile:
     def validate_request(self, args, *, full=False):
         self.original_text(args.model_config)
         if (list(args.tp_degrees) != [1] or args.profile_mtp or args.only_skew
-                or args.dp_degrees is not None or args.ep_degrees is not None
+                or (args.dp_degrees is not None and tuple(args.dp_degrees) != (1,))
+                or (args.ep_degrees is not None and tuple(args.ep_degrees) != (1,))
                 or args.hf_overrides or (full and not args.skip_skew)
                 or tuple(args.attention_decode_q_lens) != (1,)):
-            raise NotImplementedError('Hybrid residual acquisition requires local TP1/EP1, q=1, '
-                'no MTP/DP/EP/shape overrides; full profiles require --skip-skew')
+            raise NotImplementedError('Hybrid residual acquisition requires local TP1/DP1/EP1, q=1, '
+                'no MTP or shape overrides; full profiles require --skip-skew')
         if (args.num_hidden_layers not in (None, 1)
                 or args.dtype not in (None, 'auto', 'bfloat16')
                 or args.kv_cache_dtype not in (None, 'auto')):

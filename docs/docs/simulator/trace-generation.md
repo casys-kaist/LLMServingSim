@@ -25,7 +25,7 @@ flowchart LR
         DENSE[dense.csv]
         PERSEQ[per_sequence.csv]
         ATTN[attention.csv]
-        MOE[moe.csv]
+        MOE["native MoE / legacy moe.csv"]
         SKEW[skew_fit.csv]
     end
     BATCH[Batch] --> WALK[Walk architecture YAML]
@@ -49,13 +49,14 @@ flowchart LR
 
 The profiler writes per-category CSVs at:
 
-```
+```text
 profiler/perf/<hardware>/<model>/<variant>/tp<N>/{
   dense.csv,
   per_sequence.csv,
   attention.csv,
   linear_attention.csv, # hybrid/recurrent models only
-  moe.csv,           # MoE models only
+  moe_components/,   # native deployment component tables
+  moe.csv,           # retained historical whole-block tables only
   skew.csv,          # if heterogeneous-decode sweep is on
   skew_fit.csv       # ditto, the fitted alpha table
 }
@@ -105,8 +106,10 @@ see [packed-core traces](../examples/model-families/hybrid-linear-attention#pack
 Native DeepSeek-V3.2 tables use site-aware sequences: a shared fused
 embedding/input norm consumes only the first decoder norm, later residual norms
 remain per invocation, and one uncapped attention/indexer tail replaces the
-historical pair. Load requires all four completed category tables and matching
+historical pair. New bundles require completed dense/head/attention categories,
+separately completed native MoE components and matching
 [runtime evidence](../profiler/output-bundle.md#native-dsa-acquisition).
+Historical records containing whole-block MoE retain their original checks.
 
 Only the Python trace API's explicit
 `generate_trace(..., duration_replay_only=True)` admits this representation.
@@ -139,13 +142,17 @@ New bundles load category, context and callable records from the variant-root
 historical metadata layouts have read fallbacks. Directory names locate data,
 not compatible runtime semantics, and metadata relocation is not remeasurement.
 A catalog or a partial CSV directory alone is not sufficient.
+Native MoE completion is checked through its independent deployment contract,
+including wrapper work; new bundles do not require a removed ordinary `moe.csv`
+acquisition. This does not broaden the duration-only admission below.
 See [native acquisition](../profiler/output-bundle#native-kimi-acquisition).
 
 `generate_trace(..., duration_replay_only=True)` walks the supplied configuration's
 decoder schedule, including its attention types and dense/routed MLP blocks. AttnRes
 is selected by original layer and pre-attention/post-attention/final role, then
 linearly interpolated only within that exact context's measured token range.
-All other components retain their category lookup. Transformer-block copying is
+Other ordinary components retain their category lookup; MoE uses its independent
+deployment component table. Transformer-block copying is
 disabled for this representation because changing layer position changes the
 residual context. The joined MLA q-LoRA component preserves concurrent branches;
 KDA input projection, auxiliary projection, core and output projection are separate.
@@ -400,6 +407,16 @@ gathered rows, active experts and local assignments for new expert tables.
 Historical component tables retain their balanced-total lookup. Legacy lookup instead reads
 the whole-block EP slice from `moe.csv`, using gathered or replicated input
 rows, not the router's unique local-token estimate.
+
+The capability-admitted live TP1/DP1/EP1 path emits gate/routing, experts and
+wrapper rows without collectives. It preserves native quantized expert execution
+and accounts for shared experts and latent transforms in the wrapper. Recorded
+gate dtype and physical expert width determine their distinct byte annotations.
+These rows sum unique CUDA activity durations; a serial trace does not reproduce
+native overlap between branches, and wrapper work can occur both before and after
+the routed call. This is not an elapsed critical-path latency claim.
+Missing matching components can fall back only when historical whole-block data
+exists. Fresh bundles with missing or incomplete components fail explicitly.
 
 DP members index their own global expert ranks while trace markers remain
 instance-local. Ranks execute in parallel and synchronize at their collectives;

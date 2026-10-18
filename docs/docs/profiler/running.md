@@ -87,7 +87,7 @@ doesn't.
 ### Native Kimi profiling
 
 Catalog `native_profile: hybrid-residual` selects Kimi-K3's adapter through
-ordinary category `slice` and `coverage` commands, under a narrower
+`profile`, category `slice` and `coverage` commands, under a narrower
 [native execution contract](./output-bundle#native-kimi-acquisition). For a small
 acquisition on a device supporting the admitted native backend, inside the
 vLLM 0.31 container:
@@ -102,7 +102,8 @@ python -m profiler slice moonshotai/Kimi-K3 --hardware RTXPRO6000 \
 
 The small token range is an acquisition example, not a recommended accuracy grid
 or a completed GPU-validation claim. The intended scope is bounded TP1 acquisition
-and saved-duration traces, not full profiling or an end-to-end benchmark.
+and saved-duration traces; it does not establish completed full-grid profiling
+or an end-to-end benchmark.
 Reserve sufficient device memory for original-width prefix engines and bound host
 memory as described in the resource-safety guide. Do not shrink the model geometry
 to make a failed native acquisition appear supported. Engine context limits must
@@ -117,10 +118,10 @@ partial CSVs or incompatible semantic identities refused. Old model-specific
 publications and changed execution semantics require fresh acquisition, not a
 metadata conversion. Source hashes and exact runtime versions are provenance;
 actual API/backend, shape, dtype and layout checks still apply. Configuration-derived planning is not evidence
-of arbitrary device support. Explicit `--skip-skew` is
-required by the full-run adapter, but full profiles now fail because quantized
-MoE component acquisition is unsupported. Ordinary slices do not replace the
-historical whole-block MoE table. TP>1, native DP/EP acquisition, MTP, shape overrides and
+of arbitrary device support. Full profiles require `--skip-skew` and a separately
+completed [live local MoE acquisition](./native-moe-components#live-local-boundaries)
+using the admitted native expert backend. Explicit `--dp 1 --ep 1` is allowed;
+ordinary category slices do not certify MoE completion. TP>1, DP/EP greater than one, MTP, shape overrides and
 non-BF16 activation/KV paths are not admitted by this contract. Use `coverage`
 with the same model/device and sufficient engine limits to inspect actual CUDA
 ownership; it does not prove end-to-end serving accuracy.
@@ -186,7 +187,7 @@ unset to inherit the CLI defaults.
 
 ## MoE parallelism
 
-For supported unquantized local or DP+EP models, MoE acquisition defaults to
+For supported native execution contracts, MoE acquisition defaults to
 [native components](./native-moe-components) at DP1, preserving global expert
 IDs and top-k. `--dp` selects other target degrees for `profile` or
 `slice --group moe`; EP is TP*DP. Optional `--ep` filters those full-EP targets;
@@ -198,8 +199,12 @@ In either shell template, `DP_DEGREES="1,2"` selects local and DP+EP targets,
 `EP_DEGREES` forwards `--ep`, and `MOE_ROUNDS` controls repeated contexts.
 For a mixed dense/MoE `profile-all.sh` job list, put explicit `--dp`/`--ep`
 in each MoE job's extra arguments, not global variables that also reach dense jobs.
-DP1 omits native no-op prepare/finalize and DP collectives;
+Modular DP1 omits verified no-op prepare/finalize and DP collectives;
 TP>1 still means full EP, not tensor-sharded experts.
+The live local adapter requires TP1/DP1/EP1 and retains native quantized or shared
+expert execution only after capability and output-reference checks. Its extra
+wrapper component includes surrounding shared/latent work. These rows sum unique
+CUDA activity durations; they do not reconstruct concurrent elapsed latency.
 
 New component measurements are eager only, without isolated CUDA graph capture.
 Expert sampling covers tokens N, active local experts A and local assignments M.
@@ -219,9 +224,14 @@ from its drafter pass. Explicit `--dp` or `--ep` cannot be combined with
 
 Whole-block acquisition and `--moe-ep-degrees` have been removed. Historical
 `moe.csv` files remain readable until supported components are remeasured.
-Quantized, shared-expert and other unsupported native paths fail explicitly;
+Unsupported native APIs, layouts and deployments fail explicitly;
 no removed whole-block acquisition is substituted. See
 [Output bundle](./output-bundle) for compatibility and fallback behavior.
+The component engine has a separate internal KV-memory cap, defaulting to 1 GiB.
+It keeps the requested context/token/sequence limits and lets vLLM validate native
+capacity, failing if the cap is insufficient. This does not change ordinary
+profiling cache allocations or target serving graph coordinates; the
+[component guide](./native-moe-components) explains its recorded observations.
 
 ## Sampling policy
 
@@ -777,11 +787,11 @@ from context coverage, capacity admission and end-to-end accuracy validation.
 Native DeepSeek-V3.2's combined `dsa_attention_tail` includes indexing work and
 keeps the full-context axis; do not cap its grid at `index_topk`. The
 historical representation requires TP1, eager BF16 activations with the original
-FP8 weight configuration, and no MTP. Its complete bundle includes historical
-whole-block MoE timings. New full acquisition is blocked because native quantized
-MoE components are unsupported; ordinary category slices and coverage remain
-available. A short attention-only prefix cannot certify the head or replace the
-historical MoE table. See [native DSA acquisition](./output-bundle.md#native-dsa-acquisition)
+FP8 weight configuration, and no MTP. New ordinary publication completes dense,
+head and attention categories together; native MoE components publish independently
+under their local deployment contract. Historical records that include whole-block
+MoE retain their original checks. A short attention-only prefix cannot certify
+the head or native MoE acquisition. See [native DSA acquisition](./output-bundle.md#native-dsa-acquisition)
 for live mode checks and the explicit duration-only consumer boundary.
 
 ### `--profile-mtp` — profiling the drafter

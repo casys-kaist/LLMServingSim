@@ -35,7 +35,7 @@ profiler/                          Python package: python -m profiler
 │   ├── context_lookup.py          strict category loading and exact-context interpolation
 │   ├── callable_profile.py        catalog-selected native and isolated-call orchestration
 │   ├── hardware.py                device facts and NCCL link calibration
-│   ├── moe_profile.py             native DP+EP component acquisition
+│   ├── moe_profile.py             native local/DP+EP component acquisition
 │   ├── moe_deployment.py          TP/DP/EP ownership and token domains
 │   ├── moe_geometry.py            global expert placement and routing geometry
 │   ├── moe_conditioning.py        matched-work expert measurement controls
@@ -66,6 +66,8 @@ profiler/                          Python package: python -m profiler
 │       ├── runtime_admission.py   explicit native runtime/configuration admission
 │       ├── tp_shape.py            native config and TP head-width preservation
 │       ├── cache_pages.py         shared physical KV page allocation
+│       ├── moe_live_components.py native local gate/expert/wrapper boundaries
+│       ├── moe_live_region.py     processed native expert state and bank cloning
 │       └── moe_hook.py            native MoE runner discovery
 ├── models/                        architecture catalogs and model-type aliases
 │   ├── llama.yaml
@@ -171,8 +173,11 @@ rather than `--force`. Expert forward counts can exceed
 `--measurement-iterations` to cover matched weight cycles. `MOE_ROUNDS` and
 `MOE_GRID_FACTOR` control repetitions and grid spacing. Dense models, coverage,
 ordinary category slices and skew-only acquisition do not acquire components.
-DP1 measures gate/routing and experts, verifying identity preparation and aliased
-no-op finalization instead of adding a copy. TP>1 means full EP, not tensor-sharded
+Modular DP1 measures gate/routing and experts, verifying identity preparation and
+aliased no-op finalization instead of adding a copy. The separately admitted
+[live local path](../docs/docs/profiler/native-moe-components.md#live-local-boundaries)
+retains native expert prepare/finalize and adds measured wrapper work.
+TP>1 means full EP, not tensor-sharded
 experts. The native backend is selected independently for each target.
 The deferred-finalization guard reads vLLM's effective boolean property, not
 its request flag or method; unknown capability APIs are rejected. See the
@@ -713,9 +718,18 @@ predictor. Historical balanced-assignment component tables retain their lookup.
 
 Whole-block acquisition, forced routing and `--moe-ep-degrees` are removed.
 Historical `moe.csv` files remain readable until supported components are
-remeasured. Quantized, shared-expert and other unsupported native paths fail
-explicitly; they cannot fall back to the removed acquisition method. See the
+remeasured. The live TP1/DP1/EP1 adapter preserves admitted native quantized
+weights/backends and measures gate/routing, experts and surrounding wrapper work,
+including shared experts and latent transforms. It sums unique CUDA activity
+durations, not an overlap-aware elapsed latency. Exact native-reference checks,
+storage-preserving bank clones and capability admission remain mandatory;
+unsupported paths cannot fall back to the removed acquisition method. See the
 [native component contract](../docs/docs/profiler/native-moe-components.md).
+
+The isolated MoE engine uses the MLP prefix and a privately configurable KV-memory
+cap (1 GiB by default), preserving the requested context/token/sequence limits.
+vLLM must validate native cache capacity; the cap is not a universal feasibility
+guarantee. Component-engine observations do not replace main-engine metadata.
 
 ## Execution scope
 
@@ -767,22 +781,24 @@ Catalog `native_profile` selects a runtime-admitted adapter through the normal
 callable publication validate full catalog coverage, runtime identities and
 partial CSVs before resume. Kimi-K3's hybrid/residual adapter derives prefix
 depths and original-stack contexts from configuration, retaining joined MLA
-timing and separate KDA components. All categories must complete before opt-in
-duration trace replay. New full Kimi profiles are blocked by unsupported quantized
-MoE components; ordinary category slices and coverage remain available. The shared
-machinery does not admit another backend. See
+timing and separate KDA components. Ordinary categories, residual contexts and
+the separate deployment-matched native MoE acquisition must complete before
+opt-in duration trace replay. Full profiles require `--skip-skew`; explicit local
+`--dp 1 --ep 1` is admitted, while distributed degrees remain unsupported.
+The shared machinery does not admit another backend. See
 [native Kimi acquisition](../docs/docs/profiler/output-bundle.md#native-kimi-acquisition)
 for supported category slices, memory bounds and resume rules.
 
 ### DeepSeek-V3.2
 
 Native DeepSeek-V3.2 uses declared sequence sites and a guarded first-layer norm
-fusion. Its historical TP1 eager representation requires complete `dense`,
-`per_sequence`, `attention` and `moe` tables sharing a runtime identity; source
+fusion. New TP1 eager acquisitions require complete `dense`, `per_sequence` and
+`attention` tables sharing a runtime identity, plus independently published native
+MoE components; source
 geometry, backend modes and the actual native sampler route are checked before
-acquisition. Quantized MoE component acquisition is not supported, so a new full
-bundle cannot currently replace that whole-block table. Ordinary category slices
-and coverage remain available. Its combined attention/indexer tail retains full-context coordinates.
+acquisition. Historical records that include a whole-block `moe` category retain
+their original completion checks; new components do not certify old pending rows.
+Its combined attention/indexer tail retains full-context coordinates.
 See [native DSA acquisition](../docs/docs/profiler/output-bundle.md#native-dsa-acquisition)
 for supported modes and the separate duration-only trace boundary.
 

@@ -121,11 +121,17 @@ for the schema and backend restrictions. Rebuild ASTRA-Sim after updating.
 When variant-root metadata contains a deployment-matched
 `per_tp[tp].moe_components` entry, DP+EP execution
 uses separate local routing, gathered expert and local finalization timings.
-DP1 uses local routing and expert timings, omitting verified no-op finalization
+Modular DP1 uses local routing and expert timings, omitting verified no-op finalization
 and DP collectives; full EP at TP>1 retains its trailing TP AllReduce.
 The full padded DP token vector determines each stage's shape; recorded dtypes
-determine the hidden/top-k collective payloads. Missing coverage warns and retains
-the legacy EP table, while corrupt or out-of-support installed data is rejected.
+determine the hidden/top-k collective payloads. The live TP1/DP1/EP1 contract adds
+measured wrapper work around native quantized/routed experts, retaining shared
+experts and latent transforms. Its sum of unique CUDA durations does not reproduce
+concurrent branch overlap. Actual gate dtype and gate/expert widths determine its
+byte annotations. Missing coverage falls back only when a historical whole-block
+table exists; fresh bundles require complete matching components. Corrupt or
+out-of-support installed data is rejected. DSA and Kimi retain their separate
+duration-only admission and capacity limits.
 New tables use eager timings at those resolved row counts, with independent
 input-row, active-local-expert and local-assignment coordinates supplied by the
 routing policy. Interpolation geometry is built once and queries are cached;
@@ -482,9 +488,11 @@ turning corrupt installed data into a fallback.
 
 Selects matching native component tables and emits routing, ordered dispatch,
 expert work, combine and finalization. Missing coverage is distinct from corrupt
-installed data; unsupported paths retain the documented legacy fallback.
-DP1 emits only routing and experts plus optional TP reduction, and never uses
+installed data; unsupported paths retain legacy fallback only when that table exists.
+Modular DP1 emits routing and experts plus optional TP reduction, and never uses
 full-EP data for tensor-sharded experts.
+The live local contract adds a wrapper row and preserves its measured physical
+weight storage separately from the clone bank's allocation footprint.
 RR/RAND can use new three-axis tables; old balanced-total tables retain their
 policy fallback. Capture sizes affect serving row counts, not acquisition mode.
 The expert query uses gathered/padded N and the router's rank-local A/M; its

@@ -564,8 +564,10 @@ merely the spelling of an interchangeable kernel. Each named group declares:
 - `invocation_contract: site-scope-calls` additionally checks resolved site
   calls and normalization against the actual acquired prefix. The optional
   `runtime_contract: native-dsa-eager-tail` invokes the explicit native DSA
-  admission adapter and requires four-category publication; it is not a generic
-  opt-out from execution checks.
+  admission adapter and requires coupled dense/head/attention publication, with
+  native MoE completion checked separately; it is not a generic opt-out from
+  execution checks. Historical records containing whole-block MoE retain their
+  original completion requirements.
 
 Substitutions are one-pass and nonrecursive. Groups must be disjoint and references
 must exist. Block-wide layouts require the complete selected set in each affected

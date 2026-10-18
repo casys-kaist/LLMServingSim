@@ -11,10 +11,11 @@ import statistics
 import time
 
 from .config import HOST_ENGINE_DEFAULTS, load_architecture, probe_moe_params
-from .moe_deployment import MoeTarget
+from .moe_deployment import MoeTarget, component_names
 from .moe_geometry import ExpertPlacement
 from .moe_conditioning import expert_conditioning
 from .bundle_metadata import read_tp, update_tp, update_bundle
+from .stack import text_config
 
 SCHEMA = 'moe-components'
 KEYS = ('component', 'mode', 'tokens', 'activated_experts', 'local_assignments')
@@ -143,6 +144,7 @@ def _token_points(sampling, axis, maximum):
 
 def points_for(contract):
     target = MoeTarget(**contract['target'])
+    components = component_names(contract)
     place = ExpertPlacement(contract['global_experts'], contract['global_top_k'], target.ep, target.rank)
     factor = contract['expert_sampling']['grid_factor']
     maximum_tokens = contract['maximum_expert_tokens']
@@ -158,7 +160,7 @@ def points_for(contract):
                     token_points.add(corner)
     local = target.token_domains((contract['local_token_budget'],)*target.dp)['gate_rows']
     for mode in contract['modes']:
-        for component in target.components:
+        for component in components:
             if component == 'experts':
                 continue
             local_points = _token_points(contract['expert_sampling'], 'local', local)
@@ -289,6 +291,9 @@ class MeasurementStore:
             raise ValueError("Measurement identity or point differs from its plan")
         if type(repeat) is not int or not 0 <= repeat < self.rounds:
             raise ValueError("Invalid measurement round")
+        if ((self.contract.get('expert_region') or {}).get('schema') == 'native-live-expert-region'
+                and result.get('geometry', {}).get('native_state_unchanged') is not True):
+            raise ValueError('Live native measurement did not verify unchanged runtime state')
         if self.contract.get('expert_conditioning') and row['point']['component']=='experts':
             plan=expert_conditioning(self.contract,row['point']['activated_experts'],self.iterations)
             if (result.get('geometry',{}).get('conditioning') != plan
@@ -373,7 +378,7 @@ class MeasurementStore:
 
 
 def validate_request(arch, args):
-    if args.dp_degrees is None or not probe_moe_params(args.model_config or {}):
+    if args.dp_degrees is None or not probe_moe_params(text_config(args.model_config or {})):
         raise ValueError("Native component profiling requires a MoE checkpoint and resolved DP")
     if not arch.catalog.moe or len(arch.catalog.moe) != 1:
         raise NotImplementedError("One catalog MoE block is required for this component adapter")
@@ -390,10 +395,9 @@ def validate_request(arch, args):
         raise ValueError("Measurement repetitions must be positive")
     if not math.isfinite(args.moe_grid_factor) or args.moe_grid_factor <= 1:
         raise ValueError("MoE grid factor must be finite and greater than one")
-    config = args.model_config or {}
-    for holder in (config, config.get('text_config') or {}):
-        if holder.get('quantization_config'):
-            raise NotImplementedError("Native component acquisition currently supports unquantized experts")
+    # Quantization alone does not determine the expert execution API. The
+    # worker admits its actual native method, tensors and component boundaries
+    # before returning a contract; unsupported methods still fail there.
 
 
 def resolve_targets(arch, args, tps):
@@ -418,19 +422,28 @@ def resolve_targets(arch, args, tps):
     if (any(tp > 1 and dp > 1 for tp, dp in pairs)
             and entry.sequence_parallel is None):
         raise ValueError("TP+DP requires an audited MoE sequence_parallel catalog binding")
-    experts, _ = probe_moe_params(args.model_config)
+    experts, _ = probe_moe_params(text_config(args.model_config))
     if any(tp*dp > experts for tp, dp in pairs):
         raise ValueError("Requested EP degree exceeds the global expert count")
     return [MoeTarget(tp, dp, tp*dp, rank, bool(entry.sequence_parallel and tp>1 and dp>1))
             for tp, dp in pairs for rank in range(tp*dp)]
 
 
-def run_components(arch_path, args, tps, variant_root):
+def run_components(arch_path, args, tps, variant_root, *, kv_cache_memory_bytes=1024**3):
+    """Acquire isolated components under an explicit native-validated KV cap.
+
+    The internal cache budget may be raised for a context or cache layout that
+    needs it; the default 1 GiB is a resource bound, not a capacity guarantee.
+    Ordinary acquisition engines and their recorded settings are independent.
+    """
     from . import logger as log
     from .engine import spin_up, spin_down, probe_limits
     from .sampling import resolve_sampling
     from .bundle_metadata import read_bundle
+    from .callable_profile import profile_for
 
+    if type(kv_cache_memory_bytes) is not int or kv_cache_memory_bytes < 1:
+        raise ValueError('Component KV memory budget must be a positive integer')
     arch = load_architecture(arch_path)
     targets = resolve_targets(arch, args, tps)
     engine_args = replace(args, tp_degrees=[1], profile_mtp=False)
@@ -443,9 +456,29 @@ def run_components(arch_path, args, tps, variant_root):
                 raise ValueError('Native MoE output differs from the existing bundle')
             meta[key] = value
     update_bundle(variant_root, record_bundle)
-    llm, _, temporary = spin_up(engine_args, 1)
+    # Components need the first routed MLP, not every attention alternative.
+    # Preserve a declared profile's native engine settings (e.g. text-only
+    # acquisition) while keeping this engine separate from ordinary tables.
+    # The isolated component engine never consumes attention history. Leave
+    # the requested context/token/sequence limits intact, but reserve memory
+    # for independently conditioned native weight banks instead of assigning
+    # the usual GPU-utilization remainder to an unused KV cache. vLLM still
+    # checks that this explicit cache can hold its configured max_model_len;
+    # insufficient native capacity is an error, never a smaller context.
+    log.info('Native MoE engine KV budget: %d bytes; vLLM must admit the configured context length',
+             kv_cache_memory_bytes)
+    llm, _, temporary = spin_up(engine_args, 1, ('mlp',), native_profile=profile_for(arch),
+                                engine_overrides={'kv_cache_memory_bytes': kv_cache_memory_bytes})
     try:
         limits = probe_limits(llm, engine_args)
+        effective = llm.llm_engine.vllm_config
+        engine_effective = dict(
+            max_model_len=effective.model_config.max_model_len,
+            max_num_batched_tokens=effective.scheduler_config.max_num_batched_tokens,
+            max_num_seqs=effective.scheduler_config.max_num_seqs,
+            kv_cache_memory_bytes=effective.cache_config.kv_cache_memory_bytes,
+            block_size=effective.cache_config.block_size,
+            num_gpu_blocks=effective.cache_config.num_gpu_blocks)
         for target in targets:
             plan = resolve_sampling(args, limits, target.tp, dp=target.dp,
                                     meta=read_bundle(variant_root))
@@ -453,6 +486,7 @@ def run_components(arch_path, args, tps, variant_root):
             native = llm.collective_rpc('moe_component_initialize',
                                         args=(asdict(target), physical_budget))[0]
             contract = dict(native, model=args.model, hardware=args.hardware, variant=args.effective_variant,
+                engine_effective=engine_effective,
                 expert_sampling=dict(axes=['tokens', 'activated_experts', 'local_assignments'],
                                      grid_factor=args.moe_grid_factor,
                                      **token_sampling(target, plan, budget)),

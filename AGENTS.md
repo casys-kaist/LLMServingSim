@@ -983,10 +983,12 @@ and entrypoint ABI. Source hashes and library versions are observations, not
 admission locks. Sampler payload width is source-backed, not observed
 tensor data; V1 returns int32, V2 int64. Do not force a runner to fit a byte formula.
 
-Native DSA publication requires all four categories (`dense`, `per_sequence`,
-`attention`, `moe`) with matching runtime identity and per-category engine facts
-inside the existing per-TP component-layout record. Never bless old rows by adding
-these fields. The combined tail includes indexer work and must use full-context
+New native DSA publication requires `dense`, `per_sequence` and `attention` with
+matching runtime identity and per-category engine facts inside the existing per-TP
+component-layout record. Native MoE components publish independently under their
+deployment contract; new ordinary records must not require the removed `moe.csv`
+acquisition. Historical records containing `moe` retain their original completion
+checks. Never bless old rows by adding these fields. The combined tail includes indexer work and must use full-context
 coordinates, not the historical sparse-attention cap. Historical representations
 and MiniMax's independent native attention contract remain unchanged.
 
@@ -2346,7 +2348,7 @@ and sequence-parallel wrappers require per-member ceil division before gathering
 Pass the full already-padded DP vector through both wave-completion paths; its
 sum/minimum cannot reconstruct the sequence-parallel geometry.
 
-DP1 is non-SP in this adapter. Select its backend from the resolved target,
+The unquantized modular DP1 path is non-SP. Select its backend from the resolved target,
 not the DP+EP selection: native priorities can differ. NoDPEP preparation must
 preserve the input and return no scale or token metadata; with a NoOP reduction,
 experts write directly to the caller's output alias. Observe no CUDA work in
@@ -2354,7 +2356,10 @@ prepare/finalize before recording `local_execution` and omit `finalize_copy`
 entirely. Preserve the alias in every conditioned eager variant. DP1
 traces contain gate/routing, experts and optional TP AllReduce, no DP collectives.
 Full EP at TP>1 owns whole experts and is not plain tensor-sharded TP. Missing
-DP1 native coverage falls back without consuming a mismatched EP table.
+DP1 native coverage falls back only when a historical whole-block table exists,
+without consuming a mismatched EP component table. Match the legacy lookup's TP
+choice (TP1 when present, otherwise its first available degree); a fresh bundle
+without that table requires a complete matching component acquisition.
 Cache missing deployment coverage for the lifetime of the simulation, just like
 loaded native tables: bundles are immutable during a run. Do not reread the same
 metadata on every layer. Corrupt contracts remain errors, never cached misses.
@@ -2366,6 +2371,41 @@ API; never invoke the request method or silently assume finalization is local.
 Check actual native APIs, geometry, dtypes, backend and conditioning semantics;
 source-file hashes and exact versions are not acquisition admission or grouping
 keys. Do not restamp historical measurements after a semantic adapter change.
+
+The separate live adapter admits actual APIs, standard token layouts and native
+capabilities at TP1/DP1/EP1. Preserve processed weights/scales, native backend,
+routing and activation parameters; do not rebuild an unquantized approximation.
+Its `gate_routing` includes external routing, or projection only when routing is
+inside the expert kernel. `experts` includes native preparation and finalization.
+`wrapper` executes the native parent and accounts for shared experts, latent
+transforms, normalization, scaling and combination outside the excluded gate/router
+and routed-kernel scopes. Use launch ownership and conservation checks, not
+subtraction of unrelated profile captures. Sum unique CUDA activity durations;
+this is not an interval union or elapsed critical path across concurrent branches.
+Compare every routing stimulus and each cloned bank exactly with the native method
+outside timing and verify native state remains unchanged.
+These guards compare parameter bindings/layouts, available version counters,
+effective configuration and callable identities, not all device-memory contents.
+Do not describe them as bytewise weight checks or arbitrary CUDA-write detection.
+
+Keep gate dtype/width, model width and physical expert width explicit. Count unique
+native weight/scale storage separately from all cloned bank storage; preserve
+storage aliases, offsets and strides. Bank allocation uses the actual processed
+bank footprint plus native workspace/free-memory reserve, not the unquantized
+conversion-buffer heuristic. Missing or unsupported capability statements are
+errors, including deferred, input-weighted, fused-shared-gate, biased/redundant,
+LoRA, EPLB and padded-hidden execution. Monolithic routing requires native replay
+evidence; a matching model name is not an admission.
+
+The isolated MoE engine uses the MLP prefix and declared native-profile settings.
+Its private `kv_cache_memory_bytes` override defaults to 1 GiB and accepts only a
+positive integer. The internal caller may raise this resource cap, but never
+reduce requested token/sequence/context limits to fit it. vLLM must validate native
+capacity. Record resolved component-engine settings only in MoE observations,
+never as main-engine cache facts or replacement target graph policy. Read nested
+source geometry through `text_config`; local Kimi DP1/EP1 selectors are admitted,
+distributed selectors remain refused. Preserve DSA/Kimi's duration-only consumers
+and their separate capacity/serving restrictions.
 
 Root `per_tp[tp].moe_components` selects deployment entries containing semantic
 contracts, observations, coverage and CSV checksums. Paths locate tables; folder
@@ -2403,8 +2443,8 @@ a changed semantic plan requires a fresh output root.
 New acquisition must not create CUDA graphs; eager timing and serving-padded
 coordinates are distinct.
 
-Serving automatically consumes matching tables for the supported modular,
-unquantized local or DP+EP path. Local components use token interpolation.
+Serving automatically consumes matching tables for the supported modular
+local/DP+EP or separately admitted live local path. Local components use token interpolation.
 New experts use physical N/A/M interpolation: construct affine-rank-reduced
 simplices at table load, then use nonnegative barycentric weights and bounded
 query caches. Do not normalize by query-dependent feasible ranges: doing so
@@ -2414,9 +2454,10 @@ their original interpolation and graph/eager selection. The routing policy
 supplies A/M; BALANCED and measured active-count CUSTOM use rounded expectations,
 RR/RAND use selected pairs and native rank ownership. Within-rank imbalance is
 not a fourth measured axis. Missing deployment/policy coverage warns and retains the
-legacy EP table; corruption and out-of-support queries are errors. Shared,
-quantized, monolithic, deferred and tensor-sharded variants
-need separate contracts, not guessed aliases. Keep historical acquisition
+legacy EP table only when it exists; corruption and out-of-support queries are
+errors. Shared, quantized and supported monolithic local execution require the
+live contract, never guessed aliases. Deferred and tensor-sharded execution remain
+unsupported. Keep historical acquisition
 fingerprints as provenance; do not relabel old samples after changing a method.
 
 DP+EP trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,

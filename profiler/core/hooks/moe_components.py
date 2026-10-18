@@ -40,6 +40,21 @@ class ProfileCall(torch.nn.Module):
 
 
 class ComponentMeasurement:
+    def __new__(cls, model_runner, target, local_budget):
+        runner = single_moe_runner(model_runner)
+        if (model_runner.vllm_config.quant_config is not None
+                or getattr(runner, '_shared_experts', None) is not None
+                or getattr(runner, 'routed_output_transform', None) is not None
+                or getattr(runner, 'routed_input_transform', None) is not None
+                or runner.moe_config.skip_final_all_reduce):
+            from .moe_live_components import LiveComponentMeasurement
+            try:
+                return LiveComponentMeasurement(model_runner, target, local_budget)
+            except Exception as exc:
+                import traceback
+                raise RuntimeError('Native live MoE initialization failed:\n'+traceback.format_exc()) from exc
+        return super().__new__(cls)
+
     def __init__(self, model_runner, target, local_budget):
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
         from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import TopKWeightAndReduceNoOP

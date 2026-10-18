@@ -26,12 +26,24 @@ def measure_experts(owner, point, iterations, failure_dir=None):
     additional = maximum-len(owner.expert_banks)
     reserve = max(2**30, 8*n*owner.cfg.experts_per_token*owner.cfg.hidden_dim*4)
     free, total = torch.cuda.mem_get_info(owner.device)
-    needed = max(0,additional)*owner.contract['expert_weight_bytes']*2+reserve
-    if needed > free or max(0,additional)*owner.contract['expert_weight_bytes'] > total//4:
+    live = owner.contract['expert_region']['schema'] == 'native-live-expert-region'
+    bank_bytes = owner.contract['expert_bank_bytes'] if live else owner.contract['expert_weight_bytes']
+    # A live bank clones already processed native tensors once, without a
+    # second conversion buffer. Account all persistent scales in its footprint
+    # and recheck free memory before each bank. The legacy conversion path
+    # keeps its original double-buffer and quarter-device guards.
+    needed = max(0,additional)*bank_bytes*(1 if live else 2)+reserve
+    if needed > free or (not live and max(0,additional)*owner.contract['expert_weight_bytes'] > total//4):
         raise MemoryError('Native expert conditioning exceeds safe free GPU memory; lower engine memory utilization or use a larger GPU')
     for _ in range(additional):
-        w13,w2 = (v.clone() for v in owner.checkpoint_weights)
-        owner.expert_banks.append(NativeExpertRegion(owner.cfg,w13,w2))
+        if live:
+            free, _ = torch.cuda.mem_get_info(owner.device)
+            if bank_bytes+reserve > free:
+                raise MemoryError('Native processed weight bank plus workspace reserve exceeds free GPU memory')
+            owner.expert_banks.append(owner.expert.clone())
+        else:
+            w13,w2 = (v.clone() for v in owner.checkpoint_weights)
+            owner.expert_banks.append(NativeExpertRegion(owner.cfg,w13,w2))
     generator = torch.Generator(device=owner.device).manual_seed(n)
     hidden = torch.randn((n,owner.cfg.hidden_dim),device=owner.device,
                          dtype=owner.cfg.in_dtype,generator=generator)
@@ -47,7 +59,7 @@ def measure_experts(owner, point, iterations, failure_dir=None):
         raise ValueError('Conditioned routing changed the requested local work')
     # NoDPEP writes the already-reduced expert result directly into the
     # caller's output. A distinct final buffer would add a non-native copy.
-    output_alias = torch.empty_like(hidden) if owner.target.dp == 1 else None
+    output_alias = torch.empty_like(hidden) if owner.target.dp == 1 and not live else None
     calls = [[ProfileCall(bank.bind(hidden,route,weights,output_alias=output_alias)) for route in ids]
              for bank in owner.expert_banks[:maximum]]
     for bank_calls in calls:

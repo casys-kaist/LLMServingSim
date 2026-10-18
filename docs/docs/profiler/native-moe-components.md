@@ -9,9 +9,11 @@ DP+EP does not apply one token count to an entire MoE block. Gate and routing
 operate on local rows, experts operate on gathered rows, and finalization returns
 to local rows. Native component profiling measures these GPU regions separately
 while leaving communication to the network model.
-DP1 uses the same component acquisition and lookup pipeline, but only measures
-local gate/routing and experts. Its admitted native boundaries perform no CUDA
-work; it has no DP dispatch/combine.
+The unquantized modular DP1 path measures local gate/routing and experts, with
+verified no-op preparation/finalization and no DP dispatch/combine. A separate
+capability-admitted live path retains native processed expert weights and backend
+at TP1/DP1/EP1, including supported quantized and shared-expert execution. It adds
+a local `wrapper` component for the surrounding native work.
 
 The shipped RTXPRO6000 BF16 Qwen3-30B bundle includes a TP1/DP2/EP2 component
 entry in its root metadata. Its contracts define the actual bounds and backend; the same model name
@@ -33,7 +35,7 @@ not relabel historical measurements.
 
 ## Acquire a deployment-matched table
 
-For a supported unquantized model, refresh only the MoE category:
+For a supported unquantized modular deployment, refresh only the MoE category:
 
 ```bash
 python -m profiler slice Qwen/Qwen3-30B-A3B-Instruct-2507 \
@@ -64,8 +66,10 @@ or enable tensor-sharded experts. Both shell templates forward `TP_DEGREES`,
 The profiler uses **one physical GPU**, not TP times DP processes. It retains
 the checkpoint's global expert count and top-k, resolves each target rank's
 expert map through vLLM, and builds local expert weights in the native layout.
-Expert weights are synthetic; this measures the selected implementation and
-tensor geometry, not a trained router's distribution. Collective execution
+The modular adapter initializes synthetic expert weights. The live local adapter
+keeps the engine's dummy-loaded, natively processed weights, quantization scales,
+activation settings and selected backend; it does not substitute an unquantized
+kernel. Neither path measures a trained router's distribution. Collective execution
 and CPU time are excluded. Target and acquisition parallelism are recorded
 separately, so a TP2/DP2 table is not evidence of a four-GPU communication run.
 
@@ -73,6 +77,51 @@ Omitting `--dp` selects DP1 for MoE acquisition. The component path also works
 in `profile`, replacing only its MoE category; dense models and non-MoE slices
 do not acquire MoE components. A MoE slice
 does not restamp the main engine, attention grid or skew metadata.
+
+The isolated component engine instantiates the smallest MLP prefix and preserves
+the requested token, sequence and context limits. Its private
+`kv_cache_memory_bytes` override defaults to a 1 GiB resource cap, leaving space
+for independently conditioned expert banks. This is not a capacity guarantee:
+vLLM must validate the configured context against its native cache layout, or
+startup fails. The internal acquisition caller can raise the cap; context limits
+are never reduced to fit it. Actual component-engine settings are observations
+in that MoE contract, not replacement cache facts for ordinary profiling or serving.
+
+## Live local boundaries
+
+The live adapter admits actual APIs, tensor layouts and capabilities rather than
+model-name aliases. It keeps gate projection and external routing in
+`gate_routing`; when the native expert kernel fuses routing, this component holds
+projection only and `experts` includes routing. Native expert preparation,
+quantization and finalization stay inside `experts`.
+
+`wrapper` runs the original parent MoE forward and retains its CUDA activities
+after excluding the gate/router and routed-kernel scopes. Shared experts, latent
+down/up projections, normalization, scaling and output combination remain in this
+boundary where the native wrapper performs them. Launch ownership and conservation
+checks prevent those activities from also entering another component. The native
+method and each isolated/cloned expert bank must produce exactly equal outputs
+for every routing stimulus before timing; unsupported routing replay or state
+changes are errors.
+State checks cover parameter bindings/layouts, available version counters,
+effective MoE configuration and callable identities. They are not bytewise
+checksums of device memory and do not detect arbitrary in-place CUDA writes.
+
+The stored metric is the **sum of unique native CUDA activity durations**, not an
+interval union or elapsed critical-path latency. Concurrent gate, routed and
+shared branches can overlap in the real model; adding these rows in a serial
+trace does not reproduce that overlap. CPU time and launch gaps remain excluded.
+These boundaries provide measured work-duration replay, not a new full-model
+serving-accuracy claim.
+
+The contract separates original/gate width from the physical expert width and
+records the actual gate dtype, including FP32 routers. `expert_weight_bytes`
+counts unique native weight/scale storage; `expert_bank_bytes` additionally counts
+native state that a conditioned clone must own. The bank allocation guard uses
+the latter plus native workspace and reserved free memory. It does not apply the
+unquantized adapter's conversion-buffer estimate to already processed weights.
+Cloning preserves storage aliases, offsets and strides. Wrapper weight storage
+excludes the gate and routed expert storage rather than double-counting them.
 
 ## Shapes and measurement protocol
 
@@ -85,7 +134,7 @@ This adapter's DP1 path is non-sequence-parallel: local and expert row counts
 are equal. The native backend is selected from each target's resolved configuration;
 it may differ between DP1 and DP+EP even on the same model and GPU.
 
-For DP1, native preparation must preserve the input without scales or dispatch
+For the unquantized modular DP1 path, native preparation must preserve the input without scales or dispatch
 metadata. Experts write to the caller's output buffer; the admitted native
 NoOP reduction then needs no copy. Acquisition verifies alias identity and
 absence of CUDA activity in prepare/finalize before recording these boundaries
@@ -127,6 +176,8 @@ forward counts covering complete cycles. Every expert point must pass the
 recorded 3% pooled-median stability check before the higher-bank measurement is
 published. Independent weight-bank outputs are compared against cloned eager
 references, including DP1 output alias checks.
+The live local path instead retains native output allocation and checks against
+the exact native method at each routing stimulus, including every cloned bank.
 
 These are explicit measurement-conditioning rules, not a guarantee of exact
 full-model cache behavior. Local gate/finalization regions remain isolated-warm.
@@ -175,8 +226,9 @@ tables. New output uses readable deployment directories rather than contract has
 ```
 
 `components.csv` stores `component,mode,tokens,activated_experts,local_assignments,time_us`.
-DP+EP stores `gate_routing`, `experts` and `finalize_copy`; DP1 stores only
-`gate_routing` and `experts`. The contract declares the expected component set.
+Modular DP+EP stores `gate_routing`, `experts` and `finalize_copy`; modular DP1
+stores `gate_routing` and `experts`. The live local path stores `gate_routing`,
+`experts` and `wrapper`. The admitted contract declares the expected component set.
 The root record has `schema: moe-components` and `entries`, each containing
 `target`, a TP-relative table `path`, `contract` and `coverage`. The contract
 describes geometry, target TP/DP/EP/rank, expert ownership, dtypes, native backend
@@ -233,8 +285,10 @@ count curve does not provide a rank-load histogram. Historical balanced-total
 component tables keep their old interpolation and mode choice, and support only
 their previously admitted routing policies. Retained `moe.csv` reads are unchanged.
 
-Missing deployment coverage or an unsupported routing policy warns and retains
-the legacy EP-table path, whose DP/backend accuracy is unverified. Corrupt contracts,
+Missing deployment coverage or an unsupported routing policy retains the legacy
+EP-table path only when a historical whole-block table exists, with its existing
+warning and unverified DP/backend accuracy. A fresh bundle without that table
+requires a complete matching component acquisition. Corrupt contracts,
 checksum mismatches and queries outside an installed table's supported geometry
 are errors rather than silently extrapolated measurements.
 Deployment selection caches both loaded tables and absent coverage for the run,
@@ -249,8 +303,11 @@ in dependency order. Tensor widths come from recorded dtypes. For TP greater tha
 one, the audited wrapper also restores TP output with AllGather for sequence
 parallelism or AllReduce otherwise. Native components and collectives are charged
 separately; collective time is not included in the component CSV.
-DP1 emits gate/routing and experts, followed by TP AllReduce only when TP>1.
+Modular DP1 emits gate/routing and experts, followed by TP AllReduce only when TP>1.
 There are no DP AllGathers, ReduceScatter or finalize-copy in that trace.
+The live TP1 path emits gate/routing, experts and wrapper without collectives;
+wrapper work can surround the expert call in the native forward, so this order
+is a serial duration representation, not a claim about concurrent execution.
 
 The analytical path retains a worst-rank Ring envelope for unequal DP counts.
 Logical tensors and dependency order do not reproduce NCCL's grouped launch,
@@ -258,11 +315,15 @@ channel selection or arbitrary ragged task schedule. Optional
 [collective links](../reference/cluster-config#collective-specific-links) change
 effective communication parameters without changing these tensor shapes.
 
-The current adapter requires positive DP, full EP, linear expert placement,
-and unquantized native modular experts with standard activation layout. Shared
-experts, monolithic/quantized backends, deferred finalization, input-weighted
-routing, padded hidden dimensions, biased or redundant experts, LoRA, EPLB and tensor-sharded experts need
-their own adapters. New tables admit rank-level N/A/M variation but do not resolve
+The modular adapter requires positive DP, full EP, linear expert placement and
+unquantized native modular experts with standard activation layout. Its local
+and DP+EP contracts remain unchanged. The live adapter requires TP1/DP1/EP1 and
+standard token layout; monolithic kernels must expose verifiable native routing
+replay. Quantization or shared experts alone are not rejection conditions, but
+an unsupported API, deferred finalization, input-weighted routing, fused shared
+gate, padded hidden dimensions, biased or redundant experts, LoRA, EPLB or
+tensor-sharded experts still fails explicitly. No removed whole-block acquisition
+is substituted. New tables admit rank-level N/A/M variation but do not resolve
 arbitrary within-rank expert histograms or establish trained-routing accuracy.
 No coverage of other models, hardware or execution paths should be inferred
 solely from a matching file format.

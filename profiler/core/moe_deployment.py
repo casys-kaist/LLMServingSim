@@ -6,6 +6,23 @@ the simulated deployment, not the process ranks of the single-GPU profiler.
 from dataclasses import asdict, dataclass, replace
 
 
+def component_names(contract):
+    """Admitted GPU boundaries, shared by acquisition and CPU-only readers."""
+    target = MoeTarget(**contract['target'])
+    schema = (contract.get('expert_region') or {}).get('schema')
+    if schema == 'native-live-expert-region':
+        if (target.tp, target.dp, target.ep, target.rank) != (1, 1, 1, 0):
+            raise ValueError('Live expert components require local TP1/DP1/EP1')
+        expected = ('gate_routing', 'experts', 'wrapper')
+    elif schema == 'native-modular-expert-region':
+        expected = target.components
+    else:
+        raise ValueError('Unknown native expert component boundary')
+    if contract.get('components') != list(expected):
+        raise ValueError('MoE components differ from the admitted native boundary')
+    return expected
+
+
 @dataclass(frozen=True)
 class MoeTarget:
     tp: int
