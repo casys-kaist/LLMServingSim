@@ -96,6 +96,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Preserve TP-stable replicas when starting or resuming ordinary higher-TP
+  categories, not only coupled layouts. Copied rows keep their source identity
+  and never substitute for unmeasured local shots.
 - Preserve native attention head width through TP configuration file reloads,
   including derived widths and nested text backbones. Check the actual native
   reconstruction rather than an in-memory update; incorrectly shaped projection,

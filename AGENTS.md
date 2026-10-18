@@ -291,6 +291,10 @@ text snapshot does not certify the wrapper, backend or parameter layout, and
 missing historical snapshots must not be reconstructed.
 Ordinary and skew acquisition metadata record resolved geometry and preparation
 semantics. Remeasure wrongly shaped rows, never restamp them as corrected.
+TP-stable replication applies to every catalog, not only coordinated layouts.
+Preserve copied rows and their source identities during local acquisition;
+exclude them from measured-shot resume coverage and from local replacement.
+Layout discovery probes remain subject to their own acquisition contract.
 
 **The stack is shrunk per category, not per model.** Instrumentation, warmup
 and forward work scale with executed operations. Runtime estimates must come

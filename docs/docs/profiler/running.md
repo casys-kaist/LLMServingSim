@@ -405,6 +405,12 @@ Supported historical sidecars other than `skew.meta.yaml` remain readable;
 skew acquisition and calibration use root metadata only. Resume does not restamp
 observations as a new measurement or derive compatibility from a folder name.
 
+TP-stable rows copied from TP1 retain their source acquisition when a higher-TP
+category starts or resumes, including ordinary catalogs without component
+layouts. These rows do not count as locally measured shots. A replica-only CSV
+therefore still measures every planned TP-local shot; `--force` preserves the
+copies while replacing local measurements.
+
 For coupled component layouts, acquire every affected category before simulation.
 Qwen's packed GDN core includes the formerly separate norm, so new `dense` and
 `linear_attention` data must be acquired together. Compatible interrupted runs

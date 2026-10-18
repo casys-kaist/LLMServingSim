@@ -63,6 +63,8 @@ regimes and independent active-expert/assignment axes. Physical bounds include
 compiler-SP padding. The [sampling guide](docs/profiler/running.md#sampling-policy)
 documents observed versus derived captures, eager-only acquisition, category
 limits and the optional target-only `--cudagraph` and `--grid-factor` controls.
+The [resume guide](docs/profiler/running.md#resume-vs-force) separates TP-stable
+copies from local measurement coverage for ordinary and coupled catalogs alike.
 
 The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
 0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained

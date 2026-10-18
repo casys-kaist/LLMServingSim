@@ -66,7 +66,8 @@ samples; the [sampling guide](https://llmservingsim.ai/docs/profiler/running#sam
 distinguishes observed captures from derived candidates and category-specific coverage.
 Actual backend/layout checks govern admission, not source hashes or folder names.
 CSV publication checks protect resume after an interrupted replacement without
-changing measured timings.
+changing measured timings; TP-stable copies retain their source acquisition
+without substituting for unmeasured TP-local work.
 Native [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
 defaults to local DP1 and supports DP+EP targets through consistent TP/DP/EP
 selectors and deployment-matched execution boundaries. New eager-only tables

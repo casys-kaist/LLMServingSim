@@ -238,9 +238,10 @@ def _fire_one_category(
     # selected representation differs at this degree. They cannot certify
     # a measured shot or be replaced by new TP2 samples.
     replicated = set()
-    if layout_context is not None and tp > 1:
+    if tp > 1:
         replicated = {name for name, entry in catalog_slice.items()
-                      if entry.get("tp_stable") and name not in probes}
+                      if entry.get("tp_stable")
+                      and (layout_context is None or name not in probes)}
     if not wipe or replicated:
         preloaded = sink.preload(preserve_layers=replicated, preserve_only=wipe)
         if preloaded:

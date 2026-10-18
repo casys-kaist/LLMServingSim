@@ -807,6 +807,8 @@ actual API/backend, shape, dtype, layout and finite-output guards remain.
 
 Starting local acquisition beside TP-stable replicas preserves their source-TP
 provenance; local resume never relabels copied timings as locally measured rows.
+This applies to ordinary catalogs as well as coupled component layouts. A
+replica-only CSV does not skip any unmeasured TP-local shots.
 Native DP+EP components retain their separate measurement contract.
 
 Ordinary categories save periodic atomic checkpoints between completed shots.
