@@ -18,13 +18,27 @@ sidebar_position: 2
 | Selects | top **2048 tokens** | top **16 blocks of 128 tokens** |
 | Over | MLA (one latent, no separate V) | plain GQA |
 | Index cache | `index_head_dim` fp8 keys + fp32 scales, packed `uint8` | one `sparse_index_dim` vector per token, **bf16** |
-| Attention kernels in the profile | `attention` (MLA), `indexer` | `attention`, `sparse_attention`, `indexer` |
+| Historical attention components | `attention` (MLA), `indexer` | `attention`, `sparse_attention`, `indexer` |
 | `model_type` | `deepseek_v32`, `glm_moe_dsa` | `minimax_m3_vl` |
 
-DeepSeek-V3.2 and GLM-5 share **one catalog** because vLLM runs both
-through `deepseek_v2.py`. Where the two checkpoints differ — GLM-5 uses
-plain `RotaryEmbedding` where DeepSeek scales rope — the catalog lists
-both class names for the entry.
+DeepSeek-V3.2 and GLM-5 share **one catalog** for their recorded vLLM 0.28
+`deepseek_v2.py` decomposition. The catalog lists both rotary-embedding classes
+used by those checkpoints. This does not assert that later vLLM versions execute
+the same modules: vLLM 0.31 uses a native DeepSeek-V3.2 path under
+`vllm.models.deepseek_v32.nvidia.model`. Stored bundles remain readable, but new
+acquisitions require matching live coverage and execution contracts. The native
+DeepSeek representation is described by its
+[four-table acquisition contract](../../profiler/output-bundle.md#native-dsa-acquisition):
+it uses a combined, full-context `dsa_attention_tail` and explicit local duration
+replay only. This does not extend native acquisition to GLM-5.
+
+MiniMax-M3's new runtime-checked vLLM 0.31 Triton BF16 acquisition records a
+[per-TP attention contract](../../profiler/output-bundle.md#native-attention-lookup-contract):
+the configured selected-block count and reviewed 128-token block layout determine
+the sparse-prefill lookup cap (2048 for the shipped configuration). The
+historical unmarked tables retain 2176. Raw producer coordinates, indexer
+history and decode lookup remain unchanged; selecting a native cap does not
+certify a full grid, distributed deployment, KV capacity or benchmark accuracy.
 
 :::caution[The `attention` category holds more than one kernel, and they are not interchangeable]
 Every lookup is keyed by kernel name, and so is the skew alpha. On
@@ -35,6 +49,12 @@ got the dense kernel's latency — 2.1x per layer on M3.
 :::
 
 ## What the KV cache actually holds
+
+The capacity and deployment examples below describe the historical simulator
+path. They do not admit the new native DSA tables for serving: their FP8 main
+cache is 656 bytes plus a 132-byte index cache, whereas the legacy FP8 formula
+counts 576+132. Native duration replay does not perform capacity admission;
+ordinary serving refuses these new tables.
 
 Sizing these as GQA is the single biggest error available here. Per
 token per layer, in bf16:
@@ -102,16 +122,23 @@ unrestricted case spelled out, and M3 does not declare the fields.
 
 ## Profiling
 
+These are acquisition templates, not a guarantee that a historical catalog
+matches the installed runtime. Verify the selected model's coverage and component
+boundaries first; do not publish a table with missing or double-counted work.
+
 ```bash
-# DeepSeek-V3.2 / GLM-5 — defaults are fine
-MODEL="deepseek-ai/DeepSeek-V3.2-Exp" HARDWARE=RTXPRO6000 ./profiler/profile.sh
+# Native DeepSeek-V3.2 — fresh admitted tables, local duration replay only
+python -m profiler profile deepseek-ai/DeepSeek-V3.2-Exp \
+  --hardware RTXPRO6000 --tp 1 --ep 1 --out-root profiler/perf-native
 
 # MiniMax-M3 — block size 128 is REQUIRED
-MODEL="MiniMaxAI/MiniMax-M3" HARDWARE=RTXPRO6000 BLOCK_SIZE=128 ./profiler/profile.sh
+python -m profiler profile MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 \
+  --tp 1 --block-size 128 --out-root profiler/perf-native
 ```
 
-Check the catalog first; it is the only check that catches an entry that
-names a real class and measures nothing:
+Inspect coverage before a sweep to check active bindings and uncovered CUDA
+work. Runtime admission and category publication also validate required
+components; a coverage report alone does not establish a complete bundle:
 
 ```bash
 python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 --block-size 128
@@ -129,13 +156,19 @@ python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 --block-s
   wants a flat file; `stack.text_config` handles both.
 :::
 
-Profiling is single-GPU whatever the TP degree — per-rank shapes are
-emulated by dividing `hidden_size` / `num_attention_heads` via
-`hf_overrides`, and collectives are left to ASTRA-Sim. So a 671B model
+Ordinary historical TP profiling is single-GPU — per-rank shapes are
+emulated by dividing the declared sharded dimensions, including attention
+head counts and MLP intermediate widths, through `hf_overrides`;
+`hidden_size` stays unchanged. Collectives are left to ASTRA-Sim. So a 671B model
 profiles on one card: the profiler shrinks the stack to the 4 layers
 needed to reach every block type (3 dense MLP + 1 MoE, sparse throughout).
+The native DSA acquisition contract currently permits only actual/logical TP1
+and EP1; it does not certify emulated wider TP or sliced expert geometry.
 
 ## Run
+
+This serving example requires a compatible historical bundle; the new native
+DSA representation is restricted to the explicit duration-replay API.
 
 ```bash
 python -m serving \

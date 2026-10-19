@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -55,6 +55,9 @@ from profiler.core.catalog_path import resolve_architecture_path
 # attention page had halved.
 SHARD_FIELDS: list[str] = [
     "intermediate_size",
+    # MiniMax's dense MLP reads this separate width; intermediate_size is its
+    # expert width (native minimax_m3/nvidia/model.py:743).
+    "dense_intermediate_size",
     "num_attention_heads",
     "num_key_value_heads",
     "vocab_size",
@@ -179,10 +182,8 @@ def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
         (hf_cfg[k] for k in MOE_NUM_EXPERTS_KEYS if k in hf_cfg),
         None,
     )
-    top_k = next(
-        (hf_cfg[k] for k in MOE_TOP_K_KEYS if k in hf_cfg),
-        None,
-    )
+    from .stack import expert_top_k
+    top_k = expert_top_k(hf_cfg)
     if num_experts is None or top_k is None:
         return None
     return (int(num_experts), int(top_k))
@@ -192,17 +193,38 @@ def probe_moe_params(hf_cfg: dict[str, Any]) -> tuple[int, int] | None:
 # Catalog (loaded from architecture yaml)
 # ---------------------------------------------------------------------------
 
+class CallableScope(BaseModel):
+    """Exact runtime target; instrumentation never imports or replaces its code."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    kind: Literal["function", "method"]
+    module: str | None = None
+    attribute: str | None = None
+    owner: str | None = None
+    path: str | None = None
+    within: str | list[str] | None = None
+    context: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check_target(self):
+        from .hooks.capture_scope_contract import normalize_callable
+        normalized = normalize_callable(self.model_dump(exclude_none=True))
+        self.context = normalized.get('context')
+        return self
+
+
 class LayerEntry(BaseModel):
     """One row of the catalog.
 
-    Each entry binds a canonical layer name (the YAML key) to the vLLM
-    Python class that the CUDA profiler will report, plus optional
+    Each entry binds a canonical name (the YAML key) to a vLLM class/kernel
+    selector or one exact native CPU operator scope, plus optional
     disambiguation (``within``) and TP-invariance (``tp_stable``).
     """
     # extra="forbid" catches typos in YAML early (e.g., `tp_stabe: true`).
     model_config = ConfigDict(extra="forbid")
 
-    vllm: str | list[str]
+    vllm: str | list[str] | None = None
     """Name the CUDA profiler reports for this layer, e.g.
     ``"QKVParallelLinear"``, ``"RMSNorm"``, ``"Attention"``.
 
@@ -228,11 +250,40 @@ class LayerEntry(BaseModel):
     attention is (prefill kernel, decode kernel, merge), in which case the
     matches are summed."""
 
+    operator: str | None = None
+    """One exact native CPU operator name, instead of ``vllm``.
+
+    The operator interval determines which native CUDA launches belong to
+    this component. Latency still uses CUDA activity intervals, not CPU time.
+    Its scope is transparent to descendant parent-call normalization.
+    """
+
+    callable: CallableScope | None = None
+    """One explicitly declared imported function or live-object method.
+
+    The wrapper only establishes runtime ancestry and CUDA launch ownership.
+    An inactive alternative is reported, never populated with a zero value.
+    """
+
+    normalization: Literal["parent", "invocations"] | None = None
+    """Override the category default (parent, or invocations for whole MoE)."""
+
+    @model_validator(mode="after")
+    def _check_binding_kind(self):
+        if sum(value is not None for value in (self.vllm, self.operator, self.callable)) != 1:
+            raise ValueError("A layer requires exactly one of vllm, operator or callable")
+        if self.operator is not None:
+            if not self.operator or any(char in self.operator for char in "*("):
+                raise ValueError("operator must be one exact native CPU name")
+        elif self.vllm is not None and (not self.vllm_names() or any(not name for name in self.vllm_names())):
+            raise ValueError("vllm requires nonempty class/kernel names")
+        return self
+
     def vllm_names(self) -> list[str]:
         """``vllm`` as a list."""
         if isinstance(self.vllm, str):
             return [self.vllm]
-        return list(self.vllm)
+        return list(self.vllm or [])
 
     within: str | list[str] | None = None
     """Optional ancestor class name to disambiguate when the same ``vllm``
@@ -283,6 +334,17 @@ class LayerEntry(BaseModel):
 
     sequence_parallel: bool | None = None
     """Whether the MoE wrapper sequence-shards its input under DP+TP."""
+
+    attention_sequence_parallel: bool | None = None
+    """Whether TP+DP MoE at PP1 keeps sequence shards across attention blocks.
+
+    This requires a different trace from a wrapper-only sequence-parallel MoE.
+    Until implemented, serving refuses that deployment rather than emitting
+    attention AllReduce and a per-block MoE restore that the engine omits.
+    """
+
+    tp_output_reduction: Literal["all_reduce"] | None = None
+    """Ordinary TP row-parallel output reduction, after this component."""
 
     key_saturates: bool = False
     """If True, this kernel's cost stops growing once a sequence's key window
@@ -479,6 +541,34 @@ class MtpSection(BaseModel):
     head: list[str] = Field(default_factory=list)
 
 
+class ComponentLayoutLayer0(BaseModel):
+    """One exact target-layer-zero prefix consumed by a fused prologue."""
+    model_config = ConfigDict(extra="forbid")
+    path: list[str]
+    expected_prefix: list[str]
+    replacement_prefix: list[str]
+    consumed_by: str
+
+
+class ComponentLayoutVariant(BaseModel):
+    """Observed canonical members and a one-pass block-order substitution."""
+    model_config = ConfigDict(extra="forbid")
+    observed: dict[str, list[str]]
+    replace: dict[str, list[str]] = Field(default_factory=dict)
+    layer0: list[ComponentLayoutLayer0] | None = None
+    invocation_contract: Literal["site-scope-calls"] | None = None
+    runtime_contract: Literal["native-dsa-eager-tail"] | None = None
+
+
+class ComponentLayoutGroup(BaseModel):
+    """Mutually exclusive, runtime-observed representations of one component."""
+    model_config = ConfigDict(extra="forbid")
+    historical: str
+    categories: list[str]
+    variants: dict[str, ComponentLayoutVariant]
+    sites: list[list[str]] | None = None
+
+
 class Architecture(BaseModel):
     """Parsed architecture yaml.
 
@@ -510,6 +600,8 @@ class Architecture(BaseModel):
     # class as a target decoder layer and the simulator replays the target's
     # own block sequence for it.
     mtp: MtpSection | None = None
+    component_layouts: dict[str, ComponentLayoutGroup] = Field(default_factory=dict)
+    native_profile: Literal['hybrid-residual'] | None = None
 
     # ------------------------------------------------------------------
     # Validation
@@ -519,10 +611,18 @@ class Architecture(BaseModel):
     def _check_catalog(self) -> "Architecture":
         # Canonical names must be unique across ALL catalog groups.
         seen: set[str] = set()
-        for _, name, _ in self.catalog.all_entries():
+        for kind, name, entry in self.catalog.all_entries():
             if name in seen:
                 raise ValueError(f"Layer name {name!r} appears twice in catalog")
             seen.add(name)
+            if entry.callable is not None and entry.callable.context is not None:
+                if kind != 'dense' or entry.normalization != 'invocations':
+                    raise ValueError('Context-bearing callables currently require dense/invocations')
+            if entry.attention_sequence_parallel and (
+                    kind != "moe" or entry.sequence_parallel is not True):
+                raise ValueError("attention_sequence_parallel requires a sequence-parallel MoE entry")
+            if entry.tp_output_reduction is not None and kind != "dense":
+                raise ValueError("tp_output_reduction requires a dense projection entry")
 
         # At least one softmax-attention entry, unless the architecture is
         # purely linear-attention. More than one is allowed: a sparse-attention
@@ -534,24 +634,32 @@ class Architecture(BaseModel):
                 "linear_attention entry"
             )
 
-        # (vllm, within) pairs globally unique so layer matching is
+        # Binding kind/name and ancestry guards are globally unique so matching is
         # deterministic. Several profile-tree nodes may still match one entry,
         # which is fine and sometimes the point: their timings are summed,
         # because one canonical name is one trace node.
-        pairs: dict[tuple[tuple[str, ...], tuple[str, ...]], str] = {}
+        pairs: dict[tuple, str] = {}
         for _, name, entry in self.catalog.all_entries():
             key = (
-                tuple(sorted(entry.vllm_names())),
+                "callable" if entry.callable is not None else "operator" if entry.operator is not None else "vllm",
+                (entry.callable.name,) if entry.callable is not None else
+                (entry.operator,) if entry.operator is not None else tuple(sorted(entry.vllm_names())),
                 tuple(sorted(entry.within_names())),
                 tuple(sorted(entry.not_within_names())),
             )
             if key in pairs:
                 raise ValueError(
                     f"Ambiguous layer binding: {name!r} and {pairs[key]!r} "
-                    f"both resolve to (vllm={entry.vllm!r}, "
+                    f"both resolve to ({key[0]}={key[1]!r}, "
                     f"within={entry.within!r})"
                 )
             pairs[key] = name
+
+        # One semantic callable name has one target across category slices.
+        # This also rejects operator/callable context-name collisions before
+        # any worker can change a live callable attribute.
+        from .hooks.capture_scope_contract import contexts_from_architecture
+        contexts_from_architecture(self)
 
         # One layer-order form, and it has to be there: the trace generator
         # has nothing to walk otherwise.
@@ -581,6 +689,8 @@ class Architecture(BaseModel):
                 f"{sorted(set(unknown))}"
             )
 
+        from profiler.core.component_layouts import validate_definitions
+        validate_definitions(self.model_dump(exclude_none=True))
         return self
 
     # ------------------------------------------------------------------
@@ -707,7 +817,7 @@ def resolve_architecture_by_model_type(
 # Profile session args (CLI, no yaml)
 # ---------------------------------------------------------------------------
 
-#: Default geometric factor for attention axes.
+#: Default geometric factor for attention request counts.
 #:
 #: Smaller geometric factors trade more shots for finer resolution. A doubling
 #: axis is nested in the sqrt(2) axis: even powers retain its coordinates.
@@ -749,29 +859,28 @@ class ProfileArgs:
             require 1 for TP-stable replication; skew-only work is independent.
         variant: Free-form output folder label under the model's
             directory. If omitted at the CLI, auto-derived from
-            ``dtype`` + ``kv_cache_dtype`` so that profiles with
-            different engine kwargs don't collide.
+            checkpoint precision and explicit activation/KV dtype choices.
+            HF precision or nested text-config overrides need an explicit label.
         dtype / kv_cache_dtype / max_num_batched_tokens / max_num_seqs:
             Common vLLM engine kwargs. None means "use defaults"
             (HOST_ENGINE_DEFAULTS for max_*, vLLM default for dtype).
         attention_max_kv: Cap for the attention and skew grids' KV axes.
-            Doubles from 512 up to min(this, max_model_len). ``None`` means
+            Each grid retains its own starting point and factor. ``None`` means
             the model's own context, and ``runner`` resolves it against the
             live engine's ``max_model_len`` (see
             ``engine.resolve_attention_max_kv``) before any grid is composed --
             so every reader downstream, including the meta the run records,
             sees one concrete number and never ``None``.
-        moe_ep_degrees: EP degrees to profile the MoE block at. Each one past
-            1 costs its own engine boot, because the slice a rank runs -- E/ep
-            experts, k/ep assignments per token -- is a config the engine is
-            built with, not a per-shot knob. Default ``(1,)``, which is the
-            whole model on one rank and what every bundle held before the axis
-            existed.
+        dp_degrees: Target DP degrees for native MoE components. None
+            selects DP1 automatically for MoE acquisition; other categories
+            and coverage are unaffected. EP is TP times DP.
+        ep_degrees: Optional EP filter over those TP/DP targets. None keeps
+            every target; an explicit degree must match a selected TP times DP.
         profile_mtp: When set, boot with ``speculative_config`` so the drafter
             is built and its kernels land in the profile tree. The drafter
             runs inside ``sample_tokens()`` (``propose_draft_token_ids`` ->
             ``drafter.propose``), which the fire path already calls inside
-            ``layerwise_profile``. Always at ``num_speculative_tokens=1``, so
+            the native CUDA collector. Always at ``num_speculative_tokens=1``, so
             what lands in ``mtp.csv`` is **one** drafter pass -- the unit the
             simulator multiplies by its own N.
         hf_overrides: Extra HF config overrides, merged under the
@@ -822,14 +931,20 @@ class ProfileArgs:
     # config model_type (deepseek_mtp / qwen3_5_mtp / minimax_m3_mtp) is
     # produced by SpeculativeConfig.hf_config_override and is unknown to HF
     # Transformers, so the module cannot be loaded standalone.
-    moe_ep_degrees: tuple[int, ...] = (1,)
-    moe_dp_degrees: tuple[int, ...] | None = None
-    """Explicit target DP degrees for native, separately timed MoE components.
+    dp_degrees: tuple[int, ...] | None = None
+    """Target DP degrees for native, separately timed MoE components.
 
-    None retains legacy whole-block acquisition. This is target metadata, not
+    None selects DP1 automatically for MoE acquisition. This is target metadata, not
     the number of actual profiler processes. EP is resolved as TP times DP.
+    DP1 measures local gate/routing and experts without DP dispatch/combine.
+    """
+    ep_degrees: tuple[int, ...] | None = None
+    """Optional full-EP target filter. None selects all TP times DP targets.
+
+    This does not change expert tensor sharding or infer additional TP/DP degrees.
     """
     moe_rounds: int = 3
+    moe_grid_factor: float = 2.0
     profile_mtp: bool = False
     """Layers to instantiate. None uses HOST_ENGINE_DEFAULTS (1), which is
     right for a uniform stack: every block is identical, so profiling one
@@ -861,6 +976,14 @@ class ProfileArgs:
     vLLM there, so HF hub access is never required and custom-shape
     profiling is one file-edit away."""
 
+    # Target sampling policy, separate from the eager acquisition engine.
+    grid_factor: float = 2.0
+    """Geometric spacing for ordinary non-graph token/request coordinates.
+    Attention, skew and native MoE use their own axis factors."""
+    cudagraph: dict[str, Any] | None = None
+    """Target serving graph options passed to the shared capture-grid resolver.
+    None selects its defaults; these options never enable graph acquisition."""
+
     # Attention grid
     attention_max_kv: int | None = None
     attention_decode_q_lens: tuple[int, ...] = (1,)
@@ -874,99 +997,31 @@ class ProfileArgs:
     attention grid, so it is opt-in: pass the ``1 + N`` values you intend to
     simulate. Published N for the four modern families are 3, 4 and 5.
     """
-    attention_chunk_factor: float = SQRT2
-    """Geometric factor for the prefill-token axis. Default ``SQRT2``;
+    attention_chunk_factor: float = 2.0
+    """Geometric factor for the prefill-token axis. Default 2.0;
     override via --attention-chunk-factor.
 
-    It was briefly 1.5, on an end-to-end A/B that turned out to be confounded.
-    Swapping only the attention grid moved the Llama bench example's TTFT mean
-    from -4.6% to -1.1% -- but the denser file was measured on vllm=0.19 and
-    the ground truth it was scored against was recorded on 0.19 too, while the
-    coarse file was 0.28. Re-recording that truth on 0.28 **with cudagraphs
-    off**, so the execution mode matches what the profiler can measure, the
-    two grids read |err| p50 2.7% (x2) against 3.4% (x1.5 union) -- the
-    advantage is gone and slightly reversed. Do not lower this again without
-    an A/B whose truth matches the bundle's vLLM version *and* runs eager.
-
-    That is an argument against 1.5, not against ``SQRT2``, and the two are
-    not interchangeable: 1.5 lands on none of the doubling grid's values above
-    2, so it *replaces* a bundle's measurements, while ``SQRT2`` interleaves
-    with them. What the A/B refutes is the claim that a denser chunk axis pays
-    for a re-measure on its own; it says nothing about the value to sweep a
-    *new* bundle at.
-
-    **Every committed RTXPRO6000 Llama/Qwen bundle is at 1.5 on this axis and
-    on kv** -- `meta.yaml` records `chunk_factor: 1.5, kv_factor: 1.5` -- and
-    every other bundle is at 2.0. So a `slice --group attention` refresh at
-    the defaults would silently re-grid those two axes as well as the one
-    being refreshed. Pass the bundle's own `--attention-chunk-factor` /
-    `--attention-kv-factor` (and `--attention-max-kv` and `--max-num-seqs`,
-    which the meta also records) to refresh one axis without moving the
-    others."""
-    attention_kv_factor: float = SQRT2
+    Denser sampling increases acquisition cost without an accuracy guarantee.
+    When refreshing one axis, restate the bundle's recorded factors and limits
+    for the others; resume also requires compatible identities and shot keys.
+    """
+    attention_kv_factor: float = 2.0
     """Geometric factor for the prefill-key and kv_decode axes. Default
-    ``SQRT2``; override via --attention-kv-factor. See the note above."""
+    2.0; override via --attention-kv-factor. See the note above."""
     attention_n_factor: float = SQRT2
-    """Geometric factor for the n_decode axis. Override via
-    --attention-n-factor.
+    """Geometric factor for the n_decode axis. Default ``SQRT2``;
+    override via --attention-n-factor.
 
-    **Below doubling, because the axis is smooth only on a *pure decode*
-    batch.** It was 2.0 on exactly that evidence -- per-sequence decode cost
-    on Llama-3.1-8B is flat and slightly falling, 6.60 / 6.33 / 5.94 / 5.81 /
-    5.70 us at n = 16 / 32 / 64 / 128 / 256 (kv 2076) -- and that measurement
-    is right. It just does not describe a **mixed** batch, where the same
-    model rises **37%** across the same doubling:
-
-        n_decode      16    32    64    72    80    88    96   104   112   128
-        pure  us/seq 6.60  6.33  5.94    -     -     -     -     -     -  5.81
-        mixed us/seq 9.18  9.28  8.99  9.33  9.45  9.47 10.39 11.03 11.55 12.31
-
-    (chunk 273, kv 2076, one prefill sequence; the mixed figures subtract the
-    chunk's own 13.2 us.) The curve is flat to n=88 and then climbs, so a
-    doubling grid's linear blend between 64 and 128 over-charges the middle by
-    up to **12.7%** -- blend 954.2 us against a measured 846.3 at n=88, 1081.3
-    against 1010.3 at n=96. ``SQRT2`` puts a profiled point at **91**, i.e. on
-    the knee.
-
-    That is where a real run lives: matching Llama-3.1-8B's steps against a
-    vLLM run one for one, the simulator is exact at n_decode 0 and 32 (both
-    grid points: 0.983-1.032) and 5-12% slow at 64-127, with attention 54.8%
-    of such a step. It is the largest identified piece of that example's
-    +4.8% TTFT.
-
-    Note what kind of evidence this is. The chunk and kv factors were lowered
-    once on an end-to-end A/B and reverted when that turned out confounded
-    (see ``attention_chunk_factor``); this is not that. It is the
-    interpolation error of the modelled quantity, measured against the same
-    engine in the same run, so no vLLM version or execution mode enters it.
-
-    A sparse model needs it lower still: DeepSeek-V3.2's per-sequence cost
-    drops ~3x between n=64 and n=128 at **every** kv (48.63 -> 15.64 us/seq at
-    kv=256, 7.57 -> 3.45 at kv=8192).
-
-    **1.5 is the wrong way to get that resolution**, even though it is
-    denser. It lands on none of the doubling grid's values above 2, so it
-    discards what a bundle already holds -- 37.9% reuse and 23,579 orphaned
-    rows on Llama-3.1-8B, against ``SQRT2``'s 99.9% and 19 -- and needs
-    37,696 new shots where ``SQRT2`` needs 28,272. Measured at 2.19 shot/s
-    that is 4.8 h against 3.6 h, for a grid that is no better placed.
+    Request counts retain finer spacing because mixed attention can change
+    sharply between doubling points even when pure-decode cost is smooth.
+    The floating-point geometric grid interleaves doubling coordinates;
+    row reuse still requires matching acquisition identities and full keys.
     """
     # Measurement averaging
     measurement_iterations: int = 3
-    """N timed forwards per shot, averaged."""
-
-    """If True, skip the step sweep (step.csv will not be written and the
-    simulator applies no cudagraph correction -- it then predicts eager
-    execution, which is 2-5% slower than production on a dense model).
-
-    On by default, unlike ``skip_skew``, because a missing correction is a
-    *known* bias rather than an unknown one: skew's fallback of alpha=0 is
-    defensible since a guessed alpha is worse than none, while here the
-    direction and rough size are established. Skippable all the same, and for
-    two real reasons -- the sweep needs a second engine boot (minutes on a
-    large model, and vLLM's graph capture allocates memory a checkpoint that
-    only just fits under ``enforce_eager`` may not have), and a per-category
-    ``slice`` refresh has no reason to pay it."""
+    """Timed forwards per ordinary shot. The collector averages GPU activity
+    using the catalog's per-call normalization; repeated forwards reduce
+    sampling noise without providing a hardware-independent error bound."""
 
     skip_skew: bool = False
     """If True, skip the skew profiling step (skew.csv will not be
@@ -997,10 +1052,6 @@ class ProfileArgs:
     whose keys are already measured, so a re-run after a feasibility
     change adds only the newly-eligible cases. Applies to both the
     main loop categories (dense/per_sequence/attention/moe) and skew."""
-    """Number of timed forward passes per shot, averaged by vLLM's
-    layerwise_profile via its ``invocations`` count. A single sample
-    can swing 15-25% on large GEMMs due to DVFS / clock-state jitter;
-    N=3 cuts that jitter to ~5% at ~3x profile time."""
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -1010,27 +1061,51 @@ class ProfileArgs:
     def effective_variant(self) -> str:
         """Resolved variant — explicit override or auto-derived name.
 
-        When the user doesn't pass ``--variant``, we name the folder
-        after the engine flags that actually change kernel timings:
-        ``dtype`` and ``kv_cache_dtype``. The weight dtype defaults to
-        the model config's ``torch_dtype`` / ``dtype`` so the folder carries
-        meaningful info (no bare "default").
+        Omitted ``dtype`` and ``dtype='auto'`` retain the checkpoint's
+        established folder name. On a quantized checkpoint ``--dtype``
+        controls floating activations/unquantized modules, not quantized
+        weights. A different activation dtype gets a distinct ``-act``
+        suffix; matching BF16/FP16 keeps the checkpoint name. FP32 is not
+        considered an auto match because vLLM normally downcasts it.
+        HF precision fields and any nested ``text_config`` override need an
+        explicit ``--variant``; config-class-specific updates are not guessed.
 
         Examples (typical BF16 models like Llama 3.x):
 
             no flags                   → "bf16"          (from torch_dtype)
             --kv-cache-dtype fp8       → "bf16-kvfp8"
-            --dtype fp8                → "fp8"
-            --dtype fp8 --kv... fp8    → "fp8-kvfp8"
+            --dtype float16            → "fp16"
+            FP8 checkpoint + BF16      → "fp8"       (BF16 config)
+            FP8 checkpoint + FP16      → "fp8-actfp16" (BF16 config)
         """
         if self.variant is not None:
             return self.variant
 
-        # Weight dtype: CLI wins; otherwise probe the model config.
-        weight_dtype = self.dtype
-        if weight_dtype is None and self.model_config:
-            weight_dtype = model_config_weight_dtype(self.model_config)
-        parts = [_short_dtype(weight_dtype) if weight_dtype else "default"]
+        # Do not infer the effect of arbitrary HF config-class overrides.
+        # An explicit label remains the escape hatch for deliberate variants.
+        if self.hf_overrides and set(self.hf_overrides) & {
+                "dtype", "torch_dtype", "quantization_config", "text_config"}:
+            raise ValueError("Precision or nested HF overrides require an explicit --variant")
+
+        config = self.model_config or {}
+        checkpoint_dtype = model_config_weight_dtype(config)
+        base = _short_dtype(checkpoint_dtype) if checkpoint_dtype else "default"
+        requested = None if self.dtype is None else str(self.dtype).lower()
+        if requested not in (None, "auto"):
+            quant = config.get("quantization_config")
+            method = quant.get("quant_method") if isinstance(quant, dict) else None
+            inner = config.get("text_config")
+            nested_quant = inner.get("quantization_config") if isinstance(inner, dict) else None
+            if not method and isinstance(nested_quant, dict) and nested_quant.get("quant_method"):
+                raise ValueError("Nested-only quantization needs an explicit --variant with --dtype")
+            if method:
+                activation = _checkpoint_activation_dtype(config)
+                selected = _short_dtype(requested)
+                if activation not in ("bf16", "fp16") or selected != activation:
+                    base += f"-act{selected}"
+            else:
+                base = _short_dtype(requested)
+        parts = [base]
 
         if self.kv_cache_dtype and self.kv_cache_dtype != "auto":
             parts.append(f"kv{_short_dtype(self.kv_cache_dtype)}")
@@ -1064,6 +1139,26 @@ def _short_dtype(d: str) -> str:
     return _DTYPE_SHORT.get(str(d), str(d))
 
 
+def _checkpoint_activation_dtype(config: dict[str, Any]) -> str | None:
+    """Unambiguous declared floating dtype, root first then text backbone.
+
+    vLLM's auto resolver may use weight metadata or a platform-specific fallback
+    when this is absent/FP32; do not claim an explicit dtype matches that case.
+    Conflicting legacy/current aliases also need an intentional variant label.
+    This is naming only and never changes the engine's dtype or quantization.
+    """
+    for node in (config, config.get("text_config")):
+        if not isinstance(node, dict):
+            continue
+        values = {_short_dtype(str(node[key]).lower().removeprefix("torch."))
+                  for key in MODEL_DTYPE_KEYS if node.get(key)}
+        if len(values) > 1:
+            raise ValueError("Conflicting dtype/torch_dtype aliases require an explicit --variant")
+        if values:
+            return next(iter(values))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # vLLM engine default kwargs
 # ---------------------------------------------------------------------------
@@ -1077,7 +1172,7 @@ HOST_ENGINE_DEFAULTS: dict[str, Any] = {
     # Don't download checkpoints; we only measure kernel latency.
     "load_format": "dummy",
     # Disable CUDA graphs so every launch is an independently timeable
-    # event. layerwise_profile requires this.
+    # event. The native CUDA collector requires this.
     "enforce_eager": True,
     # Skip tokenizer init — our synthetic batches never tokenize.
     "skip_tokenizer_init": True,

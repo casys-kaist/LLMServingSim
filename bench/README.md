@@ -14,6 +14,8 @@ bench/                         Python package: python -m bench
 ├── core/                       internals
 │   ├── runner.py               AsyncLLM driver, captures RequestStateStats
 │   ├── recorder.py             writes meta.json / requests.jsonl / timeseries.csv
+│   ├── kv_cache_metadata.py     qualified per-engine startup READY capacities
+│   ├── execution_metadata.py   completed worker graph observations
 │   ├── stat_logger.py          custom vLLM StatLoggerBase that fills timeseries
 │   ├── validate.py             bench-vs-sim comparison entry point
 │   ├── plots.py                throughput / running-waiting / latency-CDF helpers
@@ -35,9 +37,16 @@ bench/                         Python package: python -m bench
 
 `bench run` needs the vLLM GPU environment. `bench validate` only reads recorded
 files and runs on CPU in the simulator environment; it does not boot vLLM.
+The shared launcher targets vLLM 0.31.0 / CUDA 13. Committed reference runs
+retain the versions in their metadata; changing the launcher does not refresh them.
 The committed examples validate their stored profile bundles, not automatically
 a new acquisition made with the latest profiler. Check both profile acquisition
 metadata and benchmark engine settings before claiming equivalent coverage.
+Profile CSVs contain coordinates and timings; per-category method and runtime
+observations are recorded in profile metadata. A version label alone neither
+proves equivalence nor vetoes execution: compare the actual backend, precision,
+geometry and workload. Bounded Kimi/GLM profiling and duration replay do not
+establish native serving capacity, TP2 support or benchmark accuracy.
 
 ### Record a workload: `bench run`
 
@@ -48,16 +57,26 @@ consumes). Each request's `input_tok_ids` and `output_toks` are pinned via
 vLLM run uses the same prompt token IDs and requested output lengths as the
 simulator. Generated token content and execution timing are not bit-identical.
 
-The communication baseline is NCCL: the runner explicitly sets
-`disable_custom_all_reduce=True` and records it in `engine_kwargs`, alongside
-the resolved parallel configuration. It also disables the independent Torch
-symmetric-memory and FlashInfer all-reduce paths before loading vLLM; the
-effective overrides are saved in `meta.json` under
-`hardware.all_reduce_environment`. Non-NCCL all-reduce/RMS and asynchronous
-GEMM/communication fusions are disabled through recorded compilation overrides.
-Ordinary compute compilation and CUDA graphs remain enabled by default.
-Historical artifacts retain their original
-settings; inspect their metadata before comparing them.
+Benchmark replay supports **flat request rows with nonempty `input_tok_ids`**
+only. Rows containing `sub_requests` are skipped; session dependencies and
+tool delays are not replayed. Use a flat-only dataset when comparing against
+the simulator, since a mixed file would otherwise represent different workloads.
+The benchmark does not tokenize count-only requests.
+
+Communication backend selection follows vLLM's defaults and the caller's
+environment. The runner does not force NCCL or overwrite all-reduce environment
+variables. It retains `fuse_allreduce_rms=False` and `fuse_gemm_comms=False` to
+keep the benchmark's separate compute/communication decomposition; ordinary
+compute compilation and CUDA graphs remain enabled. These compiler settings
+do not disable model-native fused implementations. `--disable-custom-all-reduce` is an
+explicit opt-in (off by default); it disables that implementation only, not
+other optimized or fused communication paths. The choice is recorded in
+`engine_kwargs` together with the two compilation overrides, environment values
+in `hardware.all_reduce_environment`, and
+resolved parallel/compiler settings in `resolved_config`. An unset environment
+value means vLLM chooses its default, not that the path is disabled.
+Historical artifacts retain their original settings; a new default run is not
+automatically equivalent to a committed NCCL-only reference.
 
 `--record-gate-stats --enforce-eager` observes routing between explicit workload
 start/end markers. A concentrated gate is valid data, not a warmup signature.
@@ -71,11 +90,13 @@ Use per-instance `cudagraph` settings to describe the effective target worker
 mode and capture grid; the profiler's eager configuration is not that target.
 A simulator-side refresh preserves the recorded vLLM truth.
 
-The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples use NCCL-only
-references under the calibrated host interconnect. Both omit link overrides
-and inherit the hardware bundle's per-operation bandwidths and common latency;
-the MoE example also includes native component measurements. Keep recorded
-references and their interconnect calibration matched when refreshing examples.
+The RTXPRO6000 headline examples pair refreshed vLLM 0.31.0 profiles with
+recorded references and explicit target graph settings. Qwen3-32B TP2 records
+custom all-reduce disabled; Llama TP1 and Qwen3-30B TP1/DP2/EP2 retain the
+default setting and do not exercise the TP custom-all-reduce path. The Qwen
+examples inherit the hardware bundle's primitive-calibrated per-operation
+bandwidths and common latency. Keep each reference's recorded communication
+settings and interconnect calibration matched.
 
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
@@ -100,6 +121,7 @@ Run options (also available through `python -m bench run --help`):
 | `--tensor-parallel-size` | `1` | vLLM `tensor_parallel_size` |
 | `--data-parallel-size` | `1` | vLLM `data_parallel_size` |
 | `--enable-expert-parallel` | off | vLLM `enable_expert_parallel`, MoE only |
+| `--disable-custom-all-reduce` | off | Explicitly disable custom all-reduce; does not enforce NCCL-only |
 | `--max-num-seqs` | `128` | vLLM `max_num_seqs` |
 | `--max-num-batched-tokens` | `2048` | vLLM `max_num_batched_tokens` |
 | `--max-model-len` | model max | vLLM `max_model_len` |
@@ -117,10 +139,14 @@ Run options (also available through `python -m bench run --help`):
 | `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 There is no `--block-size`: vLLM picks the KV block size itself and records
-what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
-the simulator as `--block-size` to line the two up.
+what it chose in `meta.json`. For a new DP run, use the matched engine's block
+size under complete `kv_cache.capacity.per_engine` observations. Historical
+single-engine recordings retain `kv_cache.block_size`; the raw DP client value
+can describe only the last engine. Pass the matched value to the simulator as
+`--block-size` or a per-instance override.
 
 `bench.sh` is an editable run template, not a passthrough for every CLI flag.
+`DISABLE_CUSTOM_ALL_REDUCE=1` enables the same explicit opt-in; its default is `0`.
 Use the module directly for `--kv-cache-memory-bytes` or `--record-gate-stats`.
 Its default TP is `2`, while the module defaults to `1`; see the
 [wrapper variable reference](../docs/docs/reference/bench-cli.md#shell-wrappers).
@@ -174,8 +200,30 @@ bench/results/<run_id>/
 `--prefix NAME` prepends `NAME_` to each validation filename. `meta.json`
 includes the dataset hash, vLLM version, requested engine kwargs, wall-clock
 start/end, resolved `VllmConfig`, device placement and `kv_cache` fields.
-Match `kv_cache.num_gpu_blocks` and `block_size` to the simulator; equal
-memory-utilization settings alone do not account for vLLM's activation budget.
+New runs also retain `execution`: a read-only worker startup observation of the
+effective runner, graph mode and completed capture sizes, qualified by model,
+precision and deployment limits. Unsupported or incomplete observations remain
+`unknown`; frontend configuration alone is not evidence of completed captures.
+The observer runs before workload submission and changes no sampling or graph
+settings. Capture lists are not truncated by the generic metadata serializer.
+Use `profiler import-execution` to copy a compatible serving observation into a
+profile bundle; this does not change its measured CSVs.
+For new runs, match each simulator instance to its rank in
+`kv_cache.capacity.per_engine` only when `capacity.status` is `complete`.
+The reviewed vLLM 0.31 client sums connected DP engines in the raw
+`kv_cache.num_gpu_blocks` and retains the last READY `block_size`; their
+`num_kv_tokens` product is not a general aggregate token capacity. Never divide
+the total by DP to invent per-engine budgets. Equal memory-utilization settings
+alone do not account for vLLM's activation budget.
+
+The bounded observer retains native READY payloads during engine construction
+and restores the callback before decoding or request submission. It adds no
+request instrumentation. Unsupported callback/response APIs, replaced callbacks,
+client/topology mismatches and incomplete observations record `status: unknown`,
+`per_engine: null` and a reason. Observed versions and callback/response ABI facts
+are recorded; compatibility follows the actual callback and response interfaces.
+These are startup scheduler-pool facts, not physical GPU memory or later elastic
+changes. Historical artifacts keep their original fields and version semantics.
 
 ## Latency definitions (sim ↔ bench)
 
@@ -227,14 +275,15 @@ bench artifacts, the simulator output, and the resulting
 | Example | Parallelism | Workload (300 reqs) | TTFT mean | TPOT mean | Latency mean |
 | --- | --- | --- | --- | --- | --- |
 | `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.5% | +0.4% | +0.5% |
-| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +1.0% | +0.1% | +0.3% |
-| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.7% | -0.8% |
-| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | -1.1% | +0.2% | +0.1% |
+| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.7% | +0.3% | +0.4% |
+| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -0.2% | +0.2% | +0.1% |
+| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | -0.2% | -0.3% | -0.3% |
 
-The dense RTXPRO6000 bundles include broader measured skew geometry and
-reference-aligned calibration. Check all fifteen statistics, not just these
-means: all headline examples are within 5% on every statistic, with the MoE
-example's largest displayed absolute error at 2.6%. Additional stored diagnostics
+Check all fifteen statistics, not just these means. The largest absolute
+errors for the RTXPRO6000 Llama, Qwen3-32B and Qwen3-30B references are
+0.682%, 0.456% and 1.197%, respectively. These results cover the recorded
+workloads and deployment scopes, not every acquired TP or MoE deployment.
+Additional stored diagnostics
 include a reduced DeepSeek model with larger errors. See the public validation page
 for those results and the limits of these workload-specific comparisons.
 
@@ -264,8 +313,22 @@ and its own `config.json`. Both wrappers discover `*/*/config.json` rather
 than a fixed model list; additional stored diagnostics are included too.
 `BLOCK_SIZE` overrides the recorded `kv_cache.block_size`; otherwise the
 recorded value is passed to the simulator. If it is missing, the wrapper
-omits `--block-size` and lets the simulator resolve its default. Thus the
-simulator runs against the exact same workload and engine configuration
-as the original vLLM bench. To regenerate the vLLM side from scratch,
-use `bench/bench.sh` (or `python -m bench run`) from inside the vLLM
-container.
+omits `--block-size` and lets the simulator resolve its default. Published
+examples use repository-relative dataset paths and equivalent canonical model
+identifiers in place of machine-local paths. The instance config supplies
+the target graph policy and memory settings; the wrapper does not reconstruct
+every engine option from metadata. Llama and Qwen3-32B use `mem_util: 0.92`;
+Qwen3-30B matches 38,256 recorded KV blocks per rank with
+`mem_util: 0.9043190002441406`, while its benchmark retains the recorded 0.92.
+To record a new vLLM reference, use `bench/bench.sh` or `python -m bench run`
+inside the vLLM environment. These commands do not reconstruct a committed
+recording's settings. The CLI exposes only a subset of vLLM options and has
+no `--gpu-memory-utilization`; the RTXPRO6000 references record 0.92, while
+a new run inherits the installed vLLM default. Match the effective engine
+settings, communication policy and observed KV capacity before treating a new
+recording as equivalent. `--kv-cache-memory-bytes` can set an explicit budget,
+but its resolved capacity must still be verified.
+
+Apart from portable dataset and local model path identifiers, adopted outputs
+retain their emitted values and rows, including measurements, engine settings,
+hashes, validation results and logs.

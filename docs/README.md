@@ -42,74 +42,42 @@ upgrade requirements explicit. See the
 Accuracy claims refer to the recorded bundles and workloads on the
 [validation page](docs/validation.md), not every architecture catalog or newly
 acquired profile. Keep GPU recording separate from CPU-only comparison in setup
-instructions. The root README is a short entry point; detailed contracts live
-in the guides below. Follow the shared
+instructions. Root Getting Started keeps runnable commands, runtime requirements
+and documentation links; measurement details, model-specific limits and
+contribution policies stay in the topic guides. Follow the shared
 [README formatting conventions](docs/contributor/conventions.md#readme-and-markdown-formatting)
-for directory trees and examples. Root Latest News entries link shipped changes
+for directory trees and examples. Directory introductions stay short; detailed
+contracts belong under topic headings after the usage entry points.
+Root Latest News entries link shipped changes
 to their PR and label future backend/model work as in progress.
 
-The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
-current table contract, required measurement inputs, CPU-only rebuild command,
-dynamic acquisition, resumable repetitions, independent skew-only TP selection,
-automatic reference-cell support completion, and migration of enabled bundles.
-It also describes common-metadata geometry validation for sparse indexers
-whose backend-specific metadata does not retain query boundaries.
-Skew timing documentation separates launch-correlated kernel ownership from
-latency: CPU scopes identify the launching module but contribute no time.
-The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
-defines per-call CUDA interval unions, acquisition identity columns and
-incompatible-resume protection; existing tables are not automatically converted.
-Its whole-block MoE section documents the shared fine token grid and the
-distinction between acquisition resolution and runtime interpolation.
-The resume guide also distinguishes atomic progress checkpoints from complete
-bundles ready for simulation and documents exact fractional attention-key matching.
-The [runtime guide](docs/profiler/running.md#expected-runtime) distinguishes CLI
-default inheritance in the single-model template, explicit TP/DP options and
-multiplicative attention-grid costs; a stage ETA is not a complete-bundle
-completion estimate. The multi-model script remains an explicit campaign.
-The acquisition guides document assigned-page dummy KV initialization outside
-timed query work, its content/layout limitations and asynchronous completion.
-They also distinguish request phase from query/history geometry: native decode
-requests need a completed prompt and separate output tokens for correct ordering.
-The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
-hardware characterization, backend-aligned Ring calibration, bandwidth units,
-recorded residuals and the distinction from grouped MoE communication.
-It separates the bundled NVIDIA CUDA path from other accelerators that require
-an acquisition port; vLLM device support alone does not establish compatibility.
-The [collective-link schema](docs/reference/cluster-config.md#collective-specific-links)
-documents optional per-operation analytical Ring links and configuration
-precedence, without changing collective payloads or the common fallback.
-The [native MoE guide](docs/profiler/native-moe-components.md) describes explicit-DP
-single-rank acquisition, publication checks, component lookup and supported
-execution contracts. It distinguishes measured GPU work from analytical transport.
-The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)
-also explains whole-block MoE invocation normalization and when existing
-hybrid-stack tables need remeasurement. Forced-routing grids retain native
-top-k GPU work, warm the requested distribution, and reject bypassed hooks;
-older grids that omitted routing kernels also require a refresh.
-The same table guide explains non-overlapping sparse-indexer glue ownership
-and the dense-category refresh needed for older DeepSeek/GLM glue rows.
-The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
-and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
-and keeps each recorded reference matched to its transport calibration.
-The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
-NCCL baseline and recorded communicator and compilation settings.
-It also documents phase-delimited gate observations and their exclusion from
-unperturbed latency references, without discarding concentrated workload gates.
-The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
-local CUDA graph padding from DP synchronization; target graph overrides live
-in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
-Its layer table distinguishes FULL attention metadata padding from PIECEWISE,
-invalid KV slots and the simulator's real-geometry attention approximation.
-It also separates non-speculative head rows from forward padding and explains
-why idle DP forwards run the backbone without logits or sampling, with
-independent TP/EP collective numbering in the backend.
-The [expert routing guide](docs/simulator/moe-expert-routing.md) distinguishes
-global EP-rank lookup from instance-local trace markers, and documents
-round-robin top-k assignment over gathered token positions.
-The [publication workflow](docs/contributor/pr-workflow.md#publishing-submodule-changes)
-explains how to publish Chakra, ASTRA-Sim and the frontend without leaving
-unavailable submodule commits in a public checkout.
+## Guide responsibilities
+
+Keep detailed contracts in their topic guides instead of duplicating them in
+this index. During a release pass, check copy-pasted commands against the actual
+wrappers: an editable template can overwrite an exported environment variable.
+Distinguish accepted arguments from applied behavior and explicit refusals.
+
+| Topic | Authoritative guide |
+| --- | --- |
+| GPU setup, package pins and retained source patches | [vLLM installation](docs/getting-started/installation/vllm.mdx) |
+| CLI options, sampling grids and resume/force conditions | [Running the profiler](docs/profiler/running.md) |
+| CUDA-only timing, dummy preparation, root metadata and native support limits | [Profile bundle](docs/profiler/output-bundle.md) |
+| Local and DP+EP MoE acquisition, routing axes and deployment coverage | [Native MoE components](docs/profiler/native-moe-components.md) |
+| Raw skew measurements and explicit CPU-only calibration | [Skew calibration](docs/profiler/skew-alpha-fit.md) |
+| Collective measurement, units and configuration precedence | [Adding hardware](docs/profiler/adding-hardware.md) and [cluster configuration](docs/reference/cluster-config.md) |
+| Recorded backend, per-engine KV capacity and serving graph observations | [Bench CLI](docs/reference/bench-cli.md) |
+| Flat benchmark inputs, workload generation and agentic simulation boundaries | [ShareGPT generator](docs/workloads/sharegpt-generators.md) and [agentic sessions](docs/workloads/agentic-sessions.md) |
+| Kimi/native DeepSeek duration replay versus ordinary serving | [Trace generation](docs/simulator/trace-generation.md) |
+| Logical bytes, native MoE payloads and unsupported traffic/capacity claims | [Trace format](docs/reference/trace-format.md) |
+| Official reference scopes and all latency statistics | [Validation](docs/validation.md) |
+| Submodule publication and repeatable regression checks | [PR workflow](docs/contributor/pr-workflow.md) and [validation workflow](docs/contributor/validating-changes.md) |
+
+The RTXPRO6000 headline references cover Llama TP1, Qwen3-32B TP2 and
+Qwen3-30B TP1/DP2/EP2 with refreshed vLLM 0.31.0 data. Acquiring another TP
+or adding a catalog does not extend those accuracy claims. Kimi's local
+duration replay and native DeepSeek's duration-only representation remain
+distinct from ordinary scheduler/capacity admission; the guides state the limits.
 
 ## Installation
 

@@ -49,11 +49,13 @@ clock — an idle engine's batch queue is empty, and vLLM admits a new arrival
 immediately — and `schedule()` retries phase B with the full horizon whenever
 the lagged pass admitted nothing.
 
-It is worth roughly 0.6 of a step. That is invisible on a saturated run,
-where TTFT is dominated by queueing (the RTXPRO6000/Qwen3-32B example is
-+1.3% with or without it, on a 37 s TTFT), and about a fifth of the median
-TTFT on a lightly loaded one. Turn it off with `--no-async-scheduling` to
-model an engine started with vLLM's `--no-async-scheduling`.
+At `pp_size > 1`, the scheduler applies this additional lag only when its
+`_uses_v2_model_runner` classification is true; the modeled V1 pipeline
+already supplies its in-flight window. This classification currently treats
+non-MoE, non-hybrid stacks as V2 and is separate from the `cudagraph.runner`
+setting used for graph dispatch. The TTFT effect depends on workload and
+batch composition, not a fixed fraction of a step. Turn it off with
+`--no-async-scheduling` to model an engine with async scheduling disabled.
 
 `--enable-prefix-caching` does not change the code path, only whether
 blocks get indexed for reuse. There is one scheduler for both.

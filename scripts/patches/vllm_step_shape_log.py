@@ -1,10 +1,4 @@
-"""Log every engine step's shape and its interval, for validating the cost model.
-
-`bench` records per-request latencies and a 1-second timeseries. Neither can
-answer the question a cost-model residual needs answering: **which step shapes
-is the simulator wrong about?** A tick's `running / gen_throughput` averages
-over ~16 steps of mixed kinds, and a tick that carries any prefill says nothing
-about how much, or in which of its steps.
+"""Optionally log scheduled shapes and CPU execute_model entry intervals.
 
 This inserts one line per `execute_model` call into
 `$VLLM_STEP_SHAPE_LOG.<pid>` -- one file per process, because every rank of a
@@ -13,31 +7,22 @@ TP group and every engine of a DP group calls `execute_model`:
     {"t": .., "num_tokens": .., "n_reqs": .., "n_prefill": ..,
      "prefill_tokens": ..}
 
-The **interval between consecutive lines** is the step time, and that is the
-right measure precisely because it needs no synchronisation: a saturated
-engine's loop is GPU-bound, so the rate at which `execute_model` is entered is
-the rate the GPU finishes steps. Timing the call itself would catch only the
-CPU-side launch -- it returns long before the GPU is done -- and adding a sync
-would drain the pipeline, which inflates a step by 3-9x (Llama-3.1-8B: 14.5% of
-a step shows as idle when synced per step against 4.4% when the steps run
-back-to-back).
+Consecutive timestamps measure CPU-entry cadence, not GPU execution duration or
+per-step completion. CPU scheduling, asynchronous execution and pipeline depth
+can change the interval. This observer adds Python/file-I/O overhead and must
+not be used as a replacement for the profiler's CUDA-activity collector.
 
 Off unless `VLLM_STEP_SHAPE_LOG` is set, so the patch is inert in an image.
 
-Both runners are patched. vLLM 0.28 chooses between them with
-`VllmConfig._is_default_v2_model_runner_model` --
-`is_default_v2_architecture or not model_config.is_moe` -- so MoE and hybrid
-models take `v1/worker/gpu_model_runner.py` and everything else
-`v1/worker/gpu/model_runner.py`. The two share the class name `GPUModelRunner`
-and only `__module__` separates them, so covering one records nothing for half
-the models. That is the trap the cudagraph hook fell into, where a V2-only
-patch measured a saving of -1 us on an MoE model and looked like an answer.
+Both registered runner sources are patched: `v1/worker/gpu_model_runner.py`
+and `v1/worker/gpu/model_runner.py`. vLLM 0.31.0 can select either at runtime.
+Python execute_model entry still runs when model work uses CUDA graph replay.
 
 Shape comes from the scheduler output rather than the batch:
-`num_scheduled_tokens` maps request id -> tokens this step, so a request with
-more than one is a prefill chunk and one with exactly one is a decode -- the
-same classification `trace_generator` makes, which is what makes the two sides
-comparable row by row.
+`num_scheduled_tokens` maps request id -> scheduled tokens. The legacy
+`n_prefill`/`prefill_tokens` labels use the q > 1 heuristic, not request-phase
+metadata: one-token prefills and speculative multi-token decodes are not
+classified correctly by that heuristic. Interpret those fields accordingly.
 
 Run:  python3 scripts/patches/vllm_step_shape_log.py     (idempotent)
 """
@@ -64,9 +49,8 @@ BLOCK = '''        # --- llmservingsim step-shape log ---
                 }
                 # One file per process. Every rank of a TP group and every
                 # engine of a DP group calls execute_model, so a shared path
-                # interleaves their lines and the interval between two
-                # consecutive ones stops being any step's duration -- which
-                # read as prefill steps costing 7-9x what they do.
+                # interleaves their lines and destroys each process's
+                # CPU-entry cadence.
                 _lss_p = "%s.%d" % (
                     _lss_os.environ["VLLM_STEP_SHAPE_LOG"], _lss_os.getpid())
                 with open(_lss_p, "a") as _lss_f:
@@ -100,8 +84,8 @@ def main():
 
     root = Path(vllm.__file__).parent
     targets = [
-        root / "v1" / "worker" / "gpu_model_runner.py",       # V1: MoE, hybrid
-        root / "v1" / "worker" / "gpu" / "model_runner.py",   # V2: the rest
+        root / "v1" / "worker" / "gpu_model_runner.py",       # V1
+        root / "v1" / "worker" / "gpu" / "model_runner.py",   # V2
     ]
     rc = 0
     for t in targets:

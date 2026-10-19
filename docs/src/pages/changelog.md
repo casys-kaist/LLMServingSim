@@ -6,6 +6,106 @@ description: LLMServingSim release history
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
+## [v1.3.0] - 2026-10-19
+
+Version 1.3.0 upgrades profiling and benchmarking to vLLM 0.31.0 / CUDA 13
+and accelerates acquisition with a lightweight profiler. It adds Kimi-K3
+catalog and duration-replay integration, improves DeepSeek-V3.2, MiniMax-M3
+and Qwen hybrid-model handling, and refreshes Llama and Qwen profiles and
+benchmark accuracy ([#77](https://github.com/casys-kaist/LLMServingSim/pull/77)).
+The shipped simulator remains the Python frontend with ASTRA-Sim; the
+native simulator and replacement network backend are not part of this update.
+
+### Added
+
+- Kimi-K3 configuration and catalog with admitted local eager profiling,
+  configuration-derived KDA/MLA/residual geometry and opt-in contextual duration
+  replay. Ordinary serving, resident-capacity admission and distributed accuracy
+  are not certified by this path. Native DeepSeek-V3.2 acquisition similarly
+  uses an explicit duration-only replay contract.
+- Declarative function, method and native-operator capture boundaries, exact
+  invocation contexts and coordinated fused/unfused component layouts. CUDA
+  activity supplies latency; CPU scopes establish ownership only.
+- Recorded worker CUDA-graph observations and CPU-only `import-execution` for
+  matching profile bundles. Explicit instance settings remain authoritative.
+
+### Changed
+
+- Align Docker and bare-metal GPU environments on vLLM 0.31.0 / CUDA 13.
+  Remove the upstream-fixed SM120 sparse-MLA backport; retain the MiniMax-M3
+  MTP namespace patch and optional diagnostic patches.
+- Replace layerwise tracing with lightweight PyTorch/Kineto capture for
+  ordinary and skew profiling, including CUDA copies and memsets. Keep eager
+  measurements distinct from target graph replay and its execution-shape rules.
+- Reduce recorded Qwen3-32B TP2 end-to-end skew acquisition from 17 h 12 min
+  to 2 h 41 min (roughly 7x), for approximately 25,500 batch configurations
+  with nine timed forwards each. This includes preparation, timing, extraction
+  and checkpoint writing within the skew stage, not the entire profiling sweep.
+- Include serving capture coordinates in acquisition grids. Uncovered ranges
+  default to geometric factor 2, with square-root-of-two attention request
+  spacing; users can override the factors and target `--cudagraph` settings.
+  Match observed policies when available and model MRV1/MRV2 dispatch separately.
+- Default new MoE acquisition to eager native components at DP1. Select
+  deployments with `--tp`, `--dp` and optional `--ep`; independently sample
+  input rows, active local experts and local assignments. Preserve native
+  quantized weights/backends in admitted local execution. Historical
+  whole-block tables remain readable, but are no longer acquired.
+- Consolidate measurement methods, runtime facts and per-TP publication records
+  in the variant-root `meta.yaml`; CSVs hold coordinates and timings. Use
+  descriptive policy names and semantic/API/backend guards instead of exact
+  library-version or source-hash execution vetoes.
+- Preserve vLLM's default benchmark communication-backend choice, with explicit
+  custom-all-reduce opt-out. Keep all-reduce/RMS and GEMM/communication compiler
+  fusions disabled and retain observed settings and inherited environment.
+- Refresh RTXPRO6000 Llama and Qwen TP1/TP2 profiles, primitive-calibrated
+  hardware links and official benchmark artifacts. Maximum absolute errors
+  across the fifteen TTFT, TPOT and latency statistics are 0.682% for Llama
+  TP1, 0.456% for Qwen3-32B TP2 and 1.197% for Qwen3-30B TP1/DP2/EP2;
+  these results apply to the recorded workloads and deployment configurations.
+  See the [validation results](https://llmservingsim.ai/docs/validation).
+
+### Fixed
+
+- Forward the ShareGPT generator's repetition-penalty option to vLLM sampling,
+  including its default of `1.1`; `1.0` disables the penalty. Existing workload
+  files are unchanged; newly generated outputs can differ.
+- Preserve attention head widths, explicit layer-type prefixes, nested config
+  overrides, dense-MLP TP widths and checkpoint precision through native config
+  reloads; reject ambiguous catalog claims.
+- Allocate synthetic histories from the shared physical KV pool without
+  overwriting null or other groups' pages. Prepare typed/packed MLA/indexer
+  caches, native packed dummy experts and KDA buffers under their layout rules.
+- Correct GPU-activity ownership and Phi-MoE residual accounting; restore the
+  Qwen GDN output-projection TP reduction. Bind MiniMax-M3 sparse lookups to
+  measured backend semantics and correct indexer/sparse-attention trace bytes.
+- Preserve TP-stable replicas and acquisition provenance during resumes.
+  Protect CSV replacement with pending checksums, recover completed skew plans,
+  reject infeasible shots before GPU execution and retain native routing work.
+- Cache native MoE tables and interpolation support across batches without
+  changing routing or simulated timings. Keep local input rows distinct from
+  routed expert assignments.
+- Record source-qualified per-engine KV capacity for DP benchmarks instead of
+  interpreting the client aggregate as an individual scheduler pool.
+- Correct CLI examples, defaults and rejected combinations across the guides;
+  distinguish catalog availability, duration replay and validated serving.
+  Clarify flat-only benchmark replay, reference capacity matching, decode-only
+  PIM offloading, inherited memory fields and backend write requirements.
+
+### Upgrade notes
+
+- Existing timings keep their original provenance. Changed acquisition
+  geometry, methods or layouts require remeasurement, not metadata relabelling.
+  New component bundles must cover the deployment; historical MoE fallback
+  requires an existing whole-block table.
+- Replace `--moe-ep-degrees` with `--ep`. Skew metadata is root-only;
+  the old `skew.meta.yaml` fallback and old policy-name aliases are removed.
+  Raw repetition checkpoints still support acquisition resume.
+- Kimi and native DeepSeek duration replay are not a substitute for a
+  distributed serving benchmark. CUDA-work sums also do not model concurrent
+  branch elapsed latency. Consult the [bundle](https://llmservingsim.ai/docs/profiler/output-bundle)
+  and [MoE](https://llmservingsim.ai/docs/profiler/native-moe-components) contracts
+  before using a newly acquired architecture.
+
 ## [v1.2.0] - 2026-10-06
 
 Version 1.2.0 expands serving simulation, profiling and validation across dense,

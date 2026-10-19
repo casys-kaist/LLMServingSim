@@ -7,8 +7,8 @@ title: Adding a model architecture
 
 The profiler dispatches on the HF config's `model_type` field. If
 your model's `model_type` already maps to a YAML under
-`profiler/models/`, you're done, just run `profile.sh`. If not, you
-need to add a YAML.
+`profiler/models/`, start with that catalog and verify live runtime coverage
+before running `profile.sh`. If not, you need to add a YAML.
 
 This page is about that case.
 
@@ -22,8 +22,9 @@ and compare against the bundled architectures:
 | `llama` | `llama.yaml` | Llama dense shapes using the catalog's vLLM classes; a different `model_type` needs an explicit verified alias or its own catalog |
 | `qwen3`, `qwen3_moe` | `qwen3.yaml` | Qwen3, dense **and** MoE (0.6B … 32B, 30B-A3B, 235B-A22B), with per-head `qk_norm` |
 | `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
-| `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); both run vLLM's `deepseek_v2` module, so one catalog serves both |
+| `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); the recorded vLLM 0.28 decomposition shares `deepseek_v2`, not a guarantee of later runtime compatibility |
 | `minimax_m3_vl` | `minimax_m3_vl.yaml` | MiniMax-M3 — block-level sparse attention (top-`k` blocks of `sparse_block_size` tokens) over GQA, non-sparse on the first few layers |
+| `kimi_k3` | `kimi_k3.yaml` | Kimi-K3's native `hybrid-residual` adapter: bounded eager TP/PP/DP/EP1 acquisition with BF16 activations and admitted native expert backends; see the [runtime contract](./output-bundle#native-kimi-acquisition). Skew, MTP and distributed acquisition are outside this contract |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
 
@@ -117,17 +118,22 @@ Two consequences worth knowing before you author a config:
   is what vLLM registers, hands you `transformers`' generic config class
   instead — which lacks fields (`rope_theta`) the model plugin then reads off
   it.
-- **`hf_overrides` only ever reaches the top level.** For a nested config the
-  profiler mirrors its overrides into `text_config` as well
-  (`engine._materialize_config`), or neither the shrink-to-N-layers nor the TP
-  shard fields would take effect — and the latter fails without an error, so you
-  get a profile of a shape nobody asked for.
+- **Forwarded `hf_overrides` reaches the top level.** The profiler materializes
+  nested backbone overrides in `text_config` (`engine._materialize_config`),
+  then consumes backbone-only keys instead of assigning them again to wrapper
+  properties. Independently declared root keys stay forwarded, including shared
+  root/text fields. Check the final native config as well as the local file;
+  a shape-correct dictionary alone does not prove successful native loading.
 
-Some `model_type` values are different checkpoints of **one** implementation:
-GLM-5 (`glm_moe_dsa`) and DeepSeek-V3.2 (`deepseek_v32`) both run vLLM's
-`deepseek_v2` path, and a wrapped checkpoint answers to both its own name and
-its text tower's. Rather than duplicate a catalog or lean on symlinks, list
-every value one file serves:
+Some `model_type` values are different checkpoints of **one compatible**
+implementation, and a wrapped checkpoint may expose both its own name and its
+text tower's. Rather than duplicate a catalog or lean on symlinks, list every
+verified value one file serves. The recorded vLLM 0.28 DeepSeek-V3.2/GLM-5 catalog
+shares the `deepseek_v2` decomposition; vLLM 0.31's native DeepSeek-V3.2 path is
+`vllm.models.deepseek_v32.nvidia.model`. A retained alias does not certify that
+new path: check matching live coverage and execution contracts before acquisition.
+
+A catalog's aliases are declared as follows:
 
 ```yaml
 model_types:
@@ -137,29 +143,36 @@ model_types:
   - qwen3_5_moe
 ```
 
-Resolution tries `<model_type>.yaml` first and only scans for a declaration on
-a miss, so the common path stays one `stat`. Two files claiming the same
-`model_type` is an error, not a silent first-wins — otherwise which catalog you
-got would depend on directory order.
+Resolution checks `<model_type>.yaml` and declared aliases together. Two files
+claiming the same `model_type` is an error even when one filename matches;
+directory order cannot choose between them. A file may list its own primary
+type under `model_types:` without becoming a second claimant.
 
 Alias only what is genuinely the same implementation. `qwen3_next` has the same
 gated-DeltaNet structure as `qwen3_5` but different classes
 (`Qwen3NextDecoderLayer`, plain `RMSNorm` where Qwen3.5 uses `GemmaRMSNorm`),
-so it gets its own file.
+so it would need a separately verified catalog. No `qwen3_next` catalog or alias
+is currently shipped.
 
 ## YAML structure
 
 Every top-level key is validated with `extra="forbid"`, so a typo or a stray
 key fails at load time rather than silently doing nothing:
 
-- `catalog:` — binds canonical layer names to the vLLM class names the CUDA
-  profiler reports. Grouped by profile kind.
+- `catalog:` — binds canonical layer names to vLLM classes, raw CUDA kernels or
+  exact native operator scopes. Grouped by profile kind.
 - `model_types:` — optional; the extra `model_type` values this file serves
   (see [File naming](#file-naming)).
 - `blocks:` — the layer order inside a decoder layer, keyed by **axis**.
   See [Heterogeneous stacks](#heterogeneous-stacks) for what the axes are.
 - `shared:` — `prologue` and `head`, which run once per *iteration* rather
   than once per layer.
+- `native_profile:` — optional; selects a registered runtime-admitted native
+  acquisition adapter. `hybrid-residual` uses shared category/context
+  publication and configuration-derived residual plans; omitting it preserves
+  ordinary acquisition. Selection is not permission to bypass runtime checks.
+- `component_layouts:` — optional; declares runtime-selected alternatives to
+  the historical block decomposition, with coupled acquisition categories.
 
 There used to be a second form for a uniform stack, `sequence:`, and it is
 gone. It was this one flattened — its `pre_attn` / `post_attn` were the single
@@ -259,7 +272,7 @@ model runs an indexer kernel alongside the attention kernel on the same axes.
 
 The entry *set* is not a style choice. A `catalog` entry exists iff the profile
 tree holds a node that carries CUDA time and no other entry claims it — and the
-tree holds a node per module that launches a kernel **of its own**. So vLLM's
+tree retains invoked modules, their descendant CUDA activities and raw kernels. So vLLM's
 implementation decides how many entries a block needs, and the same operation
 can need seven in one family and one in another.
 
@@ -319,10 +332,18 @@ share a granularity.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vllm` | ✓ | The name the CUDA profiler reports for this layer — a vLLM **leaf class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
-| `within` | optional | An **ancestor** class name, used to disambiguate when the same `vllm` name appears more than once in the model. Matching rule: the name matches **and** (`within` is unset **or** one of `within`'s alternatives appears among the node's ancestor classes). Accepts a list |
+| `vllm` | One binding selector | A vLLM **class name** (`QKVParallelLinear`, `RMSNorm`, `Attention`) or a **raw CUDA kernel name** (`_causal_conv1d_fwd_kernel`). Not an attribute path. Accepts a **list**, and a trailing `*` matches by prefix — see below |
+| `operator` | One binding selector | One **exact native CPU operator name**, such as `vllm::qwen_gdn_attention_core_fused_norm_packed`. No list or wildcard. Its scope owns CUDA activities; CPU duration is never measured |
+| `callable` | One binding selector | A typed declaration of an exact loaded function or live-object method; see [declared callable boundaries](#declared-callable-boundaries) |
+| `normalization` | optional | `parent` divides by parent calls × sequence occurrences; `invocations` divides by matched calls. Defaults to `parent`, except whole-block `moe` entries default to `invocations` |
+| `within` | optional | An observed **ancestor** class, declared operator name or callable semantic name. The name must match and, when `within` is set, at least one alternative must occur in runtime ancestry. Accepts a list |
 | `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
-| `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
+| `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1; the writer replicates stable `dense`/`per_sequence` rows, while stable MTP rows are read directly at TP1 |
+| `tp_output_reduction` | optional | `all_reduce` on a `dense` row-output projection; emits a TP reduction of its full output at activation dtype |
+| `sequence_parallel` | optional | Whether a MoE wrapper sequence-shards inputs under DP+TP |
+| `attention_sequence_parallel` | optional | Declares attention-wide sequence shards; requires `sequence_parallel: true` on a MoE entry and triggers the unsupported-deployment guard described in [parallelism mechanics](../simulator/parallelism-mechanics#attention-wide-sequence-parallelism) |
+
+Each entry requires exactly one of `vllm`, `operator` or `callable`.
 
 A **list** under `vllm` means "every one of these the checkpoint has", and
 covers two situations:
@@ -354,7 +375,7 @@ ones as `layernorm`, and `within: LlamaForCausalLM` catches the last as
 within `LlamaAttention`) from `down_proj` (the same class within
 `LlamaMLP`).
 
-The `(vllm, within, not_within)` triple has to be **globally unique** across
+The `(binding kind, name(s), within, not_within)` combination must be **globally unique** across
 the catalog; the loader rejects duplicates by design, because otherwise one
 profiled kernel would be credited to two canonical names.
 
@@ -364,9 +385,214 @@ rope modules of the same class: `rotary_emb` scopes to
 `MultiHeadLatentAttentionWrapper` and `indexer_rope_emb` to `Indexer`, which is
 nested inside it, so the indexer's copy lands on the inner entry.
 
-There is no `tp_collective` / `ep_collective` field. TP ALLREDUCE after
-`o_proj` / `down_proj` and the EP all-to-all around `moe` are attached by the
-simulator from the **cluster config**, not declared here.
+There is no general `tp_collective` / `ep_collective` field. Ordinary `o_proj` /
+`down_proj` reductions and MoE transport follow the cluster configuration.
+`tp_output_reduction` declares an additional row-output reduction, such as
+`gdn_out_proj`; it does not model arbitrary fused or sequence-parallel collectives.
+
+### Direct methods and native operator ownership
+
+Module registration does not prove that `__call__` executes. Common synchronous
+`embed_input_ids`/`compute_logits` contexts preserve actual shared-module ancestry
+for direct calls, without adding descendant normalization units. They are not
+static aliases, independently bindable method costs or arbitrary-method coverage.
+Ambiguous parent denominators are rejected.
+
+When an executed native operator is the appropriate component boundary, declare
+it explicitly in the catalog section:
+
+```yaml
+linear_attention:
+  gdn_core:
+    operator: vllm::qwen_gdn_attention_core_fused_norm_packed
+    within: QwenGatedDeltaNetAttention
+```
+
+Its CPU interval locates launches; only CUDA kernels, copies and memsets contribute
+time. Exclude already-owned descendants with `not_within`. Name-kind collisions,
+ambiguous/crossing intervals, launch APIs and out-of-forward/thread scopes fail;
+an absent operator is never synthesized. `capture_scope_contract.py` projects the
+full methods/operators contract to ordinary, coverage and skew RPCs, so
+cross-category exclusions survive slicing. Declared callable targets extend that
+same contract, rather than adding a separate collector. Standalone callers must
+pass the full contract explicitly; omission derives it only from their supplied catalog.
+Consume returned normalized components, not the augmented audit tree through an
+older extractor.
+
+### Declared callable boundaries
+
+Use `callable` when a component runs through a synchronous function or direct
+method without a suitable module/native-operator boundary. The common collector
+temporarily wraps the declared target to record runtime ownership; it executes
+the original implementation with unchanged arguments and outputs. No model-family
+Python collector, replacement kernel or imported target module is needed.
+
+These are declaration shapes, not installed target names. Substitute exact names
+from the runtime implementation being profiled:
+
+```yaml
+catalog:
+  attention:
+    attention_core:
+      callable:
+        name: AttentionCoreScope
+        kind: function
+        module: package.attention_backend
+        attribute: run_attention
+        within: AttentionModule
+      normalization: parent
+```
+
+Alternatively, a method declaration selects a live module owner and follows an
+object path from that owner:
+
+```yaml
+callable:
+  name: AttentionCoreScope
+  kind: method
+  owner: AttentionModule
+  path: impl.forward_attention
+  within: DecoderLayer
+```
+
+`module` is a dotted, already loaded module name; `attribute` is one exact
+attribute in that module, not a dotted path. `owner` is one runtime class name
+(subclasses match through their MRO), and `path` is an exact dotted attribute path
+relative to each matching live owner. Target fields accept identifiers, not
+wildcards or dunder paths. A function uses only `module`/`attribute`; a method
+uses only `owner`/`path`. Unknown fields and inconsistent declarations fail early.
+
+The nested `callable.within` optionally restricts execution to an active owner
+class or a list of class alternatives; it is distinct from the entry's ordinary
+`within`/`not_within` matching filters. A method must execute under its actual
+owner, even when several owners share one backend object. The `name` identifies
+the semantic scope; use that name for descendant exclusions to prevent counting
+both a whole callable and the CUDA work inside it. Names must not collide with
+module, operator or CUDA-leaf identities.
+
+For each matched call, latency is the union of correlated CUDA kernels, copies
+and memsets, never the Python scope duration. These scopes add no parent-call
+counts for descendants. `normalization: parent` retains merged-child sums and
+sequence occurrences; `invocations` returns a matched-call mean instead. Select
+the rule that represents one trace component, not a correction fitted to a bench.
+Top-level parent normalization uses timed forwards as its parent count.
+
+Missing modules, attributes, owners, object paths or noncallable targets are
+reported as unavailable alternatives, without synthetic zero values. A resolved
+target that is not executed is also visible in `callable_audit`. The selected
+layout still needs positive CUDA coverage; target availability alone does not
+establish a valid acquisition. Descriptor failures, ambiguous ownership,
+overlapping claims and unsupported asynchronous/generator interfaces fail.
+Targets need an ordinary mutable attribute namespace, not a slot/data descriptor.
+Installation and restoration check target identity; a foreign replacement during
+capture is preserved and the capture fails.
+
+The full architecture's callable declarations travel with every category,
+including inactive alternatives and contexts owned by other categories. They
+participate in both ordinary and skew semantic acquisition identities. See
+[resume rules](./output-bundle#cuda-activity-and-acquisition-identity): changing
+capture semantics does not convert old rows to a new acquisition. Source hashes
+and exact library versions are observational; native API and layout checks remain.
+Declaring a boundary alone adds neither a model catalog nor simulator sizing or
+trace support for a new component.
+
+#### Explicit argument and tensor-layout contexts
+
+When a callable's work changes with structural arguments, declare them under
+`callable.context` instead of averaging distinct roles into one dense row:
+
+```yaml
+context:
+  fields:
+    num_blocks: {argument: num_blocks, operation: int}
+    delta_present: {argument: delta, operation: present}
+  tensors:
+    prefix: {argument: prefix, token_axis: 0}
+    delta: {argument: delta, optional: true, token_axis: 0}
+    blocks: {argument: blocks, token_axis: 0}
+```
+
+Fields accept exact Python integers or presence checks. Tensor declarations
+record shape, stride, dtype and storage offset, not contents. A declared token
+axis becomes `$tokens` in the structural key; its actual size is stored separately.
+All declared token axes must agree, and one must belong to a required tensor.
+Arguments must occur explicitly in the native callable signature. Context-bearing
+entries require `normalization: invocations` and use capture-contract schema 3;
+ordinary callables retain schema 2, catalogs without callables schema 1.
+
+Such rows are not pooled into the ordinary dense timing. An acquisition planner
+must declare every expected context and invocation count before capture. The
+isolated callable API validates the unchanged native target, each forward's calls
+and its CUDA ledger before publishing rows and completion records in the
+variant-root `meta.yaml`. Context definitions and callable plans are metadata,
+not standalone JSON artifacts beside the timing CSV.
+The immutable lookup matches the structural context exactly and interpolates
+only its token axis, refusing missing contexts and out-of-range tokens. A
+declaration alone does not supply that planner or simulator integration. The
+[Kimi acquisition](./output-bundle#native-kimi-acquisition) selects
+`native_profile: hybrid-residual` for its source-derived residual roles.
+`NativeProfile` shares orchestration, category publication and exact-context
+loading; its runtime adapter supplies native API/backend admission and callable
+planning. The entire supplied architecture participates in identity, not a
+hard-coded catalog file. Config-derived widths and schedules do not eliminate
+native API or observed-layout checks, and adding this key is not certification
+of another implementation or device. Keep a new adapter's source-specific rules
+separate from the common publication/lookup mechanisms.
+
+Concurrent branches require a different treatment: choose a joined native
+boundary if their separate costs would overlap in an additive trace. Kimi's
+MLA q-LoRA phase uses that rule; its KDA projections/core/output remain separate
+under the admitted eager execution contract.
+
+### Declaring alternative component layouts
+
+Use `component_layouts` when the runtime changes a block's decomposition, not
+merely the spelling of an interchangeable kernel. Each named group declares:
+
+- `historical`: the variant matching the unchanged original block order.
+- `categories`: every affected category, including unchanged names whose scope
+  changed. Block-wide layouts support `dense` and `linear_attention`; explicit
+  site layouts additionally support `attention`.
+- `variants`: exact `observed` canonical sets for `prefill`, `decode` and `mixed`.
+  A nonhistorical variant may use `replace` mappings from historical components
+  to lists of replacements; an empty list removes an old component already
+  covered by its replacement.
+- `sites`: optional exact existing sequence paths under `blocks` or `shared`;
+  omission preserves the original block-wide substitution behavior.
+- A variant may declare `layer0` entries with `path`, `expected_prefix`,
+  `replacement_prefix` and `consumed_by`. Consumption is restricted to absolute
+  target layer 0, after the rewritten prefix matches and the consuming component
+  appears in the active shared prologue. This is not an MTP rewrite.
+- `invocation_contract: site-scope-calls` additionally checks resolved site
+  calls and normalization against the actual acquired prefix. The optional
+  `runtime_contract: native-dsa-eager-tail` invokes the explicit native DSA
+  admission adapter and requires coupled dense/head/attention publication, with
+  native MoE completion checked separately; it is not a generic opt-out from
+  execution checks. Historical records containing whole-block MoE retain their
+  original completion requirements.
+
+Substitutions are one-pass and nonrecursive. Groups must be disjoint and references
+must exist. Block-wide layouts require the complete selected set in each affected
+block without duplicates. Site layouts instead validate the declared footprint;
+repeated active components need invocation normalization. The historical variant
+does not rewrite its sequences.
+Never select an alternative from the vLLM version, a model-family branch or
+absent kernel names.
+
+`profiler/models/qwen3_5.yaml` supplies a coupled example: historical conv/scan/norm
+entries versus a packed GDN core including the gated norm. Runtime coverage must
+select a unique variant, followed by per-shot checks. Its new `dense` and
+`linear_attention` data must be acquired together under the
+[layout publication contract](./output-bundle#runtime-selected-component-layouts).
+Historical bundles retain their old sequence. Small probes are not full-grid,
+checkpoint or deployment certification. See [packed-core traces](../examples/model-families/hybrid-linear-attention#packed-core-traces)
+for the independent sizing and communication contract.
+
+`deepseek_v32.yaml` supplies a site-aware example: its native shared endpoint
+consumes the first input norm, while a combined indexing/attention tail replaces
+the historical separate costs. Its trace-only support and required live modes
+are defined by the [native DSA contract](./output-bundle.md#native-dsa-acquisition),
+not inferred from an existing catalog alias or checkpoint family name.
 
 ### Section reference
 
@@ -385,7 +611,8 @@ simulator from the **cluster config**, not declared here.
 
 `attention` is **listed explicitly** in `pre_attn`; it is not implicit.
 Every name a section mentions has to exist in `catalog`, and every catalog
-entry the simulator emits has to appear in some section.
+entry the simulator emits has to appear in a section or in a declared selected
+component-layout substitution.
 
 Declare only the axis values the family actually has: Llama has no
 `mlp.moe`, Mixtral no `mlp.dense`, and a family with both (Qwen3,
@@ -580,7 +807,8 @@ Gemma-style dense model) and adjust:
 - Update `vllm` class names to match the model's, and set `within`
   wherever the same class shows up more than once.
 - Add any extra layers (e.g., Gemma 2's post-MLP layernorm) to the
-  catalog and `sequence`.
+  catalog and the appropriate `blocks` or `shared` list. The removed `sequence`
+  schema is not accepted.
 - Set `tp_stable: true` on layers whose latency doesn't depend on
   TP.
 
@@ -636,10 +864,18 @@ unbound     34.3 us  void at::native::elementwise_kernel<128, 4, at::nat...
                                                      under: ... > QwenGatedDeltaNetAttention
 ```
 
-The command exits non-zero while any gap remains, so it works in a script. Each
-gap is reported at the shallowest node whose subtree binds nothing at all,
-which is the level you can act on: a node listed here is CUDA time the
-simulator will never see, so the layer it belongs to looks cheaper than it is.
+The command exits non-zero while any gap remains, so it works in a script.
+Gaps aggregate native activity names with their dynamic module ancestry;
+activities outside modules are explicitly labelled unscoped. These durations
+are not assigned to any canonical layer, so inspect them before trusting a
+catalog's completeness.
+
+Raw-kernel wildcards also need child exclusions: Phi-MoE's `block_glue`
+excludes `PhiMoE`, `LayerNorm` and `PhiMoEAttention`, so routing kernels and
+attention copies are not counted again as decoder residual work. This applies
+even when profiling only the dense category. Shared native CUDA activities
+claimed by multiple canonical entries reject acquisition before CSV storage.
+Refresh old affected rows; changing a catalog does not correct stored timings.
 
 This is the check that catches the failure mode from step 1, and it is worth
 running before you trust any new catalog. Writing the four bundled modern
@@ -655,42 +891,44 @@ To *locate* a gap rather than detect it, print the raw trees. Two dumps
 answer different questions, and a throwaway script for each is worth writing:
 the **module** tree with the KV cache group layout, which says what exists, and
 the **profile** tree with full ancestor chains, once per regime, which says
-what actually launched a kernel. The second is the authority — a module that
-launches nothing never becomes a profile node, so binding it measures
-nothing.
+what was actually invoked and which native activities it owns. The second
+is the authority: an instantiated but bypassed module has no measured call;
+calling a parent can include all its descendants, so audit overlaps as well.
 
 ### 4. Try profiling
 
 ```bash
-MODEL="google/gemma-2-9b" \
-HARDWARE="<your-hw>" \
-TP_DEGREES=1 \
-SKIP_SKEW=1 \
-./profiler/profile.sh
+python -m profiler profile google/gemma-2-9b \
+  --hardware "<your-hw>" --tp 1 --skip-skew \
+  --max-num-batched-tokens 128 --max-num-seqs 8 \
+  --attention-max-kv 128 --max-model-len 512
 ```
 
-Start with TP=1 and `SKIP_SKEW=1` for the fastest feedback. The
-profiler will:
+Start with TP1 and `--skip-skew` for bounded initial feedback. If using
+`profile.sh` instead, edit its `MODEL` and `HARDWARE` assignments: those two
+assignments override environment values.
 
-- Warn loudly if any layer in `sequence` isn't found on the model
-  via the `cls` you specified.
-- Skip layers it can't find (with a warning), so you can iterate.
-
-If the YAML is right, you'll get clean CSVs. Run a tiny simulation
-to confirm.
+Review coverage and the resulting canonical rows against `catalog`, `blocks`
+and `shared`. An unexecuted alternative may have no row; missing required
+measurements, invalid ownership and incompatible native/layout contracts can
+fail acquisition. Do not treat a completed command or an omitted row as proof
+of a complete model decomposition. Run a small simulation only after checking
+the required profile coverage.
 
 ### 5. Try simulating
 
-In your `cluster_config.json`:
+In the appropriate instance under your cluster configuration's
+`nodes[].instances[]` (see the [cluster schema](../reference/cluster-config)):
 
 ```json
 {
   "model_name": "google/gemma-2-9b",
   "hardware": "<your-hw>",
-  "tp_size": 1,
-  ...
+  "tp_size": 1
 }
 ```
+
+This is an instance-field excerpt, not a complete cluster configuration.
 
 Run `python -m serving --cluster-config ... --dataset workloads/example_trace.jsonl ...`.
 

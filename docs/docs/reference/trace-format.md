@@ -97,6 +97,87 @@ contain a space.
 | `comm_size` | int | Collective message size in bytes. Usually `0` when `comm_type` is `NONE`, but **not always**: on a `PREFILL` trace, `qkv_proj` carries the per-layer P/D KV transfer here while keeping `comm_type` at `NONE` (see [below](#comm_size-without-a-collective)) |
 | `misc` | string | Misc tag (sub-batch interleaving, etc.; usually `NONE`) |
 
+### Native DSA logical bytes
+
+The runtime-admitted native DeepSeek-V3.2 representation has separate logical
+component boundaries in `serving/core/component_sizes.py`. They apply only to
+[explicit duration replay](../simulator/trace-generation.md#native-dsa-duration-replay),
+not the historical decomposition or a new capacity/traffic model.
+
+Activations, embeddings and heads use BF16. Matrix payloads follow the admitted
+source configuration: one byte per FP8 value or two per unquantized BF16 value,
+including routed/shared expert matrices. A missing quantization declaration does
+not silently use FP8 byte widths. This sizing rule does not independently admit
+another model, runtime or backend.
+Derived MLA UK/UV tensors remain BF16, indexer WK is unquantized and indexer
+LayerNorm parameters are FP32. `weight_size` denotes logical referenced model
+tensors, not packed scale metadata or allocator residency. Persistent KV/index
+caches, slot/position metadata and temporary workspaces are excluded from these
+activation-boundary triples; no available-history byte sum is invented as a read.
+
+The shared embedding endpoint returns both residual and normalized hidden states.
+The final norm consumes their pair and returns one hidden state. The combined
+tail consumes the supported sparse-query/index-query activations and returns
+BF16 `[tokens, heads, value_dim]` output. The native 656-byte main cache and
+132-byte index cache remain explicit runtime facts, separate from legacy capacity.
+
+Input token IDs are int32. Sampled IDs use the actual inspected native route:
+V1 returns int32 and V2 int64. The sampler row and final Chakra memory-store node
+use that recorded width, rather than assuming the input and output ID buffers
+share a dtype. CPU scope time never contributes to `comp_time`.
+
+### Native Kimi logical bytes
+
+Kimi's contextual representation also requires explicit local duration replay.
+Its logical component triples use the independently loaded source configuration
+and admitted native layouts, with separate MLA and KDA dimensions and
+original-depth residual roles. Expert annotations retain the full expert axis
+and packed scales; they are not an active-expert estimate of resident weights.
+Persistent KV/recurrent state, routing metadata and scratch space remain outside
+these triples. No ordinary serving-capacity model follows from them. See
+[native Kimi duration replay](../simulator/trace-generation#native-kimi-duration-replay)
+for completion requirements and unsupported modes.
+
+### MiniMax-M3 logical bytes
+
+The canonical `indexer` row uses MiniMax-M3's own layout, separately from the
+DeepSeek/GLM indexer layout. With the supported default indexer dtype, both its
+query and key-only cache are BF16, independently of the main KV cache and
+weight precision. Its selected block indices are int32 per local index head.
+For `T` forward tokens, `H` local index heads, index width `D`, `K` selected
+blocks per head, and each request's already cached history `h_i`:
+
+| Field | Bytes |
+| --- | --- |
+| Indexer input | `2 * D * (T * H + sum(h_i))` |
+| Indexer weights | `0` |
+| Indexer output | `4 * T * H * K` |
+
+The trace retains the exact cached histories of prefill and decode requests.
+The indexer includes every cached index key. For `sparse_attention`, the
+cached-history term instead uses `sum(min(h_i, C))`, where
+`C = sparse_topk_blocks * sparse_block_size`. The cap applies to each request
+before summing. For example, histories of 100 and 3000 tokens with `C = 2048`
+contribute 2148 cached positions, rather than capping their combined history
+at 2048. Decode histories are not reconstructed from a floored mean.
+
+These fields account for logical query tensors and preexisting cached history.
+They do not measure kernel DRAM transactions, tiling, workspace or the number
+of causal reads within a prefill chunk. KV capacity is accounted separately
+and is not reduced by the sparse read cap. This layout does not establish
+support for nondefault runtime indexer dtypes or whole-model TP deployments.
+
+Raw latency-table coordinates and stored timings are unchanged. Unmarked
+historical MiniMax tables retain their 2176 prefill-lookup cap, separately from
+the 2048-position byte cap for the shipped config. New runtime-checked native
+Triton BF16 acquisitions instead record the configured selected-block count
+times the reviewed 128-token block width as their per-TP sparse-prefill lookup cap
+(2048 for the shipped config)
+in their [attention contract](../profiler/output-bundle.md#native-attention-lookup-contract).
+This selects the consumer coordinate without clipping producer rows, dense
+attention, indexer lookup or decode-history coordinates. Neither lookup rule
+reduces KV capacity or establishes whole-model deployment support.
+
 ## Memory locations
 
 The `input_loc`, `weight_loc`, and `output_loc` fields use one of:
@@ -143,9 +224,9 @@ this layer:
 | Value | Meaning | When emitted |
 | --- | --- | --- |
 | `NONE` | No collective | Most layers |
-| `ALLREDUCE` | All-reduce across the involved dim | After `o_proj` and `down_proj` (TP > 1) |
-| `ALLGATHER` | MoE all-to-all **dispatch** | On the `EXPERT 0` marker (EP > 1) |
-| `REDUCESCATTER` | MoE all-to-all **combine** | On the `EXPERT END` marker (EP > 1) |
+| `ALLREDUCE` | All-reduce across the involved dim | Declared row-output projections, shared vocabulary embedding and native MoE TP restoration where required |
+| `ALLGATHER` | All-gather across the involved dim | Shared vocabulary logits, MoE dispatch and sequence-parallel MoE TP restoration where required |
+| `REDUCESCATTER` | Reduce-scatter across the involved dim | MoE combine on `EXPERT END` where required |
 | `ALLTOALL` | All-to-all | Parsed by the converter, but **never emitted**: vLLM's default `all2all_backend` is `allgather_reducescatter`, so the MoE all-to-all comes out as the pair above |
 
 ### Dimension scoping
@@ -226,9 +307,10 @@ written verbatim with no suffix.
 
 ### `EXPERT {i}` / `EXPERT END` (MoE)
 
-One `EXPERT {i}` marker per EP rank, then a single `EXPERT END` for the
-whole block. The **collectives ride on the markers**, not on the expert
-rows — real lines from a Qwen3-30B-A3B run at `ep_total 2`:
+The retained whole-block representation writes one `EXPERT {i}` marker per
+EP rank, then a single `EXPERT END` for the block. The **collectives ride
+on the markers**, not on the expert rows — historical lines from a
+Qwen3-30B-A3B run at `ep_total 2`:
 
 ```
 EXPERT 0 ALLGATHER:0,1 21760
@@ -268,6 +350,16 @@ given. The two are sized by ASTRA-Sim's convention for each: AllGather
 router logits alongside the hidden state), ReduceScatter's is the
 pre-scatter total (`total_len * hidden * fp`). In the example:
 `5 * (2048 + 128) * 2 = 21760` and `10 * 2048 * 2 = 40960`.
+
+Deployment-matched native component tables use a different payload contract:
+local routing precedes dispatch; hidden states, top-k weights and top-k IDs
+have separate ordered AllGathers on the opening marker. The closing marker
+carries combine, followed by any required TP restoration, and local
+finalization follows the expert block. A marker can therefore carry multiple
+collective/size pairs. Local DP1 paths omit verified no-op DP collectives.
+See [native component execution](../simulator/parallelism-mechanics#deployment-matched-native-components)
+for tensor dtypes, uneven row counts and sequence-parallel restoration;
+the historical full-router-logits formula above does not apply to those tables.
 
 ### `PIM {channel}` / `PIM END` (PIM offload)
 

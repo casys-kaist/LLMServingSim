@@ -10,7 +10,7 @@ histories. It does not replace `attention.csv`, change attention interpolation,
 or fit benchmark request latencies. The default profiler compiles a small
 lookup table offline; simulation only selects an already fitted bucket.
 
-Enabled fits must use `runtime-skew-calibration-v1`. Legacy lookup and inline
+Enabled fits must use the supported `runtime-skew-calibration` format. Legacy lookup and inline
 coefficients are no longer supported; rebuild old enabled bundles. Disabled
 bundles, including RTX4090, are unchanged. Rebuilding is not an accuracy guarantee. The broader shipped Llama TP1 and
 Qwen3-32B TP2 raw data are retained measurements, not a completed run of the
@@ -28,20 +28,28 @@ Every forward time is retained, per attention-category kernel. Historical
 measured controls remain diagnostic; they are not relabelled lookup estimates.
 
 Native launch correlations, not GPU timestamp containment, assign retained
-CUDA activities to CPU module calls. Python-call intervals are matched to
-native OS-thread identities before locating the innermost launching module.
-This repairs misplaced kernel leaves while preserving recorded durations and
-activity coverage. CPU scopes contribute no latency, and missing or ambiguous
+CUDA activities to explicit dynamic module scopes on their native OS thread.
+The innermost containing launch scope owns the activity; no Python-call tree
+repair is needed. Recorded durations and activity coverage are preserved.
+CPU scopes contribute no latency, and missing or ambiguous
 launch ownership is a measurement error rather than a zero-valued sample.
 
-`dummy-kv-skew-query-state-per-forward-v5` uses the same per-call CUDA interval unions as
+Skew acquisition uses the same per-call CUDA interval unions as
 ordinary attention profiling. Overlapping activities on one device count once
 inside each module invocation; distinct calls remain separate before averaging.
-CPU time and GPU gaps remain excluded. Worker and host acquisition fingerprints
-must match, and older kernel-sum measurements cannot satisfy the new resume
-contract or be silently appended to a current-method sweep.
+CPU time and GPU gaps remain excluded. Worker and host semantic identities bind
+the effective serialized attention selectors/normalization and full capture
+contexts. Variant-root `meta.yaml::per_tp[tp].skew` records the descriptive method and observed runtime
+versions; exact versions and source-file hashes are not execution vetoes.
+Changed acquisition semantics require remeasurement, not restamping.
 
-Before each context, the profiler initializes assigned attention pages with
+CPU `plan-skew` uses the same catalog/context projection without importing Torch
+or vLLM. It does not infer absent acquisition observations from its environment.
+These acquisition rules do not remove the fitter's separate reference-table and
+lookup-code invalidation checks below.
+
+Before each context, the profiler reserves disjoint physical pages across KV
+groups, leaving the shared pool's null block untouched, then initializes assigned attention pages with
 vLLM's deterministic dummy-weight initializer.
 Initialization is outside warmup and timing, and unassigned pages remain intact.
 Recurrent caches use zero-start state. See the [preparation contract](./running#--measurement-iterations--averaging-out-clock-jitter)
@@ -71,6 +79,16 @@ not agree. A coefficient fitted against one pair cannot be assumed to
 compensate the other. Prefill coordinates use the shared query-weighted helper,
 including catalog-specific prefill key saturation. Decode references retain
 the runtime lookup's history semantics.
+For native MiniMax-M3 acquisitions, serving, `plan-skew`, support completion
+and fitting use the same validated per-TP
+[attention contract](./output-bundle.md#native-attention-lookup-contract).
+The reviewed Triton BF16 sparse-prefill cap is 2048; unmarked historical tables
+retain 2176. Marked raw skew rows also require matching semantic/acquisition
+identity and a completed checksum. Missing or stale contracts cannot silently
+fall back to historical semantics. A zero-case skew plan writes no new skew
+file or completion claim and does not itself trigger a fit; existing artifacts
+remain untouched even with
+`--force`, and other nonempty TP acquisitions retain their provenance.
 
 Both references must have an exact attention `layer` and `decode_q_len`
 slice. Offline fitting refuses to substitute another query length.
@@ -101,8 +119,10 @@ Mixed batches include the scheduled-token frontier.
 Geometric axes follow configured sequence/token/context bounds and resolved
 engine capacity, not model names or benchmark distributions. The four
 `--skew-*-factor` flags control density; `--skew-samples-per-cell` defaults to
-32 distribution draws per operating cell. `--skew-seed` defaults to zero and
-`--skew-rounds` to three. See [Running the profiler](./running).
+32 distribution draws per operating cell and requires at least one draw per
+family (currently eight). `--skew-seed` defaults to zero and `--skew-rounds`
+to three. Both the round count and `--measurement-iterations` must be positive.
+See [Running the profiler](./running).
 
 The operating grid is not the lookup grid. The profiler checks its base
 draws in the compiler's kernel/query/prefill/leverage partitions and selects
@@ -145,7 +165,7 @@ included in the measured CUDA interval union.
 The plan streams batches rather than allocating the full Cartesian product.
 Raw checkpoints are replaced atomically. Successful cases survive failures;
 incomplete kernel sets, missing repetitions or a changed protocol need
-measurement. A failed run raises and keeps `skew.meta.yaml::completed: false`,
+measurement. A failed run raises and keeps root `per_tp[tp].skew.completed: false`,
 rather than reporting success with missing cases. CPU refitting also rejects
 an acquisition marked incomplete; resume it before rebuilding. Acquisition status and actual
 resolved bounds are recorded per TP, not reconstructed from CLI defaults.
@@ -253,6 +273,13 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B \
 The command requires the local model config, `meta.yaml`, `attention.csv`
 and `skew.csv`. A bundle with no raw skew measurements is an error: its
 metadata stays unchanged and a disabled calibration is not enabled.
+When valid raw measurements are present, an explicit refit enables the rebuilt
+calibration even if it was previously disabled.
+Skew acquisition and calibration records are read from the root `meta.yaml`;
+`skew.meta.yaml` is not loaded by acquisition, refitting or runtime lookup.
+Refitting requires a present root acquisition record to be marked complete.
+Repeat-level data without that record is rejected; unmarked historical skew
+tables retain their existing behavior.
 Omit `--tp` to rebuild every measured TP; use `--out` for an
 alternate profile root. It writes only derived fit tables and the skew-fit
 metadata, preserving other categories and metadata fields. Keep a copy before

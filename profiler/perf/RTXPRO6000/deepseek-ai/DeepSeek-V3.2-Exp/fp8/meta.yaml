@@ -95,7 +95,7 @@ skew_fit:
   enabled: true
   per_tp:
     1:
-      schema: runtime-skew-calibration-v1
+      schema: runtime-skew-calibration
       identity:
         hardware: RTXPRO6000
         model: deepseek-ai/DeepSeek-V3.2-Exp

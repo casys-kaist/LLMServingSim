@@ -18,7 +18,7 @@ from pathlib import Path
 import tempfile
 
 
-SCHEMA = "runtime-skew-calibration-v1"
+SCHEMA = "runtime-skew-calibration"
 LEV_BINS = (0.0, 0.25, 0.75, 1.5, 3.0, 1_000_000_000.0)
 LEV_LABELS = ("lev0", "lev1", "lev2", "lev3", "lev4")
 MIN_ROWS = 20
@@ -129,6 +129,13 @@ def reference_rows(skew_csv, attention_csv, tp, architecture, key_saturation):
 
 
 def fit_csv(skew_csv, attention_csv, identity, architecture, key_saturation=None):
+    if architecture.get("component_layouts"):
+        from .component_layouts import selected_catalog_for_tp
+        folder = Path(attention_csv).parent
+        if folder != Path(skew_csv).parent or folder.name != f"tp{identity['tp']}":
+            raise ValueError("Layout-aware skew calibration requires paired tables in one TP folder")
+        _, attention = selected_catalog_for_tp(folder, architecture, "attention")
+        architecture = dict(architecture, catalog=dict(architecture["catalog"], attention=attention))
     rows = reference_rows(skew_csv, attention_csv, identity["tp"], architecture, key_saturation)
     reference = dict(attention_sha256=checksum(attention_csv), lookup_sha256=lookup_fingerprint(),
                      skew_sha256=checksum(skew_csv), key_saturation=key_saturation,
@@ -140,25 +147,35 @@ def fit_csv(skew_csv, attention_csv, identity, architecture, key_saturation=None
 def fit_bundle(variant_root, identity, model_config, tp_degrees=None):
     """Compile measured TP folders automatically, without starting an engine."""
     from serving.core.utils import _load_architecture
-    from .stack import probe_key_saturation, text_config
+    from .stack import text_config
     root = Path(variant_root)
     config = text_config(model_config)
     architecture = _load_architecture(config["model_type"])
-    cap = probe_key_saturation(config)
+    from . import attention_lookup as lookup_contract
+    lookup_records = lookup_contract.resolve(root, model_config, architecture)
     available = sorted(int(p.name[2:]) for p in root.glob("tp*")
                        if p.is_dir() and p.name[2:].isdigit() and (p/"skew.csv").exists())
     wanted = available if tp_degrees is None else sorted(set(tp_degrees))
     per_tp = {}
     for tp in wanted:
         folder = root / f"tp{tp}"
-        status = folder / "skew.meta.yaml"
-        if status.exists():
-            import yaml
-            if not (yaml.safe_load(status.read_text()) or {}).get("completed"):
+        from .bundle_metadata import read_tp
+        missing = object()
+        status = read_tp(folder, 'skew', missing)
+        if status is not missing:
+            if not isinstance(status, dict) or status.get('completed') is not True:
                 raise ValueError(f"Incomplete skew acquisition at {folder}; resume profiling first")
         if not (folder / "skew.csv").exists():
             raise FileNotFoundError(f"Missing skew measurements at {folder}")
+        if status is missing:
+            with (folder / 'skew.csv').open(newline='') as stream:
+                fields = csv.DictReader(stream).fieldnames or []
+            if 'round_timings_us_json' in fields:
+                raise ValueError(f"Missing root skew acquisition metadata at {folder}; remeasure in a new output root")
         fit_identity = dict(identity, tp=tp)
+        record = lookup_records.get(tp)
+        lookup_contract.check_skew(folder, record['semantic_sha256'] if record else None)
+        cap = lookup_contract.cap_for(lookup_records, tp, model_config)
         table = fit_csv(folder/"skew.csv", folder/"attention.csv", fit_identity, architecture, cap)
         output = folder / "skew_fit.csv"
         write_table(output, table)
@@ -170,44 +187,23 @@ def fit_bundle(variant_root, identity, model_config, tp_degrees=None):
 
 def rebuild_bundle(variant_root, model_config, tp_degrees=None):
     """CPU-only refresh; preserve all unrelated metadata and profile files."""
-    import yaml
+    from .bundle_metadata import read_bundle, update_bundle
     root = Path(variant_root)
-    path = root / "meta.yaml"
-    metadata = yaml.safe_load(path.read_text())
+    metadata = read_bundle(root)
     identity = {key: metadata[key] for key in ("hardware", "model", "variant")}
-    block = dict(metadata.get("skew_fit") or {})
-    previous = dict(block.get("per_tp") or {})
     fitted = fit_bundle(root, identity, model_config, tp_degrees)
     if not fitted["per_tp"]:
         raise FileNotFoundError(f"No raw skew measurements to rebuild at {root}")
-    for tp, entry in fitted["per_tp"].items():
-        previous.pop(str(tp), None)
-        previous[tp] = entry
-    block.update(enabled=bool(previous), per_tp=previous)
-    metadata["skew_fit"] = block
-    atomic_yaml(path, metadata)
+    def merge(metadata):
+        block = dict(metadata.get('skew_fit') or {})
+        previous = dict(block.get('per_tp') or {})
+        for tp, entry in fitted['per_tp'].items():
+            previous.pop(str(tp), None)
+            previous[tp] = entry
+        block.update(enabled=bool(previous), per_tp=previous)
+        metadata['skew_fit'] = block
+    update_bundle(root, merge)
     return fitted
-
-
-def atomic_yaml(path, value, **kwargs):
-    """Publish complete metadata without truncating the previous checkpoint."""
-    import yaml
-    path = Path(path)
-    previous = path.stat() if path.exists() else None
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name+".",
-                                     suffix=".tmp", delete=False) as stream:
-        temporary = Path(stream.name)
-    try:
-        with temporary.open("w") as stream:
-            yaml.dump(value, stream, sort_keys=False, **kwargs)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if previous is not None and os.geteuid() == 0:
-            os.chown(temporary, previous.st_uid, previous.st_gid)
-        temporary.chmod(previous.st_mode & 0o777 if previous else 0o644)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _label(bins, labels, value):

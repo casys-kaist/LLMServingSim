@@ -14,7 +14,6 @@ from pathlib import Path
 from .attention_shape import prefill_key
 from .skew_calibration import MIN_ROWS, _partition, measurement_shape, partition_axes
 from .skew_plan import iter_cases, summarize
-from .stack import probe_key_saturation, text_config
 
 
 # This is a candidate-search bound, not a request to measure this many draws.
@@ -68,12 +67,18 @@ def complete_plan(args, limits, attention_csv, arch, completed=(), existing_csv=
                     pc_cap = max(pc_cap, sum(query for query, _ in pf))
     axes = partition_axes(pc_cap)
     table = tg._build_attention_tables_by_layer(tg._read_category_csv(str(attention_csv), None))
-    entries = arch.catalog.attention
+    from .component_layouts import selected_catalog_for_tp
+    _, entries = selected_catalog_for_tp(Path(attention_csv).parent,
+        arch.model_dump(exclude_none=True), "attention", arch.catalog.attention)
     for layer in entries:
         if not set(args.attention_decode_q_lens) <= set(table.get(layer, {})):
             raise ValueError(f"Missing exact attention query slices for {layer}")
     db = dict(tables={1: {"attention_by_layer": table}})
-    saturation = probe_key_saturation(text_config(args.model_config or {}))
+    from .attention_lookup import semantic_for_table, check_skew
+    record, saturation = semantic_for_table(attention_csv, args.model_config or {},
+                                            arch.model_dump(exclude_none=True))
+    if record and existing_csv is not None and Path(existing_csv).exists():
+        check_skew(Path(existing_csv).parent, record['semantic_sha256'], allow_pending=True)
 
     def cells(shot):
         pf = shot.requests[:shot.n_prefill]

@@ -141,6 +141,12 @@ layer has from the checkpoint:
 | **+ sparse indexer** (the same two) | plus `index_head_dim + index_head_dim/128 * 4` — a **second** cache beside the latent, fp8 keys with one fp32 scale per 128 elements | no |
 | **Linear attention** (Qwen3.5/3.8 gated DeltaNet) | 0 — its state is fixed *per sequence*, not per token | n/a |
 
+These are the ordinary simulator's capacity formulas. New native DeepSeek-V3.2
+tables record a packed 656+132-byte cache per token per layer, which this
+historical capacity model does not admit. Their explicit duration replay,
+and Kimi's contextual replay, do not establish scheduler capacity or memory
+traffic. See [native trace boundaries](../trace-generation#native-dsa-duration-replay).
+
 The MLA row is the reason this matters rather than being a detail: sizing
 DeepSeek-V3.2 with the GQA formula reads 1,748,992 bytes per token where it
 actually caches 78,324, a 22x overstatement of the thing that decides how many
@@ -289,8 +295,12 @@ activation peak or CUDA context, `0.9` here buys noticeably more KV cache than
 `0.9` does in vLLM. More cache means less preemption, so the simulated run
 finishes early and every latency metric skews with it.
 
-Set it from the measured run in that case. `python -m bench run` records what
-vLLM actually resolved in `meta.json`:
+Set it from the measured run in that case. For new runs, use complete
+`kv_cache.capacity.per_engine` observations in `meta.json`, matching each
+simulator instance to the native DP rank. The raw vLLM 0.31 client block count
+sums connected engines; do not use it as one pool or infer an equal division.
+See the [capacity metadata contract](/docs/reference/bench-cli#kv-capacity-metadata).
+The historical single-engine RTX 4090 reference records:
 
 ```json
 "kv_cache": { "num_gpu_blocks": 2588, "block_size": 16, "num_kv_tokens": 41408 }
@@ -301,17 +311,16 @@ same block count. The bundled RTX 4090 / Llama-3.1-8B example is exactly this
 case — 24 GB, pinned at its ceiling for most of the run — and the matched value
 is `0.833919`, not `0.9`:
 
-| | KV tokens | blocks | TTFT mean | TPOT mean | Latency mean |
-| --- | --- | --- | --- | --- | --- |
-| vLLM (measured) | 41,408 | 2,588 | — | — | — |
-| `mem_util: 0.9` | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
-| `mem_util: 0.833919` | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
+The refreshed RTXPRO6000 Qwen3-30B example matches the complete READY
+observations of 38,256 blocks per DP rank through its instance memory settings.
+Llama and Qwen3-32B retain the recorded utilization without claiming a complete
+per-engine capacity match. The [validation page](/docs/validation) reports
+the canonical results and each example's memory settings.
 
-Same profile bundle, same workload, same engine flags — only the capacity
-differs. The bundled RTXPRO6000 examples, by contrast, peak at 58-97% of their
-budget, so they are left at `0.9`: there is nothing for a calibration to
-change. Read the peak `Each NPU Memory Usage` percentage off the heartbeat to
-tell which case you are in — remember its ceiling is `mem_util * 100`, not 100.
+Inspect preemption and request scheduling when assessing memory pressure.
+The simulator heartbeat includes cached-but-free blocks, while vLLM's
+`kv_cache_pct` counts pinned blocks; their percentages alone do not establish
+whether capacity changes the schedule.
 :::
 
 The scheduler takes `ceil(tokens / block_size)` blocks per active request

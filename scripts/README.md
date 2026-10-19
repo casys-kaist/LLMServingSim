@@ -8,9 +8,9 @@ live with their module.
 
 | File | Purpose |
 | --- | --- |
-| `docker-vllm.sh`  | Launch the vLLM Docker container (profiler + bench + workloads.generators). Mounts the repo as `/workspace`, pins vLLM 0.28.0, installs `datasets`, `matplotlib`, `pandas` and the pinned NCCL dependency, and applies `scripts/patches/`. |
+| `docker-vllm.sh`  | Launch the vLLM CUDA 13 container (profiler + bench + workloads.generators). Mounts the repo as `/workspace`, pins vLLM 0.31.0, installs `datasets`, `matplotlib`, `pandas` and Torch's pinned NCCL dependency, and applies `scripts/patches/`. |
 | `docker-sim.sh`   | Launch the simulator Docker container (ASTRA-Sim + sim Python deps). |
-| `install-vllm.sh` | Bare-metal vLLM install via `uv venv` for environments without Docker. Brings in vLLM 0.28.0 plus `datasets`, `matplotlib` and `pandas`; source patches must be applied separately in the activated environment. |
+| `install-vllm.sh` | Bare-metal vLLM 0.31.0 install into the repository's Python 3.12 `.venv`. Uses uv's `cu130` PyTorch backend, installs the same extras and NCCL pin, then applies the same source patches as Docker. |
 | `compile.sh`      | Build ASTRA-Sim's analytical backend and install the Chakra trace converter. Rerun it after any change under `astra-sim/`, including `llm_converter.py`, which is installed into site-packages rather than imported from the tree. |
 | `monitor_run.py` | Run one command with process-tree RSS, host-memory, swap-growth and timeout guards; write CSV telemetry and a JSON completion summary. Optional GPU telemetry targets one explicit physical UUID. |
 
@@ -28,7 +28,26 @@ Bare metal (vLLM side only):
 
 ```bash
 ./scripts/install-vllm.sh
+source .venv/bin/activate
 ```
+
+Run `bench/bench.sh` after entering the vLLM container or activating the venv;
+the benchmark template uses the current environment's `python3` and does not
+launch Docker or activate an environment itself.
+
+The installer requires a uv version supporting `--torch-backend cu130` and a
+compatible NVIDIA driver. Docker remains the reference environment; a successful
+dependency installation does not establish model/backend acquisition coverage.
+
+The retained MiniMax-M3 MTP namespace patch prevents target/drafter layer-name
+collisions. The SM120 sparse-MLA fix is upstream in vLLM 0.31.0, so its backport
+is removed. Step-shape logging is an explicitly optional CPU-entry diagnostic
+(`VLLM_STEP_SHAPE_LOG`), not a GPU timer. Gate statistics are enabled by
+`bench --record-gate-stats` or `VLLM_MOE_ACTIVATED_LOG`, require eager execution,
+and cover modular routers rather than every MoE backend. Both observers are
+disabled by default. The NCCL package pin does not force a communication backend.
+Recorded profile bundles and benchmark truths retain their original versions;
+changing the launcher does not remeasure or certify them on vLLM 0.31.0.
 
 ## Editing notes
 
@@ -61,3 +80,5 @@ exclusive GPU availability, and run the acquisition under explicit memory limits
   example, `VLLM_GPUS='"device=0,1"' ./scripts/docker-vllm.sh`.
 - `bench validate` is CPU-only and works in the simulator environment.
   Only recording new vLLM runs requires the GPU environment.
+- `docker-sim.sh` includes SciPy for new three-axis native MoE interpolation.
+  Its triangulation is prepared at table load; no GPU is needed for lookup.

@@ -120,6 +120,8 @@ class TraceCtx:
     dp_sum_total_len: int  # sum of total_len across DP group (0 = DP inactive). Captures the post-AG gathered size for MoE compute; dummy batches are pre-padded to max by serving/__main__.py so the sum reflects vLLM's CUDA-graph padding.
     dp_min_total_len: int  # smallest member's total_len in the DP round (0 = DP inactive). Only the EP collectives read it: they are ragged, so their cost is set by the worst-off rank, not the average one. Equals max on a padded round.
     dp_token_counts: tuple = ()  # Authoritative padded model rows in DP-rank order.
+    component_sizes: object = None  # Explicit selected-runtime logical boundaries.
+    duration_replay_only: bool = False  # Explicitly bypasses any serving/capacity support claim.
 
 
 @dataclass
@@ -193,8 +195,8 @@ def _load_meta(variant_root):
         raise FileNotFoundError(
             f"meta.yaml missing at {path}. Re-run the profiler to produce it."
         )
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+    from profiler.core.bundle_metadata import read_bundle
+    return read_bundle(variant_root)
 
 
 def _hydrate_skew_fit_tables(meta, variant_root):
@@ -497,6 +499,16 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
         "available_tps": sorted(available_tps),
         # Per-TP category tables, filled in by _tp_tables on first lookup.
         "tables": {},
+        # The per-batch TP view below is a shallow copy. Allocate the lazy
+        # caches here so all views reuse validation and sequence substitutions
+        # rather than populating an ephemeral view or losing byte contracts.
+        "component_sizes": {},
+        "component_layout_choices": {},
+        "component_layout_catalogs": {},
+        "component_layout_sequences": {},
+        "component_layout_sites": {},
+        "native_moe_index_present": {},
+        "native_moe_components": {},
         # One LayerSpec per decoder layer, from the checkpoint's own config.
         # Empty only when the config declares no num_hidden_layers, which the
         # simulator has already failed on by the time it gets here.
@@ -512,13 +524,19 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type,
                 _stack_module().text_config(model_config))
             if model_config else None),
     }
-    for entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).values():
+    from profiler.core import attention_lookup as lookup_contract
+    lookup_records = lookup_contract.resolve(root, model_config, arch, meta=meta)
+    perf_db["key_saturation_by_tp"] = {
+        tp: lookup_contract.cap_for(lookup_records, tp, model_config) for tp in available_tps}
+    for tp, entry in ((meta.get("skew_fit") or {}).get("per_tp") or {}).items():
         if not isinstance(entry, dict) or not entry.get("calibration"):
             continue
+        if int(tp) in lookup_records:
+            lookup_contract.check_skew(os.path.join(root, f'tp{int(tp)}'), lookup_records[int(tp)]['semantic_sha256'])
         reference = entry["reference"]
-        saturation = {k: bool(v.get("key_saturates"))
-                      for k, v in (arch["catalog"].get("attention") or {}).items()}
-        if (reference["key_saturation"] != perf_db["key_saturation"]
+        attention = _component_layout_catalog(perf_db, int(tp), "attention")
+        saturation = {k: bool(v.get("key_saturates")) for k, v in attention.items()}
+        if (reference["key_saturation"] != perf_db["key_saturation_by_tp"].get(int(tp), perf_db["key_saturation"])
                 or reference["saturation_by_layer"] != saturation):
             raise ValueError("Attention window/catalog changed; run profiler refit-skew")
     _perf_db_cache[cache_key] = perf_db
@@ -1084,7 +1102,8 @@ def _moe_ep_slice(by_ep, ep, perf_db):
             "ep_size=%d was not profiled for the MoE block (have %s); using "
             "%d. An EP rank runs E/ep experts and k/ep of a token's expert "
             "assignments, so the wrong slice misprices every MoE layer -- "
-            "re-profile with --moe-ep-degrees including %d.",
+            "acquire native components with --ep %d and matching --tp/--dp "
+            "(EP=TP*DP) where supported; legacy whole-block acquisition is unavailable.",
             ep, have, nearest, ep,
         )
     return by_ep[nearest]
@@ -1156,12 +1175,30 @@ def _catalog_has(perf_db, category, name):
 # Context builders
 # ======================================================================
 
+def _require_attention_parallelism(architecture, tp_size, pp_size, local_ep, ep_total):
+    """Refuse attention-wide SP before a trace can publish partial output.
+
+    vLLM 0.28/0.31 Qwen TP+DP MoE at PP1 keeps sequence shards across
+    blocks. A wrapper-only MoE AllGather cannot represent that execution.
+    The simulator's supported expert transport is allgather_reducescatter.
+    """
+    if tp_size <= 1 or pp_size != 1 or ep_total <= max(local_ep, 1):
+        return
+    if any(entry.get("attention_sequence_parallel", False)
+           for entry in architecture["catalog"].get("moe", {}).values()):
+        raise NotImplementedError(
+            "This TP>1 + DP>1 + EP deployment uses attention-wide sequence "
+            "parallelism: attention AllGather/ReduceScatter, local norm/MoE "
+            "rows and one final AllGather. That trace contract is not yet "
+            "implemented; use TP1 for DP+EP or DP1 for TP profiling/validation.")
+
+
 def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                      placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                      variant, kv_cache_dtype='auto',
                      runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
                      tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, num_speculative_tokens=0,
-                     dp_rank=0, dp_token_counts=()):
+                     dp_rank=0, dp_token_counts=(), duration_replay_only=False):
     if dp_rank < 0 or (gate is not None and (dp_rank + 1) * max(local_ep, 1) > ep_total):
         raise ValueError("DP member's local expert ranks exceed the EP group")
     model_type = config.get('model_type')
@@ -1173,6 +1210,10 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
     tp_needed = {max(int(tp_size), 1)}
     perf_db = _load_perf_db(hardware, model, variant, tp_needed, model_type,
                             model_config=config)
+    perf_db = dict(perf_db, key_saturation=perf_db["key_saturation_by_tp"][max(int(tp_size), 1)])
+    if gate is not None:
+        _require_attention_parallelism(perf_db["architecture"], tp_size, pp_size,
+                                      local_ep, ep_total)
     warn_if_runtime_exceeds_profiled(
         perf_db, runtime_max_num_batched_tokens, runtime_max_num_seqs)
 
@@ -1187,7 +1228,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         pim_config = pim_model.get_config()
         pim_channels = int(pim_config["mem_size"] // pim_config["dimm_size"])
 
-    return TraceCtx(
+    ctx = TraceCtx(
         hardware=hardware, model=model, config=config, perf_db=perf_db,
         node_id=node_id,
         fp=fp, placement=placement, gate=gate,
@@ -1202,7 +1243,13 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         dp_min_total_len=dp_min_total_len,
         dp_token_counts=tuple(dp_token_counts),
         num_speculative_tokens=num_speculative_tokens,
+        component_sizes=_selected_component_sizes(perf_db, tp_size, config),
+        duration_replay_only=duration_replay_only,
     )
+    if ctx.component_sizes is not None:
+        from .component_sizes import validate_local_trace
+        validate_local_trace(ctx)
+    return ctx
 
 
 def _build_batch_ctx(batch, ctx):
@@ -1279,7 +1326,7 @@ def _layer_category(perf_db, layer_name):
 
 
 def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer_num=None,
-                comm_type='NONE', comm_size=0, input_loc='LOCAL', output_loc='LOCAL'):
+                comm_type='NONE', comm_size=0, input_loc='LOCAL', output_loc='LOCAL', source_role=None):
     """Emit a single trace layer: lookup latency, compute sizes, format, track power."""
     category = _layer_category(ctx.perf_db, layer_name)
     if category is None:
@@ -1289,7 +1336,10 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
             f"profiler/models/<model_type>.yaml or remove it from the block order."
         )
 
-    if category == "per_sequence":
+    if layer_name == 'attn_res' and _is_contextual_profile(ctx):
+        source_role = source_role or ('final' if layer_num is None else None)
+        latency_ns = ctx.component_sizes.residual(bctx.total_len, source_role, layer_num)
+    elif category == "per_sequence":
         latency_ns = _lookup_per_sequence(ctx.perf_db, layer_name, ctx.tp_size, bctx.lm_head_len)
     elif category == "attention":
         latency_ns = _lookup_attention_with_skew(
@@ -1324,15 +1374,26 @@ def _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag='NONE', layer
         latency_ns = _lookup_dense(ctx.perf_db, layer_name, ctx.tp_size, bctx.total_len)
 
     # Size calculation uses the same canonical layer names.
-    if layer_name == 'attention':
+    if _is_contextual_profile(ctx):
+        inp, wt, out = ctx.component_sizes.sizes_for(bctx, layer_name, source_role, layer_num)
+    elif layer_name == 'attention':
         kv_len_for_sizes = bctx.kv_prefill + bctx.n_decode * bctx.kv_decode_mean
         inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
                                        kv_len=kv_len_for_sizes,
                                        parallel=ctx.tp_size, fp=ctx.fp)
+    elif (layer_name in ("indexer", "sparse_attention")
+          and get_config(ctx.model).get("model_type") == "minimax_m3_vl"):
+        # Preserve individual histories: the indexer scans each whole cache,
+        # while sparse attention caps each request before summing its reads.
+        histories = [*bctx.batch.prefill_k_list, *bctx.batch.decode_k_list]
+        inp, wt, out = calculate_sizes(ctx.model, layer_name, bctx.total_len,
+                                       kv_lens=histories,
+                                       parallel=ctx.tp_size, fp=ctx.fp)
     else:
         length = bctx.lm_head_len if category == "per_sequence" else bctx.total_len
         inp, wt, out = calculate_sizes(ctx.model, layer_name, length,
-                                       parallel=ctx.tp_size, fp=ctx.fp)
+                                       parallel=ctx.tp_size, fp=ctx.fp,
+                                       component_sizes=ctx.component_sizes)
 
     if layer_num is None and comm_type == 'NONE':
         comm_type, comm_size = _shared_tp_collective(ctx, bctx, layer_name)
@@ -1403,6 +1464,14 @@ def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
     """Compute TP communication size. Returns (comm_size, comm_type)."""
     if ctx.tp_size <= 1:
         return 0, 'NONE'
+    entry = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {})
+    if entry.get("tp_output_reduction") == "all_reduce":
+        # RowParallelLinear reduces the full hidden-state output, not its
+        # sharded input. Activation precision is independent of weight dtype.
+        element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
+        _, _, out = calculate_sizes(ctx.model, layer_name, total_len,
+                                    parallel=ctx.tp_size, fp=element_bytes)
+        return out, 'ALLREDUCE'
     _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=ctx.fp)
     return out, collective
 
@@ -1621,8 +1690,12 @@ def _emit_moe_block(ctx, bctx, lines, power_acc, layer_num, batch_id_str, batch_
             rank_latency_ns = _lookup_moe(
                 ctx.perf_db, ep_total, local_tokens,
                 max(activated_experts, 1))
-            rank_inp, rank_wt, rank_out = calculate_sizes(
-                ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp)
+            if _is_contextual_profile(ctx):
+                rank_inp, rank_wt, rank_out = ctx.component_sizes.sizes_for(bctx, 'moe')
+            else:
+                rank_inp, rank_wt, rank_out = calculate_sizes(
+                    ctx.model, "moe", local_tokens, parallel=ep_total, fp=ctx.fp,
+                    component_sizes=ctx.component_sizes)
             max_rank_latency_ns = max(max_rank_latency_ns, rank_latency_ns)
 
             lines.append(("expert", str(rank_latency_ns), 'LOCAL', str(rank_inp),
@@ -1723,33 +1796,22 @@ def _spec_block_layers(perf_db, spec, part, where):
     need: every one of their layers is sparse, so there is nothing to tell
     apart and one ``attn`` block serves them all.
     """
-    blocks = perf_db["architecture"].get("blocks") or {}
+    path = _spec_block_site(perf_db, spec, part, where)
+    value = perf_db["architecture"]
+    for key in path[:-1]:
+        value = value[key]
+    return list(value.get(path[-1]) or [])
 
-    if part == "mlp":
-        by_type = blocks.get("mlp") or {}
-        if spec.mlp not in by_type:
-            raise KeyError(
-                f"Architecture {perf_db['variant']} declares no "
-                f"'blocks.mlp.{spec.mlp}', but {where} of "
-                f"{perf_db['model']} runs a {spec.mlp} MLP. Declared: "
-                f"{sorted(by_type) or 'none'}."
-            )
-        return list(by_type.get(spec.mlp) or [])
 
-    group = None
-    if spec.sparse:
-        group = (blocks.get("sparse_attn") or {}).get(spec.attn)
-    if group is None:
-        group = (blocks.get("attn") or {}).get(spec.attn)
-    if group is None:
-        declared = sorted((blocks.get("attn") or {}))
-        raise KeyError(
-            f"Architecture {perf_db['variant']} declares no "
-            f"'blocks.attn.{spec.attn}', but {where} of "
-            f"{perf_db['model']} runs {spec.attn}. Declared: "
-            f"{declared or 'none'}."
-        )
-    return list(group.get(part) or [])
+def _spec_block_site(perf_db, spec, part, where):
+    """Share the pure site rule used by live invocation-count expectations."""
+    from profiler.core.component_layouts import spec_block_site
+    if part not in ("pre_attn", "post_attn", "mlp"):
+        raise ValueError(f"Unknown decoder part: {part}")
+    try:
+        return spec_block_site(perf_db["architecture"], spec, part)
+    except ValueError as exc:
+        raise KeyError(f"Architecture {perf_db['variant']}, {where} of {perf_db['model']}: {exc}") from exc
 
 
 _skipped_layer_warned = set()
@@ -1787,6 +1849,113 @@ def _layer_available(perf_db, tp, layer_name):
     return False
 
 
+def _component_layout_choices(perf_db, tp):
+    """Read and verify each TP's recorded layout once, not once per layer."""
+    from profiler.core.component_layouts import read_for_trace
+    choices = perf_db.setdefault("component_layout_choices", {})
+    if tp not in choices:
+        choices[tp] = read_for_trace(
+            os.path.join(perf_db["root"], f"tp{tp}"),
+            perf_db["architecture"])
+    return choices[tp]
+
+
+def _selected_component_sizes(perf_db, tp, config):
+    """Resolve once from validated recorded coverage, never a model-name alias."""
+    cache = perf_db.setdefault('component_sizes', {})
+    if tp in cache:
+        if cache[tp] is not None:
+            cache[tp].validate_config(config)
+        return cache[tp]
+    from profiler.core.component_layouts import metadata_records, selected_runtime_contract
+    architecture = perf_db['architecture']
+    if architecture.get('native_profile') is not None:
+        if tp != 1:
+            raise NotImplementedError('Local native category profiles support TP1 only')
+        from .component_sizes import ContextualProfileBundle
+        from .utils import get_source_config
+        selected = ContextualProfileBundle(os.path.join(perf_db['root'], 'tp1'), architecture,
+                                           get_source_config(perf_db['model']))
+        selected.validate_config(config)
+        cache[tp] = selected
+        return selected
+    if not architecture.get('component_layouts'):
+        cache[tp] = None
+        return None
+    choices = _component_layout_choices(perf_db, tp)
+    schema = selected_runtime_contract(architecture, choices)
+    if schema is None:
+        cache[tp] = None
+        return None
+    from .component_sizes import NATIVE_DSA, NativeDSASizes
+    if schema != NATIVE_DSA:
+        raise NotImplementedError(f'No trace tensor contract for {schema!r}')
+    block = metadata_records(perf_db['root'], architecture)
+    cache[tp] = NativeDSASizes.from_record(config, block['per_tp'][tp])
+    return cache[tp]
+
+
+def _component_layout_catalog(perf_db, tp, category):
+    """Select the same recorded components for lookup and trace composition.
+
+    A catalog may declare inactive alternatives. They must not alter an old
+    calibration's saturation map or make an inactive table appear measured.
+    This projection changes no coordinate, interpolation or stored timing.
+    """
+    architecture = perf_db["architecture"]
+    entries = architecture["catalog"].get(category) or {}
+    if not architecture.get("component_layouts"):
+        return entries
+    from profiler.core.component_layouts import selected_catalog_for_tp
+    cache = perf_db.setdefault("component_layout_catalogs", {})
+    key = (tp, category)
+    if key not in cache:
+        choices, selected = selected_catalog_for_tp(
+            os.path.join(perf_db["root"], f"tp{tp}"), architecture, category)
+        recorded = perf_db.setdefault("component_layout_choices", {})
+        if tp in recorded and recorded[tp] != choices:
+            raise ValueError("Component-layout selection changed after lookup initialization")
+        recorded[tp] = choices
+        cache[key] = selected
+    return cache[key]
+
+
+def _component_layout_sequence(perf_db, tp, layers):
+    """Cache an immutable expansion by TP and the original sequence."""
+    from profiler.core.component_layouts import expand_sequence
+    key = (tp, tuple(layers))
+    cache = perf_db.setdefault("component_layout_sequences", {})
+    if key not in cache:
+        cache[key] = tuple(expand_sequence(perf_db["architecture"],
+                                          _component_layout_choices(perf_db, tp), layers))
+    return cache[key]
+
+
+def _component_site_sequence(perf_db, tp, path, *, role, layer_index=None):
+    """Resolve a named site with explicit target/shared/drafter ownership."""
+    architecture = perf_db["architecture"]
+    if not architecture.get("component_layouts"):
+        value = architecture
+        for key in path:
+            value = value.get(key, {}) if isinstance(value, dict) else None
+        return tuple(value or ())
+    from profiler.core.component_layouts import resolve_sequence_site
+    key = (tp, tuple(path), role, layer_index)
+    cache = perf_db.setdefault("component_layout_sites", {})
+    if key not in cache:
+        cache[key] = resolve_sequence_site(
+            architecture, _component_layout_choices(perf_db, tp), path,
+            role=role, layer_index=layer_index)
+    return cache[key]
+
+
+def _resolved_block_sequence(ctx, layer_num, part):
+    path = _spec_block_site(ctx.perf_db, _layer_spec(ctx.perf_db, layer_num),
+                            part, f"layer {layer_num}")
+    return _component_site_sequence(ctx.perf_db, ctx.tp_size, path,
+                                    role="target", layer_index=layer_num)
+
+
 def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     """Walk a flat list of canonical layer names from the architecture
     yaml, emitting each. ``attention`` triggers PIM attention before the
@@ -1796,7 +1965,23 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
     (e.g., an older profile run that predates a yaml addition), the
     emission is skipped with a single warning per (variant, layer).
     """
+    if ctx.perf_db["architecture"].get("component_layouts"):
+        layers = _component_layout_sequence(ctx.perf_db, ctx.tp_size, layers)
+    _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag)
+
+
+def _is_contextual_profile(ctx):
+    from .component_sizes import CONTEXTUAL_PROFILE
+    return getattr(ctx.component_sizes, 'schema', None) == CONTEXTUAL_PROFILE
+
+
+def _emit_resolved_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag, source_role=None):
+    """Emit an already resolved sequence without applying substitutions twice."""
     for layer_name in layers:
+        if layer_name == 'attn_res' and _is_contextual_profile(ctx):
+            _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
+                        source_role=source_role)
+            continue
         if layer_name == "attention":
             if ctx.enable_attn_offloading:
                 _emit_pim_attention(ctx, bctx, lines, power_acc, layer_num, batch_tag)
@@ -1815,7 +2000,8 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
                     ctx.perf_db["model"], ctx.perf_db["variant"],
                 )
             continue
-        if layer_name in _TP_ALLREDUCE_AFTER:
+        reduction = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {}).get("tp_output_reduction")
+        if layer_name in _TP_ALLREDUCE_AFTER or reduction == "all_reduce":
             comm_size, comm_type = _tp_comm(ctx, layer_name, bctx.total_len)
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         comm_type=_with_dim(comm_type, ctx.tp_dim), comm_size=comm_size)
@@ -1855,35 +2041,44 @@ def _block_copy_key(ctx, block_mode_on, *layer_nums):
     for all 61 of DeepSeek-V3.2's. Several layer numbers for the interleaved
     path, whose block straddles a boundary.
     """
-    if block_mode_on:
+    if block_mode_on or _is_contextual_profile(ctx):
         return None
     if ctx.is_moe and not ctx.gate.block_copy:
         return None
+    groups = ctx.perf_db["architecture"].get("component_layouts") or {}
+    if any(group.get("sites") for group in groups.values()):
+        # A fused prologue may consume only the first decoder's input norm.
+        # Later equivalent layers still share their cache entry, but must not
+        # replay that shorter first-layer sequence, including interleaving.
+        return tuple((_layer_spec(ctx.perf_db, n),
+                      tuple(_resolved_block_sequence(ctx, n, part)
+                            for part in ("pre_attn", "post_attn", "mlp")))
+                     for n in layer_nums)
     return tuple(_layer_spec(ctx.perf_db, n) for n in layer_nums)
 
 
 def _emit_pre_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_tag='NONE'):
-    _emit_sequence(ctx, bctx, layer_num,
-                   _block_layers(ctx.perf_db, layer_num, "pre_attn"),
-                   lines, power_acc, batch_tag)
+    _emit_resolved_sequence(ctx, bctx, layer_num,
+                           _resolved_block_sequence(ctx, layer_num, "pre_attn"),
+                           lines, power_acc, batch_tag, source_role='pre_attn')
 
 
 def _emit_post_attn_layers(ctx, bctx, layer_num, lines, power_acc, batch_id_str, batch_tag='NONE'):
     # Attention post-processing, from this layer's own block.
-    _emit_sequence(ctx, bctx, layer_num,
-                   _block_layers(ctx.perf_db, layer_num, "post_attn"),
-                   lines, power_acc, batch_tag)
+    _emit_resolved_sequence(ctx, bctx, layer_num,
+                           _resolved_block_sequence(ctx, layer_num, "post_attn"),
+                           lines, power_acc, batch_tag, source_role='post_attn')
     # MLP: whichever this layer runs. Resolved per layer, not per model --
     # DeepSeek-V3.2 and GLM-5 run a dense MLP for their first
     # ``first_k_dense_replace`` layers and MoE for the rest, and a model-level
     # flag emitted MoE for all of them.
-    for layer_name in _block_layers(ctx.perf_db, layer_num, "mlp"):
+    for layer_name in _resolved_block_sequence(ctx, layer_num, "mlp"):
         if layer_name == "moe":
             _emit_moe_block(ctx, bctx, lines, power_acc, layer_num,
                             batch_id_str, batch_tag)
         else:
-            _emit_sequence(ctx, bctx, layer_num, [layer_name],
-                           lines, power_acc, batch_tag)
+            _emit_resolved_sequence(ctx, bctx, layer_num, [layer_name],
+                                    lines, power_acc, batch_tag)
 
 
 def _build_transformer_block(ctx, bctx, layer_num, batch_tag, batch_id_str):
@@ -2092,7 +2287,8 @@ def _emit_final_layers(ctx, bctx, rows, batch_tag='NONE'):
     The last emitted layer routes its output to REMOTE so the Chakra
     converter places a MEM_STORE node back to CPU.
     """
-    head_layers = _shared_layers(ctx.perf_db, "head")
+    head_layers = _component_site_sequence(ctx.perf_db, ctx.tp_size,
+                                           ("shared", "head"), role="shared")
     idle = bctx.lm_head_len == 0
     if idle:
         # The dummy forward still runs its final norm, but no logits/sampling.
@@ -2143,7 +2339,8 @@ def _emit_prologue(ctx, bctx, rows, batch_tag='NONE'):
     input is routed from REMOTE to match the Chakra converter's
     MEM_LOAD node placement.
     """
-    prologue_layers = _shared_layers(ctx.perf_db, "prologue")
+    prologue_layers = _component_site_sequence(ctx.perf_db, ctx.tp_size,
+                                               ("shared", "prologue"), role="shared")
     if not prologue_layers:
         return 0
     before = len(rows)
@@ -2172,7 +2369,7 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                       variant, kv_cache_dtype='auto',
                       runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
                       tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
-                      num_speculative_tokens=0, dp_rank=0, dp_token_counts=()):
+                      num_speculative_tokens=0, dp_rank=0, dp_token_counts=(), duration_replay_only=False):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
@@ -2181,8 +2378,13 @@ def _synthesize_trace(hardware, model, config, tp_size, pp_size, local_ep, ep_to
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                            dp_min_total_len=dp_min_total_len,
                            num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank,
-                           dp_token_counts=dp_token_counts)
+                           dp_token_counts=dp_token_counts,
+                           duration_replay_only=duration_replay_only)
     bctx = _build_batch_ctx(batch, ctx)
+
+    if ctx.component_sizes is not None:
+        from .component_sizes import validate_actual_batch
+        validate_actual_batch(ctx, bctx)
 
     logger.info(
         "Batch #%d: model=%s num_reqs=%d total_len=%d req_ids=%s",
@@ -2267,7 +2469,7 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                                   variant, kv_cache_dtype='auto',
                                   runtime_max_num_batched_tokens=None, runtime_max_num_seqs=None,
                                   tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0,
-                                  num_speculative_tokens=0, dp_rank=0, dp_token_counts=()):
+                                  num_speculative_tokens=0, dp_rank=0, dp_token_counts=(), duration_replay_only=False):
     ctx = _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_total, node_id, fp,
                            placement, gate, enable_attn_offloading, power_model, pim_model, pd_type,
                            variant=variant, kv_cache_dtype=kv_cache_dtype,
@@ -2276,7 +2478,10 @@ def _synthesize_interleaved_trace(hardware, model, config, tp_size, pp_size, loc
                            tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                            dp_min_total_len=dp_min_total_len,
                            num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank,
-                           dp_token_counts=dp_token_counts)
+                           dp_token_counts=dp_token_counts,
+                           duration_replay_only=duration_replay_only)
+    if ctx.component_sizes is not None:
+        raise NotImplementedError('Native DSA interleaved trace execution is not yet admitted')
     bctx1 = _build_batch_ctx(batches[0], ctx)
     bctx2 = _build_batch_ctx(batches[1], ctx)
 
@@ -2419,7 +2624,13 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None,
                    enable_sub_batch_interleaving=False, fp=16, dtype=None, kv_cache_dtype='auto',
                    tp_dim=None, ep_dim=None, dp_sum_total_len=0, dp_min_total_len=0, enable_block_copy=True, inputs_root=None,
-                   num_speculative_tokens=0, gate_stats_path=None, dp_rank=0, dp_token_counts=()):
+                   num_speculative_tokens=0, gate_stats_path=None, dp_rank=0, dp_token_counts=(),
+                   *, duration_replay_only=False):
+
+    if type(duration_replay_only) is not bool:
+        raise ValueError('duration_replay_only must be an explicit boolean')
+    if duration_replay_only and enable_prefix_caching:
+        raise NotImplementedError('Duration replay has no prefix-cache admission contract')
 
     model = batch.model
     config = get_config(model)
@@ -2446,7 +2657,7 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     if num_experts_cfg:
         gate = GateRouter(
             node_id, instance_id, num_experts_cfg,
-            num_experts_per_tok=config.get('num_experts_per_tok', 1),
+            num_experts_per_tok=_stack_module().expert_top_k(config),
             routing_policy=expert_routing_policy,
             seed=42,
             block_copy=enable_block_copy,
@@ -2484,7 +2695,8 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
                         tp_dim=tp_dim, ep_dim=ep_dim, dp_sum_total_len=dp_sum_total_len,
                         dp_min_total_len=dp_min_total_len,
                         num_speculative_tokens=num_speculative_tokens, dp_rank=dp_rank,
-                        dp_token_counts=tuple(dp_token_counts))
+                        dp_token_counts=tuple(dp_token_counts),
+                        duration_replay_only=duration_replay_only)
     if not enable_sub_batch_interleaving:
         rows, block_starts = _synthesize_trace(*synth_args, batch, max_len, **synth_kwargs)
     else:
@@ -2538,7 +2750,10 @@ def generate_trace(batch, hardware, tp_size, pp_size, local_ep, ep_total, pd_typ
     # it here unconditionally cost 0.616 ms per batch, 8,810 times on the
     # swe-bench MoE DP+EP example, for a file that was then read straight
     # back in the same process.
-    return TraceData(header_line=header_line, rows=mem + rows, path=output_path)
+    # The context builder already verified this immutable per-TP selection.
+    selected_sizes = _perf_db_cache[(hardware, model, variant)]['component_sizes'][tp_size]
+    return TraceData(header_line=header_line, rows=mem + rows, path=output_path,
+                     byte_contract=selected_sizes.schema if selected_sizes else None)
 
 
 # ======================================================================
@@ -2556,6 +2771,7 @@ class TraceData:
     header_line: str
     rows: list
     path: str
+    byte_contract: str = None
 
 
 _TRACE_ROW_FIELDS = 11

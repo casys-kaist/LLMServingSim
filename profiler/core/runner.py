@@ -30,7 +30,7 @@ from profiler.core.categories import (
     _entry_dict,
     categories_for,
 )
-from profiler.core.config import Architecture, ProfileArgs, load_architecture
+from profiler.core.config import Architecture, ProfileArgs, declares_moe, load_architecture
 from profiler.core.engine import (
     probe_limits,
     resolve_attention_max_kv,
@@ -38,6 +38,7 @@ from profiler.core.engine import (
     spin_up,
 )
 from profiler.core.hooks.batch import Shot
+from profiler.core.hooks.capture_scope_contract import contexts_from_architecture
 from profiler.core.hooks.timings import CoverageReport, TimingSample
 from profiler.core.stack import ALL_AXES, minimal_layer_count_for
 from profiler.core.writer import (
@@ -45,6 +46,8 @@ from profiler.core.writer import (
     replicate_tp_stable,
     sink_for,
 )
+from profiler.core.callable_profile import profile_for, digest
+from profiler.core.context_tables import CategoryRecord
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +76,75 @@ def _variant_root(out_root: Path, args: ProfileArgs) -> Path:
 # Shot firing + point ingestion (shared between run_full and run_slice)
 # ---------------------------------------------------------------------------
 
+def _validate_layout_invocations(llm, architecture, choices, reports_by_rank, catalog):
+    """Apply an opt-in physical-call gate to every discovery rank and regime."""
+    from profiler.core import component_layouts as layouts
+    if not any(group["variants"][choices[name]].get("invocation_contract") is not None
+               for name, group in (architecture.get("component_layouts") or {}).items()):
+        return
+    config = layouts.resolved_text_config(llm.llm_engine.vllm_config)
+    expected = layouts.expected_scope_calls(architecture, choices, config)
+    for reports in reports_by_rank:
+        for regime, report in reports.items():
+            layouts.validate_invocation_report(architecture, choices, report, expected, 1, catalog, regime)
+
+
+def _component_layout_context(llm, category, arch, scope_contexts, args=None, tp=1, logical_ep=1):
+    """Discover representations on the live engine before writing category rows."""
+    from profiler.core import component_layouts as layouts
+    architecture = arch.model_dump(exclude_none=True)
+    groups = architecture.get("component_layouts") or {}
+    affected = {name for group in groups.values() for name in group["categories"]}
+    runtime_possible = any(variant.get('runtime_contract') is not None
+                           for group in groups.values() for variant in group['variants'].values())
+    if category.name not in affected and not runtime_possible:
+        return None
+    whole_catalog = {}
+    for group in type(arch.catalog).model_fields:
+        whole_catalog.update(_entry_dict(getattr(arch.catalog, group), arch))
+    probes = layouts.probe_catalog(architecture, whole_catalog)
+    # Do not cache across engine boots or TP degrees. Per-shot probes below
+    # additionally reject shape-dependent changes after these three checks.
+    reports_by_rank = None
+    for regime, shot in _coverage_shots(llm.llm_engine.vllm_config):
+        reports = llm.collective_rpc(
+            "coverage", args=(shot.as_dict(), probes, 1, scope_contexts))
+        if reports_by_rank is None:
+            reports_by_rank = [{} for _ in reports]
+        if not reports or len(reports) != len(reports_by_rank):
+            raise ValueError("Component-layout discovery changed its worker set")
+        for values, report in zip(reports_by_rank, reports):
+            values[regime] = report
+    selections = [layouts.select_runtime_layouts(architecture, reports)[0]
+                  for reports in reports_by_rank]
+    choices = selections[0]
+    if any(selection != choices for selection in selections):
+        raise ValueError("Component layouts differ across TP workers")
+    _validate_layout_invocations(llm, architecture, choices, reports_by_rank, probes)
+    runtime_schema = layouts.selected_runtime_contract(architecture, choices)
+    if category.name not in affected and runtime_schema is None:
+        return None
+    runtime = None
+    if runtime_schema is not None:
+        if args is None:
+            raise ValueError('Runtime admission requires host source configuration and logical degrees')
+        # Keep the original source depth. --num-hidden-layers and per-category
+        # reductions are acquisition prefixes, not new source model identities.
+        from profiler.core.hooks.runtime_admission import profile_descriptor, admit_runtime
+        descriptor = profile_descriptor(runtime_schema, args.model_config, args.hf_overrides,
+                                        logical_tp=tp, logical_ep=logical_ep)
+        results = llm.collective_rpc('component_runtime_admission', args=(descriptor,))
+        if len(results) != len(reports_by_rank) or not results:
+            raise ValueError('Runtime admission changed the discovery worker set')
+        for result in results:
+            if admit_runtime(descriptor, result['engine_facts']) != result:
+                raise ValueError('Worker runtime admission result is inconsistent')
+        runtime = results[0]
+        if any(item['runtime_sha256'] != runtime['runtime_sha256'] for item in results):
+            raise ValueError('Workers disagree on component runtime modes')
+    return architecture, choices, probes, runtime
+
+
 def _fire_one_category(
     llm,
     category: Category,
@@ -92,23 +164,86 @@ def _fire_one_category(
     measured rows; only completed shots reach them. ``--force`` replaces
     the selected category rather than appending to its prior acquisition.
 
-    ``wipe`` overrides that for a category swept more than once in a single
-    run. ``moe`` is: it fires once per EP degree, each on its own engine, and
-    the degrees share one CSV because ``ep`` is a column. With ``--force``
-    every pass started from an empty sink, so each one erased the degrees
-    before it and the file ended up holding only the last -- 50 rows at ep=8
-    where four degrees had been measured. Only the first pass may wipe.
+    ``wipe`` overrides the session's replacement policy for this category.
     """
     if wipe is None:
         wipe = args.force
     catalog_slice = category.catalog_slice(arch)
-    from .measurement import layerwise_measurement
-    measurement = layerwise_measurement(catalog_slice, args.measurement_iterations)
+    native_scope = None
+    profile = profile_for(arch)
+    if profile is not None:
+        native_scope = profile.native_scope(llm, args, tp, limits)
+        # Full-depth residual roles are isolated native calls, not the pooled
+        # prefix-engine calls. All other entries retain ordinary category axes.
+        catalog_slice = profile.ordinary_catalog(catalog_slice)
+    from profiler.core import component_layouts as layouts
+    scope_contexts = contexts_from_architecture(arch)
+    layout_context = _component_layout_context(llm, category, arch, scope_contexts,
+                                               args, tp, limits.moe_ep)
+    layout_sha256 = None
+    component_layout_contract = None
+    runtime = None
+    runtime_sha256 = None
+    capture_catalog = catalog_slice
+    if layout_context is not None:
+        architecture, choices, probes, runtime = layout_context
+        catalog_slice = layouts.filter_catalog_slice(architecture, choices, catalog_slice)
+        capture_catalog = {**catalog_slice, **probes}
+        layout_sha256 = layouts.layout_identity(architecture, choices)
+        if any(group["variants"][choices[name]].get("invocation_contract") is not None
+               for name, group in architecture["component_layouts"].items()):
+            component_layout_contract = dict(architecture=architecture, selections=choices,
+                                              layout_sha256=layout_sha256)
+        if runtime is not None:
+            runtime_sha256 = runtime['runtime_sha256']
+            component_layout_contract['runtime'] = dict(
+                descriptor=runtime['invariant_facts']['descriptor'], runtime_sha256=runtime_sha256)
+    from .measurement import layerwise_identity, layerwise_measurement, measurement_token, native_scope_token
+    from . import attention_lookup as lookup_contract
+    attention_semantic = (lookup_contract.acquire(llm, args.model_config,
+                          arch.model_dump(exclude_none=True), tp) if category.name == 'attention' else None)
+    attention_sha = lookup_contract.digest(attention_semantic) if attention_semantic is not None else None
+    identity = layerwise_identity(capture_catalog, args.measurement_iterations,
+        scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
+        attention_lookup_sha256=attention_sha, runtime_sha256=runtime_sha256,
+        native_profile_sha256=native_scope_token(native_scope) if native_scope is not None else None)
+    measurement = measurement_token(identity)
+    from .sampling import resolve_sampling, record_category
+    from .bundle_metadata import read_bundle
+    limits.sampling_plan = resolve_sampling(args, limits, tp, meta=read_bundle(out_dir.parent),
+                                            include_stable=category.name == 'dense')
+    all_shots = list(category.compose_shots(arch, args, limits, tp))
+    if not all_shots:
+        log.warning('category %s produced no shots for tp=%d; skipping', category.label, tp)
+        return False
+    record_category(out_dir, category, args, limits.sampling_plan, all_shots)
+    native_record = (CategoryRecord(out_dir, category, arch, all_shots, catalog_slice,
+                      measurement, native_scope, replace=wipe, identity=identity, tp=tp)
+                     if native_scope is not None else None)
+    if attention_semantic is not None:
+        lookup_contract.begin(out_dir, attention_semantic, measurement, replace=wipe)
+    if layout_context is not None:
+        # The shared probe catalog provides one version/source/repetition
+        # identity across coupled categories; each CSV still stamps its
+        # actual capture catalog independently.
+        acquisition = layerwise_measurement(probes, args.measurement_iterations,
+            scope_contexts=scope_contexts, component_layout_sha256=layout_sha256,
+            runtime_sha256=runtime_sha256)
+        layouts.begin_category(out_dir, architecture, choices, category.name,
+                               measurement, acquisition, replace=wipe, runtime=runtime)
     sink = sink_for(category, out_dir, measurement=measurement)
 
     prior_keys: set[tuple] = set()
-    if not wipe:
-        preloaded = sink.preload()
+    # Copied stable rows retain their TP1 acquisition, including when the
+    # selected representation differs at this degree. They cannot certify
+    # a measured shot or be replaced by new TP2 samples.
+    replicated = set()
+    if tp > 1:
+        replicated = {name for name, entry in catalog_slice.items()
+                      if entry.get("tp_stable")
+                      and (layout_context is None or name not in probes)}
+    if not wipe or replicated:
+        preloaded = sink.preload(preserve_layers=replicated, preserve_only=wipe)
         if preloaded:
             prior_keys = sink.prior_shot_keys()
             log.info(
@@ -116,16 +251,10 @@ def _fire_one_category(
                 "%d prior shot keys recognized",
                 category.label, preloaded, len(prior_keys),
             )
+    if native_record is not None:
+        prior_keys = native_record.resume_keys(sink)
 
     # Retain the planned shots for progress totals and resume filtering.
-    all_shots = list(category.compose_shots(arch, args, limits, tp))
-    if not all_shots:
-        log.warning(
-            "category %s produced no shots for tp=%d; skipping",
-            category.label, tp,
-        )
-        return False
-
     if prior_keys:
         shots = [s for s in all_shots if category.shot_key(s) not in prior_keys]
         skipped = len(all_shots) - len(shots)
@@ -138,6 +267,14 @@ def _fire_one_category(
         shots = all_shots
 
     if not shots:
+        if native_record is not None:
+            native_record.complete(sink)
+            if category.name == 'dense':
+                return profile.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
+        if attention_semantic is not None:
+            lookup_contract.complete(out_dir)
+        if layout_context is not None:
+            layouts.complete_category(out_dir, architecture, category.name)
         log.info("%s: nothing to do (all shots already measured)", category.label)
         return False
 
@@ -149,28 +286,56 @@ def _fire_one_category(
     checkpoint_at = t_start + 60
     with log.progress(label, total=len(shots)) as bar:
         for done, shot in enumerate(shots, start=1):
+            rpc_args = (shot.as_dict(), capture_catalog, category.name,
+                        args.measurement_iterations, scope_contexts, layout_sha256, attention_semantic)
+            if component_layout_contract is not None:
+                rpc_args += (component_layout_contract,)
+            if native_scope is not None:
+                if component_layout_contract is not None:
+                    raise ValueError('Local native profiles require their own admitted category contract')
+                rpc_args += (None, native_scope)
             raw = llm.collective_rpc(
-                "fire",
-                args=(shot.as_dict(), catalog_slice, category.name,
-                      args.measurement_iterations),
+                "fire", args=rpc_args,
             )
             # collective_rpc returns one result per worker (one per
             # TP rank). The timings are identical across ranks; take
             # rank 0's.
+            if not raw:
+                raise ValueError('No worker timings returned')
             timings_dicts = raw[0]
+            if attention_semantic is not None and any(not worker_rows or any(
+                    any(row.get(k) != v for k, v in measurement.items()) for row in worker_rows)
+                    for worker_rows in raw):
+                raise ValueError('Worker attention lookup acquisition identity differs')
             if not timings_dicts or any(
                     any(d.get(k) != v for k, v in measurement.items())
                     for d in timings_dicts):
                 raise ValueError('Worker timings do not match the requested acquisition method')
+            if layout_context is not None:
+                # These two categories carry q=1 decodes only. Reuse the
+                # existing linear-category coordinate partition, including
+                # explicit one-token prefill roles.
+                from profiler.core.categories import _split_linear_attention_shot
+                prefill, decode = _split_linear_attention_shot(shot)
+                regime = "mixed" if prefill and decode else "prefill" if prefill else "decode"
+                for worker_rows in raw:
+                    if any(any(item.get(k) != v for k, v in measurement.items())
+                           for item in worker_rows):
+                        raise ValueError("Worker component-layout acquisition identity differs")
+                    layouts.validate_runtime_shot(architecture, choices, regime,
+                                                   {item["layer"] for item in worker_rows})
             timings = [
                 TimingSample(
                     layer=d["layer"],
                     microseconds=float(d["microseconds"]),
                 )
                 for d in timings_dicts
+                if d["layer"] in catalog_slice and d["layer"] not in replicated
             ]
             for point in category.extract_points(shot, timings, arch, tp):
                 sink.coalesce(point)
+            if done == 1:
+                sink.stage_measurement(identity, replace=wipe)
             bar.advance(1)
             if done == 1 or done % 100 == 0 or time.monotonic() >= checkpoint_at:
                 # Retain the complete accumulator, including duplicate counts:
@@ -185,7 +350,15 @@ def _fire_one_category(
                     rate, (len(shots) - done) / rate / 60.0,
                 )
 
-    sink.flush()
+    sink.flush(clear=native_record is None)
+    if native_record is not None:
+        native_record.complete(sink)
+        if category.name == 'dense':
+            profile.acquire_contexts(llm, args, all_shots, out_dir, replace=wipe)
+    if attention_semantic is not None:
+        lookup_contract.complete(out_dir)
+    if layout_context is not None:
+        layouts.complete_category(out_dir, architecture, category.name)
     log.success("%s → %s", category.label, sink.path)
     return True
 
@@ -201,6 +374,9 @@ def run_full(
 ) -> None:
     """Profile every (tp, category) pair for this architecture × model."""
     arch = load_architecture(arch_path)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args, full=True)
     variant_root = _variant_root(out_root, args)
 
     if args.only_skew:
@@ -210,9 +386,16 @@ def run_full(
 
     log.banner(args, variant_root)
 
-    if args.moe_dp_degrees is not None:
-        from .moe_profile import validate_request
-        validate_request(arch, args)
+    component_args = None
+    if not args.only_skew and (args.dp_degrees is not None or args.ep_degrees is not None
+                              or any(declares_moe(holder) for holder in (
+                                  args.model_config or {},
+                                  (args.model_config or {}).get("text_config") or {}))):
+        from .moe_profile import resolve_targets
+        component_args = dataclasses.replace(
+            args, dp_degrees=(1,) if args.dp_degrees is None else args.dp_degrees,
+            profile_mtp=False)
+        resolve_targets(arch, component_args, args.tp_degrees)
 
     last_engine_kwargs: dict[str, Any] | None = None
     # Keyed by TP, not a single "last": the engine resolves a different
@@ -250,17 +433,12 @@ def run_full(
         # 4 layers for its MLP axis and 1 for attention, and the attention
         # sweep is the expensive one.
         wanted = categories_for(arch, tp)
-        moe_eps = tuple(args.moe_ep_degrees or (1,))
         by_depth: dict[int, list] = {}
         for category in wanted:
             if category.name == "mtp":
                 continue  # second pass, with the drafter built
-            if category.name == "moe" and args.moe_dp_degrees is not None:
-                continue
-            if category.name == "moe" and 1 not in moe_eps:
-                continue  # every requested EP slice needs its own engine
             depth = minimal_layer_count_for(
-                args.model_config or {}, category.stack_axes)
+                args.model_config or {}, profile.stack_axes(category) if profile else category.stack_axes)
             by_depth.setdefault(depth, []).append(category)
         # Deepest first: its engine also answers probe_limits for the meta and
         # for `--attention-max-kv`, which has to describe the stack the
@@ -276,11 +454,11 @@ def run_full(
         tp_root.mkdir(parents=True, exist_ok=True)
 
         for depth in depths:
-            axes = by_depth[depth][0].stack_axes
+            axes = profile.stack_axes(by_depth[depth][0]) if profile else by_depth[depth][0].stack_axes
             stage = (f"TP={tp}  booting vLLM engine"
                      + (f" ({depth} layer(s))" if len(depths) > 1 else ""))
             with log.stage(stage):
-                llm, engine_kwargs, tmpdir = spin_up(main_args, tp, axes)
+                llm, engine_kwargs, tmpdir = spin_up(main_args, tp, axes, native_profile=profile)
                 limits = probe_limits(llm, main_args)
             if depth == depths[0]:
                 # The deepest engine is the one whose shapes describe the stack
@@ -327,41 +505,10 @@ def run_full(
                 if not args.skip_skew and any(
                         c.name == "attention" for c in by_depth[depth]):
                     from profiler.core.skew import sample_skew
-                    sample_skew(llm, arch, args, limits, tp, tp_root)
-                    skew_measured = True
+                    if sample_skew(llm, arch, args, limits, tp, tp_root) is not None:
+                        skew_measured = True
             finally:
                 spin_down(llm, tmpdir)
-
-        # Per-EP pass for the MoE block. ep=1 rode the main engine above (it
-        # *is* the main engine's expert count), so only the other degrees need
-        # a boot -- each one a different model: E/ep experts, k/ep assignments
-        # per token. That is what makes the rank-local operating point a
-        # measured grid point instead of a clamp against the ep=1 floor.
-        moe_category = next(
-            (c for c in categories_for(arch, tp) if c.name == "moe"), None)
-        if moe_category is not None and not args.only_skew and args.moe_dp_degrees is None:
-            for ep in (e for e in moe_eps if e != 1):
-                with log.stage(f"TP={tp}  booting vLLM engine at EP={ep} "
-                               f"for the MoE slice"):
-                    llm, _, tmpdir = spin_up(args, tp, moe_category.stack_axes,
-                                             moe_ep=ep)
-                    ep_limits = dataclasses.replace(
-                        probe_limits(llm, args), moe_ep=ep)
-                log.info(
-                    "TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
-                    tp, ep, ep_limits.num_experts, ep_limits.top_k,
-                )
-                try:
-                    # ep=1 rode the main engine above and has already wiped
-                    # under --force; these passes add to that file.
-                    if _fire_one_category(
-                        llm, moe_category, arch, args, ep_limits, tp, tp_root,
-                        wipe=False,
-                    ):
-                        acquired_categories.add(moe_category.name)
-                finally:
-                    spin_down(llm, tmpdir)
-
 
         # Second pass: the drafter, on its own engine and its own category.
         # Only the `mtp` catalog group is in the slice handed to the matcher,
@@ -376,7 +523,7 @@ def run_full(
                          "declares no 'mtp' catalog group; nothing to do", tp)
             else:
                 with log.stage(f"TP={tp}  booting vLLM engine with the drafter"):
-                    llm, _, tmpdir = spin_up(args, tp)
+                    llm, _, tmpdir = spin_up(args, tp, native_profile=profile)
                     mtp_limits = probe_limits(llm, args)
                 try:
                     if _fire_one_category(
@@ -386,9 +533,9 @@ def run_full(
                 finally:
                     spin_down(llm, tmpdir)
 
-    if args.moe_dp_degrees is not None:
+    if component_args is not None:
         from .moe_profile import run_components
-        run_components(arch_path, args, args.tp_degrees, variant_root)
+        run_components(arch_path, component_args, args.tp_degrees, variant_root)
 
     # After every tp has run, copy tp_stable rows from tp1 into the rest.
     # Skip when only_skew=True (nothing new to replicate).
@@ -435,24 +582,29 @@ def run_slice(
 ) -> None:
     """Re-profile one (tp, category) pair without redoing everything."""
     arch = load_architecture(arch_path)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args)
     variant_root = _variant_root(out_root, args)
 
-    if group not in CATEGORY_BY_NAME:
+    if group not in CATEGORY_BY_NAME and group != "moe":
         raise ValueError(
             f"unknown group {group!r}; must be one of "
-            f"{sorted(CATEGORY_BY_NAME)}"
+            f"{sorted((*CATEGORY_BY_NAME, 'moe'))}"
         )
     if tp not in args.tp_degrees:
         raise ValueError(
             f"tp={tp} is not in the session's tp_degrees ({args.tp_degrees})"
         )
 
-    if args.moe_dp_degrees is not None:
-        if group != "moe":
-            raise ValueError("Explicit DP applies only to the MoE slice")
+    if group == "moe":
         from .moe_profile import run_components
-        run_components(arch_path, args, [tp], variant_root)
+        component_args = dataclasses.replace(
+            args, dp_degrees=(1,) if args.dp_degrees is None else args.dp_degrees)
+        run_components(arch_path, component_args, [tp], variant_root)
         return
+    if args.dp_degrees is not None or args.ep_degrees is not None:
+        raise ValueError("Explicit DP/EP applies only to the MoE slice")
 
 
     category_cls = CATEGORY_BY_NAME[group]
@@ -471,39 +623,21 @@ def run_slice(
     # together would need: the attention sweep does not care which MLP a layer
     # runs, and each extra layer costs the profiler its whole op count on every
     # shot. DeepSeek-V3.2 and GLM-5 go from 4 layers to 1 here.
-    depth = minimal_layer_count_for(args.model_config or {},
-                                    category.stack_axes)
+    axes = profile.stack_axes(category) if profile else category.stack_axes
+    depth = minimal_layer_count_for(args.model_config or {}, axes)
     tp_root = variant_root / f"tp{tp}"
     tp_root.mkdir(parents=True, exist_ok=True)
 
-    # The MoE block is the one category whose engine is a *slice* of the model
-    # rather than the whole of it, so a refresh may need several boots. Every
-    # other group is one engine and ``moe_ep`` stays 1.
-    eps = (tuple(args.moe_ep_degrees or (1,)) if group == "moe" else (1,))
-    engine_kwargs: dict = {}
-    limits = None
-    acquired = False
-    for ep in eps:
-        stage = f"TP={tp}  booting vLLM engine ({depth} layer(s))"
-        if ep != 1:
-            stage += f" at EP={ep}"
-        with log.stage(stage):
-            llm, engine_kwargs, tmpdir = spin_up(
-                args, tp, category.stack_axes, moe_ep=ep)
-            limits = dataclasses.replace(probe_limits(llm, args), moe_ep=ep)
-            args = dataclasses.replace(
-                args, attention_max_kv=resolve_attention_max_kv(args, limits),
-            )
-        if ep != 1:
-            log.info("TP=%d EP=%d MoE slice: %s local experts, top_k=%s",
-                     tp, ep, limits.num_experts, limits.top_k)
-        try:
-            acquired = _fire_one_category(
-                llm, category, arch, args, limits, tp, tp_root,
-                wipe=(args.force and ep == eps[0]),
-            ) or acquired
-        finally:
-            spin_down(llm, tmpdir)
+    with log.stage(f"TP={tp}  booting vLLM engine ({depth} layer(s))"):
+        llm, engine_kwargs, tmpdir = spin_up(args, tp, axes, native_profile=profile)
+        limits = probe_limits(llm, args)
+        args = dataclasses.replace(
+            args, attention_max_kv=resolve_attention_max_kv(args, limits),
+        )
+    try:
+        acquired = _fire_one_category(llm, category, arch, args, limits, tp, tp_root)
+    finally:
+        spin_down(llm, tmpdir)
 
     # A slice refresh at tp=1 may invalidate prior replication; redo it.
     if tp == 1:
@@ -561,18 +695,34 @@ _COVERAGE_REGIMES: tuple[tuple[str, dict[str, int]], ...] = (
 )
 
 
+def _coverage_shots(config):
+    """Check every discovery shape before the first direct worker call."""
+    from .hooks.batch import validate_shot_limits
+    shots = [(name, Shot.attention(**spec)) for name, spec in _COVERAGE_REGIMES]
+    for name, shot in shots:
+        try:
+            validate_shot_limits(shot, config)
+        except ValueError as exc:
+            raise ValueError(f'{name} layout/coverage probe does not fit the acquisition '
+                             f'limits: {exc}. Use max_num_seqs >= 5, max_model_len >= 258 '
+                             'and an acquisition token buffer >= 68 for these probes.') from exc
+    return shots
+
+
 def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport]:
     """Report how much of the model's CUDA time the catalog binds.
 
-    Boots at tp=1 only. Coverage is about which nodes exist, and TP changes
-    tensor shapes rather than the module graph -- profiling every TP would cost
-    minutes to re-answer the same question.
+    Boots at physical tp=1 only: a bounded structural smoke, not certification
+    of other TP degrees' fused paths, collective placement or complete sweeps.
 
     Returns the per-regime reports and logs them; writes no CSV. A non-empty
-    ``gaps`` list is the actionable output: each line is a node the catalog
-    binds nothing to, at the shallowest level where that is true.
+    ``gaps`` list reports unbound native kernel/copy/memset work by activity
+    name and dynamic ancestry, including explicitly unscoped runner work.
     """
     arch = load_architecture(arch_path)
+    profile = profile_for(arch)
+    if profile is not None:
+        profile.validate_request(args)
 
     # The whole catalog as one slice. Coverage is a property of the catalog,
     # not of a category, and a layer filed under the wrong category still
@@ -593,17 +743,34 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
     )
 
     with log.stage("TP=1  booting vLLM engine"):
-        llm, _engine_kwargs, tmpdir = spin_up(args, 1)
+        llm, _engine_kwargs, tmpdir = spin_up(args, 1, native_profile=profile)
 
     reports: dict[str, CoverageReport] = {}
+    scope_contexts = contexts_from_architecture(arch)
     try:
-        for label, spec in _COVERAGE_REGIMES:
-            shot = Shot.attention(**spec)
+        reports_by_rank = None
+        for label, shot in _coverage_shots(llm.llm_engine.vllm_config):
             raw = llm.collective_rpc(
                 "coverage",
-                args=(shot.as_dict(), whole_catalog, 1),
-            )[0]
-            reports[label] = CoverageReport.hydrate(raw)
+                args=(shot.as_dict(), whole_catalog, 1, scope_contexts),
+            )
+            if reports_by_rank is None:
+                reports_by_rank = [{} for _ in raw]
+            if not raw or len(raw) != len(reports_by_rank):
+                raise ValueError("Coverage changed its worker set")
+            for values, report in zip(reports_by_rank, raw):
+                values[label] = report
+            reports[label] = CoverageReport.hydrate(raw[0])
+        architecture = arch.model_dump(exclude_none=True)
+        if any(variant.get("invocation_contract") is not None
+               for group in (architecture.get("component_layouts") or {}).values()
+               for variant in group["variants"].values()):
+            from profiler.core import component_layouts as layouts
+            selections = [layouts.select_runtime_layouts(architecture, values)[0]
+                          for values in reports_by_rank]
+            if any(choice != selections[0] for choice in selections):
+                raise ValueError("Component layouts differ across coverage workers")
+            _validate_layout_invocations(llm, architecture, selections[0], reports_by_rank, whole_catalog)
     finally:
         spin_down(llm, tmpdir)
 
@@ -626,7 +793,8 @@ def run_coverage(arch_path: Path, args: ProfileArgs) -> dict[str, CoverageReport
         # each, and do not fail on it.
         mtp_names = set((arch.catalog.mtp or {}))
         real = [(c, ch) for c, ch in report.over_matches
-                if not args.profile_mtp or c in mtp_names]
+                if (not args.profile_mtp or c in mtp_names
+                    or any(chain.startswith("shared CUDA activity:") for chain in ch))]
         expected = len(report.over_matches) - len(real)
         for canonical, chains in real:
             log.warning(

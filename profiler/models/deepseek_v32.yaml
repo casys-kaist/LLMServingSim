@@ -1,6 +1,9 @@
-# DeepSeek-V3.2 / GLM-5 — class catalog (MLA + DeepSeek Sparse Attention, MoE).
+# DeepSeek-family historical decomposition and an explicitly admitted native
+# DSA representation. Historical blocks/shared/MTP remain the default; native
+# acquisition requires matching live coverage and runtime evidence. Its trace
+# contract permits duration replay only, not serving or memory-capacity admission.
 #
-# One catalog for both, because vLLM runs them through the same module:
+# The historical vLLM 0.28 representation uses the same module for both:
 # ``registry.py`` maps ``DeepseekV32ForCausalLM`` *and*
 # ``GlmMoeDsaForCausalLM`` (along with V2, V3 and the original Deepseek) to
 # ``deepseek_v2.py``, so the class names below are shared. The configs agree
@@ -83,6 +86,70 @@ blocks:
 shared:
   prologue:  [embedding]
   head:      [final_layernorm, lm_head, sampler]
+
+
+# The native path changes several boundaries together, including a fused first
+# norm in the shared endpoint. Exact runtime sets are checked in every regime;
+# no version/model-name selection or independently positive native indexer row.
+# The combined tail always owns attention even when dense-prefill index scoring
+# skips. Its full-context coordinate must not inherit attention's old saturation.
+component_layouts:
+  dsa_text_pipeline:
+    historical: legacy-modules
+    categories: [dense, attention]
+    sites:
+      - [shared, prologue]
+      - [blocks, attn, full_attention, pre_attn]
+      - [blocks, attn, full_attention, post_attn]
+    variants:
+      legacy-modules:
+        observed:
+          prefill: [embedding, layernorm, mla_qkv_a_proj, mla_a_layernorm,
+                    mla_b_proj, rotary_emb, indexer_wq_b, indexer_wk_proj,
+                    indexer_k_norm, indexer_rope_emb, indexer_q_rope_quant,
+                    indexer, indexer_glue, attention, o_proj]
+          decode: [embedding, layernorm, mla_qkv_a_proj, mla_a_layernorm,
+                   mla_b_proj, rotary_emb, indexer_wq_b, indexer_wk_proj,
+                   indexer_k_norm, indexer_rope_emb, indexer_q_rope_quant,
+                   indexer, indexer_glue, attention, o_proj]
+          mixed: [embedding, layernorm, mla_qkv_a_proj, mla_a_layernorm,
+                  mla_b_proj, rotary_emb, indexer_wq_b, indexer_wk_proj,
+                  indexer_k_norm, indexer_rope_emb, indexer_q_rope_quant,
+                  indexer, indexer_glue, attention, o_proj]
+      native-eager-tail:
+        invocation_contract: site-scope-calls
+        runtime_contract: native-dsa-eager-tail
+        observed:
+          prefill: [embedding_input_norm, decoder_residual_norm, mla_qkv_a_proj,
+                    indexer_wk_proj, mla_norm_rope_cache, mla_q_b_proj,
+                    mla_query_compress, indexer_wq_b, mla_query_rope_quant,
+                    dsa_attention_tail, o_proj]
+          decode: [embedding_input_norm, decoder_residual_norm, mla_qkv_a_proj,
+                   indexer_wk_proj, mla_norm_rope_cache, mla_q_b_proj,
+                   mla_query_compress, indexer_wq_b, mla_query_rope_quant,
+                   dsa_attention_tail, o_proj]
+          mixed: [embedding_input_norm, decoder_residual_norm, mla_qkv_a_proj,
+                  indexer_wk_proj, mla_norm_rope_cache, mla_q_b_proj,
+                  mla_query_compress, indexer_wq_b, mla_query_rope_quant,
+                  dsa_attention_tail, o_proj]
+        replace:
+          embedding: [embedding_input_norm]
+          layernorm: [decoder_residual_norm]
+          mla_a_layernorm: [indexer_wk_proj, mla_norm_rope_cache]
+          mla_b_proj: [mla_q_b_proj, mla_query_compress]
+          rotary_emb: []
+          indexer_wk_proj: []
+          indexer_k_norm: [mla_query_rope_quant]
+          indexer_rope_emb: []
+          indexer_q_rope_quant: []
+          indexer: [dsa_attention_tail]
+          indexer_glue: []
+          attention: []
+        layer0:
+          - path: [blocks, attn, full_attention, pre_attn]
+            expected_prefix: [decoder_residual_norm]
+            replacement_prefix: []
+            consumed_by: embedding_input_norm
 
 
 # The model's own drafter, built only when the engine boots with
@@ -168,8 +235,48 @@ catalog:
       # decoder-layer norms on ``layernorm``.
       vllm: RMSNorm
       within: [DeepseekV3ForCausalLM, DeepseekV2ForCausalLM,
-               GlmMoeDsaForCausalLM, DeepseekV2Model]
+               GlmMoeDsaForCausalLM, DeepseekV2Model,
+               DeepseekV32ForCausalLM, DeepseekV32Model]
       tp_stable: true
+
+    # Native 0.31 boundaries; callable declarations are the single source for
+    # full-context instrumentation. Wrappers observe original calls only.
+    embedding_input_norm:
+      callable:
+        name: DSAEmbeddingInputNorm
+        kind: function
+        module: vllm.models.deepseek_v32.nvidia.model
+        attribute: fused_embed_norm
+        within: DeepseekV32Model
+      within: DeepseekV32Model
+    decoder_residual_norm:
+      vllm: RMSNorm
+      within: DeepseekV32DecoderLayer
+      normalization: invocations
+    mla_q_b_proj:
+      vllm: ColumnParallelLinear
+      within: DeepseekV32Attention
+      not_within: DSAAttentionTail
+    mla_norm_rope_cache:
+      callable:
+        name: DSANormRopeCache
+        kind: function
+        module: vllm.models.deepseek_v32.attention
+        attribute: fused_norm_rope
+        within: DeepseekV32Attention
+      within: DeepseekV32Attention
+    mla_query_compress:
+      operator: aten::bmm
+      within: DeepseekV32Attention
+      not_within: DSAAttentionTail
+    mla_query_rope_quant:
+      callable:
+        name: DSAQueryRopeQuant
+        kind: function
+        module: vllm.models.deepseek_v32.attention
+        attribute: fused_q
+        within: DeepseekV32Attention
+      within: DeepseekV32Attention
 
     # --- MLA projections ---------------------------------------------------
     mla_qkv_a_proj:
@@ -186,7 +293,8 @@ catalog:
       within: DeepseekV2MLAAttention
     o_proj:
       vllm: RowParallelLinear
-      within: DeepseekV2MLAAttention
+      within: [DeepseekV2MLAAttention, DeepseekV32Attention]
+      not_within: DSAAttentionTail
     rotary_emb:
       # Shared across layers (built on layer 0), but the profile tree still
       # reports it under each caller, so this is a per-layer number. The class
@@ -198,10 +306,12 @@ catalog:
     # --- sparse-attention indexer ------------------------------------------
     indexer_wq_b:
       vllm: ReplicatedLinear
-      within: Indexer
+      within: [Indexer, DeepseekV32Attention]
+      not_within: DSAAttentionTail
     indexer_wk_proj:
       vllm: MergedColumnParallelLinear
-      within: Indexer
+      within: [Indexer, DeepseekV32Attention]
+      not_within: DSAAttentionTail
     indexer_k_norm:
       # A bare nn.LayerNorm, not RMSNorm.
       vllm: LayerNorm
@@ -254,6 +364,14 @@ catalog:
       tp_stable: true
 
   attention:
+    dsa_attention_tail:
+      callable:
+        name: DSAAttentionTail
+        kind: method
+        owner: DeepseekV32Attention
+        path: _sparse_indexer_and_attn
+      within: DeepseekV32Attention
+      key_saturates: false
     attention:
       # mla_attn -> MultiHeadLatentAttentionWrapper -> MLAAttention.
       vllm: MLAAttention

@@ -44,8 +44,10 @@ HARDWARE="RTXPRO6000"
 # TP_DEGREES="1"                  # use "1,2" to sweep both degrees
 
 # --- Engine kwargs ----------------------------------------------------------
-# DTYPE is left unset so vLLM resolves the checkpoint dtype. Quantization
-# is a checkpoint setting; this flag alone does not quantize its weights.
+# DTYPE is left unset (or "auto") so vLLM resolves the checkpoint dtype.
+# It does not enable/disable checkpoint quantization. For an FP8/BF16 checkpoint,
+# bfloat16 keeps "fp8"; float16 uses "fp8-actfp16". The simulator selects only
+# the checkpoint-default variant. HF precision/text_config overrides need VARIANT.
 # KV_CACHE_DTYPE defaults to vLLM's "auto" and may be promoted by the config.
 # DTYPE="bfloat16"                 # explicit vLLM engine dtype override
 # KV_CACHE_DTYPE="fp8"             # explicit vLLM KV cache dtype override
@@ -87,16 +89,15 @@ HARDWARE="RTXPRO6000"
 # LINEAR_ATTN_CHUNK=64
 
 # --- MoE target parallelism -------------------------------------------------
-# DP_DEGREES selects native DP+EP component acquisition on one physical GPU.
-# Supported targets require DP >= 2; EP is derived as TP * DP, retaining the
-# global expert IDs and top-k. Leave MOE_EP_DEGREES unset in this mode; native
-# acquisition cannot be combined with ONLY_SKEW, PROFILE_MTP or FORCE. Use a
-# new OUT_ROOT to remeasure an immutable native contract.
-# DP_DEGREES="2"                  # --dp; comma-separated target DP degrees
+# MoE profiling defaults to eager native components at DP=1 on one physical GPU.
+# EP is TP * DP; global expert IDs and top-k are retained. DP_DEGREES selects
+# other targets; EP_DEGREES optionally selects their EP values. Explicit --dp/--ep
+# cannot be combined with ONLY_SKEW or PROFILE_MTP.
+# Native contracts are immutable: use a new OUT_ROOT instead of FORCE.
+# DP_DEGREES="1,2"                # --dp; comma-separated target DP degrees
+# EP_DEGREES="2"                  # --ep; select matching TP*DP targets (omitted: all)
 # MOE_ROUNDS=3                    # independent native measurement contexts
-# Without DP_DEGREES, the retained whole-block path profiles the requested EP
-# degrees with a reduced checkpoint shape. This is not native DP+EP coverage.
-# MOE_EP_DEGREES="1"              # legacy --moe-ep-degrees; e.g. "1,2,4,8"
+# MOE_GRID_FACTOR=2.0             # spacing for tokens, active experts and assignments
 
 # --- Drafter (MTP) ----------------------------------------------------------
 # Boot with speculative decoding so vLLM also builds the model's own MTP
@@ -112,6 +113,11 @@ HARDWARE="RTXPRO6000"
 # a smaller GPU_MEMORY_UTILIZATION.
 # PROFILE_MTP=1
 
+# --- Sampling policy --------------------------------------------------------
+# Target graph capture points guide sampling; acquisition remains eager.
+# GRID_FACTOR=2.0                # ordinary non-graph token/request spacing
+# CUDAGRAPH='{"mode":"FULL_AND_PIECEWISE","runner":"v1"}'
+
 # --- Attention grid ---------------------------------------------------------
 # Bounds the histories used to construct attention shots. Unset/empty uses
 # the engine's resolved context bound with room for the decode queries.
@@ -119,10 +125,10 @@ HARDWARE="RTXPRO6000"
 # ATTENTION_MAX_KV=16384
 # Geometric factors: smaller values (>1) make denser, more expensive grids.
 # The KV factor controls both prefill-key and decode-KV; costs multiply across
-# all four shape axes. All three factors inherit the CLI's sqrt(2) default.
+# all four shape axes. Chunk/KV default to 2; request counts default to sqrt(2).
 # Existing rows are reusable only with compatible identities and exact keys.
-# ATTENTION_CHUNK_FACTOR=1.4142135623730951
-# ATTENTION_KV_FACTOR=1.4142135623730951
+# ATTENTION_CHUNK_FACTOR=2.0
+# ATTENTION_KV_FACTOR=2.0
 # ATTENTION_N_FACTOR=1.4142135623730951
 # Query tokens per decode sequence. "1" is ordinary decoding. A
 # speculative-decoding verification step submits 1 + num_speculative_tokens
@@ -130,7 +136,7 @@ HARDWARE="RTXPRO6000"
 # kernel tile shape rather than a bigger one -- so the simulator falls back to
 # the nearest profiled value with a warning instead of interpolating. Profile
 # the values you intend to simulate: "1,5" for N=4, "1,4" for N=3. Each extra
-# value adds a decode-containing grid; q > 1 omits pure-prefill shots.
+# value adds a decode-containing grid; pure prefill is measured once at q=1.
 # ATTENTION_DECODE_Q_LENS="1,5"
 
 # --- Measurement averaging --------------------------------------------------
@@ -170,11 +176,13 @@ HARDWARE="RTXPRO6000"
 # FORCE=1
 
 # --- Output naming ----------------------------------------------------------
-# When omitted, the variant folder is auto-named from the effective
-# DTYPE + KV_CACHE_DTYPE — e.g. "bf16", "bf16-kvfp8" (FP8 KV),
-# "fp8-kvfp8" (both FP8). Without DTYPE the variant uses the checkpoint's
-# quantization method, then ``torch_dtype`` / ``dtype``, so it is named without
-# setting anything. Override VARIANT only for named runs (awq, gptq, ...).
+# Omitted DTYPE or "auto" retains checkpoint-derived naming (e.g. "bf16" or
+# "fp8"); it does not prove the complete resolved engine precision. For an FP8
+# checkpoint declaring BF16 activations, DTYPE=bfloat16 keeps "fp8", while
+# DTYPE=float16 uses "fp8-actfp16". Explicit KV_CACHE_DTYPE adds a KV suffix.
+# Set VARIANT for HF precision fields or any nested text_config override,
+# ambiguous configs, or intentionally separate measurements. The simulator
+# selects its checkpoint-default label, not arbitrary alternate variants.
 # VARIANT="my_experiment"
 
 # --- Paths ------------------------------------------------------------------
@@ -209,9 +217,12 @@ cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")
 [[ -n "${MAX_MODEL_LEN:-}" ]]          && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ -n "${NUM_HIDDEN_LAYERS:-}" ]]      && cmd+=(--num-hidden-layers "$NUM_HIDDEN_LAYERS")
-[[ -n "${MOE_EP_DEGREES:-}" ]]         && cmd+=(--moe-ep-degrees "$MOE_EP_DEGREES")
 [[ -n "${DP_DEGREES:-}" ]]             && cmd+=(--dp "$DP_DEGREES")
+[[ -n "${EP_DEGREES:-}" ]]             && cmd+=(--ep "$EP_DEGREES")
 [[ -n "${MOE_ROUNDS:-}" ]]             && cmd+=(--moe-rounds "$MOE_ROUNDS")
+[[ -n "${MOE_GRID_FACTOR:-}" ]]        && cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
+[[ -n "${GRID_FACTOR:-}" ]]            && cmd+=(--grid-factor "$GRID_FACTOR")
+[[ -n "${CUDAGRAPH:-}" ]]              && cmd+=(--cudagraph "$CUDAGRAPH")
 [[ -n "${PROFILE_MTP:-}" ]]            && cmd+=(--profile-mtp)
 [[ -n "${LINEAR_ATTN_CHUNK:-}" ]]      && cmd+=(--linear-attn-chunk "$LINEAR_ATTN_CHUNK")
 # HF_OVERRIDES is an array, one --hf-override per entry.

@@ -11,8 +11,12 @@ needs an answer to two questions: **which experts do I activate** and
 function; the second is determined by how the simulator assigns
 experts to ranks. This page is about both.
 
-With a matching native DP+EP profile installed, the component consumer uses
-the recorded rank placement and balanced assignment surface. See
+With a matching native profile installed, the component consumer uses
+the recorded rank placement. New tables query input rows, distinct active local
+experts and local token-expert assignments from `GateRouter.route_ep(native=True)`.
+BALANCED/CUSTOM retain rounded expected assignment totals; RR/RAND count actual
+selected pairs. Equal coordinates do not imply equal within-rank histograms;
+that remaining imbalance is approximated by the balanced profiling stimulus. See
 [Native MoE components](../profiler/native-moe-components) for local/gathered
 token domains, supported policies and warnings. The legacy whole-block
 `moe.csv` path remains the fallback; its reduced-top-k acquisition is not
@@ -38,15 +42,20 @@ router = GateRouter(
     block_copy=True,
 )
 
-result = router.route_ep(layer_num=0, batch_id="0", total_len=T, ep_size=EP)
-# → RoutingResult(local_tokens=[...], activated_experts=[...], source_tokens=[...])
+result = router.route_ep(layer_num=0, batch_id="0", total_len=T, ep_size=EP, native=True)
+# → RoutingResult(local_tokens=[...], activated_experts=[...],
+#                 source_tokens=[...], local_assignments=[...])
 ```
 
 `local_tokens[i]` counts unique tokens with at least one expert on global
 EP rank `i`; `activated_experts[i]` counts its distinct active experts.
 For the default all-gather/reduce-scatter backend, MoE lookup uses the
 **gathered input token count**, not `local_tokens[i]`, and that rank's
-activated-expert count. The source-token split in this routing result is
+activated-expert count and local assignments for new component tables.
+Assignments count token-expert pairs: one token can contribute several pairs
+to the same rank. `native=True` selects the recorded vLLM ownership geometry;
+historical whole-block callers retain the default mapping.
+The source-token split in this routing result is
 synthetic; actual DP communication sizes come from the scheduled DP round.
 
 ## Four policies

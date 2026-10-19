@@ -30,8 +30,6 @@ from vllm import LLM
 from profiler.core import logger as log
 from profiler.core.config import (
     HOST_ENGINE_DEFAULTS,
-    MOE_NUM_EXPERTS_KEYS,
-    MOE_TOP_K_KEYS,
     SHARD_FIELDS,
     ProfileArgs,
     probe_linear_attn_chunk,
@@ -69,14 +67,11 @@ class RuntimeLimits:
             A grid-placement quantity, not an engine one: measured cost
             tracks the chunk count, so the sweep has to sample boundaries and
             the points just past them.
-        num_experts / top_k: MoE parameters from HF config. None for
-            non-MoE models. Under an EP override these are already the
-            **rank-local** values -- ``E/ep`` experts and ``k/ep`` slots per
-            token -- because the override goes through ``hf_overrides`` and
-            ``probe_limits`` reads the live config back.
-        moe_ep: the EP degree this engine stands in for, i.e. the label the
-            MoE rows are written under. 1 means the whole model on one rank,
-            which is what every bundle held before the axis existed.
+        num_experts / top_k: Global MoE parameters from the live HF config.
+            None for non-MoE models. Native component targets resolve their
+            expert placement separately without shrinking these fields.
+        moe_ep: Ordinary engine's logical EP degree, always 1. Native
+            components record their deployment in their own contracts.
         key_saturation: how many key tokens a query can attend to, when the
             checkpoint bounds it (``index_topk``, or M3's selected-block
             count times its block size); None on a dense model, whose queries
@@ -96,6 +91,15 @@ class RuntimeLimits:
     top_k: int | None = None
     moe_ep: int = 1
     key_saturation: int | None = None
+    # Native text configuration of this engine, not the wrapper or backend.
+    # Persisted for authoritative main engines so consumed overrides survive
+    # deletion of the temporary local config.
+    model_text_config: dict[str, Any] | None = None
+    # Initialization and postload checks, not a forward-execution certificate.
+    dummy_weight_preparation: dict[str, Any] | None = None
+    # Read-only acquisition runtime facts; neither an eager graph mode nor
+    # proof that the full serving model completed graph capture.
+    sampling_runtime: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +152,7 @@ def _profile_engine_overrides(args: ProfileArgs) -> dict[str, Any]:
 
 def fuse_engine_kwargs(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
+    *, native_profile=None,
 ) -> dict[str, Any]:
     """Produce the final ``**kwargs`` to pass to ``vllm.LLM()``.
 
@@ -237,39 +242,23 @@ def fuse_engine_kwargs(
     if args.hf_overrides:
         hf_overrides = _deep_merge(hf_overrides, args.hf_overrides)
 
-    # 4. TP sharding uses the model config directly. The written
-    # config.json will have SHARD_FIELDS divided by tp via hf_overrides,
-    # so vLLM's ColumnParallelLinear / RowParallelLinear see the
-    # correct per-rank shapes.
+    # 4. Resolve native config defaults and user overrides before TP sharding.
+    # Changing the head count must not change a dimension derived from it.
     if args.model_config is None:
         raise ValueError(
             "ProfileArgs.model_config is required — build it via "
             "config.read_model_config(path) in the CLI layer."
         )
 
-    sharded_overrides: dict[str, Any] = {}
-    for field_name in SHARD_FIELDS:
-        if field_name not in args.model_config:
-            log.debug(
-                "shard field %r not in model config; skipping",
-                field_name,
-            )
-            continue
-        val = args.model_config[field_name]
-        if not isinstance(val, int):
-            raise TypeError(
-                f"shard field {field_name!r} must be an int; got "
-                f"{type(val).__name__}"
-            )
-        if val % tp != 0:
-            raise ValueError(
-                f"model config field {field_name!r}={val} is not "
-                f"divisible by tp={tp}; cannot TP-shard for profiling"
-            )
-        sharded_overrides[field_name] = val // tp
+    from profiler.core.hooks.tp_shape import resolved_tp_overrides
+    sharded_overrides = resolved_tp_overrides(
+        args.model_config, hf_overrides, tp, SHARD_FIELDS, _materialize_config)
 
     # 5. Sharding wins.
     kwargs["hf_overrides"] = _deep_merge(hf_overrides, sharded_overrides)
+
+    if native_profile is not None:
+        kwargs = _deep_merge(kwargs, native_profile.engine_overrides())
 
     # 6. Wire the worker extension.
     kwargs["worker_extension_cls"] = "profiler.core.hooks.extension.Extension"
@@ -297,23 +286,71 @@ def _materialize_config(
     That fails loudly at 60 layers of experts (out of memory) and would fail
     *silently* on a smaller model -- profiling a shape nobody asked for.
 
-    So for a nested config the same overrides are written into ``text_config``
-    as well. Only keys the backbone already declares are touched, so this
-    cannot invent fields the class would reject.
+    For a nested config, backbone overrides are written into ``text_config``
+    and consumed from the subsequently forwarded ``hf_overrides``. Reapplying
+    them to the wrapper can hit a read-only proxy property or create a second,
+    conflicting value. Unrelated or independently declared wrapper overrides
+    stay forwarded. Only keys the backbone already declares are touched,
+    apart from the decoder depth and a scalar attention head-width override.
     """
-    written = copy.deepcopy(model_config)
+    from .stack import materialize_prefix
+    written = materialize_prefix(model_config, kwargs.get("hf_overrides") or {})
     inner = written.get("text_config")
-    if not isinstance(inner, dict):
-        return written
-    for key, value in (kwargs.get("hf_overrides") or {}).items():
-        if key in inner or key == "num_hidden_layers":
-            inner[key] = value
+    overrides = kwargs.get("hf_overrides") or {}
+    # Native config construction reapplies top-level overrides. Forward the
+    # already validated prefix schedule, never the original full-depth list.
+    native_text = written.get("text_config", written)
+    overrides = copy.deepcopy(overrides)
+    for key in ("linear_attn_config", "layer_types"):
+        if key in overrides and key in native_text:
+            overrides[key] = copy.deepcopy(native_text[key])
+    kwargs["hf_overrides"] = overrides
+    if isinstance(inner, dict):
+        for key, value in overrides.items():
+            # A native scalar head width may be derived rather than declared
+            # in the raw text config. Materialize the TP-preservation pin in
+            # the backbone and consume it below like other text-only fields.
+            if key in inner or key in ("num_hidden_layers", "head_dim"):
+                inner[key] = copy.deepcopy(value)
+    else:
+        inner = written
+    # Profiling a decoder prefix must retain that prefix's explicit layer
+    # types. Newer config classes validate list length against the depth.
+    depth = overrides.get("num_hidden_layers")
+    layer_types = overrides.get("layer_types", inner.get("layer_types"))
+    if depth is not None and isinstance(layer_types, list):
+        if type(depth) is not int or depth < 1 or len(layer_types) < depth:
+            raise ValueError("Profiling depth exceeds the explicit layer_types prefix")
+        inner["layer_types"] = copy.deepcopy(layer_types[:depth])
+        inner["num_hidden_layers"] = depth
+        # An explicit override is applied again after reading config.json.
+        if "layer_types" in overrides:
+            overrides["layer_types"] = copy.deepcopy(layer_types[:depth])
+    if isinstance(written.get("text_config"), dict):
+        # Those values are already present in the local file read by the
+        # native config constructor. Apply them there once, not again to the
+        # wrapper's attributes (which may expose read-only text properties).
+        kwargs["hf_overrides"] = {
+            key: value for key, value in overrides.items()
+            if key not in inner or key in written
+        }
     return written
+
+
+def _private_engine_overrides(value):
+    """Bound isolated acquisition cache allocation without changing workloads."""
+    if value is None:
+        return {}
+    if (type(value) is not dict or set(value) != {'kv_cache_memory_bytes'}
+            or type(value['kv_cache_memory_bytes']) is not int
+            or value['kv_cache_memory_bytes'] < 1):
+        raise ValueError('Private engine overrides require positive integer kv_cache_memory_bytes only')
+    return dict(value)
 
 
 def spin_up(
     args: ProfileArgs, tp: int, stack_axes: tuple[str, ...] = ALL_AXES,
-    moe_ep: int = 1,
+    *, native_profile=None, engine_overrides=None,
 ) -> tuple[LLM, dict[str, Any], Path]:
     """Construct a vLLM engine ready for profiling.
 
@@ -333,7 +370,12 @@ def spin_up(
               caller MUST pass this to ``spin_down`` so it gets
               cleaned up.
     """
-    kwargs = fuse_engine_kwargs(args, tp, stack_axes)
+    overrides = _private_engine_overrides(engine_overrides)
+    kwargs = fuse_engine_kwargs(args, tp, stack_axes, native_profile=native_profile)
+    kwargs.update(overrides)
+    from .hooks.dummy_weights import validate_execution_scope
+    validate_execution_scope(args.model_config, tp=tp, moe_ep=1,
+                             profile_mtp=args.profile_mtp, kwargs=kwargs)
 
     # Materialize the model's config.json in a temp directory so vLLM
     # can load it directly from disk.
@@ -341,12 +383,13 @@ def spin_up(
         "spin_up requires ProfileArgs.model_config; fuse_engine_kwargs "
         "should have caught this already."
     )
-    tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
-    config_path = tmpdir / "config.json"
     materialized = _materialize_config(args.model_config, kwargs)
+    validate_execution_scope(materialized, tp=tp, moe_ep=1,
+                             profile_mtp=args.profile_mtp, kwargs=kwargs)
     if args.profile_mtp:
         materialized = _cap_mtp_modules(materialized)
-    materialized = _slice_experts_for_ep(materialized, moe_ep)
+    tmpdir = Path(tempfile.mkdtemp(prefix="profiler_model_"))
+    config_path = tmpdir / "config.json"
     config_path.write_text(json.dumps(materialized, indent=2))
     log.debug("model config written to %s", config_path)
 
@@ -364,74 +407,39 @@ def spin_up(
             "num_speculative_tokens": 1,
         }
 
-    with log.capture_stdio():
-        llm = LLM(**kwargs)
+    llm = None
+    try:
+        with log.capture_stdio():
+            llm = LLM(**kwargs)
+        receipts = llm.collective_rpc("dummy_weight_preparation", args=())
+        if not isinstance(receipts, list) or len(receipts) != 1:
+            raise ValueError("Expected one dummy-preparation worker receipt")
+        receipt = receipts[0]
+        from .hooks.dummy_weights import format_intent
+        if format_intent(materialized) and receipt is None:
+            raise ValueError("Native MXFP4 engine has no dummy-preparation receipt")
+        if receipt is not None:
+            from .hooks.dummy_weights import POLICY
+            if (not isinstance(receipt, dict) or receipt.get("policy") != POLICY
+                    or receipt.get("complete") is not True
+                    or receipt.get("forward_verified") is not False
+                    or receipt.get("postload", {}).get("structure_verified") is not True
+                    or receipt.get("postload", {}).get("forward_verified") is not False):
+                raise ValueError("Worker dummy-preparation receipt is incomplete or incompatible")
+            receipt = copy.deepcopy(receipt)
+            receipt["checkpoint_quantization"] = {
+                key: copy.deepcopy(holder["quantization_config"])
+                for key, holder in (("root", args.model_config),
+                                    ("text", args.model_config.get("text_config")))
+                if isinstance(holder, dict) and "quantization_config" in holder}
+        llm._profiler_dummy_weight_preparation = receipt
+    except BaseException:
+        if llm is not None:
+            spin_down(llm, tmpdir)
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     return llm, kwargs, tmpdir
-
-
-def _slice_experts_for_ep(config: dict[str, Any], ep: int) -> dict[str, Any]:
-    """Cut the expert count and top-k down to one EP rank's share.
-
-    An EP rank does not run the model's MoE block, it runs a slice: ``E/ep``
-    local experts, and ``k/ep`` of a token's k expert assignments. Profiling at
-    ep=1 and charging the result per rank overstates all three of the permute
-    width, the GEMM rows and the distinct experts activated -- and the third is
-    the one that bites, because the ``activated_experts`` axis then floors at
-    ``top_k``, a value the runtime routinely goes under (98.4% of MoE lookups
-    in a GLM-5 EP=2 run asked for 4 against a floor of 8) and the lookup clamps
-    rather than extrapolating: 1.4x-3.7x over on the MoE term.
-
-    Written into the config **file**, not passed as ``hf_overrides``, for the
-    same reason ``_cap_mtp_modules`` is: on a wrapped checkpoint the fields
-    live under ``text_config``, where a top-level override never lands.
-    MiniMax-M3 is exactly that shape (``model_type: minimax_m3_vl``, experts
-    under ``text_config``), and the ``hf_overrides`` version raised "the model
-    config declares no expert count" on it while working fine on the three
-    flat ones.
-
-    ``k//ep`` floors at 1: past ``ep = k`` a token reaches only some ranks, and
-    a rank it reaches runs one expert for it.
-    """
-    if ep <= 1:
-        return config
-    # Deep, not shallow: ``text_config`` is a nested dict, and a shallow copy
-    # shares it with the caller's ``args.model_config``. spin_up is called once
-    # per EP degree from the same args, so a shared holder makes the slices
-    # compound -- 128 experts became 64 at ep=2 and then 16 at ep=4.
-    out = copy.deepcopy(config)
-    found = False
-    for holder in (out, out.get("text_config")):
-        if not isinstance(holder, dict):
-            continue
-        e_key = next((k for k in MOE_NUM_EXPERTS_KEYS if k in holder), None)
-        k_key = next((k for k in MOE_TOP_K_KEYS if k in holder), None)
-        if e_key is None or k_key is None:
-            continue
-        experts, top_k = int(holder[e_key]), int(holder[k_key])
-        if experts % ep:
-            raise ValueError(
-                f"ep={ep} does not divide {e_key}={experts}; a rank would hold "
-                f"a fractional number of experts"
-            )
-        local = experts // ep
-        # Group-limited routing (DeepSeek/GLM) constrains the slice: vLLM needs
-        # the local experts to divide evenly into n_group groups.
-        n_group = int(holder.get("n_group") or 1)
-        if n_group > 1 and (local < n_group or local % n_group):
-            raise ValueError(
-                f"ep={ep} leaves {local} local experts, which n_group="
-                f"{n_group} does not divide; that slice is not a configuration "
-                f"vLLM can build"
-            )
-        holder[e_key], holder[k_key] = local, max(1, top_k // ep)
-        found = True
-    if not found:
-        raise ValueError(
-            f"--moe-ep-degrees includes {ep} but the model config declares no "
-            f"expert count / top-k under any known key, at the top level or "
-            f"under text_config; cannot express a per-rank slice"
-        )
-    return out
 
 
 def _cap_mtp_modules(config: dict[str, Any], cap: int = 1) -> dict[str, Any]:
@@ -531,6 +539,7 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
     engine_mnbt = cfg.scheduler_config.max_num_batched_tokens
     engine_msq = cfg.scheduler_config.max_num_seqs
     logical_mnbt = engine_mnbt - engine_msq
+    sampling_runtime = llm.collective_rpc('sampling_runtime')[0]
 
     return RuntimeLimits(
         max_num_batched_tokens=logical_mnbt,
@@ -542,6 +551,9 @@ def probe_limits(llm: LLM, args: ProfileArgs | None = None) -> RuntimeLimits:
         num_experts=num_experts,
         top_k=top_k,
         key_saturation=key_saturation,
+        model_text_config=copy.deepcopy(cfg_dict),
+        dummy_weight_preparation=copy.deepcopy(getattr(llm, "_profiler_dummy_weight_preparation", None)),
+        sampling_runtime=sampling_runtime,
     )
 
 

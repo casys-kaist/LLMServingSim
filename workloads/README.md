@@ -79,8 +79,8 @@ of the `sub_requests` key.
 ### ShareGPT traces
 
 Generated on demand by `python -m workloads.generators sharegpt --model <hf-id>
---num-reqs <n> --sps <r>` (see `generators/`). Output files land directly in
-this directory and follow the flat-request format above with `input_tok_ids`
+--num-reqs <n> --sps <r> --output workloads/<name>.jsonl` (see `generators/`).
+The required `--output` selects the destination. Files follow the flat-request format with `input_tok_ids`
 populated for prefix-cache hashing.
 
 
@@ -165,7 +165,7 @@ Free-generation options:
 | `--vllm-max-num-batched-tokens` | `16384` | `max_num_batched_tokens`, likewise |
 | `--vllm-max-model-len` | model's max | override `max_model_len` |
 | `--vllm-temperature` | `0.0` | `0` = greedy, so generation is reproducible for a seed |
-| `--vllm-repetition-penalty` | `1.1` | `1.0` disables. Above 1.0 keeps free generation from rambling past natural EOS, so output lengths land at typical ShareGPT values (~500-1000 tokens) instead of every request hitting `--max-output-toks` |
+| `--vllm-repetition-penalty` | `1.1` | Passed to `SamplingParams.repetition_penalty`; `1.0` disables the penalty, values above `1.0` discourage repetition without guaranteeing EOS or output length |
 
 These are settings for the generation job, not for the simulated run:
 the generator records only token counts and ids, so a high

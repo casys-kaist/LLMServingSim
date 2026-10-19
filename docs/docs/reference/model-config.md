@@ -5,10 +5,13 @@ title: Model config
 
 # Model config schema
 
-Model config files live at `configs/model/<org>/<name>.json` and are
-**raw HuggingFace `config.json` files**: exactly what
-`AutoModelForCausalLM` would download from the hub. The simulator
-and profiler read a small subset of fields; the rest are ignored.
+Model config files live at `configs/model/<org>/<name>.json` and preserve
+the shape consumed by the checkpoint's native config class. MiniMax-M3 and
+Kimi-K3 retain their nested `text_config`; the shipped Qwen3.8 text tower is
+flattened with `model_type: qwen3_5_text`. Do not flatten a wrapper by analogy
+with another family. The profiler supplies these configurations to vLLM;
+the simulator reads a flattened backbone view while retaining the original
+wrapper independently for native runtime admission.
 
 This page documents the subset that matters.
 
@@ -38,7 +41,7 @@ profiler downloads and caches it on first run. The simulator
 
 | Field | Type | Used by | Description |
 | --- | --- | --- | --- |
-| `model_type` | string | profiler | Picks the architecture YAML at `profiler/models/<model_type>.yaml`, or a YAML that lists this value under `model_types:`. e.g. `llama`, `qwen3`, `qwen3_moe` (both -> `qwen3.yaml`), `qwen3_5` (-> `qwen3_5.yaml`), `deepseek_v32` and `glm_moe_dsa` (both -> `deepseek_v32.yaml`), `minimax_m3_vl`, `mixtral`, `phimoe` |
+| `model_type` | string | both | Resolves a catalog by filename or declared `model_types:` alias. Claims by different files are rejected. The files under `profiler/models/` are authoritative; a catalog does not establish serving or acquisition support for every runtime |
 | `hidden_size` | int | both | Model embedding / hidden dim |
 | `num_hidden_layers` | int | both | Number of decoder blocks |
 | `num_attention_heads` | int | both | Total attention heads (for TP scaling) |
@@ -60,7 +63,7 @@ to `hidden_size // num_attention_heads`. This is wrong for Qwen3
 | --- | --- | --- |
 | `num_local_experts` | int | Total experts (Mistral-style: e.g., `num_local_experts: 8` for Mixtral 8x7B) |
 | `num_experts` | int | Alternative naming (HF / Qwen-style: e.g., `num_experts: 128` for Qwen3-30B-A3B) |
-| `num_experts_per_tok` | int | top-K activations per token. Typical values: 2 (Mixtral), 8 (Qwen3 MoE) |
+| `num_experts_per_tok` / `num_experts_per_token` / `moe_k` | int | Expert top-k, resolved by shared `expert_top_k`. Declared values must be positive integers and aliases must agree. Kimi uses `num_experts_per_token`; resolving its geometry does not enable ordinary serving |
 | `n_routed_experts` | int | A third spelling (DeepSeek / GLM: `n_routed_experts: 256`) |
 | `moe_intermediate_size` | int | Per-expert MLP intermediate dim. Often smaller than the dense `intermediate_size` |
 | `n_group`, `topk_group` | int | **Group-limited routing.** A token's experts come only from `topk_group` of `n_group` groups, so it reaches fewer EP ranks. DeepSeek-V3.2 is `8` / `4`; GLM-5 ships `1` / `1`, the unrestricted case spelled out |
@@ -80,7 +83,7 @@ per-rank MoE work and EP collective size. See
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `torch_dtype` | string | Weight dtype, and the only source for it — there is no `--dtype` flag. `quantization_config.quant_method` wins when present. e.g. `bfloat16`, `float16`, `float32` |
+| `torch_dtype` / `dtype` | string | Floating dtype, read legacy spelling first. There is no simulator `--dtype` flag. `quantization_config.quant_method` wins for weight precision when present; the floating dtype then describes activations |
 | `quantization_config.kv_cache_scheme` / `.kv_cache_quant_algo` | dict / string | Declares an **fp8 KV cache**. The only way to get one, since there is no `--kv-cache-dtype`. Mirrors vLLM's promotion at `attention.py:281` |
 | `mamba_cache_dtype` | string | Conv-state dtype. `auto` (the default) means the weight dtype |
 | `mamba_ssm_dtype` | string | Recurrent-state dtype. `auto` means the **conv** dtype, not the weight dtype. Qwen3.8-27B declares `float32`, and the recurrent state is 98% of the per-sequence state, so reading this wrong halves it |
@@ -105,6 +108,7 @@ the same block — which is the right answer for Llama and for Qwen3.
 | Field | Decides | Read as |
 | --- | --- | --- |
 | `layer_types` | attention per layer | indexed directly, as vLLM's `qwen3_5.py` does |
+| `linear_attn_config.kda_layers`, `.full_attn_layers` | Kimi attention per layer | explicit one-based lists must partition the original decoder depth without duplicates or overlap; only engine construction trims a profiling prefix |
 | `full_attention_interval` | attention per layer, when `layer_types` is absent | `"linear_attention" if (i + 1) % interval else "full_attention"` |
 | `decoder_sparse_step`, `mlp_only_layers` | MLP per layer (Qwen3-MoE) | MoE iff `i not in mlp_only_layers and (i + 1) % step == 0` |
 | `first_k_dense_replace`, `moe_layer_freq` | MLP per layer (DeepSeek / GLM) | MoE iff `i >= first_k_dense_replace and i % freq == 0`. A **list**-valued `moe_layer_freq` is a per-layer 0/1 flag instead, as MiniMax-M3 ships |
@@ -117,13 +121,27 @@ Qwen3-MoE's is `(layer_idx + 1) % decoder_sparse_step`. Only rules read out of
 vLLM's own source are implemented; an unrecognised layout falls back to
 "uniform" and says so in the run log.
 
-## Fields the simulator ignores
+### Native contextual configurations
 
-The HF config has many more fields the simulator doesn't use -
-things like `bos_token_id`, `eos_token_id`, `attention_dropout`,
-`rope_*`, `rms_norm_eps`, `initializer_range`,
-`tie_word_embeddings`. Leave them as the HF config has them; ignored
-fields don't affect simulation.
+Kimi-K3's `attn_res_block_size` and `rms_norm_eps` also determine the
+original-depth residual contexts. Its catalog supports bounded local eager
+acquisition and explicit `generate_trace(..., duration_replay_only=True)`
+with complete matching tables. No Kimi profile bundle is committed, and
+ordinary `python -m serving` cannot supply resident-weight or hybrid-cache
+capacity admission for this path. There is no CLI bypass. See
+[native Kimi duration replay](../simulator/trace-generation#native-kimi-duration-replay).
+Native DeepSeek-V3.2 tables have a separate duration-only restriction;
+the shared historical DeepSeek/GLM catalog does not establish native GLM-5
+acquisition support. See [sparse attention](../examples/model-families/sparse-attention).
+
+## Other configuration fields
+
+Ordinary legacy sizing does not directly consume many HF fields, including
+token IDs, initialization settings and some normalization or positional
+settings. Preserve them: the profiler's native config class may require them,
+and source-bound native contracts can validate fields that ordinary sizing
+does not read. In particular, `rms_norm_eps` is part of Kimi's residual
+context, so it is not universally ignored.
 
 `max_position_embeddings` is **not** in that group, despite looking
 like a pure-HF field: see the required table above.
@@ -201,12 +219,12 @@ Llama 3.1.)
 
 ## Adding a new model
 
-1. Drop the raw HF `config.json` at
+1. Save the native-class-compatible HF config at
    `configs/model/<org>/<name>.json`.
 2. Verify the required fields above are present.
 3. **Add `head_dim` explicitly** if the model has it in its HF config.
-4. Make sure `profiler/models/<model_type>.yaml` exists. If not,
-   you need a new architecture YAML, see
+4. Resolve the type against both catalog filenames and `model_types:` aliases.
+   If no catalog claims it, you need a new architecture YAML; see
    **[Profiler → Adding a model architecture](/docs/profiler/adding-model-architecture)**.
 
 ## Gotchas
@@ -219,8 +237,9 @@ Llama 3.1.)
 2. **`num_local_experts` vs `num_experts`**: same concept,
    different naming convention across model families. Pick whichever
    the model's HF config uses; the simulator handles both.
-3. **`model_type` is case-sensitive** and must match a YAML at
-   `profiler/models/<model_type>.yaml` exactly.
+3. **`model_type` is case-sensitive.** It must resolve to exactly one
+   catalog by filename or alias; a matching filename does not hide another
+   catalog's conflicting claim.
 4. **`max_position_embeddings` silently caps the token budget.** The
    scheduler and trace generator both read it as
    `min(max_num_batched_tokens, max_position_embeddings)`. On a

@@ -1,26 +1,8 @@
-"""Give vLLM's non-module sampler a module scope so it can be profiled.
+"""Give a non-module sampler the same dynamic scope as an nn.Module sampler.
 
-vLLM 0.28 sends every **dense** model down the V2 model runner
-(``VllmConfig._is_default_v2_model_runner_model``: ``is_default_v2_architecture
-or not model_config.is_moe``), and that runner's sampler is
-``vllm.v1.worker.gpu.sample.sampler.Sampler`` -- a plain object, where the V1
-runner's is an ``nn.Module``. ``layerwise_profile`` builds its tree from module
-events, so the V2 sampler never becomes a node at all: the ``per_sequence``
-sweep writes no ``sampler`` row and the simulator then rejects the bundle with
-``Missing per-sequence profile for layer=sampler``.
-
-The cost it hides is real. Timed with CUDA events on RTXPRO6000 /
-Llama-3.1-8B, one call runs 29.5 us at a single sequence and 90.3 us at 256 --
-within a few percent of the ``nn.Module`` sampler's own numbers in the
-vllm=0.19 bundle (24.7 us and, at 128 sequences where both were measured,
-63.69 against 63.77).
-
-Every bundle profiled on 0.28 before this was MoE, which keeps the V1 runner,
-which is why the defect surfaced only with the first dense 0.28 refresh.
-
-Wrapping puts the same class name in the tree on both runners, so each
-catalog's ``sampler: {vllm: Sampler}`` binds unchanged -- the alternative was
-a second spelling in every catalog that can run a dense model.
+The facade forwards native arguments, outputs and sampler attributes unchanged.
+It is shared by warmup and collection for the worker's lifetime, so catalog
+bindings keep the common Sampler class without architecture-specific branches.
 """
 
 from typing import Any

@@ -1,4 +1,5 @@
 import os
+import math
 from .utils import (
     get_architecture, get_config, get_layer_stack, is_moe as _is_moe,
     num_experts as _num_experts, num_mtp_layers,
@@ -18,6 +19,150 @@ KB_TO_BYTE = 1024
 # OffloadingConnector defaults to a factor of 1; 256 is kept because it matches
 # LMCache and preserves the shared pool's existing granularity.
 LOWER_TIER_CHUNK_TOKENS = 256
+
+
+def tensor_nbytes(shape, dtype):
+    """Logical tensor bytes from explicit metadata, not allocator capacity."""
+    widths = {'bfloat16': 2, 'float16': 2, 'float32': 4, 'float64': 8,
+              'int8': 1, 'uint8': 1, 'int16': 2, 'int32': 4, 'int64': 8,
+              'float8_e4m3fn': 1, 'float8_e5m2': 1, 'float8_e8m0fnu': 1}
+    dtype = str(dtype).removeprefix('torch.')
+    if dtype not in widths or any(type(n) is not int or n < 0 for n in shape):
+        raise ValueError('Unsupported tensor shape or dtype')
+    return math.prod(shape) * widths[dtype]
+
+
+def packed_expert_shapes(experts, hidden, intermediate, *, weight_pack,
+                         scale_group_size, scales_per_element):
+    """Pack a gated expert's logical dimensions with an explicit storage rule.
+
+    This is arithmetic only. The selected native quantization method must supply
+    the packing rule and actual padded dimensions; these shapes do not select
+    or certify a backend. Scale element dtype is supplied separately to sizing.
+    """
+    values = (experts, hidden, intermediate, weight_pack, scale_group_size, scales_per_element)
+    if any(type(n) is not int or n <= 0 for n in values):
+        raise ValueError('Expert dimensions and packing factors must be positive integers')
+    scale_pack = scale_group_size * scales_per_element
+    if any(n % divisor for n in (hidden, intermediate) for divisor in (weight_pack, scale_pack)):
+        raise ValueError('Expert dimensions do not divide the selected packing layout')
+    return dict(w13=(experts, 2 * intermediate, hidden // weight_pack),
+                w2=(experts, hidden, intermediate // weight_pack),
+                s13=(experts, 2 * intermediate, hidden // scale_pack),
+                s2=(experts, hidden, intermediate // scale_pack))
+
+
+def kimi_component_geometry(config, tp, *, projection_alignment, vocab_rows):
+    """Config-derived, non-EP/non-SP/PP1 native Kimi component geometry.
+
+    vLLM 0.31 kimi_k3/nvidia/kda.py:531-601,646-724; mla.py:196-299;
+    model.py:589-668,957-986,1169-1181. Alignment and padded vocabulary rows
+    must come from the selected runtime. Dtypes, expert packing, buffer
+    presence, cache layout and aliasing remain independent runtime facts.
+    No checkpoint dimensions or supported hardware list are encoded here.
+    """
+    from profiler.core.stack import resolve_stack
+    if config.get('model_type') not in ('kimi_k3', 'kimi_linear'):
+        raise ValueError('Native Kimi geometry requires its family source rule')
+    text = config.get('text_config', config)
+    resolve_stack(config)
+
+    def positive(value, name):
+        if type(value) is not int or value <= 0:
+            raise ValueError(name + ' must be a positive integer')
+        return value
+
+    def field(name, mapping=text):
+        return positive(mapping.get(name), name)
+
+    def shard(value, name):
+        if value % tp:
+            raise ValueError(name + ' must divide TP exactly')
+        return value // tp
+
+    positive(tp, 'tp')
+    positive(projection_alignment, 'projection_alignment')
+    positive(vocab_rows, 'vocab_rows')
+    h, vocab = field('hidden_size'), field('vocab_size')
+    if vocab_rows * tp < vocab:
+        raise ValueError('Rank-local vocabulary rows cannot cover the vocabulary')
+    linear = text.get('linear_attn_config')
+    if not isinstance(linear, dict) or linear.get('use_full_rank_gate') is not True:
+        raise ValueError('Kimi KDA geometry requires its full-rank gate configuration')
+    d, heads, conv = (field(key, linear) for key in ('head_dim', 'num_heads', 'short_conv_kernel_size'))
+    n = shard(heads, 'KDA heads')
+    p = n * d
+    raw_input_width = 4 * p + d + n
+    in_width = raw_input_width + (-raw_input_width % projection_alignment)
+    an = shard(field('num_attention_heads'), 'MLA heads')
+    q, latent = field('q_lora_rank'), field('kv_lora_rank')
+    key, rope, value = (field(key) for key in ('qk_nope_head_dim', 'qk_rope_head_dim', 'v_head_dim'))
+    if text.get('mla_use_nope') is not True or text.get('mla_use_output_gate') is not True:
+        raise ValueError('This component boundary requires NoPE q-LoRA MLA with an output gate')
+    dense = shard(field('intermediate_size'), 'dense intermediate size')
+    experts, moe_i = field('num_experts'), field('moe_intermediate_size')
+    minimum = positive(text.get('min_moe_intermediate_per_partition', 256),
+                       'min_moe_intermediate_per_partition')
+    # Native model.py:589-598 pads a too-small TP shard before FusedMoE.
+    padded_i = max(moe_i, minimum * tp) if tp > 1 else moe_i
+    local_i = shard(padded_i, 'expert intermediate size')
+    shared = text.get('num_shared_experts')
+    if type(shared) is not int or shared < 0:
+        raise ValueError('num_shared_experts must be a nonnegative integer')
+    shared_i = shard(moe_i * shared, 'shared expert intermediate size')
+    routed = field('routed_expert_hidden_size')
+    if text.get('latent_moe_use_norm') is not True:
+        raise ValueError('This latent-MoE boundary requires its routed normalization')
+    width = field('attn_res_block_size')
+    depth = field('num_hidden_layers')
+    shapes = dict(
+        embedding=dict(weight=(vocab_rows, h)), head=dict(weight=(vocab_rows, h)),
+        final_norm_and_residual=dict(norm=(h,), res_norm=(h,), res_proj=(1, h)),
+        residual=dict(input_norm=(h,), post_norm=(h,), attn_res_norm=(h,),
+                      mlp_res_norm=(h,), attn_res_proj=(1, h), mlp_res_proj=(1, h)),
+        linear_attention=dict(in_proj=(in_width, h), f_b_proj=(p, d),
+            conv=(3 * p, 1, conv), dt_bias=(p,), A_log=(n,), norm=(d,), o_proj=(h, p)),
+        full_attention=dict(in_proj=(q + latent + rope + an * value, h),
+            q_b_proj=(an * (key + rope), q), kv_b_proj=(an * (key + value), latent),
+            q_norm=(q,), kv_norm=(latent,), o_proj=(h, an * value)),
+        dense=dict(gate_up=(2 * dense, h), down=(h, dense)),
+        moe=dict(router=(experts, h), router_bias=(experts,),
+            shared_gate_up=(2 * shared_i, h), shared_down=(h, shared_i),
+            routed_down=(routed, h), routed_up=(h, routed), routed_norm=(routed,)))
+    return dict(hidden=h, vocab=vocab, depth=depth, tp=tp, shapes=shapes,
+        kda_heads=n, kda_head_dim=d, kda_projection=p, kda_input_width=in_width,
+        kda_input_padding=in_width - raw_input_width,
+        kda_decode_buffers=dict(conv=(3, conv, p), norm=(d,)),
+        kda_state_shapes=((conv - 1, 3 * p), (n, d, d)),
+        mla_heads=an, mla_output_width=an * value, mla_cache_head_size=latent + rope,
+        mla_absorbed_shapes=((an, key, latent), (an, latent, value)),
+        expert_logical_shapes=dict(w13=(experts, 2 * local_i, routed),
+                                   w2=(experts, routed, local_i)),
+        moe_padded_intermediate=padded_i, attn_res_capacity=(depth + width - 1) // width)
+
+
+def kimi_parameter_components(geometry, *, linear_dtype, norm_dtype, expert_tensors):
+    """Parameter storage per component for the admitted unquantized-linears path.
+
+    ``expert_tensors`` maps unique expert payload/scale names to (shape, dtype)
+    from the native postload layout. Aliased MLA decode views and KDA derived
+    buffers are excluded; callers account for actual independent copies apart.
+    These are parameters, not activation peaks, traffic or cache-pool capacity.
+    """
+    if str(linear_dtype).removeprefix('torch.') not in ('float16', 'bfloat16', 'float32'):
+        raise ValueError('Quantized ordinary linears require their recorded storage layout')
+    if set(expert_tensors) != {'w13', 'w2', 's13', 's2'}:
+        raise ValueError('Expected unique native expert payload and scale tensors')
+    result = {}
+    for component, tensors in geometry['shapes'].items():
+        size = 0
+        for name, shape in tensors.items():
+            dtype = ('torch.float32' if name in ('conv', 'dt_bias', 'A_log', 'router_bias')
+                     else norm_dtype if 'norm' in name else linear_dtype)
+            size += tensor_nbytes(shape, dtype)
+        result[component] = size
+    result['moe'] += sum(tensor_nbytes(shape, dtype) for shape, dtype in expert_tensors.values())
+    return result
 
 
 class MemoryModel():
@@ -783,13 +928,22 @@ def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
 
 
 # calculate the per-rank input, weight, output size of each layer
-def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2):
+def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2,
+                    kv_lens=None, *, component_sizes=None):
     """Calculate input, weight, and output tensor sizes for a given layer.
 
     Args:
         parallel: parallelism degree for weight/activation sharding.
             For dense layers this is TP; for MoE experts this is EP.
+        kv_lens: exact per-request cached histories for MiniMax-M3's
+            indexer and sparse_attention only; a list or tuple of nonnegative
+            integers, mutually exclusive with kv_len. Sparse attention caps
+            each history before summing; the indexer sums them uncapped.
     """
+    if component_sizes is not None:
+        if kv_len is not None or kv_lens is not None:
+            raise ValueError("Logical component boundaries do not accept inferred cache traffic")
+        return component_sizes.sizes(layer_name, length, parallel=parallel, pim=pim)
     config = get_config(model)
     n_embd = config['hidden_size']
     n_head = config['num_attention_heads']
@@ -847,6 +1001,23 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     m3_idx_heads = sparse_cfg.get("sparse_num_index_heads") or 0
     m3_topk_blocks = sparse_cfg.get("sparse_topk_blocks") or 0
     m3_block = sparse_cfg.get("sparse_block_size") or 0
+    is_m3 = config.get("model_type") == "minimax_m3_vl"
+    if kv_lens is not None:
+        if (not is_m3 or layer_name not in ("indexer", "sparse_attention")
+                or kv_len is not None or not isinstance(kv_lens, (list, tuple))
+                or any(type(n) is not int or n < 0 for n in kv_lens)):
+            raise ValueError("Per-request KV histories require MiniMax attention and nonnegative integer lengths")
+    if is_m3 and layer_name in ("indexer", "sparse_attention"):
+        if (type(parallel) is not int or parallel < 1
+                or any(type(n) is not int or n < 1 for n in
+                       (m3_idx_dim, m3_idx_heads, m3_topk_blocks, m3_block, kv_head))
+                or m3_idx_heads != kv_head
+                or type(length) is not int or length < 0
+                or (kv_len is not None and (type(kv_len) is not int or kv_len < 0))):
+            raise ValueError("Invalid MiniMax sparse indexer geometry")
+        if ((kv_head >= parallel and kv_head % parallel)
+                or (kv_head < parallel and parallel % kv_head)):
+            raise ValueError("Invalid MiniMax KV/index-head TP partition")
     # ``rotary_dim`` = head_dim * partial_rotary_factor; only that slice is
     # rotated.
     m3_rope_dim = config.get("rotary_dim") or head_dim
@@ -1059,7 +1230,20 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = 0
         output_size = length * (idx_q + scales * 4 + idx_heads * 4)
 
+    elif layer_name == "indexer" and is_m3:
+        # The index query matches its independent BF16 index-cache dtype,
+        # including when main KV or model weights use another precision.
+        # Native top-k output is [tokens, local index heads, topk blocks].
+        local_heads = max(1, kv_head // p)
+        kv = sum(kv_lens) if kv_lens is not None else (kv_len if kv_len is not None else length)
+        input_size = (length * local_heads + kv) * m3_idx_dim * 2
+        weight_size = 0
+        output_size = length * local_heads * m3_topk_blocks * 4
+
     elif layer_name == "indexer":
+        if not is_mla or any(type(n) is not int or n < 1 for n in
+                             (idx_heads, idx_head_dim, idx_topk)):
+            raise ValueError("Unknown sparse indexer layout")
         # ``SparseAttnIndexer``: scores every cached index key against this
         # step's fp8 queries and returns the top-k token ids. The read over
         # the KV is what makes it an attention-category layer, and it is the
@@ -1131,18 +1315,6 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         weight_size = (q_dim // p) * n_embd * fp
         output_size = length * n_embd * fp
 
-    elif layer_name == "indexer":
-        # M3's lightning indexer scores **blocks**, not tokens: it reads its
-        # own key-only side cache over the whole KV and returns the top
-        # ``sparse_topk_blocks`` block ids. The side cache is one vector per
-        # token (``MLAAttentionSpec`` with ``num_kv_heads = 1``), so it is
-        # replicated across ranks rather than sharded.
-        kv = kv_len if kv_len is not None else length
-        input_size = (length * (kv_head // p) * m3_idx_dim * fp
-                      + kv * m3_idx_dim * fp)
-        weight_size = 0
-        output_size = length * m3_topk_blocks * 4  # int32 block ids
-
     elif layer_name == "sparse_attention":
         # Attention over the selected blocks only, which is what caps the work:
         # at most ``sparse_topk_blocks * sparse_block_size`` keys are read
@@ -1151,6 +1323,8 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         # ``kv_bytes_per_token_per_layer``.
         kv = kv_len if kv_len is not None else length
         read = min(kv, m3_topk_blocks * m3_block) if m3_block else kv
+        if kv_lens is not None:
+            read = sum(min(history, m3_topk_blocks * m3_block) for history in kv_lens)
         input_size = ((n_head // p) * length * head_dim * fp
                       + (kv_head // p) * read * head_dim * fp * 2)
         weight_size = 0
@@ -1163,6 +1337,34 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # prefill conv entry and the recurrence's ``dt_bias`` / ``A_log`` to the
     # prefill recurrence, with the decode entries carrying 0 -- they read the
     # same weights, and counting them twice would inflate the block.
+    elif layer_name == "gdn_core":
+        # Packed operator boundary: qkvz + ba -> gated-normalized value rows.
+        # Conv/state intermediates stay inside the scope. Persistent recurrent
+        # state capacity is counted separately per sequence, never per token.
+        dims = (gdn_k_heads, gdn_v_heads, gdn_k_dim, gdn_v_dim, gdn_conv_kernel)
+        if (type(parallel) is not int or parallel <= 0
+                or any(type(value) is not int or value <= 0 for value in dims)
+                or gdn_k_heads % parallel or gdn_v_heads % parallel):
+            raise ValueError("GDN core needs positive dimensions and TP-divisible key/value heads")
+        if type(length) is not int or length < 0:
+            raise ValueError("GDN core token count must be a nonnegative integer")
+        quantization = config.get("quantization_config") or {}
+        if quantization.get("quant_method") not in (None, "fp8"):
+            raise NotImplementedError(
+                "Quantized GDN core needs a verified BA projection sharding contract; "
+                "AWQ/GPTQ/INC can replicate BA instead of TP-sharding it")
+        from .communication import dtype_bytes
+        activation_fp = dtype_bytes(config.get("torch_dtype", config.get("dtype")), fp)
+        local_v_heads = gdn_v_heads // p
+        input_size = length * ((2 * gdn_key_dim + 2 * gdn_value_dim) // p
+                               + 2 * local_v_heads) * activation_fp
+        # These parameters are not quantized linears: conv/dt_bias/norm use
+        # model dtype; A_log explicitly uses float32. Norm scale is replicated.
+        weight_size = (gdn_conv_kernel * (gdn_conv_dim // p) * activation_fp
+                       + local_v_heads * (activation_fp + 4)
+                       + gdn_v_dim * activation_fp)
+        output_size = length * (gdn_value_dim // p) * activation_fp
+
     elif layer_name == "gdn_in_proj":
         # ``in_proj_qkvz`` (hidden -> 2*key_dim + 2*value_dim) and
         # ``in_proj_ba`` (hidden -> 2*num_v_heads), reported by the profiler as

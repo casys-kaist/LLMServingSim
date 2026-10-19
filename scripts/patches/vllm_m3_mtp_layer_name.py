@@ -17,20 +17,17 @@ The three MTP families avoid that differently, and M3 does neither:
 
 This applies Qwen's approach: `model` -> `model.mtp`.
 
-**Parameter names are unaffected**, which is what makes this safe for a real
-weight load and not just for `load_format=dummy`. In vLLM the `prefix` string
-feeds the layer-name registry and the quant-config lookup; parameter names come
-from the PyTorch module tree (`self.model` -> `self.layers` -> `"0"`). Verified
-on a live engine with the patch applied: the drafter's parameters are still
-`model.layers.0.enorm.weight`, `model.layers.0.eh_proj.weight`, ... exactly what
-`MiniMaxM3MTP._map_checkpoint_name` maps a `model.mtp.layers.*` checkpoint key
-onto.
+The registered CUDA MiniMaxM3MTP implementation in vLLM 0.31.0 still uses the
+colliding prefix in `models/minimax_m3/nvidia/mtp.py`. Both runner generations
+load the MTP drafter without a separate outer prefix. Retain this patch until
+the registered implementation separates the names upstream.
 
-Unlike the SM120 patch beside this one, there is **no upstream fix to
-backport** -- the file is byte-identical between 0.28.0 and vLLM main as of
-2026-09-01, and no issue reports it. Drop this patch once one lands.
+The PyTorch parameter tree is unchanged (`self.model` -> `self.layers` -> "0").
+The prefix also feeds quantization-config lookup, so this namespace fix alone
+does not certify every real checkpoint, quantization method or MTP backend.
 
-Idempotent. A no-op if the anchor is gone.
+Idempotent. Already-applied or missing targets are no-ops; an unexpected anchor
+count fails rather than silently claiming a fix.
 
 Run:  python3 scripts/patches/vllm_m3_mtp_layer_name.py
 """

@@ -18,6 +18,9 @@ Profiling subcommands:
 
 Offline calibration:
 
+    import-execution <model> --hardware <hw> --bench-dir DIR [--variant NAME]
+        Save a matching benchmark's observed serving graph policy in meta.yaml.
+
     plan-skew <model> --hardware <hw> [options]
         Preview heterogeneous coverage using saved engine limits and references.
 
@@ -63,6 +66,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -98,6 +102,44 @@ MODEL_CONFIG_DIR = _REPO_ROOT / "configs" / "model" # LLMServingSim's shared con
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+def _grid_factor(value: str) -> float:
+    try:
+        factor = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be finite and greater than 1") from None
+    if not math.isfinite(factor) or factor <= 1:
+        raise argparse.ArgumentTypeError("must be finite and greater than 1")
+    return factor
+
+
+def _parse_cudagraph(value: str) -> dict:
+    """Validate target graph options without resolving engine-dependent bounds."""
+    try:
+        options = json.loads(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a JSON object") from None
+    if not isinstance(options, dict):
+        raise argparse.ArgumentTypeError("must be a JSON object")
+    unknown = set(options) - {"mode", "capture_sizes", "max_capture_size", "enable_sp", "runner"}
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown cudagraph fields: {sorted(unknown)}")
+    modes = ("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE")
+    if "mode" in options and options["mode"] not in modes:
+        raise argparse.ArgumentTypeError(f"cudagraph.mode must be one of {modes}")
+    if "runner" in options and options["runner"] not in ("v1", "v2"):
+        raise argparse.ArgumentTypeError("cudagraph.runner must be 'v1' or 'v2'")
+    if "enable_sp" in options and not isinstance(options["enable_sp"], bool):
+        raise argparse.ArgumentTypeError("cudagraph.enable_sp must be boolean")
+    cap = options.get("max_capture_size")
+    if cap is not None and (type(cap) is not int or cap <= 0):
+        raise argparse.ArgumentTypeError("cudagraph.max_capture_size must be a positive integer")
+    sizes = options.get("capture_sizes")
+    if sizes is not None and (not isinstance(sizes, list) or not sizes
+                              or any(type(size) is not int or size <= 0 for size in sizes)):
+        raise argparse.ArgumentTypeError("cudagraph.capture_sizes must be a nonempty list of positive integers")
+    return options
+
+
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
     """Flags registered by profile, slice, coverage and plan-skew."""
     p.add_argument(
@@ -116,8 +158,9 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--variant",
         default=None,
-        help="Output folder label. Default: auto-derived from dtype "
-             "and kv_cache_dtype (e.g. 'bf16' or 'bf16-kvfp8').",
+        help="Output folder label. Default: checkpoint precision plus explicit "
+             "activation/KV dtype suffixes (e.g. 'fp8-actfp16'). Required for "
+             "HF precision or nested text_config overrides.",
     )
 
     # Engine kwargs.
@@ -182,22 +225,24 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "support this. Pair it with the coverage subcommand "
                         "first: the drafter's kernels show up as unbound "
                         "until a catalog binds them.")
-    p.add_argument("--moe-ep-degrees", type=str, default="1",
-                   dest="moe_ep_degrees",
-                   help="Comma-separated legacy whole-block EP degrees, e.g. "
-                        "'1,2,4,8'. Default '1'. This path reduces the "
-                        "checkpoint's expert/top-k shape to approximate rank "
-                        "work; it does not establish native DP+EP coverage. "
-                        "Omit this option when selecting native components "
-                        "with --dp, where EP is TP*DP.")
-    p.add_argument("--dp", default=None, dest="moe_dp_degrees",
+    p.add_argument("--dp", default=None, dest="dp_degrees",
                    help="Target DP degrees for native MoE component profiling, "
                         "comma separated. Experts retain global top-k and IDs; "
-                        "EP is TP*DP. Supported native targets require DP>=2. "
+                        "EP is TP*DP. DP=1 measures local modular components without DP collectives. "
                         "The profiler still uses one physical GPU. "
-                        "Only profile or slice --group moe accept this option.")
+                        "Defaults to DP=1 for MoE profiling. Only profile or "
+                        "slice --group moe accept this option.")
+    p.add_argument("--ep", default=None, dest="ep_degrees",
+                   help="Target EP degrees for native MoE components, comma separated. "
+                        "Defaults to all TP*DP targets. When set, selects matching "
+                        "targets without changing TP/DP or expert tensor sharding. "
+                        "Every requested EP must match a selected TP*DP. Only profile "
+                        "or slice --group moe accept this option; a slice uses --tp-refresh.")
     p.add_argument("--moe-rounds", type=int, default=3,
                    help="Independent measurement contexts per native MoE point.")
+    p.add_argument("--moe-grid-factor", type=float, default=2.0,
+                   help="Geometric spacing for native MoE token, active-expert "
+                        "and assignment axes (finite and greater than 1; default 2).")
     p.add_argument("--hf-override", action="append", default=None,
                    dest="hf_override", metavar="KEY=VALUE",
                    help="Override one model-config field, repeatable. The "
@@ -216,6 +261,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "FLA_CHUNK_SIZE. Measured cost tracks the chunk "
                         "count, not the token count, so the grid samples "
                         "boundaries and the points just past them.")
+
+    # Target sampling policy; acquisition remains eager.
+    p.add_argument("--grid-factor", type=_grid_factor, default=2.0,
+                   help="Geometric spacing for ordinary non-graph token/request "
+                        "sampling (finite and greater than 1; default 2). "
+                        "Attention, skew and native MoE retain their own factor options.")
+    p.add_argument("--cudagraph", type=_parse_cudagraph, default=None, metavar="JSON",
+                   help="Target serving CUDA graph sampling options as a JSON object: "
+                        "mode, capture_sizes, max_capture_size, enable_sp, runner. "
+                        "Defaults use the serving resolver. Acquisition remains eager.")
 
     # Attention grid.
     p.add_argument("--attention-max-kv", type=int, default=None,
@@ -238,17 +293,17 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
                         "sequence against that sequence's own KV, which is "
                         "neither a prefill chunk of the same size nor that many "
                         "single-token decodes. Each extra value adds a separate "
-                        "decode-containing grid; q > 1 omits pure prefill.")
-    p.add_argument("--attention-chunk-factor", type=float, default=SQRT2,
+                        "decode-containing grid; pure prefill is measured once at q=1.")
+    p.add_argument("--attention-chunk-factor", type=float, default=2.0,
                    dest="attention_chunk_factor",
                    help="Geometric factor for the prefill-token axis. "
-                        "sqrt(2) (default); 2.0 is doubling. Lower values "
+                        "Default 2.0 (doubling). Lower values "
                         "produce a denser grid.")
-    p.add_argument("--attention-kv-factor", type=float, default=SQRT2,
+    p.add_argument("--attention-kv-factor", type=float, default=2.0,
                    dest="attention_kv_factor",
                    help="Geometric factor for the prefill-key and kv_decode "
-                        "axes. sqrt(2) (default); 2.0 is doubling and is a "
-                        "nested grid. Resume still requires compatible "
+                        "axes. Default 2.0 (doubling). Lower values add samples. "
+                        "Resume still requires compatible "
                         "measurement identities and exact shot keys.")
     p.add_argument("--attention-n-factor", type=float, default=SQRT2,
                    dest="attention_n_factor",
@@ -451,18 +506,28 @@ def _build_profile_args(
     architecture: str,
     model_config: dict,
 ) -> ProfileArgs:
-    raw_dp = getattr(ns, "moe_dp_degrees", None)
-    dp_degrees = None
-    if raw_dp is not None:
-        dp_degrees = tuple(sorted({int(value.strip()) for value in raw_dp.split(",")}))
-        if not dp_degrees or min(dp_degrees) < 1:
-            raise ValueError("DP degrees must be positive integers")
+    if not math.isfinite(ns.grid_factor) or ns.grid_factor <= 1:
+        raise ValueError("--grid-factor must be finite and greater than 1")
+    if not math.isfinite(ns.moe_grid_factor) or ns.moe_grid_factor <= 1:
+        raise ValueError("--moe-grid-factor must be finite and greater than 1")
+    degrees = {}
+    for name in ("dp", "ep"):
+        raw = getattr(ns, f"{name}_degrees", None)
+        if raw is None:
+            degrees[name] = None
+            continue
+        try:
+            values = tuple(sorted({int(value.strip()) for value in raw.split(",")}))
+        except ValueError:
+            raise ValueError(f"--{name} requires comma-separated positive integers") from None
+        if not values or min(values) < 1:
+            raise ValueError(f"--{name} degrees must be positive integers")
+        degrees[name] = values
+    if any(value is not None for value in degrees.values()):
         if ns.cmd != "profile" and not (ns.cmd == "slice" and ns.group == "moe"):
-            raise ValueError("--dp is only supported for profile or slice --group moe")
+            raise ValueError("--dp and --ep are only supported for profile or slice --group moe")
         if getattr(ns, "only_skew", False) or getattr(ns, "profile_mtp", False):
             raise ValueError("Native MoE profiling cannot be combined with skew-only or MTP")
-        if str(getattr(ns, "moe_ep_degrees", "1")) != "1":
-            raise ValueError("With --dp, EP is TP*DP; omit the legacy --moe-ep-degrees option")
         if ns.moe_rounds < 1 or ns.measurement_iterations < 1:
             raise ValueError("Native MoE profiling requires positive repeat counts")
     return ProfileArgs(
@@ -482,13 +547,12 @@ def _build_profile_args(
         max_model_len=getattr(ns, "max_model_len", None),
         num_hidden_layers=getattr(ns, "num_hidden_layers", None),
         profile_mtp=bool(getattr(ns, "profile_mtp", False)),
-        moe_dp_degrees=dp_degrees,
+        dp_degrees=degrees["dp"],
+        ep_degrees=degrees["ep"],
         moe_rounds=ns.moe_rounds,
-        moe_ep_degrees=tuple(sorted({
-            max(1, int(v))
-            for v in str(getattr(ns, "moe_ep_degrees", "1") or "1").split(",")
-            if v.strip()
-        })) or (1,),
+        moe_grid_factor=ns.moe_grid_factor,
+        grid_factor=ns.grid_factor,
+        cudagraph=ns.cudagraph,
         linear_attn_chunk=getattr(ns, "linear_attn_chunk", None),
         attention_max_kv=ns.attention_max_kv,
         attention_decode_q_lens=tuple(
@@ -564,6 +628,16 @@ def build_parser() -> argparse.ArgumentParser:
         description="Layerwise profiler for LLMServingSim.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_execution = sub.add_parser('import-execution',
+        help='Import observed serving graph settings from a benchmark; no GPU.')
+    p_execution.add_argument('model', help='HF model ID with a local config and existing bundle.')
+    p_execution.add_argument('--hardware', required=True)
+    p_execution.add_argument('--variant', default=None)
+    p_execution.add_argument('--bench-dir', required=True)
+    p_execution.add_argument('--out', default='profiler/perf', dest='out_root')
+    p_execution.add_argument('--log-level', default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
 
     p_refit = sub.add_parser("refit-skew", help="Rebuild skew calibration from measured CSVs without a GPU.")
     p_refit.add_argument("model", help="HF model id with a local config and profile bundle.")
@@ -657,6 +731,18 @@ def main(argv: list[str] | None = None) -> int:
 
     log.configure(_resolve_log_level(ns))
 
+    if ns.cmd == 'import-execution':
+        from profiler.core.execution_metadata import import_execution
+        from serving.core.trace_generator import resolve_variant
+        from serving.core.utils import get_config
+        config = json.loads((MODEL_CONFIG_DIR / (ns.model + '.json')).read_text())
+        root = Path(ns.out_root) / ns.hardware / ns.model / (ns.variant or resolve_variant(get_config(ns.model)))
+        record = import_execution(ns.bench_dir, root, config)
+        log.info('Recorded serving graph policy: runner=%s, mode=%s, %d capture sizes',
+                 record['graph']['runner'], record['graph']['mode'],
+                 len(record['graph']['capture_sizes']))
+        return 0
+
     if ns.cmd == "refit-skew":
         from profiler.core.skew_calibration import rebuild_bundle
         from serving.core.trace_generator import resolve_variant
@@ -713,8 +799,11 @@ def main(argv: list[str] | None = None) -> int:
     # 5. Dispatch.
     if ns.cmd == "plan-skew":
         from profiler.core.skew_support import complete_plan
-        from profiler.core.skew import _existing_keys
+        from profiler.core.skew import _existing_keys, recorded_contract_for_skew
+        from profiler.core.component_layouts import selected_catalog_for_tp
         from profiler.core.config import load_architecture
+        from profiler.core.categories import _entry_dict
+        from profiler.core.hooks.capture_scope_contract import contexts_from_architecture
         from types import SimpleNamespace
         from serving.core.trace_generator import resolve_variant
         import dataclasses
@@ -726,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:
         resolved = metadata["engine_resolved"]["per_tp"]
         plans = {}
         architecture = load_architecture(arch_path)
-        catalog = architecture.catalog.attention
+        scope_contexts = contexts_from_architecture(architecture)
         for tp in profile_args.tp_degrees:
             saved = resolved.get(str(tp)) or resolved.get(tp)
             if not saved:
@@ -736,9 +825,20 @@ def main(argv: list[str] | None = None) -> int:
             planned = dataclasses.replace(profile_args,
                 attention_max_kv=profile_args.attention_max_kv or
                                  metadata.get("attention_grid", {}).get("max_kv") or limits.max_model_len)
+            from profiler.core.attention_lookup import semantic_for_table
+            lookup_record, _ = semantic_for_table(root / f"tp{tp}" / "attention.csv",
+                model_config, architecture.model_dump(exclude_none=True))
+            attention_sha = lookup_record['semantic_sha256'] if lookup_record else None
+            choices, entries = selected_catalog_for_tp(root / f"tp{tp}",
+                architecture.model_dump(exclude_none=True), "attention", architecture.catalog.attention)
+            catalog = _entry_dict(entries, architecture)
+            layout_contract = recorded_contract_for_skew(root / f"tp{tp}", architecture,
+                choices, planned, logical_tp=tp, logical_ep=1, block_size=limits.block_size)
             completed = set() if planned.force else _existing_keys(root / f"tp{tp}" / "skew.csv", catalog,
                                        planned.skew_rounds, planned.measurement_iterations,
-                                       block_size=limits.block_size)
+                                       block_size=limits.block_size, scope_contexts=scope_contexts,
+                                       attention_lookup_sha256=attention_sha,
+                                       component_layout_contract=layout_contract)
             plans[tp], _ = complete_plan(planned, limits, root / f"tp{tp}" / "attention.csv",
                 architecture, completed, existing_csv=None if planned.force else root / f"tp{tp}" / "skew.csv")
         print(json.dumps(plans, indent=2))

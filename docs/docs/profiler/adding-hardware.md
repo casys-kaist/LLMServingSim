@@ -7,7 +7,7 @@ title: Adding new hardware
 
 This page is the workflow for bringing up a brand-new hardware target
 that doesn't have a profile bundle in `profiler/perf/<HARDWARE>/`
-yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.28 internals.
+yet. The bundled acquisition path targets NVIDIA CUDA and vLLM 0.31 internals.
 vLLM support alone does not establish that the profiler's CUDA attribution,
 cache preparation and hardware probes support another accelerator:
 
@@ -96,6 +96,8 @@ The hardware file retains raw graphed and isolated timings, the timing source,
 fit version and assumptions, and per-size/per-collective residuals. The legacy
 key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
 unit explicit. Inherited defaults also record their units.
+The bundled hardware file preserves the measured output unchanged, including
+its raw samples and residual arrays.
 
 A retained-data bandwidth refresh can instead hold an independently calibrated
 latency fixed. The bundled post-configuration-change RTXPRO6000 calibration uses
@@ -143,8 +145,8 @@ then validate before adopting new defaults.
 
 ### 1. Confirm the acquisition backend
 
-The profiler runs vLLM `0.28.0` by default
-(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.28.0`). Its launcher,
+The profiler targets vLLM `0.31.0` by default
+(`scripts/docker-vllm.sh` pulls `vllm/vllm-openai:v0.31.0`). Its launcher,
 hardware probes, cache initialization and timing attribution target NVIDIA
 CUDA. A device being supported by vLLM alone does not validate this profiler.
 
@@ -156,7 +158,8 @@ CUDA. A device being supported by vLLM alone does not validate this profiler.
 
 Choose the CUDA image for the host driver and installed dependencies, not
 the GPU family name alone. The launcher defaults to the CUDA 13 image;
-the CUDA 12.9 image is `vllm/vllm-openai:v0.28.0-cu129`. See
+another image requires its own model/backend compatibility and acquisition
+checks. This upgrade does not remeasure existing bundles. See
 [vLLM installation](../getting-started/installation/vllm) for environment setup.
 
 ### 2. Edit `profile.sh`
@@ -206,7 +209,7 @@ or implement an accelerator adapter.
 For a target outside the bundled acquisition path, use an appropriate
 measurement adapter or analytical model. The simulator consumes the
 **profile bundle contract**, independently of the acquisition environment;
-versioned skew and native MoE data also require their matching metadata.
+skew calibration and native MoE data also require their matching metadata.
 
 The strategy: synthesize CSVs in the
 [Output bundle](./output-bundle) format from your own measurement
@@ -223,8 +226,10 @@ hardware. If you have access:
   layer types the simulator's architecture YAML declares
   (`qkv_proj`, `attention`, `down_proj`, etc.).
 - Sweep the same axes the GPU profiler does
-  (`tokens`, `(prefill_chunk, kv_prefill, n_decode, kv_decode)`,
-  `(tokens, activated_experts)`).
+  (`tokens`, `sequences`, and attention's
+  `(prefill_chunk, prefill_key, n_decode, kv_decode)` for each kernel and
+  `decode_q_len`). Use the category-specific schema for linear attention,
+  MTP and MoE; native MoE component tables require their matching contracts.
 - Write CSVs in the schema documented on
   **[Output bundle](./output-bundle)**.
 
@@ -244,9 +249,11 @@ declare which kernels you need to time. For each entry in the
 
 - For `dense` category: latency as a function of `tokens`.
 - For `per_sequence`: latency as a function of `sequences`.
-- For `attention`: 4D table over `(prefill_chunk, kv_prefill,
-  n_decode, kv_decode)`.
-- For `moe`: 2D table over `(local_tokens, activated_experts)`.
+- For `attention`: a table per kernel and `decode_q_len`, interpolated over
+  `(prefill_chunk, prefill_key, n_decode, kv_decode)`.
+- For `linear_attention`, MTP and MoE: follow the matching
+  [output schema](./output-bundle). Include the linear-attention regimes,
+  drafter entries or MoE contracts required by the model and deployment.
 
 #### 3. Hand-authored from datasheets / public benchmarks
 
@@ -268,7 +275,7 @@ Even when synthesizing, write a `meta.yaml` so the simulator's
 runtime warnings work properly:
 
 ```yaml
-profiler_version: "synthetic-v1"
+profiler_version: "synthetic"
 vllm_version: "n/a"
 gpu: "<driver device name, or n/a>"
 hardware: "<HARDWARE>"          # must equal the folder name
@@ -285,7 +292,7 @@ skew_fit:
   enabled: false                # no measured heterogeneous correction
 ```
 
-Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration-v1` entries or their hashes:
+Do not supply guessed inline alpha coefficients or invent `runtime-skew-calibration` entries or their hashes:
 generate them from measured skew data and matching attention references with
 `profiler refit-skew`. See [Skew & alpha fit](./skew-alpha-fit).
 
@@ -304,7 +311,7 @@ or fill them in however you like.
 
 :::warning[Enable only measured, compiled calibration]
 An absent or disabled `skew_fit` applies zero correction. Enabled entries
-must use the versioned compiler output; the old constant-alpha and bucket
+must use a recognized calibration format from the compiler; the old constant-alpha and bucket
 formats are rejected. `profiler refit-skew` compiles your own raw measurements
 against matching attention references. A missing TP or query slice does not
 borrow another slice's correction.
@@ -320,8 +327,10 @@ heterogeneous-decode measurements.
 - `moe.csv` if you're not modeling MoE on this hardware (only needed
   when running MoE models).
 - `tp<N>/` folders for TP degrees you don't need to simulate. Note the
-  mechanism: `_load_perf_db` loads **every** `tp*/` folder it finds and
-  then checks that the ones your cluster config needs are among them.
+  mechanism: `_load_perf_db` discovers available `tp*/` folders and checks
+  that the degrees your cluster config needs are present. Category tables
+  are loaded lazily on lookup; TP1 can still be needed for stable entries
+  and MoE even when the deployment uses another TP degree.
   A missing one is a hard error, not a fallback:
 
   ```text
@@ -330,12 +339,13 @@ heterogeneous-decode measurements.
   including 4.
   ```
 
-### What you cannot skip
+### Required inputs
 
-- `dense.csv`: every model uses dense linears.
-- `per_sequence.csv`: `lm_head` and `sampler` always run.
-- `attention.csv`: every model has attention.
-- `meta.yaml`: without it the simulator can't resolve the variant.
+- The category tables and canonical entries required by the model's resolved
+  catalog and deployment, including linear-attention or MTP tables when used.
+  See the [output schema](./output-bundle) for category coordinates and metadata.
+- `meta.yaml`, which the simulator requires to load the bundle's metadata.
+  The variant folder name itself is derived from the model configuration.
 
 ### Validation
 
@@ -368,9 +378,12 @@ it up automatically when the cluster config names matching values:
 }
 ```
 
-The `--dtype` and `--kv-cache-dtype` CLI flags resolve to the right
-`<variant>` folder via `resolve_variant()` (see
-**[Simulator → Trace generation](/docs/simulator/trace-generation#variant-resolution)**).
+The simulator's `resolve_variant()` derives the folder from the checkpoint;
+it has no runtime dtype-selection flags. Profiler `--dtype`,
+`--kv-cache-dtype` and `--variant` can create alternative measurements that
+are not automatically selected. See
+**[Simulator → Trace generation](/docs/simulator/trace-generation#variant-resolution)**
+and [profiler naming](/docs/profiler/running#precision-and-variant-names).
 
 ## What's next
 

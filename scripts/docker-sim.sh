@@ -17,6 +17,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"                    # .../LLMServingSim
 #   rich          serving/ and bench/ loggers
 #   pandas        scheduler, trace_generator, pim_model
 #   numpy         scheduler
+#   scipy         new native MoE physical-coordinate interpolation
 #   matplotlib    bench/core/plots.py, reached by `python -m bench validate`
 docker run --name servingsim_docker \
   -it \
@@ -24,4 +25,4 @@ docker run --name servingsim_docker \
   -w /app/LLMServingSim \
   astrasim/tutorial-micro2024 \
   bash -c "pip3 install pyyaml pyinstrument rich \
-  pandas==1.5.3 numpy==1.23.5 matplotlib==3.5.3 && exec bash"
+  pandas==1.5.3 numpy==1.23.5 scipy==1.10.1 matplotlib==3.5.3 && exec bash"

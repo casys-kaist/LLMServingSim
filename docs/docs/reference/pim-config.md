@@ -77,8 +77,8 @@ starting with `[` or `;`, strips `#` comments, and flattens every
 - Trailing `# comments` are safe on any line, including section
   headers.
 
-Of the ~50 keys in a bundled file, the simulator reads **eleven**.
-The rest are carried for DRAMSim3 fidelity and are inert here.
+The keys read by the simulator are listed below. Other keys are carried
+for DRAMSim3 fidelity and are inert here.
 
 ### Keys the simulator actually reads
 
@@ -185,7 +185,7 @@ row_buf_policy = OPEN_PAGE
 
 | Field | Type | Read? | Description |
 | --- | --- | --- | --- |
-| `channel_size` | int | **yes** | Target per-channel capacity in **MB**. Rounded to a whole number of ranks (see below) |
+| `channel_size` | int | **yes** | Target per-channel capacity in **MB**, raised to one rank's capacity if smaller; otherwise retained without whole-rank rounding |
 | `channels` | int | no | **Ignored.** Channel count is derived from the node's `cpu_mem.mem_size`, not from this field |
 | `bus_width` | int | **yes** | Memory bus width in bits |
 | `address_mapping` | string | no | DRAMSim3 address-mapping scheme |
@@ -226,11 +226,12 @@ page_size        = columns * device_width / 8          # bytes
 megs_per_bank    = page_size * (rows / 1024) / 1024    # MB
 megs_per_rank    = megs_per_bank * banks * devices_per_rank
 
-# channel_size from the INI is a target, snapped to whole ranks
+# channel_size from the INI is a target with a one-rank minimum
 if megs_per_rank > channel_size:
     channel_size = megs_per_rank                       # one rank, minimum
 else:
-    channel_size = (channel_size / megs_per_rank) * megs_per_rank
+    ranks = channel_size / megs_per_rank              # true division, may be fractional
+    channel_size = ranks * megs_per_rank
 
 ch_capacity = channel_size / 1024                      # GB
 ```
@@ -315,10 +316,10 @@ entirely from this table.
 ## Adding a new PIM config
 
 A new `.ini` is necessary but not sufficient. The spec name is
-whitelisted in code, so this takes two steps:
+whitelisted in code:
 
 1. Drop the file at `configs/pim/<name>.ini`. Populate at minimum the
-   eleven keys the simulator reads: `bankgroups`, `banks_per_group`,
+   keys the simulator reads: `bankgroups`, `banks_per_group`,
    `rows`, `columns`, `device_width`, `CL`, `tCK`, `bus_width`,
    `channel_size`, `data_rate`, `idle_power`, `peak_power`. Copy a
    bundled file and edit it rather than starting from scratch, so the
@@ -379,7 +380,8 @@ For a worked example, see
    `pim_type = SINGLE`; switching to `DUAL` changes nothing, because
    `pim_model.py` never reads it.
 6. **Powers are milliwatts.** `idle_power = 623` means 0.623 W per
-   DIMM. Mixing in a watt-valued number inflates node power by 1000x.
+   DIMM. Entering `0.623` would be interpreted as 0.623 mW and
+   understate that power by 1000x.
 
 ## What's next
 

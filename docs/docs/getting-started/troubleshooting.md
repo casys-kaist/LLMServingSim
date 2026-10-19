@@ -72,6 +72,10 @@ If the host's `nvidia-smi` works but the container's doesn't, the
 toolkit is the problem. If the host's `nvidia-smi` fails too, install
 the NVIDIA driver first.
 
+A successful CUDA 12.4 visibility probe does not verify the CUDA 13 runtime
+required by the default vLLM image. Check that image separately using the
+[vLLM setup instructions](./installation/vllm).
+
 ## Hugging Face: gated model / 401 / 403
 
 **Symptom:** When profiling a Llama 3.x or gated Qwen variant:
@@ -92,8 +96,12 @@ meta-llama/Llama-3.1-8B is restricted...
    ./scripts/docker-vllm.sh
    ```
 
-The token gets forwarded into the container automatically. Confirm
-with `echo $HF_TOKEN` inside the container.
+The token gets forwarded into the container automatically. Check that it is
+set without printing the secret:
+
+```bash
+test -n "$HF_TOKEN" && echo "HF_TOKEN is set"
+```
 
 ## ASTRA-Sim build fails
 
@@ -171,10 +179,7 @@ combination that doesn't have profile data:
 FileNotFoundError: Profile variant folder not found:
 ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B/bf16-kvfp8. The
 variant name is derived from the checkpoint (weight dtype, plus a
--kv<dtype> suffix when it declares a quantized KV cache), so the
-simulator cannot be pointed at a different one -- profile this model
-with the profiler's defaults, which name the same folder. Existing
-variants: ../profiler/perf/RTXPRO6000/meta-llama/Llama-3.1-8B
+-kv<dtype> suffix when it declares a quantized KV cache), ...
 ```
 
 **Cause:** The `(hardware, model, variant)` triple has no profiled
@@ -185,12 +190,15 @@ see which variants you do have.
 The variant is *derived*, and there is no flag to change it: the weight
 dtype comes from `quantization_config.quant_method` or `torch_dtype`,
 and a `-kvfp8` suffix appears when the checkpoint declares a quantized
-KV cache. So the fix is always to profile the model rather than to pass
-something different — and the profiler's defaults name exactly the
-folder the simulator asks for. (The profiler's own `--variant`,
-`--dtype` and `--kv-cache-dtype` write *additional* bundles beside it,
-which is how a deliberate second precision gets measured; the simulator
-never reads those.)
+KV cache. Compare that expected label with the acquired bundle's source config
+and recorded engine settings; automatic dtype resolution has config-specific
+limitations, so labels alone do not prove compatible data. Re-profile when the
+required acquisition is missing rather than relabel incompatible rows.
+The profiler can also write intentionally
+different variants. For quantized checkpoints a matching floating dtype keeps
+the quantization name, while a different one uses `-act...`; those alternate
+measurements are not automatically selected by the simulator.
+See [profiler naming](/docs/profiler/running#precision-and-variant-names).
 
 Two neighbouring errors with different fixes:
 
@@ -261,11 +269,17 @@ especially with MoE + EP or large prefix caches.
 
 **Common causes & fixes:**
 
+- **Read-only backend output paths.** The analytical backend writes to
+  `astra-sim/log/` and `astra-sim/tmp__mem/`, in addition to the selected
+  inputs directory. A read-only source mount needs writable mounts for these
+  output directories; `--inputs-root` alone does not relocate the backend's
+  logs or temporary memory files. Check backend startup errors before treating
+  an apparent wait as a slow simulation.
 - **Block-copy disabled.** For MoE, keep `--enable-block-copy`
-  on (the default). It replays one transformer block's trace across
-  every layer instead of re-computing routing per layer. Safe with
-  `--expert-routing-policy BALANCED` (default, deterministic);
-  `RR`/`RAND` average out per-layer variance.
+  on (the default) to reuse rows for matching block/site sequences.
+  This is exact for deterministic BALANCED/RR routing at a fixed batch shape.
+  RAND reuses a draw and suppresses per-layer variation; turn copying off when
+  that variation matters. Contextual profiles disable copying.
 - **Verbose logging.** `--log-level DEBUG` writes a lot. Drop to
   `--log-level INFO` or `WARNING`.
 - **`--log-interval` too small.** Setting it to `0.1` makes the
@@ -290,20 +304,17 @@ builds a prefill backend and reads `self.impl.masked_mha_available`, an
 attribute only `SparseMLACommonImpl` sets — and that class is not in
 this impl's MRO.
 
-**Fix:** run the backport, which `scripts/docker-vllm.sh` now does
-automatically at container start:
-
-```bash
-python3 scripts/patches/vllm_sm120_sparse_mla.py
-```
-
-It applies the same one line as upstream's
-[PR #51395](https://github.com/vllm-project/vllm/pull/51395), is
-idempotent, and is a no-op on a vLLM that already has the fix. If your
-container predates that change to `docker-vllm.sh`, run it by hand.
+**Fix:** the default vLLM 0.31.0 image's registered SM120 implementation already
+inherits the sparse common implementation and sets `supports_dense_mha_prefill`
+to `False`. The obsolete repository backport of
+[PR #51395](https://github.com/vllm-project/vllm/pull/51395) has been removed.
+Recreating the container with the current launcher uses this upstream fix;
+an old 0.28.0 container must use the upstream fix or its matching historical
+repository checkout. This specific fix does not certify all sparse-MLA paths
+on the newer runtime.
 
 :::note[`profiler coverage` does not catch this one]
-Coverage fires three fixed shots. The failure needs a batch that takes
+Coverage fires three fixed shots. In the affected 0.28.0 run, the failure needed a batch that took
 the dense-MHA prefill path, which first appeared at shot 89 of 152 in
 the dense category — so a clean coverage report is not evidence that a
 full sweep will finish.

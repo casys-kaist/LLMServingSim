@@ -2,7 +2,7 @@
 
 A ``Shot`` is one unit of work we hand to the vLLM worker: a list of
 (new_tokens, history) pairs describing the shape of every request in a
-synthetic batch, plus optional MoE routing hints. A ``Shot`` is
+synthetic batch. A ``Shot`` is
 serialized to a plain dict for cross-process transport (via
 ``llm.collective_rpc``) and rehydrated inside the worker.
 
@@ -22,7 +22,6 @@ Exactly the shape needed to sweep attention at arbitrary
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -36,14 +35,9 @@ class Shot:
             entry per synthetic request. ``new_tokens`` is what we'll
             feed into ``execute_model`` this step; ``history`` is the
             KV the engine should treat as preloaded.
-        experts: Optional MoE payload. When set, the worker activates
-            exactly ``experts["activated"]`` experts via forced
-            routing (see moe_hook.force_moe_routing). None for
-            non-MoE shots.
     """
 
     requests: list[tuple[int, int]]
-    experts: dict[str, Any] | None = None
     # Query tokens per decode request. Carried rather than re-derived from
     # ``requests``, because with more than one query token a decode is
     # indistinguishable by shape from a prefill chunk -- which is exactly the
@@ -66,7 +60,6 @@ class Shot:
     def hydrate(cls, raw: dict[str, Any]) -> "Shot":
         return cls(
             requests=[tuple(r) for r in raw.get("requests", [])],
-            experts=raw.get("experts"),
             decode_q_len=int(raw.get("decode_q_len") or 1),
             n_prefill=int(raw.get("n_prefill") or 0),
         )
@@ -204,22 +197,8 @@ class Shot:
             raise ValueError(
                 "linear_attention Shot needs prefill_tokens or n_decode"
             )
-        return cls(requests=reqs)
+        return cls(requests=reqs, n_prefill=int(prefill_tokens > 0))
 
-    @classmethod
-    def moe(cls, total_tokens: int, activated_experts: int,
-            ep: int = 1) -> "Shot":
-        """Dense-style batch tagged with MoE routing metadata.
-
-        ``ep`` is the EP degree the booting engine stands in for. It rides on
-        the shot only so ``extract_points`` can label the row -- the worker
-        does not read it, because the slice is already baked into the engine's
-        expert count and top-k.
-        """
-        return cls(
-            requests=[(total_tokens, 0)],
-            experts={"activated": activated_experts, "ep": ep},
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +239,30 @@ def _kv_group_block_sizes(model_runner) -> list[int]:
     return [int(bt.block_size) * int(bt.blocks_per_kv_block) for bt in block_tables]
 
 
+def validate_shot_limits(shot: Shot, config):
+    """Reject synthetic batches before allocating pages or launching GPU work.
+
+    Direct worker calls bypass the scheduler's safety checks. Use the actual
+    acquisition buffer limits here, not the smaller logical sampling budget.
+    """
+    if not shot.requests or any(type(q) is not int or type(h) is not int or q < 1 or h < 0
+                                for q, h in shot.requests):
+        raise ValueError('Profiling shots require positive query and nonnegative history lengths')
+    if type(shot.n_prefill) is not int or not 0 <= shot.n_prefill <= len(shot.requests):
+        raise ValueError('Invalid profiling prefill request count')
+    scheduler, model = config.scheduler_config, config.model_config
+    if len(shot.requests) > scheduler.max_num_seqs:
+        raise ValueError(f'Profiling shot has {len(shot.requests)} requests, exceeding '
+                         f'engine max_num_seqs={scheduler.max_num_seqs}')
+    tokens = sum(q for q, _ in shot.requests)
+    if tokens > scheduler.max_num_batched_tokens:
+        raise ValueError(f'Profiling shot has {tokens} query tokens, exceeding '
+                         f'engine max_num_batched_tokens={scheduler.max_num_batched_tokens}')
+    if max(q + h for q, h in shot.requests) + 1 > model.max_model_len:
+        raise ValueError(f'Profiling shot needs history + query + one output within '
+                         f'max_model_len={model.max_model_len}')
+
+
 def assemble_scheduler_output(shot: Shot, model_runner):
     """Build a ``SchedulerOutput`` describing the shot's synthetic batch.
 
@@ -268,6 +271,7 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         the set of request IDs we created so callers can correlate
         with ``execute_model``'s output if needed.
     """
+    validate_shot_limits(shot, model_runner.vllm_config)
     # Local imports: these symbols must come from whatever vLLM is
     # actually installed in the worker — not from a cached import at
     # host-side module load time.
@@ -286,31 +290,19 @@ def assemble_scheduler_output(shot: Shot, model_runner):
         max_tokens=1,
     )
 
-    block_sizes = _kv_group_block_sizes(model_runner)
-    num_kv_groups = len(block_sizes)
+    from .cache_pages import allocate_shot_blocks
+    allocations = allocate_shot_blocks(shot, model_runner)
+    num_kv_groups = len(model_runner.kv_cache_config.kv_cache_groups)
 
     scheduled: list = []
     num_scheduled_tokens: dict[str, int] = {}
     total_num_scheduled_tokens = 0
 
-    # Track the next free block index per KV group. We assign blocks
-    # greedily in arrival order; since these are fresh dummy requests
-    # there's no overlap concern.
-    block_cursor = [0] * num_kv_groups
     req_ids: list[str] = []
 
     for idx, (new_tokens, history) in enumerate(shot.requests):
         req_id = f"r{idx}"
         total_len = new_tokens + history
-
-        # For each KV group, reserve enough blocks to cover total_len.
-        # We round up because partial blocks still consume one slot.
-        group_block_ids: list[list[int]] = []
-        for g, bs in enumerate(block_sizes):
-            num_blocks = math.ceil(total_len / bs) if total_len else 1
-            ids = list(range(block_cursor[g], block_cursor[g] + num_blocks))
-            block_cursor[g] += num_blocks
-            group_block_ids.append(ids)
 
         scheduled.append(
             NewRequestData(
@@ -330,7 +322,7 @@ def assemble_scheduler_output(shot: Shot, model_runner):
                 mm_features=[],
                 sampling_params=sampling_params,
                 pooling_params=None,
-                block_ids=tuple(group_block_ids),
+                block_ids=allocations[idx],
                 # This is the "KV cache already contains `history`
                 # tokens" marker. It declares geometry, not initialized
                 # storage; dummy KV initialization happens separately.

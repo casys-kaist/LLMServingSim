@@ -166,7 +166,7 @@ before; what changed is that the guess is now visible as one.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mem_size` | float | ✓ | Capacity per device in **GB** |
+| `mem_size` | float | ✓ | Capacity per device in **GiB** |
 | `mem_bw` | float | ✓ | Bandwidth per device in **GB/s** |
 | `mem_latency` | float | ✓ | Access latency in **ns** |
 | `num_devices` | int | optional (default `1`) | Number of CXL devices (`cxl:0` through `cxl:N-1`) |
@@ -179,10 +179,14 @@ field.
 ```json
 {
   "num_instances": 2,
-  "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+  "cpu_mem": {
+    "mem_size": 512,
+    "mem_bw": 256,
+    "mem_latency": 0,
+    "pim_config": "DDR4_8GB_3200_pim"
+  },
   "instances": [...],
-  "power": {...},
-  "cpu_mem.pim_config": "DDR4_8GB_3200_pim"
+  "power": {...}
 }
 ```
 
@@ -197,10 +201,15 @@ field.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mem_size` | float | ✓ | Host CPU memory capacity in **GB** |
+| `mem_size` | float | ✓ | Host CPU memory capacity in **GiB** |
 | `mem_bw` | float | ✓ | CPU memory bandwidth in **GB/s** |
 | `mem_latency` | float | ✓ | CPU memory latency in **ns** |
 | `pim_config` | string | optional | Name of a PIM device config in `configs/pim/`. See **[PIM config](./pim-config)** |
+
+When the CLI or any instance enables attention offloading, cluster construction
+requires `pim_config` on every node and derives its CPU-memory bandwidth and
+latency from that INI. Capacity values use GiB (`1024^3` bytes); memory
+bandwidth remains decimal GB/s.
 
 ### `power` (optional)
 
@@ -268,16 +277,21 @@ Three rules the table cannot show:
 }
 ```
 
-### Required fields
+### Identity and memory fields
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `model_name` | string | HF id. Must match a config at `configs/model/<model_name>.json` (see **[Model config](./model-config)**) |
 | `hardware` | string | Hardware label. Must match `profiler/perf/<hardware>/` |
-| `npu_mem.mem_size` | float | Per-GPU NPU memory in **GB** |
-| `npu_mem.mem_bw` | float | Per-GPU NPU memory bandwidth in **GB/s** |
-| `npu_mem.mem_latency` | float | Per-GPU NPU memory latency in **ns** |
+| `npu_mem.mem_size` | float | Per-GPU NPU memory in **GiB**; inherited from hardware data when omitted |
+| `npu_mem.mem_bw` | float | Per-GPU NPU memory bandwidth in **GB/s**; inherited when omitted |
+| `npu_mem.mem_latency` | float | Per-GPU NPU memory latency in **ns**; inherited when omitted |
 | `pd_type` | string \| null | `"prefill"`, `"decode"`, or `null` (combined) |
+
+`model_name`, `hardware` and `pd_type` must be supplied. The `npu_mem`
+object and its hardware fields may be omitted when the hardware file supplies
+them; any unresolved required field fails at startup. `mem_util` has its
+separate CLI default and is not inherited from hardware data.
 
 ### Parallelism (at least one of `num_npus` / `tp_size`)
 
@@ -361,24 +375,35 @@ compatible with each member's scheduler limits.
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | Effective vLLM MRV1 graph mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY`, or `FULL_AND_PIECEWISE` (default assumption) |
+| `runner` | `v1` (historical default) or `v2`; selects the model runner's dispatch and DP synchronization rules |
+| `mode` | Effective graph mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY`, or `FULL_AND_PIECEWISE` (default assumption) |
 | `capture_sizes` | Optional positive token counts; deduplicated, sorted and filtered by the token budget and compiler-SP divisibility |
 | `max_capture_size` | Optional positive cap for automatic grid generation. If supplied with `capture_sizes`, it must equal the largest retained size before speculative rounding |
 | `enable_sp` | Compiler sequence parallelism, default `false`. This is **not** the MoE model's sequence-parallel dispatch wrapper |
 
-Without an explicit grid, the simulator follows vLLM 0.28's ordinary
+An explicit `cudagraph` object takes precedence. Otherwise, serving uses a
+matching worker observation imported into the profile bundle's
+`meta.yaml.serving_execution`, or derives defaults. Observations must match
+the model configuration, device, precision, parallelism, scheduler and cache
+scope. A saved but incompatible observation produces a warning, not silent reuse.
+See [importing serving observations](/docs/profiler/output-bundle#serving_execution).
+
+Without an explicit grid, the simulator follows vLLM's ordinary
 non-interactivity grid: 1/2/4, then increments of 8 below 256 and of 16 above.
 The cap depends on the instance's sequence limit, speculative query length,
 token budget and target compute capability. `hardware.yaml` identifies SM10x
 (platform cap 1024); other capabilities use 512. Unknown capability emits a
 warning and assumes 512; specify a cap or grid for a different target.
 Unlimited simulator scheduler limits do not constrain this finite graph cap.
-FULL decode grids are rounded to supported speculative query multiples.
+The sequence-limit endpoint is included when it fits. FULL decode grids are
+rounded to supported speculative query multiples. MRV2 retains separate
+FULL decode and PIECEWISE token grids; MRV1 retains its shared-grid behavior.
 
 Use the **effective worker mode** after attention-backend resolution, not just
 the requested engine mode. Explicit sizes can also describe an interactivity
 grid. Set `mode: "NONE"` for eager execution. The resolver does not automatically
-infer LoRA-specialized keys, cascade/encoder restrictions, DBO, MRV2 or drafter
+infer LoRA-specialized keys, cascade/encoder restrictions, DBO, dynamic/variable
+speculative decoding or drafter
 graph dispatch. Attention offloading uses NONE; graph replay for that simulator
 extension is not modeled. No graph-specific latency multiplier or subtraction
 is applied. See [parallelism mechanics](/docs/simulator/parallelism-mechanics)
@@ -412,11 +437,15 @@ invisible. On a card with headroom, leave it at the default.
 When a run does saturate, the default is the wrong number: the simulator does
 not model vLLM's activation peak or CUDA context, so `0.9` here gives **more**
 KV cache than vLLM gets at the same fraction. Read
-`kv_cache.num_gpu_blocks` from the bench run's `meta.json` and pick the
-`mem_util` whose **KV Cache Initialization** banner reports that same block
-count. On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — that is
-`0.833919`, and it takes the run from -20.7% TTFT / +12.9% TPOT to
-+0.6% / +0.2%. See [Validation](../validation) and
+each rank's complete `kv_cache.capacity.per_engine` observation from the new
+bench run's `meta.json` and match that instance's **KV Cache Initialization**
+block count through `mem_util`. Do not treat a DP client aggregate as one pool;
+see the [capacity metadata contract](bench-cli.md#kv-capacity-metadata).
+Historical single-engine references retain `kv_cache.num_gpu_blocks`.
+On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — the value is
+`0.833919`, matching its recorded 2,588 blocks. The Qwen3-30B example matches
+its complete per-engine observations separately for each DP rank.
+See [Validation](../validation) and
 [KV cache and memory](../simulator/scheduling/kv-cache-and-memory).
 :::
 #### `0` means unlimited, with one caveat
@@ -533,8 +562,10 @@ Structural, in `config_builder.py`:
 - `link_bw` and `link_latency` must both resolve at top level after hardware
   defaults are applied; they need not be written explicitly in the input config.
 - Every instance needs `model_name`, `hardware`, `npu_mem`, and
-  `pd_type`; `npu_mem` needs `mem_size`, `mem_bw`, `mem_latency`. Same
-  three keys are required in `cpu_mem` and, if present, `cxl_mem`.
+  `pd_type` after hardware defaults are applied; `npu_mem` then needs
+  `mem_size`, `mem_bw`, `mem_latency`. The same three keys are required in
+  ordinary `cpu_mem` and, if present, `cxl_mem`; the PIM path instead derives
+  CPU-memory bandwidth and latency from `pim_config`.
 - `num_npus == tp_size * pp_size`, and `pp_size <= num_hidden_layers`.
 - `dp_group` must be a string or `null`, and all instances sharing one
   `dp_group` must agree on `tp_size`, `pp_size` **and** `ep_size`.

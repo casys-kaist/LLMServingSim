@@ -1,0 +1,73 @@
+# Native vLLM 0.31, text-only local eager acquisition. Runtime admission is
+# mandatory; the catalog alone does not certify another backend or deployment.
+# MLA's q-LoRA phase joins concurrent gate and attention streams. Splitting
+# those into additive rows would charge overlapping device time twice.
+model_types: [kimi_k3]
+native_profile: hybrid-residual
+blocks:
+  attn:
+    linear_attention:
+      pre_attn: [attn_res, kda_in_proj, kda_f_b_proj, kda_core, kda_o_proj]
+      post_attn: [attn_res]
+    full_attention:
+      pre_attn: [attn_res, attention, mla_gate, mla_o_proj]
+      post_attn: [attn_res]
+  mlp:
+    dense: [mlp]
+    moe: [moe]
+shared:
+  prologue: [embedding]
+  head: [attn_res, final_layernorm, lm_head, sampler]
+catalog:
+  dense:
+    embedding: {vllm: VocabParallelEmbedding}
+    mlp: {vllm: KimiMLP, not_within: KimiMoE, normalization: invocations}
+    kda_in_proj:
+      callable: {name: kda_in_proj, kind: method, owner: KimiK3DeltaAttention, path: in_proj_qkvgfab.forward}
+      normalization: invocations
+    kda_f_b_proj:
+      callable: {name: kda_f_b_proj, kind: method, owner: KimiK3DeltaAttention, path: f_b_proj.forward}
+      normalization: invocations
+    kda_o_proj:
+      callable: {name: kda_o_proj, kind: method, owner: KimiK3DeltaAttention, path: o_proj.forward}
+      normalization: invocations
+    mla_gate:
+      callable: {name: mla_gate, kind: function, module: vllm.models.kimi_k3.nvidia.mla, attribute: _gate_sigmoid_mul}
+      normalization: invocations
+    mla_o_proj:
+      callable: {name: mla_o_proj, kind: method, owner: MultiHeadLatentAttention, path: o_proj.forward}
+      normalization: invocations
+    attn_res:
+      callable:
+        name: attn_res
+        kind: function
+        module: vllm.models.kimi_k3.nvidia.model
+        attribute: attn_res
+        context:
+          fields:
+            num_blocks: {argument: num_blocks, operation: int}
+            block_write_idx: {argument: block_write_idx, operation: int}
+            delta_present: {argument: delta, operation: present}
+            output_norm_present: {argument: output_norm_weight, operation: present}
+          tensors:
+            prefix: {argument: prefix, token_axis: 0}
+            delta: {argument: delta, optional: true, token_axis: 0}
+            blocks: {argument: blocks, token_axis: 0}
+            norm_weight: {argument: norm_weight}
+            qk_weight: {argument: qk_weight}
+            output_norm_weight: {argument: output_norm_weight, optional: true}
+      normalization: invocations
+  per_sequence:
+    final_layernorm: {vllm: RMSNorm, within: KimiLinearForCausalLM, not_within: KimiDecoderLayer}
+    lm_head: {vllm: LogitsProcessor}
+    sampler: {vllm: Sampler}
+  attention:
+    attention:
+      callable: {name: mla_joint, kind: method, owner: MultiHeadLatentAttention, path: _forward_q_lora}
+      normalization: invocations
+  linear_attention:
+    kda_core:
+      callable: {name: kda_core, kind: method, owner: KimiK3DeltaAttention, path: _forward}
+      normalization: invocations
+  moe:
+    moe: {vllm: KimiMoE, normalization: invocations, sequence_parallel: false}

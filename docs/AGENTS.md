@@ -19,6 +19,31 @@ and policy, never development-session notes or intermediate experiments.
 Do not commit temporary diagnostic or fix-verification scripts, tests or
 generated experiment results. Review the staged diff before committing.
 
+Describe profiling methods directly: collector, CUDA interval aggregation,
+normalization and synthetic input preparation. New CSVs hold coordinates and
+timings; the variant-root `meta.yaml` records methods, observed runtime versions
+and publication evidence. New per-TP records live under `per_tp[tp]`; do not
+document new standalone contract/category/context/callable/skew metadata files.
+Raw repetition checkpoints are acquisition data, not an alternative metadata store.
+Document compact MoE conditioning summaries separately from raw control records.
+Skew metadata is root-only; do not promise a `skew.meta.yaml` read fallback.
+Failure-only diagnostics are optional debugging artifacts, not required simulator
+inputs or material to commit with a profile bundle.
+Use descriptive method/policy/format labels; shared acquisition policy constants
+live in `metadata_names.py`.
+Do not promise old-name aliases. Distinguish legacy file-layout reads from method
+compatibility; preserve real library/model versions, native API identifiers and
+numeric structural schemas.
+Do not document source-file hashes or exact library versions as execution vetoes.
+Keep semantic/API/backend/layout guards and table-integrity checks distinct from
+provenance. Historical timings are never upgraded by restamping metadata, and
+bounded acquisition or duration replay does not establish full serving accuracy.
+Serving graph observations belong in root `meta.yaml.serving_execution`, separate
+from acquisition settings. Preserve explicit instance overrides and document
+scope matching, unknown/incomplete observations and MRV1/MRV2 dispatch separately.
+Completed worker capture is stronger evidence than a frontend requested grid,
+but neither is a graph-specific latency measurement.
+
 ## What this is
 
 A [Docusaurus 3](https://docusaurus.io/) site (TypeScript, classic preset)
@@ -171,8 +196,13 @@ step is silently a no-op if the source is set to anything else.
 ## Conventions
 
 - **README structure**: follow the root AGENTS.md layout/tree conventions and
-  the contributor guide's README and Markdown formatting section. Keep roadmap
-  announcements distinct from implemented and validated behavior.
+  the contributor guide's README and Markdown formatting section. Keep the opening
+  introduction brief and place detailed contracts under topic headings after usage
+  entry points, rather than appending implementation changes to the introduction. Keep roadmap
+  announcements distinct from implemented and validated behavior. Root Getting
+  Started contains only setup/run commands, runtime requirements and links;
+  do not expand it with measurement details, model-specific restrictions or
+  contribution-policy text.
 - **Language**: English only. Match the rest of the LLMServingSim repo.
 - **Changelog**: edit the root source, not the generated page. Keep each change
   category once per release, summarize final user-visible effects, and retain
@@ -184,6 +214,11 @@ step is silently a no-op if the source is set to anything else.
   defaults and subcommand scope with the complete reference and directory
   README index before release. Verify wrapper forwarding with engines disabled.
   Keep the root README as a link to those references, not a duplicate flag list.
+- **Runtime contracts**: distinguish measured per-TP backend semantics from
+  historical compatibility rules. A native attention lookup cap is neither a
+  rewrite of raw CSV coordinates nor a KV-capacity limit; document publication
+  checks and supported source/layout scope without generalizing a bounded probe
+  into full-grid, distributed-deployment or benchmark validation.
 - **Code blocks**: always specify the language (` ```bash `, ` ```python `,
   ` ```yaml `). The site's Prism config preloads bash, python, json, yaml.
 - **Images**: under `static/img/`, reference as `/img/<file>.png`.

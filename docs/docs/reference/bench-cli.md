@@ -33,12 +33,18 @@ Strict replay: the runner reads a LLMServingSim-format JSONL workload
 vLLM run therefore processes exactly the prompts the simulator sees,
 in the same order.
 
+Replay supports **flat requests with nonempty `input_tok_ids`** only. The
+loader skips rows containing `sub_requests`, so agentic-session dependencies
+and tool delays are not benchmarked. Use a flat-only dataset for a matched
+simulator comparison; mixed files would run different workloads on the two
+sides. Count-only requests cannot be tokenized by this runner.
+
 ### Required
 
 | Flag | Type | Description |
 | --- | --- | --- |
-| `--model` | string | HF model id, passed verbatim to `vllm.AsyncLLM`. Unlike the simulator, this is a real load: weights are downloaded and placed on GPU |
-| `--dataset` | path | LLMServingSim-format JSONL workload. See **[Workloads → JSONL format](/docs/workloads/jsonl-format)** |
+| `--model` | string | HF model id or local model directory, passed verbatim to `vllm.AsyncLLM`. The default loader reads checkpoint weights; `--load-format dummy` instead initializes random weights for diagnostics |
+| `--dataset` | path | Flat LLMServingSim-format JSONL requests with nonempty `input_tok_ids`; session rows are skipped. See **[Workloads → JSONL format](/docs/workloads/jsonl-format)** |
 | `--output-dir` | path | Where to write `meta.json` / `requests.jsonl` / `timeseries.csv`. Conventionally `bench/results/<run_id>/` |
 
 ### Parallelism
@@ -52,25 +58,30 @@ the bench-side counterpart of a cluster config's `tp_size` / `ep_size`
 | `--tensor-parallel-size` | int | `1` | vLLM `tensor_parallel_size` |
 | `--data-parallel-size` | int | `1` | vLLM `data_parallel_size` (DP across engines) |
 | `--enable-expert-parallel` | flag | off | vLLM `enable_expert_parallel`, for MoE models |
+| `--disable-custom-all-reduce` | flag | off | Disable vLLM custom all-reduce explicitly; other optimized or fused communication paths remain available |
 
-The communication baseline is NCCL. The runner always passes
-`disable_custom_all_reduce=True`; there is no custom-all-reduce CLI switch.
-This input is recorded in `meta.json` and `engine_start.json` under
-`engine_kwargs`, in addition to the engine's resolved parallel configuration.
-Before importing vLLM, the runner also pins
-`VLLM_ALLREDUCE_USE_FLASHINFER=0` and `VLLM_ALLREDUCE_USE_SYMM_MEM=0`.
-These independent non-NCCL paths are not controlled by the custom flag;
-Torch symmetric-memory all-reduce is enabled by default in vLLM 0.28 on
-supported devices. Effective overrides are saved in `meta.json` under
-`hardware.all_reduce_environment`. Check the backend-selection log when
-verifying a new environment.
-The runner also disables `compilation_config.pass_config.fuse_allreduce_rms`
-and `fuse_gemm_comms`, which can replace collectives with FlashInfer/AITER or
-Torch symmetric-memory fused kernels independently of those switches.
-These explicit overrides are recorded under `engine_kwargs.compilation_config`;
-ordinary compute compilation and CUDA graphs keep their usual defaults.
-Historical benchmark files retain their original metadata and are not
-retroactively NCCL-only; compare communication settings before reusing them.
+Communication backend selection defaults to vLLM's own choice, **not NCCL-only**.
+The runner preserves caller environment values. Separately, it retains
+`compilation_config.pass_config.fuse_allreduce_rms=False` and
+`fuse_gemm_comms=False`, keeping the benchmark's separate compute/communication
+decomposition. Ordinary compute compilation and CUDA graphs stay enabled.
+These two compiler switches do not disable model-native fused implementations.
+`--disable-custom-all-reduce` disables only vLLM custom all-reduce; FlashInfer,
+symmetric-memory or model-native fused paths may still run. Do not use that flag
+alone as proof of an NCCL-only recording. The `bench.sh` equivalent is
+`DISABLE_CUSTOM_ALL_REDUCE=1` (default `0`).
+
+`meta.json` and `engine_start.json` record the custom-all-reduce argument and
+the two compilation overrides under `engine_kwargs`, and resolved
+parallel/compiler settings under `resolved_config`. `meta.json` also records
+the inherited `VLLM_ALLREDUCE_USE_FLASHINFER`,
+`VLLM_ALLREDUCE_USE_SYMM_MEM` and `VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC` values
+under `hardware.all_reduce_environment`. A null value means unset: the installed
+vLLM resolves its default. These settings describe configuration, not a measured
+per-collective dispatch trace; check runtime backend selection when establishing
+a communication baseline. Preserve each reference's recorded backend settings;
+a custom-all-reduce-disabled reference must not be relabelled as a measurement
+of default backend selection. TP1 does not exercise the TP custom-all-reduce path.
 
 ### Scheduler and precision
 
@@ -84,22 +95,30 @@ comparison is not apples-to-apples.
 | `--max-model-len` | int | `None` | vLLM `max_model_len`. `None` uses the model's own maximum |
 | `--dtype` | string | `bfloat16` | Model dtype |
 | `--kv-cache-dtype` | string | `auto` | vLLM `kv_cache_dtype` |
-| `--kv-cache-memory-bytes` | int | `None` | Explicit per-GPU KV cache budget for capacity-matched controls. `None` retains automatic memory profiling. Equal memory utilization need not resolve to equal cache capacity across boots; verify `kv_cache.num_gpu_blocks` for every compared run |
+| `--kv-cache-memory-bytes` | int | `None` | Explicit per-GPU KV cache budget for capacity-matched controls. `None` retains automatic memory profiling. Verify complete `kv_cache.capacity.per_engine` observations; equal utilization does not guarantee equal blocks, and a DP client scalar can be an aggregate |
 | `--seed` | int | `42` | Sampling seed |
 | `--load-format` | string | `auto` | vLLM `load_format`. `dummy` skips checkpoint reads and initializes random weights. For dense models, fixed-input/fixed-output-length replay makes this useful for controlled performance diagnostics, not automatically interchangeable end-to-end truth. Verify the resolved backend and KV block count on every boot. MoE routing can depend on real weights and activations, so dummy weights need a separate routing control. The load format is recorded in `meta.json` |
 | `--skip-tokenizer-init` | flag | off | Boot without loading a tokenizer; replay supplies token IDs directly. For a local config-only diagnostic, create a separate model directory containing `config.json`, pass that directory as `--model`, and use `--load-format dummy`. The benchmark does not materialize the repository's named JSON files into that layout for you. Real-weight runs still require checkpoint weights |
 | `--enforce-eager` | flag | off | Run vLLM eager, with `torch.compile` and CUDA graphs off. Leave it off when comparing with the default compiled target. An eager reference helps isolate execution-mode effects because ordinary layerwise acquisition requires module boundaries, while native MoE component tables can include graph timings. Record and match the target mode; graph padding alone does not reproduce graph kernel fusion. Saved in `meta.json` |
 | `--record-gate-stats` | flag | off | Observe distinct-expert counts between explicit workload start/end markers and write `gate_stats.json` for `--expert-routing-policy CUSTOM`. Concentrated routing is retained; counts do not identify warmup. Requires the `VLLM_MOE_ACTIVATED_LOG` source patch from `scripts/docker-vllm.sh` and **`--enforce-eager`**, because `.unique()` is not graph-capturable. The curve describes the recorded weights and inputs, not all deployments. Instrumented latency is marked diagnostic and rejected by `bench validate`. Dense models produce no curve and warn |
-| `--resolve-only` | flag | off | Boot the engine, write `meta.json`, and exit without replaying. What that buys is the one number a latency comparison depends on before any of it means anything: `kv_cache.num_gpu_blocks`, which vLLM only settles at boot after subtracting the activation peak and CUDA context. Cheap with `--load-format dummy`, so a config can be checked against the simulator's block count in a minute. `requests.jsonl` and `timeseries.csv` are not written — there is no run to record |
+| `--resolve-only` | flag | off | Boot the engine, write resolved settings and KV capacity metadata, then exit without replay. Match complete per-engine observations to simulator instances; the raw DP client count need not describe one engine. Dummy loading avoids checkpoint reads but does not certify a real-weight capacity. No `requests.jsonl` or `timeseries.csv` is written |
 
 :::note[Defaults differ from `python -m serving`]
 `bench run` defaults `--dtype` to `bfloat16` outright, where the
 simulator resolves it from the model config's `torch_dtype`. `bench`
 also has no `--block-size`: vLLM picks the KV block size itself, and
-the value it settled on is recorded in `meta.json` under
-`kv_cache.block_size`. Read it back and pass it to the simulator as
-`--block-size` if you want the two to line up.
+values it settled on are recorded in `meta.json`. For new DP runs use the
+corresponding complete `kv_cache.capacity.per_engine` entry, including its
+block size. Historical single-engine references retain `kv_cache.block_size`.
+Pass the matched value to the simulator as `--block-size` or an instance override.
 :::
+
+The benchmark CLI does not expose every vLLM engine option. In particular,
+`gpu_memory_utilization` inherits the installed vLLM default; there is no
+`--gpu-memory-utilization` flag. The committed RTXPRO6000 references record
+0.92, so invoking the current wrapper is not an exact reconstruction of their
+settings. Verify effective settings and observed KV capacity for every new
+reference, including when using an explicit `--kv-cache-memory-bytes` budget.
 
 ### Workload and output
 
@@ -119,18 +138,22 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
 
 ```
 <output-dir>/
+  engine_start.json  normal replay startup snapshot, written before submission;
+                     not a completion marker
   meta.json          run metadata plus what vLLM *resolved*: kv_cache
                      (num_gpu_blocks, block_size, num_kv_tokens,
-                     gpu_memory_utilization), hardware (device name,
+                     gpu_memory_utilization, qualified capacity), hardware (device name,
                      total memory, UUID, CPU affinity, allowed NUMA nodes,
                      CUDA / torch versions), and
                      resolved_config -- the whole VllmConfig, one key
-                     per sub-config
+                     per sub-config; execution -- effective worker graph
+                     policy after capture, or unknown with a reason
   requests.jsonl     per request: request_id, input_toks, output_toks,
                      arrival_time, queued_ts, scheduled_ts,
                      first_token_ts, last_token_ts
-  timeseries.csv     per tick: t, prompt_throughput, gen_throughput,
-                     running, waiting, kv_cache_pct
+  timeseries.csv     per tick: t, prompt_throughput,
+                     prompt_compute_throughput, prompt_cached_throughput,
+                     gen_throughput, running, waiting, preempted, kv_cache_pct
   gate_stats.json    --record-gate-stats only: the measured curve
                      (tokens -> mean distinct experts, samples) plus
                      model / num_experts / num_experts_per_tok, so a
@@ -139,12 +162,48 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
                      gate_stats.json was reduced from
 ```
 
-`meta.json`'s `kv_cache.num_gpu_blocks` is the number worth reading
-first: it is the KV capacity the simulator has to match, and the only
-place vLLM's activation peak shows up, since the rest of its memory
-budget is known up front. The simulator does not model that peak, so
-its capacity at the same `mem_util` is an upper bound. See
-**[KV cache and memory](/docs/simulator/scheduling/kv-cache-and-memory)**.
+`preempted` counts preemption events during the tick, summed over DP engines.
+The prompt compute/cache throughput columns distinguish computed prompt tokens
+from prefix-cache hits. Older recordings can omit these three columns; inspect
+the CSV header before using them.
+
+### Serving graph metadata
+
+After startup and before request submission, a read-only worker RPC observes
+the effective graph mode and complete FULL/PIECEWISE capture grids, along with
+model, device, precision and deployment scope. All TP/PP/DP ranks must agree;
+the DP client is queried per engine to retain every response. Unsupported or
+incomplete observations remain `unknown` without failing the benchmark.
+Frontend `resolved_config.compilation_config.cudagraph_capture_sizes` also keeps
+its full list, but a requested list is not evidence of completed worker capture.
+Use [profiler import-execution](/docs/profiler/output-bundle#serving_execution)
+to explicitly attach a compatible observation to a profile bundle. It changes
+neither recorded timings nor the profiler's acquisition mode.
+
+### KV capacity metadata
+
+`kv_cache.capacity` schema 1 qualifies the preserved raw client fields. On the
+reviewed vLLM 0.31 startup path, `num_gpu_blocks` sums the connected DP engines
+and `block_size` is the last engine's READY value. The legacy `num_kv_tokens`
+product is arithmetic, not a general aggregate token capacity.
+
+When `capacity.status` is `complete`, `capacity.per_engine` contains directly
+observed DP ranks, scheduler block counts, block sizes, native token capacities
+and parallelism. Match each simulator instance to its rank; do not divide a
+client total by DP or assume equal hardware guarantees equal budgets. These are
+scheduler-pool counts, not tensor traffic or physical per-GPU memory measurements.
+The simulator does not model the activation peak, so equal `mem_util` values do
+not ensure equal capacity; see **[KV cache and memory](/docs/simulator/scheduling/kv-cache-and-memory)**.
+
+The observer retains bounded native READY payloads only while `AsyncLLM`
+constructs, restoring its callback before decoding or request submission. No
+worker RPC or request instrumentation is added. Unsupported callback/response
+APIs, replaced callbacks, client/topology mismatches and incomplete observations
+produce `status: unknown`, `per_engine: null` and a reason. The observer records
+the runtime version, callback signature and response fields; exact version equality
+is not an admission requirement. Resolve-only
+uses the same contract. Startup facts do not track later elastic changes;
+historical runs keep their original fields and recorded-version semantics.
 
 The dataset is never modified — generation lives in
 `workloads/generators`.
@@ -240,6 +299,7 @@ MAX_NUM_SEQS=128 MAX_NUM_BATCHED_TOKENS=2048 \
 | `TP` | `--tensor-parallel-size` | `2` |
 | `DP` | `--data-parallel-size` | `1` |
 | `EXPERT_PARALLEL` | `--enable-expert-parallel` when `1` | `0` |
+| `DISABLE_CUSTOM_ALL_REDUCE` | `--disable-custom-all-reduce` when `1` | `0` |
 | `MAX_NUM_SEQS` | `--max-num-seqs` | `128` |
 | `MAX_NUM_BATCHED_TOKENS` | `--max-num-batched-tokens` | `2048` |
 | `MAX_MODEL_LEN` | `--max-model-len`, omitted when blank | blank |
@@ -279,7 +339,7 @@ Positional, with three environment overrides:
 
 ## Committed examples
 
-`bench/examples/` holds four end-to-end runs, keyed
+`bench/examples/` holds four headline end-to-end runs plus stored diagnostics, keyed
 `<hardware>/<model>` — a dense single-GPU baseline, a TP=2 dense run and
 a DP+EP MoE run on RTXPRO6000, plus the same dense baseline on an
 RTX 4090 — each bundling its cluster `config.json`, the vLLM artifacts,

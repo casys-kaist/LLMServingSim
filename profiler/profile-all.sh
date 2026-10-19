@@ -48,6 +48,8 @@ ATTENTION_KV_FACTOR="${ATTENTION_KV_FACTOR:-2.0}"
 # Timed forwards per shot (averaged). N=3 tames single-sample DVFS
 # jitter (~15-25% on large GEMMs -> ~5%) at ~3x profile time.
 MEASUREMENT_ITERATIONS="${MEASUREMENT_ITERATIONS:-3}"
+# Native MoE defaults to DP1 and eager measurement; all three axes share this factor.
+MOE_GRID_FACTOR="${MOE_GRID_FACTOR:-2.0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -65,7 +67,13 @@ for job in "${JOBS[@]}"; do
     cmd+=(--attention-chunk-factor "$ATTENTION_CHUNK_FACTOR")
     cmd+=(--attention-kv-factor "$ATTENTION_KV_FACTOR")
     cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
+    cmd+=(--moe-grid-factor "$MOE_GRID_FACTOR")
+    [[ -n "${DP_DEGREES:-}" ]]            && cmd+=(--dp "$DP_DEGREES")
+    [[ -n "${EP_DEGREES:-}" ]]            && cmd+=(--ep "$EP_DEGREES")
+    [[ -n "${MOE_ROUNDS:-}" ]]            && cmd+=(--moe-rounds "$MOE_ROUNDS")
     # Optional globals, only when set.
+    [[ -n "${GRID_FACTOR:-}" ]]            && cmd+=(--grid-factor "$GRID_FACTOR")
+    [[ -n "${CUDAGRAPH:-}" ]]              && cmd+=(--cudagraph "$CUDAGRAPH")
     [[ -n "${TP_DEGREES:-}" ]]             && cmd+=(--tp "$TP_DEGREES")
     [[ -n "${BLOCK_SIZE:-}" ]]             && cmd+=(--block-size "$BLOCK_SIZE")
     [[ -n "${GPU_MEMORY_UTILIZATION:-}" ]] && cmd+=(--gpu-memory-utilization "$GPU_MEMORY_UTILIZATION")

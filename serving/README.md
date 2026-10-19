@@ -2,6 +2,57 @@
 
 LLMServingSim simulator core. Run as `python -m serving --cluster-config <...> [...]`.
 
+When comparing a new DP benchmark, match each instance's KV pool to the
+corresponding complete `kv_cache.capacity.per_engine` observation, not the
+frontend's aggregate block count. This does not change the simulator's memory
+formula; see the [capacity metadata contract](../docs/docs/reference/bench-cli.md#kv-capacity-metadata).
+
+Declared row-output projections, including Qwen's `gdn_out_proj`, carry their
+ordinary TP AllReduce at activation dtype. Stored latency rows are unchanged;
+TP1 emits no reduction. See [parallelism mechanics](../docs/docs/simulator/parallelism-mechanics.md).
+
+Trace generation validates runtime-selected component layouts per TP before
+expanding and caching their immutable block sequences. Pending/incompatible tables
+are refused; historical unmarked tables retain their original decomposition.
+Packed GDN sizing follows its operator boundary, with persistent state accounted
+separately. Declared row-output reductions include Qwen's `gdn_out_proj`; unsupported
+attention-wide sequence-parallel deployments fail before trace emission.
+Native MoE deployment tables and interpolation structures persist across batch
+views, with separate TP/DP/rank/sequence-parallel cache entries. Publish a complete
+bundle and keep it unchanged while readers use it. See the
+[layout contract](https://llmservingsim.ai/docs/profiler/output-bundle#runtime-selected-component-layouts).
+
+MiniMax-M3 indexer traces use independent BF16 query/cache bytes and int32
+per-head block selections. Indexer and sparse-attention rows retain each
+request's cached history, applying the sparse byte cap before summing.
+These are logical tensor bytes; see the [scope and formulas](../docs/docs/reference/trace-format.md#minimax-m3-logical-bytes).
+Separately, new runtime-checked MiniMax-M3 profiles derive their sparse-prefill
+lookup cap from the configured selected-block count and reviewed 128-token
+block layout in their per-TP native contract (2048 for the shipped config);
+unmarked historical tables retain
+2176. Dense/indexer and decode-history coordinates remain uncapped. Incomplete,
+unknown or mismatched native contracts are rejected before lookup; see the
+[bundle contract](../docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
+
+New native DeepSeek-V3.2 tables require explicit
+`generate_trace(..., duration_replay_only=True)`. This local TP1 eager replay
+preserves measured component durations and source-bound logical tensor bytes;
+ordinary serving rejects it because the native 788-byte KV layout is not the
+legacy 708-byte capacity model. This API is not a CLI capacity override or an
+accuracy claim. Matrix payload bytes follow the admitted source's FP8/BF16
+precision, not a universal one-byte assumption. See the [native trace boundary](../docs/docs/simulator/trace-generation.md#native-dsa-duration-replay).
+
+Catalog-selected contextual profiles also require explicit duration replay and
+complete runtime-admitted category tables. The common loader validates their
+catalog/runtime identity against the independently loaded source configuration.
+Kimi-K3's hybrid/residual sizing derives dimensions and roles from that config
+and observed layouts, without copying one layer's residual contexts across
+the stack. See [Kimi replay](../docs/docs/simulator/trace-generation.md#native-kimi-duration-replay)
+for its local eager scope and unsupported memory/distribution modes.
+The catalog and source config are included, but no Kimi performance bundle
+is committed. Ordinary `python -m serving` has no duration-replay flag and
+cannot use this path for scheduler capacity admission.
+
 ## Layout
 
 ```text
@@ -12,6 +63,7 @@ serving/                        Python package
 │   ├── scheduler.py            vLLM-style continuous batching scheduler
 │   ├── trace_generator.py      builds execution traces from profiled latencies
 │   ├── memory_model.py         memory tracking, KV cache, tensor sizes
+│   ├── component_sizes.py      contextual bundles, admitted logical bytes and replay guards
 │   ├── graph_generator.py      Chakra protobuf graph generation
 │   ├── controller.py           IPC with ASTRA-Sim subprocess
 │   ├── router.py               request routing across instances
@@ -71,13 +123,35 @@ of hardware-specific operation curves; `{}` disables that inheritance too.
 See the [cluster reference](https://llmservingsim.ai/docs/reference/cluster-config#collective-specific-links)
 for the schema and backend restrictions. Rebuild ASTRA-Sim after updating.
 
-When a deployment-matched `moe_components.json` is installed, DP+EP execution
+When variant-root metadata contains a deployment-matched
+`per_tp[tp].moe_components` entry, DP+EP execution
 uses separate local routing, gathered expert and local finalization timings.
+Modular DP1 uses local routing and expert timings, omitting verified no-op finalization
+and DP collectives; full EP at TP>1 retains its trailing TP AllReduce.
 The full padded DP token vector determines each stage's shape; recorded dtypes
-determine the hidden/top-k collective payloads. Missing coverage warns and retains
-the legacy EP table, while corrupt or out-of-support installed data is rejected.
+determine the hidden/top-k collective payloads. The live TP1/DP1/EP1 contract adds
+measured wrapper work around native quantized/routed experts, retaining shared
+experts and latent transforms. Its sum of unique CUDA durations does not reproduce
+concurrent branch overlap. Actual gate dtype and gate/expert widths determine its
+byte annotations. Missing coverage falls back only when a historical whole-block
+table exists; fresh bundles require complete matching components. Corrupt or
+out-of-support installed data is rejected. DSA and Kimi retain their separate
+duration-only admission and capacity limits.
+New tables use eager timings at those resolved row counts, with independent
+input-row, active-local-expert and local-assignment coordinates supplied by the
+routing policy. Interpolation geometry is built once and queries are cached;
+historical balanced-total eager/graph tables keep their original lookup.
+Within-rank expert-load imbalance is still approximated, not an extra measured axis.
 See [native MoE components](https://llmservingsim.ai/docs/profiler/native-moe-components)
 for supported configurations and remaining analytical communication assumptions.
+Missing historical EP coverage warns with the native `--ep` and matching
+`--tp`/`--dp` acquisition options; it does not change the fallback latency.
+Table paths locate data without defining execution identity. Historical standalone
+metadata layouts have read fallbacks only under current method contracts; new profiles centralize
+category, context/callable and deployment records in the root `meta.yaml`.
+Skew metadata is read from that root document, never `skew.meta.yaml`.
+Serving uses the shared strict metadata reader; this changes no numerical lookup
+or simulation behavior.
 Reinstall Chakra as well as rebuilding ASTRA-Sim after updating the trace converter.
 Update recursive submodules first; a parent repository commit pins backend and
 converter versions but does not replace an installed binary or Python package.
@@ -86,9 +160,18 @@ It and the Qwen3-32B TP2 example omit link overrides, so the measured
 per-operation hardware defaults apply without an additional CLI switch.
 Historical multi-GPU example configs can pin their original links instead of
 inheriting the hardware folder's refreshed transport calibration.
+The refreshed RTXPRO6000 examples also declare their V2 target graph policy
+and capture grid explicitly. Their memory settings belong to each example:
+Llama and Qwen3-32B use the recorded utilization, while Qwen3-30B matches
+the complete per-engine KV capacity. The benchmark's original engine settings
+remain in its metadata; simulator capacity matching does not rewrite them.
 
 The per-instance `cudagraph` object describes target execution, independently
-of the profiler's eager engine. Local graph padding applies with or without DP;
+of the profiler's eager engine. Explicit settings take priority; otherwise a
+matching `meta.yaml.serving_execution` observation supplies the runner and grid.
+Without a matching observation, the resolver retains its MRV1 default and reports
+incompatible saved settings. Select `runner: "v2"` for MRV2 dispatch semantics.
+Local graph padding applies with or without DP;
 DP then synchronizes the selected modes and forward sizes. Real attention
 queries, KV history and head rows are not expanded into dummy requests.
 In vLLM FULL graphs, attention buffers/metadata are padded with empty request
@@ -102,9 +185,10 @@ checkpoint carries five cache dtypes decided in four different places —
 weights, KV cache, mamba conv state, mamba recurrent state, sparse-indexer
 side cache — so all five are read from the model config.
 `memory_model.cache_dtype_bytes()` is the single table. To simulate another
-precision, profile it: the *profiler* still takes `--dtype` /
-`--kv-cache-dtype` and writes a separate bundle, and the simulator reads the
-one the checkpoint names.
+precision, profile the corresponding checkpoint configuration. The profiler's
+`--dtype` / `--kv-cache-dtype` can also write alternate bundles, but these flags
+do not select one in the simulator. On quantized checkpoints, a floating dtype
+override does not remove weight quantization.
 
 `--block-size` is the other input that is really a derived value. vLLM
 treats a block size as a floor and an alignment unit, raising it until one
@@ -191,9 +275,12 @@ and `moe.csv` (`tokens, activated_experts`). `resolve_variant(model_config)`
 names the `<variant>` folder as a **pure function of the checkpoint** — weight
 dtype from `quantization_config.quant_method` or `torch_dtype`, plus a
 `-kv<dtype>` suffix when the config declares a quantized KV cache. There is no
-dtype flag on the simulator; the profiler's `--variant` / `--dtype` /
-`--kv-cache-dtype` still write other bundles beside it, which the simulator
-never asks for.
+dtype flag on the simulator. A matching BF16/FP16 override retains a quantized
+checkpoint's label; a different activation dtype gets an `-act...` suffix.
+Alternate profiler variants are not automatically selected. See the
+[naming rules and limitations](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
+before acquiring an alternate precision; folder names alone do not establish
+the complete resolved engine configuration.
 
 `meta.yaml` next to each variant records the engine flags the profiler swept
 (notably `max_num_batched_tokens` and `max_num_seqs`); the simulator warns at
@@ -213,9 +300,12 @@ kv_dim = kv_head * head_dim      # NOT n_embd // group
 
 ### Working directory
 
-`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the
-simulator resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`,
-`profiler/` are prefixed with `../` in code.
+Run `python -m serving` from the repository root. It changes cwd to
+`astra-sim/` internally, but relative cluster, dataset, output and gate-stat
+paths still refer to the invocation root through their respective handlers.
+Use repository-relative dataset paths; the dataset loader does not handle an
+absolute path. An explicit relative `--inputs-root` resolves from `astra-sim/`,
+so use an absolute path to select an unambiguous intermediate directory.
 
 ## Modules
 
@@ -325,7 +415,7 @@ yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's ``blocks:``
 and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 
 - `resolve_variant()` / `_load_perf_db()` / `_load_architecture()` — turn
-  `(hardware, model, dtype, kv_cache_dtype)` into a loaded DB with category
+  `(hardware, model, checkpoint-derived variant)` into a loaded DB with category
   tables, the block order, and the checkpoint's per-layer block resolution.
 - `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
   `_lookup_moe()` — category-specific lookups with 1D linear interpolation
@@ -333,11 +423,12 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
   prefill_chunk / prefill_key / n_decode / kv_decode bracketed by its two
   neighbouring profiled values and blended linearly), and 2D for MoE.
 - `_lookup_attention_with_skew()` / `_skew_alpha()` — apply a fitted correction
-  between the unchanged mean/max attention lookups. Versioned calibration
+  between the unchanged mean/max attention lookups. Calibration
   selects supported N anchors within kernel/query/prefill/lever partitions;
   it does not interpolate neighboring alpha values or fit at runtime.
   Missing cells use the same kernel/query fallback, missing kernel/query data
-  means zero correction. Enabled unversioned fits are rejected; rebuild them
+  means zero correction. Enabled fits without a recognized calibration format
+  are rejected; rebuild them
   with `profiler refit-skew`. Disabled bundles remain unchanged.
 - `_hydrate_skew_fit_tables()` — validate profile identity, attention/table
   fingerprints, lookup code and saturation semantics before loading cells.
@@ -349,7 +440,8 @@ and ``shared:`` sections to emit each iteration's layers. Composable helpers:
 - `TraceCtx` / `BatchCtx` / `PowerAccumulator` — data classes for context passing
 - `_emit_layer()` — single-layer emission that dispatches by catalog category
 - `_emit_sequence()` — walks a list of canonical names from the yaml; attaches
-  TP ALLREDUCE to `o_proj`/`down_proj` and swaps in PIM attention before
+  TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
+  caches selected component sequences per TP, and swaps in PIM attention before
   the NPU attention kernel when offloading is enabled. Emits a one-shot warning
   when a sequence layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
@@ -390,6 +482,8 @@ matching `blocks:` / `shared:` rather than editing this file.
 Resolves target CUDA graph capture grids and local padded forward shapes,
 then synchronizes modes and token counts across each DP wave. Actual attention
 queries and non-speculative head rows remain separate from forward padding.
+MRV2 keeps FULL decode and PIECEWISE candidates separate and restores raw local
+token counts when a DP wave cannot use graphs; MRV1 retains local padding.
 
 ### `communication.py`
 
@@ -398,14 +492,25 @@ These tensor contracts are independent of measured bandwidth and latency.
 
 ### `moe_components.py`
 
-Loads versioned native MoE component tables, validates deployment and acquisition
+Loads native MoE component tables, validates deployment and acquisition
 contracts, and caches bounded interpolation over their measured coordinates.
+Deployment selection caches absent coverage as well as loaded tables, without
+turning corrupt installed data into a fallback.
 
 ### `moe_execution.py`
 
 Selects matching native component tables and emits routing, ordered dispatch,
 expert work, combine and finalization. Missing coverage is distinct from corrupt
-installed data; unsupported paths retain the documented legacy fallback.
+installed data; unsupported paths retain legacy fallback only when that table exists.
+Modular DP1 emits routing and experts plus optional TP reduction, and never uses
+full-EP data for tensor-sharded experts.
+The live local contract adds a wrapper row and preserves its measured physical
+weight storage separately from the clone bank's allocation footprint.
+RR/RAND can use new three-axis tables; old balanced-total tables retain their
+policy fallback. Capture sizes affect serving row counts, not acquisition mode.
+The expert query uses gathered/padded N and the router's rank-local A/M; its
+cache key includes all three, so changing assignment load changes the lookup
+even if N and A stay fixed. Local gate/finalization rows remain separate.
 
 ### `run_paths.py`
 

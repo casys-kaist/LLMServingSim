@@ -18,10 +18,12 @@ from __future__ import annotations
 import shutil
 import csv
 import datetime
+import hashlib
 import math
 import os
 import platform
 import subprocess
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -29,6 +31,8 @@ from typing import Any, Iterable
 import yaml
 
 from profiler.core.measurement import FIELDS as MEASUREMENT_FIELDS
+from profiler.core.measurement import measurement_token
+from profiler.core.bundle_metadata import read_bundle, read_tp, update_tp, update_bundle
 
 from profiler import __version__ as profiler_version
 from profiler.core import logger as log
@@ -36,7 +40,6 @@ from profiler.core.categories import (
     AttentionPoint,
     Category,
     DensePoint,
-    ExpertPoint,
     Point,
     SequencePoint,
 )
@@ -50,6 +53,111 @@ from profiler.core.config import (
 # ---------------------------------------------------------------------------
 # DedupSink — the CSV-producing accumulator
 # ---------------------------------------------------------------------------
+
+def _measurement_location(directory, category):
+    directory = Path(directory)
+    for tp_dir in (directory, *directory.parents):
+        if tp_dir.name.startswith('tp') and tp_dir.name[2:].isdigit() and int(tp_dir.name[2:]) > 0:
+            relative = directory.relative_to(tp_dir)
+            return tp_dir, str(relative / category) if relative.parts else category
+    raise ValueError(f'Measurement table is not inside a tp<N> directory: {directory}')
+
+
+def category_measurement(directory, category):
+    tp_dir, key = _measurement_location(directory, category)
+    records = read_tp(tp_dir, 'measurements', {})
+    if not isinstance(records, dict):
+        raise ValueError('Expected per-TP measurement metadata mapping')
+    if key in records:
+        if not isinstance(records[key], dict):
+            raise ValueError(f'Invalid measurement metadata for {key}')
+        return records[key]
+    return _legacy_category_measurement(directory, category)
+
+
+def _legacy_category_measurement(directory, category):
+    path = Path(directory) / 'meta.yaml'
+    legacy = (yaml.safe_load(path.read_text()) if path.exists() else {}) or {}
+    return legacy.get('measurements', {}).get(category)
+
+
+def _update_category_measurement(directory, category, mutator):
+    tp_dir, key = _measurement_location(directory, category)
+    legacy = _legacy_category_measurement(directory, category)
+    def apply(previous):
+        records = dict(previous or {})
+        records[key] = mutator(deepcopy(records.get(key, legacy)))
+        return records
+    return update_tp(tp_dir, 'measurements', apply)[key]
+
+
+def _compatible_measurement(record, token):
+    """Validate stored evidence before comparing measurement semantics."""
+    identity = record.get('identity')
+    if not isinstance(identity, dict) or record.get('measurement') != measurement_token(identity):
+        raise ValueError('Measurement metadata differs from its recorded identity')
+    return record['measurement'] == token
+
+
+def _measurement_record(previous, identity, *, replace=False):
+    token = measurement_token(identity)
+    replica_only = (previous is not None and previous.get('acquisitions') == []
+                    and bool(previous.get('replicated')))
+    if previous is not None and not replace and not replica_only:
+        if not _compatible_measurement(previous, token):
+            raise ValueError('Category measurement semantics changed; remeasure explicitly')
+        acquisitions = previous.setdefault('acquisitions', [previous['identity']])
+        if identity not in acquisitions:
+            acquisitions.append(identity)
+    else:
+        record = dict(identity=identity, measurement=token, acquisitions=[identity])
+        if previous is not None and previous.get('replicated'):
+            record['replicated'] = previous['replicated']
+        return record
+    return previous
+
+
+def record_category_measurement(directory, category, identity, *, replace=False):
+    """Record facts for an already acquired table; sinks publish facts with CSVs."""
+    _update_category_measurement(directory, category,
+        lambda previous: _measurement_record(previous, identity, replace=replace))
+
+
+def _validate_publication(path, record):
+    publication = (record or {}).get('publication')
+    if publication is None:
+        return  # Previously acquired metadata is not retrospectively stamped.
+    if (not isinstance(publication, dict) or set(publication) != {'state', 'csv_sha256'}
+            or publication['state'] not in ('pending', 'complete')
+            or not isinstance(publication['csv_sha256'], str)
+            or publication['csv_sha256'] != hashlib.sha256(path.read_bytes()).hexdigest()):
+        raise ValueError(f'{path} does not match its published measurement generation; '
+                         'use fresh output or explicitly remeasure with --force')
+
+
+def _publish_csv(temporary, path, record_update=None):
+    """Seal intended bytes before replacing the CSV, then mark completion."""
+    publish = record_update is not None or category_measurement(path.parent, path.stem) is not None
+    checksum = hashlib.sha256(temporary.read_bytes()).hexdigest()
+    if publish:
+        def pending(previous):
+            record = record_update(previous) if record_update is not None else previous
+            record['publication'] = dict(state='pending', csv_sha256=checksum)
+            return record
+        _update_category_measurement(path.parent, path.stem, pending)
+    temporary.replace(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    if publish:
+        def complete(record):
+            if record.get('publication') != dict(state='pending', csv_sha256=checksum):
+                raise ValueError('Measurement publication changed during CSV replacement')
+            record['publication']['state'] = 'complete'
+            return record
+        _update_category_measurement(path.parent, path.stem, complete)
 
 class DedupSink:
     """Accumulates Points, averages duplicates, flushes a sorted CSV.
@@ -76,12 +184,21 @@ class DedupSink:
                 or any(not isinstance(v, str) or not v for v in self.measurement.values())):
             raise ValueError('Incomplete measurement identity')
         self._row_measurements = {}
+        # Replicated rows are storage, not measurements by this TP sweep.
+        self._preserved_rows = {}
         # key tuple -> (running_sum, count)
         self._bucket: dict[tuple, tuple[float, int]] = {}
         # Track fieldnames in the order we first see them so the CSV
         # column order is deterministic (matches insertion in the
         # writer).
         self._fieldnames: list[str] | None = None
+        self._measurement_update = None
+
+    def stage_measurement(self, identity, *, replace=False):
+        """Defer provenance publication until its exact CSV bytes are ready."""
+        if measurement_token(identity) != self.measurement:
+            raise ValueError('Staged acquisition differs from the sink measurement')
+        self._measurement_update = (identity, replace)
 
     # ------------------------------------------------------------------
     # Input
@@ -90,6 +207,8 @@ class DedupSink:
     def coalesce(self, point: Point) -> None:
         """Accept one Point; average on key collision."""
         d = asdict(point)
+        if "context" in d or "context_tokens" in d:
+            raise ValueError("Contextual points require the separate context table")
         if self._fieldnames is None:
             # Preserve dataclass field declaration order; put time_us
             # last regardless of where it appears in the dataclass.
@@ -98,6 +217,8 @@ class DedupSink:
             self._fieldnames = ordered
 
         key = tuple(d[f] for f in self.key_fields)
+        if key in self._preserved_rows:
+            raise ValueError('A measured point would overwrite a preserved replicated row')
         if self.measurement is None and self._row_measurements:
             raise ValueError('New samples need an identity when extending a versioned table')
         us = float(d["microseconds"])
@@ -115,7 +236,7 @@ class DedupSink:
     # Resume support
     # ------------------------------------------------------------------
 
-    def preload(self) -> int:
+    def preload(self, *, preserve_layers=(), preserve_only=False) -> int:
         """Seed the in-memory bucket from any existing CSV at
         ``out_path``. Returns the number of rows ingested (0 when
         the file is missing or empty).
@@ -124,6 +245,9 @@ class DedupSink:
         reports which shot identities are already covered so the
         firing loop can skip them. The flush at the end of the run
         will then contain both preserved and newly-measured rows.
+
+        ``preserve_layers`` keeps externally replicated rows verbatim, outside
+        measured shot coverage and the current acquisition identity.
         """
         if not self.out_path.exists():
             return 0
@@ -133,10 +257,17 @@ class DedupSink:
             field_order = reader.fieldnames or []
             if not field_order:
                 return 0
-            if self.measurement is not None and any(k not in field_order for k in MEASUREMENT_FIELDS):
-                raise ValueError(
-                    f'{self.out_path} has no current measurement identity; '
-                    'use a separate output root or --force to remeasure')
+            saved = category_measurement(self.out_path.parent, self.out_path.stem)
+            _validate_publication(self.out_path, saved)
+            plain = not any(k in field_order for k in MEASUREMENT_FIELDS)
+            if self.measurement is not None and plain:
+                contextual = False
+                if saved is None:
+                    from .context_tables import read_context_record
+                    contextual = read_context_record(self.out_path.parent) is not None
+                if saved is None and not contextual:
+                    raise ValueError(f'{self.out_path} lacks compatible measurement metadata; '
+                                     'use a separate output root or --force to remeasure')
             # A prior file that predates one of this sink's key fields cannot
             # be preloaded at all -- every row would fail the key build below --
             # and adopting its column order would pin ``flush`` to a schema too
@@ -155,11 +286,27 @@ class DedupSink:
             # Establish ordering now so flush preserves the original
             # schema even when no new rows come in.
             if self._fieldnames is None:
-                ordered = ['microseconds' if f == 'time_us' else f for f in field_order]
+                ordered = ['microseconds' if f == 'time_us' else f for f in field_order
+                           if f not in MEASUREMENT_FIELDS]
                 self._fieldnames = ordered
             for row in reader:
+                preserve = row.get("layer") in preserve_layers
+                if preserve_only and not preserve:
+                    continue
                 recorded = {k: row.get(k, '') for k in MEASUREMENT_FIELDS}
-                if self.measurement is not None and recorded != self.measurement:
+                if self.measurement is not None and plain and saved is not None:
+                    if preserve:
+                        replica = saved.get('replicated', {}).get(row.get('layer'))
+                        if (not isinstance(replica, dict) or replica.get('source_tp') != 1
+                                or not isinstance(replica.get('identity'), dict)
+                                or replica.get('measurement') != measurement_token(replica['identity'])):
+                            raise ValueError('Replicated row lacks its source acquisition metadata')
+                    elif (saved.get('acquisitions') == []
+                          or not _compatible_measurement(saved, self.measurement)):
+                        raise ValueError(f'{self.out_path} has incompatible measured-row metadata; '
+                                         'use a separate output root or --force to remeasure')
+                if (self.measurement is not None and not preserve and any(recorded.values())
+                        and recorded != self.measurement):
                     raise ValueError(
                         f'{self.out_path} uses a different measurement method; '
                         'use a separate output root or --force to remeasure')
@@ -190,6 +337,13 @@ class DedupSink:
                 if bad:
                     continue
                 key = tuple(key_parts)
+                if preserve:
+                    if any(recorded.values()) and not all(recorded.values()):
+                        raise ValueError(f'Incomplete replicated measurement identity in {self.out_path}')
+                    if key in self._preserved_rows or key in self._bucket:
+                        raise ValueError(f'Duplicate replicated row in {self.out_path}')
+                    self._preserved_rows[key] = dict(row)
+                    continue
                 # Single-sample bucket entry: preserve the exact value.
                 self._bucket[key] = (us, 1)
                 if any(recorded.values()):
@@ -227,7 +381,7 @@ class DedupSink:
           * Latencies emitted with 6 sig figs (``%.6g``); coordinate
             floats retain their full precision for exact resume matching.
         """
-        if not self._bucket:
+        if not self._bucket and not self._preserved_rows:
             log.warning("nothing to write to %s", self.out_path)
             return
 
@@ -235,12 +389,15 @@ class DedupSink:
 
         # Produce rows in sort order.
         rows: list[dict[str, Any]] = []
-        for key in sorted(self._bucket.keys()):
+        for key in sorted(self._bucket.keys() | self._preserved_rows.keys()):
+            if key in self._preserved_rows:
+                rows.append({field: value for field, value in self._preserved_rows[key].items()
+                             if field not in MEASUREMENT_FIELDS})
+                continue
             total_us, count = self._bucket[key]
             avg_us = total_us / count
             row = {f: v for f, v in zip(self.key_fields, key)}
             row["time_us"] = _format_time_us(avg_us)
-            row.update(self._row_measurements.get(key, {}))
             rows.append(row)
 
         assert self._fieldnames is not None
@@ -250,8 +407,6 @@ class DedupSink:
             "time_us" if f == "microseconds" else f
             for f in header
         ]
-        if self._row_measurements:
-            header.extend(k for k in MEASUREMENT_FIELDS if k not in header)
 
         # Write beside the target and rename. Opening ``out_path`` directly
         # truncates it before the first row is validated, so one bad row
@@ -263,7 +418,14 @@ class DedupSink:
                 writer = csv.DictWriter(f, fieldnames=header)
                 writer.writeheader()
                 writer.writerows(rows)
-            tmp.replace(self.out_path)
+                f.flush()
+                os.fsync(f.fileno())
+            record_update = None
+            if self._measurement_update is not None:
+                identity, replace = self._measurement_update
+                record_update = lambda previous: _measurement_record(previous, identity, replace=replace)
+            _publish_csv(tmp, self.out_path, record_update)
+            self._measurement_update = None
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -271,6 +433,7 @@ class DedupSink:
         if clear:
             self._bucket.clear()
             self._row_measurements.clear()
+            self._preserved_rows.clear()
 
     # ------------------------------------------------------------------
     # Convenience: attach a human-friendly 'layer' prefix
@@ -301,15 +464,7 @@ def sink_for(category: Category, out_dir: Path, measurement=None) -> DedupSink:
 
 # The only place where category→key-field mapping is specified. Adding
 # a new Point type means adding a line here.
-_KEY_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
-    "dense": ["layer", "tokens"],
-    "per_sequence": ["layer", "sequences"],
-    "attention": ["layer", "prefill_chunk", "prefill_key", "n_decode",
-                  "kv_decode", "decode_q_len"],
-    "linear_attention": ["layer", "prefill_tokens", "n_decode"],
-    "moe": ["ep", "tokens", "activated_experts"],
-    "mtp": ["layer", "sequences"],
-}
+from .context_lookup import CATEGORY_KEY_FIELDS as _KEY_FIELDS_BY_CATEGORY
 
 
 # ---------------------------------------------------------------------------
@@ -360,24 +515,13 @@ def _geometric_spec(values) -> Any:
     return core if prefix is None else f"{prefix}, {core}"
 
 
-def _skew_meta_block(args, variant_root, prior=None):
-    """Record actual per-TP plans, never reconstruct engine bounds from defaults."""
-    result = dict(prior or {})
-    plans = {int(tp): value for tp, value in (result.get("per_tp") or {}).items()}
-    for path in sorted(Path(variant_root).glob("tp*/skew.meta.yaml")):
-        with path.open() as stream:
-            plans[int(path.parent.name[2:])] = yaml.safe_load(stream)
-    result.update(enabled=bool(plans) or bool(result.get("enabled")), per_tp=plans)
-    return result
-
-
 def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
-    """Compact spec of the attention sweep axes actually fired.
+    """Compact spec of the attention base axes before feasibility filtering.
 
     The knobs (max_kv / chunk_factor / kv_factor) are retained so the
     old field names still carry information; the three spec strings
-    give a human-readable view of the values ``AttentionCategory``
-    walked during profiling.
+    give a human-readable view of its geometric grid. Per-TP sampling records
+    add pure-regime graph anchors without widening the mixed Cartesian product.
     """
     from profiler.core.categories import (
         _geometric_grid, _ATTN_CHUNK_START,
@@ -404,6 +548,7 @@ def _attention_grid_spec(args, effective_mnbt: int, effective_msq: int) -> dict:
         "chunk_factor": args.attention_chunk_factor,
         "kv_factor": args.attention_kv_factor,
         "n_factor": args.attention_n_factor,
+        "scope": "geometric base; per_tp sampling adds pure-regime capture coordinates",
         # Which quantity the CSV's second prefill column holds. A bundle
         # without this field predates the change and carries ``kv_prefill``,
         # one sequence's context, which the simulator has to relabel before
@@ -555,10 +700,8 @@ def persist_meta(
     ``--block-size`` is omitted. A shrunk single-category engine is not
     authoritative either, for the same reason.
 
-    ``records_skew`` -- same restraint for ``skew_profile``, which
-    ``_skew_meta_block`` merges from actual per-TP acquisition sidecars. A run
-    that swept no skew must retain earlier coverage and provenance rather
-    than replacing it with a grid inferred from defaults.
+    Skew acquisition writes its own per-TP record directly. Session refreshes
+    preserve that record and every other owner's metadata under the shared lock.
 
     ``records_attention_grid`` -- only a run that swept attention knows which
     axes were fired. A ``per_sequence`` refresh regenerating the block from its
@@ -660,42 +803,38 @@ def persist_meta(
             or _attention_grid_spec(args, eff_mnbt, eff_msq)
         ),
         "measurement_iterations": args.measurement_iterations,
-        "skew_profile": (
-            _skew_meta_block(args, variant_root, prior.get("skew_profile"))
-            if records_skew
-            else prior.get("skew_profile") or None
-        ),
         "skew_fit": _calibrated_skew_fit_block(variant_root, args),
-        "moe_components": prior.get("moe_components"),
     }
-    variant_root.mkdir(parents=True, exist_ok=True)
-    out = variant_root / "meta.yaml"
-    from profiler.core.skew_calibration import atomic_yaml
-    atomic_yaml(out, meta, Dumper=_CompactDumper)
-    log.debug("wrote meta.yaml → %s", out)
-
-
-def persist_moe_component_meta(args, variant_root, tps):
-    """Record native-component ownership without restamping other categories."""
-    import hashlib
-    from .skew_calibration import atomic_yaml
-    prior = _prior_meta(variant_root)
-    for key, value in (("model", args.model), ("hardware", args.hardware),
-                       ("variant", args.effective_variant)):
-        if key in prior and prior[key] != value:
-            raise ValueError("Native MoE output identity differs from the existing bundle")
-        prior[key] = value
-    block = prior.setdefault("moe_components", {})
-    if block is None:
-        block = prior["moe_components"] = {}
-    block["schema"] = "moe-components-v1"
-    entries = block.setdefault("per_tp", {})
-    for tp in tps:
-        index = variant_root/f"tp{tp}"/"moe_components.json"
-        entries[tp] = dict(index=str(index.relative_to(variant_root)),
-                           sha256=hashlib.sha256(index.read_bytes()).hexdigest(),
-                           measured_at=_utcnow_iso(), vllm_version=_vllm_version())
-    atomic_yaml(variant_root/"meta.yaml", prior, Dumper=_CompactDumper)
+    def merge(current):
+        # Only the current refresh's observations replace shared fields. Each
+        # acquisition owner retains its latest locked record, including TP
+        # writers that finished after this session summary was computed.
+        meta['category_provenance'] = _category_provenance(current, measured_categories,
+            meta['vllm_version'], meta['profiled_at'], _artifacts_present(variant_root))
+        if not records_engine and current.get('engine_effective'):
+            meta['engine_effective'] = current['engine_effective']
+        if not records_attention_grid and current.get('attention_grid'):
+            meta['attention_grid'] = current['attention_grid']
+        for key in ('engine_resolved', 'skew_fit'):
+            existing = deepcopy(current.get(key) or {})
+            observed = meta.get(key) or {}
+            entries = {str(tp): value for tp, value in (existing.get('per_tp') or {}).items()}
+            updates = observed.get('per_tp') or {}
+            if key == 'engine_resolved':
+                measured = {str(tp) for tp, value in (limits or {}).items() if value is not None} if records_engine else set()
+                updates = {tp: value for tp, value in updates.items() if str(tp) in measured}
+            entries.update({str(tp): value for tp, value in updates.items()})
+            if entries:
+                if updates:
+                    existing.update({field: value for field, value in observed.items() if field != 'per_tp'})
+                existing['per_tp'] = entries
+                meta[key] = existing
+            elif key in current and not updates:
+                meta[key] = current[key]
+        meta['tp_degrees'] = sorted(set(current.get('tp_degrees') or []) | set(meta['tp_degrees']))
+        current.update(meta)
+    update_bundle(variant_root, merge)
+    log.debug('wrote meta.yaml → %s', variant_root / 'meta.yaml')
 
 
 def _calibrated_skew_fit_block(variant_root, args):
@@ -705,33 +844,6 @@ def _calibrated_skew_fit_block(variant_root, args):
     return fit_bundle(variant_root,
         dict(hardware=args.hardware, model=args.model, variant=args.effective_variant),
         args.model_config)
-
-
-# ---------------------------------------------------------------------------
-# YAML dumper that keeps short scalar lists on one line
-# ---------------------------------------------------------------------------
-
-
-class _CompactDumper(yaml.SafeDumper):
-    """SafeDumper that emits lists of primitives in flow style.
-
-    Block-style lists balloon meta.yaml (every bin / label / tp_degree
-    on its own line). Flow style collapses them to a single line while
-    still being valid YAML and round-trippable by safe_load.
-    """
-
-
-def _represent_list(dumper, data):
-    flow = all(
-        isinstance(x, (int, float, str, bool, type(None))) for x in data
-    )
-    return dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=flow,
-    )
-
-
-_CompactDumper.add_representer(list, _represent_list)
-_CompactDumper.add_representer(tuple, _represent_list)
 
 
 # ---------------------------------------------------------------------------
@@ -814,12 +926,29 @@ def _replicate_layer_file(
     else:
         merged = src_stable
 
-    protocols = {row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
-                 for row in merged}
-    if len(protocols) > 1:
-        raise ValueError(
-            f'TP-stable replication would mix timing methods in {dst}; '
-            'remeasure the destination category with the current profiler first')
+    source_record = category_measurement(src.parent, src.stem)
+    destination_record = category_measurement(dst.parent, dst.stem)
+    _validate_publication(src, source_record)
+    if dst.exists():
+        _validate_publication(dst, destination_record)
+    if source_record is not None or destination_record is not None:
+        if source_record is None or (dst_rows if dst.exists() else []) and destination_record is None:
+            raise ValueError('TP-stable replication cannot infer historical measurement semantics')
+        if (destination_record is not None and
+                source_record['identity']['method'] != destination_record['identity']['method']):
+            raise ValueError('TP-stable replication would mix different measurement methods')
+        merged = [{key: value for key, value in row.items() if key not in MEASUREMENT_FIELDS}
+                  for row in merged]
+    else:
+        # Historical tables predate metadata records. Distinguish their timing
+        # meaning without treating a numbered implementation label as an ABI.
+        def method(row):
+            protocol = row.get('measurement_protocol') or 'legacy-cuda-kernel-sum'
+            if ('cuda-union' in protocol or 'device-active-union' in protocol):
+                return 'per-call-device-active-union'
+            return protocol
+        if len({method(row) for row in merged}) > 1:
+            raise ValueError('TP-stable replication would mix historical timing methods')
     if any(bool(row.get(MEASUREMENT_FIELDS[0])) != bool(row.get(MEASUREMENT_FIELDS[1]))
            for row in merged):
         raise ValueError('TP-stable replication encountered an incomplete measurement identity')
@@ -830,7 +959,16 @@ def _replicate_layer_file(
         for k in key_fields
     ))
 
-    _write_csv_rows(dst, merged)
+    record_update = None
+    if source_record is not None:
+        def record_update(previous):
+            record = previous or dict(identity=source_record['identity'],
+                measurement=source_record['measurement'], acquisitions=[])
+            record.setdefault('replicated', {}).update({name: dict(source_tp=1,
+                identity=source_record['identity'], measurement=source_record['measurement'])
+                for name in sorted(layer_whitelist)})
+            return record
+    _write_csv_rows(dst, merged, record_update=record_update)
     log.debug(
         "replicated %d tp_stable rows into %s", len(src_stable), dst
     )
@@ -845,7 +983,7 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]], *, record_update=None) -> None:
     rows = list(rows)
     if not rows:
         return
@@ -857,7 +995,9 @@ def _write_csv_rows(path: Path, rows: Iterable[dict[str, Any]]) -> None:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-        temporary.replace(path)
+            f.flush()
+            os.fsync(f.fileno())
+        _publish_csv(temporary, path, record_update)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -906,21 +1046,14 @@ def _prior_meta(variant_root: Path) -> dict[str, Any]:
     describes work it did not do. Reading the prior file is how those parts
     survive; see ``persist_meta``'s ``records_*`` flags for which.
     """
-    existing = variant_root / "meta.yaml"
-    if not existing.is_file():
-        return {}
-    try:
-        with existing.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except Exception:
-        return {}
+    return read_bundle(variant_root)
 
 
 def _engine_resolved_block(
     variant_root: Path,
     limits_by_tp: Any,
 ) -> dict[str, Any] | None:
-    """``{"per_tp": {tp: {block_size, max_model_len, num_cache_tokens}}}``.
+    """Per-TP cache limits and, when available, the native text config.
 
     What the engine actually **settled on**, which is not always what was asked
     for: vLLM derives the KV block size from the backend's
@@ -936,6 +1069,11 @@ def _engine_resolved_block(
     rank's shard, so the resolved size is a per-rank fact. Entries already in
     the file are **kept**: a ``slice`` refresh boots one TP and must not erase
     what the other TPs resolved.
+
+    ``model_text_config`` retains resolved text fields after the temporary
+    model directory is deleted, including consumed nested overrides. It is
+    not a complete wrapper, backend or weight-layout description. Missing
+    snapshots in older limits/metadata remain missing, never reconstructed.
     """
     prior = _prior_meta(variant_root)
     prior_block = prior.get("engine_resolved")
@@ -953,11 +1091,18 @@ def _engine_resolved_block(
     for tp, limits in limits_by_tp.items():
         if limits is None:
             continue
-        merged[str(tp)] = _stringify({
+        resolved = {
             "block_size": getattr(limits, "block_size", None),
             "max_model_len": getattr(limits, "max_model_len", None),
             "num_cache_tokens": getattr(limits, "num_cache_tokens", None),
-        })
+        }
+        model_text_config = getattr(limits, "model_text_config", None)
+        if model_text_config is not None:
+            resolved["model_text_config"] = model_text_config
+        preparation = getattr(limits, "dummy_weight_preparation", None)
+        if preparation is not None:
+            resolved["dummy_weight_preparation"] = preparation
+        merged[str(tp)] = _stringify(resolved)
     return {"per_tp": dict(sorted(merged.items(), key=lambda kv: int(kv[0])))} if merged else None
 
 

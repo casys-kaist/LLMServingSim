@@ -1,10 +1,10 @@
 #!/bin/bash
 # Run a vLLM benchmark and write results under bench/results/<run_id>/.
 #
-# This is a thin host-side wrapper that:
+# Run this template in the vLLM container or an activated local vLLM venv.
+# It:
 #   1. Resolves the repo root.
-#   2. Launches python -m bench run inside the vLLM Docker container
-#      (or the local uv venv from scripts/install-vllm.sh).
+#   2. Launches python -m bench run with the current environment's python3.
 #
 # Edit the variables below for your run, then execute:
 #
@@ -60,15 +60,17 @@ RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
 # for a config-only diagnostic. Unlike the profiler, bench does not create
 # that directory from the repository's named JSON configs.
 SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
-# Run vLLM eager. Not the production configuration -- what it buys is a truth
-# in the same execution mode the profiler is forced into, which separates a
-# cost-model error from the cudagraph speedup the simulator cannot see.
+# Run vLLM eager to record an execution-mode control. Leave off for a compiled
+# serving reference; simulated graph padding does not reproduce kernel fusion.
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 EXPERT_PARALLEL="${EXPERT_PARALLEL:-0}"   # 1 to enable for MoE
+# Preserve vLLM's communication defaults unless explicitly requested.
+# Disabling custom all-reduce alone does not enforce NCCL-only.
+DISABLE_CUSTOM_ALL_REDUCE="${DISABLE_CUSTOM_ALL_REDUCE:-0}"
 
 # =============================================================================
 # EXECUTE
@@ -94,6 +96,7 @@ cmd=(python3 -m bench run
 
 [[ -n "$MAX_MODEL_LEN" ]] && cmd+=(--max-model-len "$MAX_MODEL_LEN")
 [[ "$EXPERT_PARALLEL" == "1" ]] && cmd+=(--enable-expert-parallel)
+[[ "$DISABLE_CUSTOM_ALL_REDUCE" == "1" ]] && cmd+=(--disable-custom-all-reduce)
 [[ "$RESOLVE_ONLY" == "1" ]] && cmd+=(--resolve-only)
 [[ "$SKIP_TOKENIZER_INIT" == "1" ]] && cmd+=(--skip-tokenizer-init)
 [[ "$ENFORCE_EAGER" == "1" ]] && cmd+=(--enforce-eager)

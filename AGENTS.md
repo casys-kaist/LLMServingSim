@@ -39,7 +39,7 @@ LLMServingSim/
 │   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
 ├── configs/
 │   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
-│   ├── model/                  # Model architecture configs (subset of HF config.json)
+│   ├── model/                  # Native-class-compatible HF model configs
 │   └── pim/                    # PIM device configs (DRAMSim3 INI format)
 ├── workloads/                   # Request trace datasets (.jsonl)
 │   └── generators/             # ShareGPT/etc → JSONL workload generators
@@ -49,11 +49,14 @@ LLMServingSim/
 │   │   ├── runner.py           # Orchestration (spin_up → categories → spin_down)
 │   │   ├── config.py           # Architecture / ProfileArgs / engine defaults
 │   │   ├── engine.py           # vLLM lifecycle (tmpdir-based local config load)
-│   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / Expert
+│   │   ├── categories.py       # Dense / PerSequence / Attention / LinearAttention / MTP
 │   │   ├── skew.py             # Heterogeneous-decode skew sweep
 │   │   ├── skew_calibration.py # Offline reference-aligned fit + supported-N lookup
 │   │   ├── skew_plan.py        # Dynamic heterogeneous distribution coverage
 │   │   ├── writer.py           # CSV + meta.yaml writer, TP-stable replication
+│   │   ├── bundle_metadata.py  # Locked variant-root metadata updates
+│   │   ├── metadata_names.py   # Shared descriptive metadata names
+│   │   ├── execution_metadata.py # Import/match observed serving graph policies
 │   │   ├── stack.py            # per-layer block composition from the HF config (shared with serving/)
 │   │   ├── catalog_path.py     # model_type → yaml resolution (shared with serving/)
 │   │   ├── logger.py           # Rich-based logger + stdio capture
@@ -69,6 +72,8 @@ LLMServingSim/
 │   ├── core/                   # internals
 │   │   ├── runner.py           # AsyncLLM driver, captures RequestStateStats
 │   │   ├── recorder.py         # writes meta.json / requests.jsonl / timeseries.csv
+│   │   ├── kv_cache_metadata.py # qualified per-engine startup READY capacities
+│   │   ├── execution_metadata.py # Read-only completed worker graph observations
 │   │   ├── stat_logger.py      # custom vLLM StatLoggerBase that fills timeseries
 │   │   ├── validate.py         # bench-vs-sim comparison entry point
 │   │   ├── plots.py            # throughput / running-waiting / latency-CDF plot helpers
@@ -138,11 +143,15 @@ scheduler.py → next iteration
 ## Architecture Patterns
 
 ### Profiler (`profiler/`)
-The profiler uses vLLM's built-in `layerwise_profile()` via a worker extension class to
-capture per-layer CUDA kernel timings from real vLLM execution paths. Architecture is
+The profiler uses lightweight PyTorch/Kineto capture via a worker extension class.
+Explicit dynamic module scopes own native CUDA activities through CPU launch
+correlations; CPU duration is never a latency input. No model-specific collector
+branches, Python stacks, tensor shapes or memory snapshots are required. Architecture is
 dispatched by the HF config's `model_type` field against YAML catalogs under
 `profiler/models/<model_type>.yaml`, which bind canonical layer names (dense /
-per-sequence / attention / linear-attention / moe) to vLLM class names.
+per-sequence / attention / linear-attention / moe) to vLLM class/kernel selectors
+or one exact native CPU operator name. Operator CPU intervals establish launch
+ownership only; their CUDA activities supply all measured latency.
 
 **Catalog naming rule.** The file is named after the `model_type` it primarily
 serves, spelled **verbatim** — including where vendors disagree: DeepSeek
@@ -154,11 +163,16 @@ is read from the top level of the config handed to the profiler. Preserve the
 shape that the checkpoint's config class consumes: Qwen's text tower is
 flattened to `qwen3_5_text`, while MiniMax-M3 must retain its nested
 `text_config`. Do not apply one family's flattening rule to another.
-When several `model_type` values are the same implementation (GLM-5's
-`glm_moe_dsa` and DeepSeek-V3.2's `deepseek_v32` both run vLLM's `deepseek_v2`
-path), one file lists them all under `model_types:` rather than the catalog
-being duplicated or symlinked. Two files claiming one `model_type` is an error,
-not first-wins.
+When several `model_type` values share a compatible implementation, one file
+lists them under `model_types:` rather than duplicating or symlinking the catalog.
+The recorded vLLM 0.28 DeepSeek-V3.2/GLM-5 decomposition shares `deepseek_v2`;
+that is not a version-independent runtime claim. vLLM 0.31's native DeepSeek-V3.2
+path is `vllm.models.deepseek_v32.nvidia.model`. Existing aliases and stored tables
+do not certify acquisition on that path: require matching live coverage and
+execution contracts before a new sweep. Two files claiming one `model_type` is
+an error, not first-wins, including a matching filename alongside another file's
+alias. Check all claims before choosing a catalog; a file's own alias is not
+a second claimant.
 
 **One layer-order form: `blocks:` + `shared:`.** `blocks:` is keyed by **axis**
 (`blocks.attn.<layer_types value>`, `blocks.sparse_attn.<same>` as an overlay,
@@ -183,14 +197,15 @@ the yaml. `profiler/core/stack.py` owns those rules and **both** the profiler
 and the simulator import it — the profiler to decide how many layers to
 instantiate, the simulator to decide which block each layer emits. Two
 implementations would drift, and the rules disagree on the off-by-one in
-opposite directions between vendors. Profiling a hybrid needs
-`--num-hidden-layers` raised to the smallest count that instantiates every
-block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one;
-the profiler resolves that itself.
+opposite directions between vendors. The profiler automatically resolves the
+smallest prefix that instantiates every block type required by each category —
+4 for a Qwen3.8-27B category needing every attention type. Leave
+`--num-hidden-layers` unset to use that resolution; an explicit lower count can
+omit required block types.
 
 **How finely to divide is mostly not a choice.** An entry exists iff the
 profile tree holds a node carrying CUDA time that no other entry claims, and
-the tree holds a node per module that launches a kernel **of its own** — so
+the collector retains invoked modules and their descendant CUDA activity — so
 vLLM's implementation sets the count, and the same operation needs seven
 entries in one family and one in another. DeepSeek-V3.2's `Indexer` is an
 `nn.Module` container (`self.wq_b = ReplicatedLinear`,
@@ -237,29 +252,57 @@ parent once, while latency extraction continues into its children. Audit
 nested bindings on the live tree, including across categories; a dense-only
 slice still must not claim work owned by an attention entry. Refresh old
 `indexer_glue` rows through dense acquisition after changing this guard.
+Phi-MoE's `block_glue` likewise excludes `PhiMoE`, `LayerNorm` and
+`PhiMoEAttention`; only the decoder's direct residual work belongs there.
+Acquisition rejects shared CUDA activity across canonical bindings. Old Phi
+glue measurements require a dense-category refresh, not a metadata restamp.
+
+For `deepseek_v32` and `glm_moe_dsa`, normalize the native `layer_types` cache
+label `deepseek_sparse_attention` to the catalog's full-attention block axis.
+Sparse indexer selection remains a separate axis; this normalization changes
+neither native execution nor the stored source config, and admits no new backend.
 
 Every TP degree is profiled on a **single GPU**: the engine is always booted with
 `tensor_parallel_size=1`, and per-rank shapes are emulated by dividing `SHARD_FIELDS`
 by TP via `hf_overrides`. Collective timings are left to ASTRA-Sim.
+Include separately declared `dense_intermediate_size` in this sharding step;
+do not leave a dense branch at full width while reducing the routed branch.
+Resolve the unsharded local configuration through installed vLLM first, after
+user overrides and decoder-prefix materialization. `hooks/tp_shape.py` preserves
+the native head width when reducing the head count would otherwise change it;
+validate both the sharded candidate and any scalar-width pin by materializing
+and reloading the raw config through vLLM, not by updating an already resolved
+config object. A nested backbone can derive `head_dim` without declaring it in
+JSON; write an admitted pin into that backbone and consume the forwarded key.
+Unsupported special-width changes fail rather than guessing. Nested text
+fields and user shape overrides feed the same sharding step. Strict dimension
+divisibility remains; this does not add replicated-KV-head TP emulation.
+Incorrectly shaped timings require fresh acquisition, including affected dense
+projections, attention and skew; use a separate output root or explicit category
+replacement. Source edits alone do not invalidate ordinary/skew resume identities.
+Consume nested backbone-only overrides after materializing them in the local
+config; do not reapply them to wrapper properties that may be read-only.
+Keep independently declared root fields, including shared root/text token IDs,
+forwarded. Validate the final native config, not only the materialized dict.
+Recorded engine kwargs are not a complete resolved model configuration.
+`probe_limits` snapshots the native text config without another RPC; persist it
+as `engine_resolved.per_tp[tp].model_text_config` only for authoritative main
+engines. Preserve other TP entries and MTP/short-stack refresh semantics. This
+text snapshot does not certify the wrapper, backend or parameter layout, and
+missing historical snapshots must not be reconstructed.
+Ordinary and skew acquisition metadata record resolved geometry and preparation
+semantics. Remeasure wrongly shaped rows, never restamp them as corrected.
+TP-stable replication applies to every catalog, not only coordinated layouts.
+Preserve copied rows and their source identities during local acquisition;
+exclude them from measured-shot resume coverage and from local replacement.
+Layout discovery probes remain subject to their own acquisition contract.
 
-**The stack is shrunk per category, not per model.** A shot's cost is
-overwhelmingly the profiler, and it scales with the forward's op count — so
-with the layer count. Measured on DeepSeek-V3.2, one shot (warmup + 3 timed):
+**The stack is shrunk per category, not per model.** Instrumentation, warmup
+and forward work scale with executed operations. Runtime estimates must come
+from a bounded acquisition on the intended model/backend/grid, not historical
+Python-call profiler timings.
 
-| | ms |
-|---|---|
-| shot assembly | 0.1 |
-| 3 forwards, no profiler | 49 |
-| **the `layerwise_profile` context** | **1,125** |
-| `convert_stats_to_dict()` | 2.1 |
-
-Session setup/teardown is 6.9 ms; the cost is **372 ms per forward inside the
-profiler against 16 ms outside**, linear in the forwards (0/1/3/6 forwards →
-6.9/372/1,125/2,310 ms). `with_stack=False` changes nothing — the 14x it buys
-in a raw `key_averages()` path is irrelevant here, because `layerwise_profile`
-builds its tree from `experimental_event_tree()` instead.
-
-So a category must not pay for an axis it does not measure. The profile tree
+A category must not pay for an axis it does not measure. The profile tree
 merges same-class siblings, so a second layer of a type already present adds
 **no information**, only its op count on every shot. `Category.stack_axes`
 declares the axes (`attention` / `linear_attention` → `(attn, sparse)`,
@@ -318,31 +361,37 @@ tell is the per-TP `block_size` the run logs: on a hybrid it should be the
 *same* at every degree, since both pages scale together. The model's full `config.json` (read from
 `configs/model/<org>/<name>.json`, or auto-fetched from the HF Hub on first run)
 is written to a tmpdir at spin-up so vLLM never needs Hub access.
+When reducing `num_hidden_layers`, retain the first N entries of an explicit
+`layer_types` list, in flat and nested text configurations. Validate that N is a
+positive integer within that list; retain the original model config unchanged.
+If `hf_overrides` explicitly supplies `layer_types`, slice that override too:
+vLLM applies it again after reading the materialized config.
 
-Attribution: the base layerwise-profile methodology (worker-extension hook into
-vLLM's `layerwise_profile()`, single-GPU TP emulation via `hf_overrides`) is
+Attribution: the original layerwise-profile methodology (worker-extension hooks
+and single-GPU TP emulation via `hf_overrides`) is
 adapted from [@waneon](https://github.com/waneon). The unified 4D attention
 sweep, the heterogeneous-decode skew sweep in `profiler/core/skew.py`, and
 the offline reference-aligned skew calibration in `profiler/core/skew_calibration.py` are
 developed in this repo.
 
-Each run produces a per-category CSV bundle:
+Acquisition writes the selected categories into a bundle. Historical whole-block
+MoE tables may remain alongside new native component measurements:
 
-```
+```text
 perf/<hw>/
-  hardware.yaml                          the card's spec + the measured interconnect;
-                                         one per hardware folder, shared by every model
-  <model>/<variant>/
-    meta.yaml                            profiler/vLLM version, effective engine kwargs, GPU,
-                                         timestamps, compact sweep specs, skew_fit summary
-    tp<N>/
-      dense.csv                          layer, tokens, time_us
-      per_sequence.csv                   layer, sequences, time_us
-      attention.csv                      layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
-      linear_attention.csv               layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
-      moe.csv                            ep, tokens, activated_experts, time_us  (MoE only)
-      skew.csv                           raw heterogeneous-decode shots        (skew enabled)
-      skew_fit.csv                       fitted per-bucket alpha table         (skew enabled)
+├── hardware.yaml                 # separately acquired device/interconnect facts
+└── <model>/<variant>/
+    ├── meta.yaml                 # shared and per-TP acquisition records
+    └── tp<N>/
+        ├── dense.csv             # layer, tokens, time_us
+        ├── per_sequence.csv      # layer, sequences, time_us
+        ├── attention.csv         # layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
+        ├── linear_attention.csv  # layer, prefill_tokens, n_decode, time_us (hybrid only)
+        ├── mtp.csv               # layer, sequences, time_us (opt-in drafter pass)
+        ├── moe.csv               # historical whole-block fallback; no new acquisition
+        ├── skew.csv              # raw heterogeneous-decode measurements
+        ├── skew_fit.csv          # derived per-bucket alpha table
+        └── moe_components/       # per-deployment components.csv and optional raw checkpoints
 ```
 
 **A refresh rewrites only what it measured.** `meta.yaml` describes more than
@@ -353,17 +402,18 @@ everything else over from the file:
   the one whose shapes the simulator will run, which is why `run_full` probes
   limits there. A `--profile-mtp` refresh boots a different model (one extra
   full-attention layer, a conv state widened by `num_speculative_tokens`), and
-  a per-category refresh boots a shrunk stack; neither is authoritative.
+  a category slice may boot a shallower stack. MTP and shallower slices are
+  not authoritative; an ordinary slice whose required depth equals the
+  all-axis depth updates the selected TP's main-engine metadata.
   Letting the MTP pass write them put `block_size: 800` and half the KV cache
   into Qwen3.8-27B's bundle where the main engine resolves **784** and
   19,839,182 — and `_resolve_block_size` reads that block size whenever
   `--block-size` is omitted, which is the documented way to get the profiled
   value. Three of the four modern bundles had it.
-- `attention_grid` may only be rewritten by a run that swept attention. It now
-  records **`decode_q_lens`** as well, because the fifth axis is not derivable
-  from the other four (a `q > 1` sweep yields no pure-prefill shot, so the row
-  count cannot tell you which query lengths were fired) and a bundle holding
-  five of them while the meta records none reads as a `q=1` sweep.
+- `attention_grid` may only be rewritten by a run that swept attention. It
+  records **`decode_q_lens`** explicitly: row counts do not establish requested
+  query-length coverage, and the once-only `q=1` pure-prefill rows do not imply
+  that ordinary `q=1` decode was requested or measured.
 
 An empty `limits` argument now **preserves** `engine_resolved` rather than
 erasing it, which is how the MTP refresh could delete what the main engine
@@ -375,10 +425,13 @@ share neither a latency curve nor an alpha (on MiniMax-M3 the same batch fits
 0.24 / 0.74 / -0.01 for `attention` / `indexer` / `sparse_attention`). A bundle
 profiled before those columns existed holds one kernel and it is `attention`.
 
-`<variant>` is auto-derived from weight + KV dtype (e.g. `bf16`, `bf16-kvfp8`,
-`fp8-kvfp8`) unless `--variant` is set. Times are in **microseconds**. Layers marked
-`tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1 and
-replicated into other `tp<N>/` folders by the writer.
+`<variant>` retains checkpoint-derived naming and separates explicit activation/KV
+overrides (e.g. `bf16`, `fp8-actfp16`, `fp8-kvfp8`) unless `--variant` is set.
+Ambiguous precision or nested HF overrides require an intentional label; names
+are not complete resolved-precision contracts. Times are in **microseconds**. Layers marked
+`tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1.
+The writer copies stable `dense` and `per_sequence` rows into other `tp<N>/`
+folders; stable MTP rows stay at TP1 and are looked up there by the simulator.
 
 **`tp_stable` is about the tensor a layer walks, not the weight it owns.** The
 test is whether the *work* is TP-invariant, and a norm's weight can be
@@ -408,23 +461,20 @@ stable layer at the same degree in the same run. `layernorm` re-swept at TP=2
 reads 1.00-1.03 while `qk_norm` reads 0.52 -- without the control, a 0.52 could
 be the machine rather than the flag.
 
-The profiler Docker uses **vLLM v0.28.0** (`vllm/vllm-openai:v0.28.0`, or
-`v0.28.0-cu129` on a CUDA 12.9 host). The MoE hook forges expert routing by
-patching `_compute_routing` on the live router instance — every symbol under
+The profiler Docker targets **vLLM v0.31.0 / CUDA 13**
+(`vllm/vllm-openai:v0.31.0`). Changing the environment pin does not certify
+every catalog/backend or remeasure the historical bundles. Every symbol under
 `profiler/core/hooks/` is a vLLM *internal* API and is version-specific. v0.28
 restructured MoE substantially: the old `FusedMoE` module is gone, replaced by
 `FusedMoEFactory` returning a `MoERunner` that owns a `router` (`BaseRouter`)
 and a `RoutedExperts`.
 
-Whole-block forced routing must execute the original `_compute_routing` before
-substituting precomputed expert IDs and weights: otherwise top-k GPU kernels
-disappear from a table that claims to time the whole block. Both warmup and
-timed contexts use the requested distribution and must consume the hook;
-monolithic backends that bypass it cannot silently publish that grid. Restore
-the exact previous instance override on exit, including on failure. The cyclic
-assignment controls distinct experts, not arbitrary load imbalance. Older
-forced-routing `moe.csv` grids need remeasurement; native DP+EP component
-acquisition is a separate contract.
+Whole-block forced-routing acquisition has been removed. New native component
+acquisition retains the original global expert count and top-k. Gate/routing
+executes natively; expert-only stimuli vary local active experts and assignments
+with balanced local histograms and uniform weights. These are independent
+measurement boundaries, not trained-gate numerical equivalence. Historical
+whole-block CSVs remain readable and must never be relabelled as components.
 
 ### Vocab-parallel target endpoints
 
@@ -459,18 +509,19 @@ that is why the flag is not a number.
 The kernels then arrive without new tooling, because the drafter runs inside
 `sample_tokens()` (`propose_draft_token_ids` → `drafter.propose`) and the fire
 path already calls `execute_model` then `sample_tokens(None)` inside one
-`layerwise_profile` context. **`profiler coverage --profile-mtp` is how the
+native CUDA-activity context. **`profiler coverage --profile-mtp` is how the
 `mtp:` sections were written** — it names the unbound nodes with their ancestor
 paths, so the profile tree is the source, as for every other block. For the
-opposite failure — an entry that binds *too much* — dump the profile tree
-itself: boot at the depth in question and print every node's class with its
-ancestor path, filtered to the class you suspect. Coverage cannot see that
-failure, because over-matching leaves nothing unbound.
+opposite failure — an entry that binds *too much* — coverage checks overlapping
+and structurally unrelated claims. Inspect the profile tree and ancestor paths
+as well: unexecuted alternatives and structurally plausible but semantically
+wrong bindings still require an audit.
 
 The `mtp` category has **one** axis, the pass's token count: the loop's passes
 are decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`), where tokens
-and sequences are the same number. 40 shots in 38 seconds against attention's
-8,643 in four hours.
+and sequences are the same number. Shot counts depend on sequence/token limits,
+grid factors, target drafter graph anchors and cache feasibility. Use a bounded
+sweep to estimate acquisition time for the chosen model and device.
 
 Four things a catalog here must get right:
 
@@ -480,10 +531,13 @@ Four things a catalog here must get right:
   `MiniMaxM3DecoderLayer`), so an unguarded entry claims the target's nodes
   too. DeepSeek and M3 pin `within` to their predictor classes
   (`DeepSeekMultiTokenPredictorLayer`, `MiniMaxM3MultiTokenPredictorLayer`);
-  **Qwen's wrapper (`Qwen3_5MultiTokenPredictor`, no `Layer` suffix) launches
-  no kernel of its own**, so it never becomes a profile node and its drafter's
-  nodes arrive at the *top level* — guarded by `not_within:
-  [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]` instead. Getting this wrong is
+  Historical Qwen tables used `not_within:
+  [Qwen3_5DecoderLayer, Qwen3_5ForCausalLM]` because the old Python-call tree
+  omitted their kernel-less wrapper. The scoped collector retains an invoked
+  `Qwen3_5MultiTokenPredictor` even without a direct kernel; methods bypassing
+  `Module.__call__` still need explicit ownership. Recheck every MTP binding
+  against the current runtime, rather than assuming historical top-level
+  ancestry. Getting this wrong is
   invisible in the CSV: the curve stays smooth and monotone. Qwen's `mtp_norms`
   read **1287 us at one sequence** for two RMSNorms before the guard was right.
 - **The decoder block is declared, not listed.** `mtp.prologue` / `mtp.head`
@@ -513,7 +567,11 @@ Four things a catalog here must get right:
   plain `nn.Linear` (unsharded), Qwen a `ColumnParallelLinear` (TP-sharded), M3
   a `ReplicatedLinear` (replicated).
 
-### The top-level normalization trap (vLLM 0.28)
+### Historical Python-call normalization trap (vLLM 0.28)
+The following describes the older acquisition tree. The scoped collector builds
+its own grouped tree but deliberately retains the catalog's normalization and
+full parameter-signature identity. It does not reproduce the old tree's pruning.
+
 Worth knowing well beyond MTP: it made **every latency in a 0.28-profiled
 bundle 3x too large**, not just the top-level ones. Every profile node is
 normally divided by **its parent's** invocation count to get a per-call figure, and the
@@ -570,10 +628,11 @@ not structure.
 
 The four `vllm=0.19.0` bundles were never affected, which is what made them
 usable as the reference: the fix was verified against them before anything was
-rewritten. They are gone now — every RTXPRO6000 bundle has been re-profiled on
-0.28 so the whole tree carries one vLLM version, and only
-`RTX4090/meta-llama/Llama-3.1-8B` stays 0.19, because that card is no longer in
-the machine. **A re-profile can move recorded clocks.** Refresh affected
+rewritten. RTXPRO6000 acquisition versions now vary by model: Llama-3.1-8B,
+Qwen3-32B and Qwen3-30B have refreshed TP1/TP2 data recording 0.31, while
+other bundles and Qwen3-30B's historical whole-block fallback keep their
+recorded provenance. `RTX4090/meta-llama/Llama-3.1-8B` stays 0.19.
+**A re-profile can move recorded clocks.** Refresh affected
 regression baselines and example validation together when adopting new data;
 the suite also includes other architecture families and a DeepSeek diagnostic.
 Bandwidth efficiency is the estimated memory-time bound divided by measured
@@ -588,7 +647,7 @@ built from disk. M3's 7 modules are ~103 GB otherwise. M3 additionally needs
 `scripts/patches/vllm_m3_mtp_layer_name.py` to start at all.
 
 ### A dense model's sampler is invisible on vLLM 0.28
-`layerwise_profile` builds its tree from **module** events, so a component that
+The collector's module scopes follow **module** calls, so a component that
 is not an `nn.Module` cannot become a node no matter what it launches. vLLM 0.28
 has two samplers and picks between them by model:
 
@@ -606,9 +665,9 @@ surfaced only with the first dense refresh.
 
 Two things make it hard to spot from the outside. The two runner classes share
 the name `GPUModelRunner`, so `type(runner).__name__` cannot tell them apart —
-only `__module__` can. And `profiler coverage` passes at **100%**: coverage
-reports CUDA time no entry *claims*, and this work never enters the tree at all,
-so there is nothing left unbound.
+only `__module__` can. The historical Python-call coverage passed at **100%**:
+the sampler's work never entered that tree. Native-activity coverage now retains
+it as an explicit gap unless the sampler facade gives it an owning module.
 
 `profiler/core/hooks/sampler_shim.py` wraps a non-module sampler in an
 `nn.Module` named `Sampler`, installed once per worker by `Extension.fire` and
@@ -663,7 +722,7 @@ Attention and ordinary categories use the same per-call CUDA activity union as
 skew, but retain their category-specific averaging and axes.
 
 `hooks/cuda_timing.py` forms the interval union within each raw module call,
-separately per device, before vLLM merges same-class invocations. Overlapping
+separately per device, before the collector groups compatible invocations. Overlapping
 streams on one device count once; different calls must not be pooled before
 normalization. Resolve a native activity by correlation, name and exact device
 interval, but use CPU launch scopes for ownership. Exclude annotations and
@@ -672,16 +731,48 @@ This is device-active time, not whole-step wall time. Catalog components may
 overlap each other, so their summed unions need not equal a global union.
 Coverage remains a kernel-work audit, not a union-latency percentage.
 
-Ordinary CSV rows carry `measurement_protocol` and `measurement_sha256` in the
-same atomic write as their timings. Host and worker identities include the
-catalog, repetitions, timing source and library versions. Resume rejects
-missing or incompatible identities; use a separate output root or explicitly
-remeasure with `--force`. TP-stable replication preserves row identities and
-rejects mixed timing methods before replacing the destination. Fully skipped
-ordinary categories do not acquire a new measurement timestamp. Skew uses
-`dummy-kv-skew-query-state-per-forward-v5`, with the interval, request-state and
-dummy-cache helpers in its acquisition fingerprint. Native DP+EP
-component contracts remain separate and retain their recorded timing method.
+New ordinary CSVs contain coordinates and `time_us`, not provenance columns.
+Record per-category acquisition identities, method descriptions and actual runtime
+versions in variant-root `meta.yaml::per_tp[tp].measurements`; preserve earlier acquisitions when
+extending compatible tables. Describe the PyTorch/Kineto collector, per-invocation
+device-active union, normalization and dummy input preparation directly, without
+numbered protocol branding. Resume compares semantic catalog, geometry, method
+and execution contracts, not source-file hashes or exact library versions.
+Those versions are provenance, not execution vetoes. Historical source hashes
+remain observations; new runtime admission does not collect source-file hashes.
+Actual API, backend, shape, dtype, layout, finite-output and coverage guards remain.
+Missing or incompatible acquisition metadata requires a separate output root or
+explicit remeasurement with `--force`; never restamp historical measurements.
+TP-stable replication preserves acquisition provenance and rejects mixed methods.
+When a replica-only destination begins local acquisition, promote its category
+metadata to the local method while retaining each replica's source-TP identity.
+Validate preserved rows against that source record during local resume; copying
+TP1 rows never claims a local measurement or completed local coverage.
+Fully skipped categories do not acquire a new measurement timestamp. Skew records
+its per-forward method, contexts and runtime observations in root `per_tp[tp].skew`;
+CPU `plan-skew` uses the same semantic projection without importing Torch/vLLM.
+Do not read `skew.meta.yaml`; acquisition and calibration use root metadata only.
+Native DP+EP component contracts and skew-fit invalidation remain separate.
+
+Use the variant-root `meta.yaml` for all new profile metadata. Per-TP measurements,
+category publication, context/callable records, skew acquisition and native MoE
+records belong under `per_tp[tp]`; do not create metadata sidecars beside CSVs.
+Already-central `engine_resolved.per_tp`, `attention_lookup.per_tp`,
+`component_layouts.per_tp` and `skew_fit.per_tp` retain their existing locations.
+The empty `.meta.lock` coordinates metadata writers; it is not a measurement
+record. Preserve unrelated sections on updates. Narrow legacy reads do not
+authorize restamping historical measurements or infer identity from directories.
+Raw repetition checkpoints may support acquisition resume; failure-only error
+records and diagnostic traces may support debugging. They are optional, not
+always-on metadata/evidence files or simulator inputs, and are not committed
+experiment artifacts.
+
+Saved policy, method and format names use descriptive hyphen-separated labels,
+not numbered suffixes. `metadata_names.py` holds shared names, not old-name aliases.
+Obsolete symbolic contracts require fresh acquisition, not renaming stored records.
+Legacy file-layout fallbacks still require current method contracts; unmarked
+historical mainstream tables retain their existing reads. Real library/model
+versions and numeric structural schema fields remain unchanged.
 
 `hooks/history.py` prepares query request state and completes asynchronous output.
 `hooks/dummy_cache.py` initializes assigned attention pages
@@ -691,9 +782,35 @@ kernel subdivisions map back to the request's manager block IDs. Leave
 unassigned pages untouched. Reinitialize per context, outside warmup and timing,
 so preceding queries cannot become the next shot's synthetic history.
 FP8 initialization uses bounded slabs, each with the upstream per-tensor seed,
-to limit its temporary FP16 conversion. Packed payload/scale layouts without a
-supported typed view fail explicitly. Recurrent states are zero-start, not
-generated history. None of these inputs claims trained-workload KV statistics
+to limit its temporary FP16 conversion. Supported NVIDIA packed caches initialize
+floating payloads with that same helper, then quantize and pack the native format:
+`fp8_ds_mla` uses 512 FP8 values, four FP32 scales and 64 BF16 RoPE values in each
+656-byte record; `DEEPSEEK_V32_INDEXER` uses separate value/scale planes within
+each block (128 FP8 values and one FP32 scale per token), optionally shuffled in
+16-by-16 tiles. Do not treat the index cache as interleaved 132-byte token records.
+Main scales clamp `amax / 448` at `1e-4`; index scales clamp `amax` before dividing
+by 448. Both round the scale upward to a power of two. Never initialize scale bytes
+randomly, substitute unit scales or run a native forward to generate this history.
+
+Dispatch by the verified cache spec/backend contract, not the model name. Check
+dtype, head/state geometry, sparse role, explicit shuffle mode and byte strides;
+unknown packed formats remain refusals. Floating `MLAAttentionSpec` indexer
+caches use the typed resolver. A three-dimensional `[blocks, tokens, channels]`
+view may omit the head axis only when the spec has one KV head and matching
+floating dtype; restore that singleton axis for logical shape validation.
+Require non-overlapping strides for this squeezed view: in ascending stride
+order, each non-singleton axis must start beyond the preceding axes' extent.
+Allow padded and permuted views that pass this check.
+Keep existing four-dimensional typed views and strict opaque-byte checks.
+A runtime without the sparse-role capability retains the original typed-cache
+resolver. Preserve null/unassigned
+pages and block padding, including when layer views share backing storage.
+Bound floating-source chunks independently of total cache capacity; quantization
+temporaries add a bounded multiple, so the source cap is not a peak-memory claim.
+Initialization stays outside warmup/timing and in acquisition method metadata;
+old rows must not be relabelled to bypass incompatible resume.
+Recurrent states are zero-start, not generated history. None of these inputs
+claims trained-workload KV statistics
 or representative data-dependent sparse selection.
 
 Token IDs use a local deterministic generator bounded by the live,
@@ -712,14 +829,200 @@ Restore instance hooks even on failure. Making the whole sequence a prompt
 leaves decodes as short extends; a sparse indexer with a lower decode threshold
 than the main attention backend can then classify an entire mixed batch as
 prefill. Geometry-only checks cannot catch that. Zero-history category shots
-remain fresh prompts. The ordinary acquisition protocol is
-`cuda-active-union-dummy-kv-query-v4`.
+remain fresh prompts. Record this request-phase preparation with the CUDA
+device-active-union method, not as a numbered protocol suffix.
+
+### Runtime contexts and coordinated component layouts
+
+The worker extension installs capability-checked dummy-weight preparation before
+native loading. Ordinary models call the original loader unchanged. For the
+admitted native MXFP4/SITU backend, initialize checkpoint-format
+expert bytes with the native quantizer in bounded row chunks; preserve native
+backend selection and postload processing. Do not substitute arbitrary uint8
+values or silently emulate unsupported TP/EP layouts. KDA's nonpersistent
+decode conv/norm buffers copy their native parameter transforms after floating
+initialization, rather than receiving independent random values. Preparation,
+postload structure and measured-forward validity are separate facts. The main
+engine persists the preparation receipt and method metadata describes the inputs.
+Preparation alone does not certify a forward or serving support.
+
+Architecture `native_profile` selects `NativeProfile` orchestration in
+`callable_profile.py`, with native API/backend inspection delegated to an admitted
+adapter in `hooks/runtime_admission.py`. Keep common category publication in
+`context_tables.py`, strict loading in `context_lookup.py`, and contextual
+bundle/sizing integration in `serving/core/component_sizes.py`; do not add
+checkpoint-specific orchestration or loader copies. The hybrid/residual adapter
+retains native capability, ABI, precision and execution-mode checks. Config-derived
+geometry does not establish arbitrary model/backend or device support.
+
+Kimi-K3's local eager adapter preserves the independently supplied nested config.
+Shared stack helpers derive category prefixes and original-depth residual roles;
+MoE covers the MLP axis and other categories retain their declared axes. Keep
+model widths, expert count and top-k native, with distinct MLA and KDA dimensions.
+A completed category requires every planned layer/coordinate, independently
+rebuilt catalog coverage, compatible semantic/runtime contracts and an unchanged CSV.
+Retain measured library versions as observations; do not infer absent versions
+from the consuming environment or use an exact version as execution admission. Validate partial
+CSVs before deduplication or preload can hide malformed/duplicate rows. A partial
+shot is reacquired in full. Old publication schemas and changed execution semantics
+require fresh acquisition, never relabeled measurements or inferred completion.
+Preparation elapsed times remain engine telemetry but do not participate in
+runtime identity. Keep actual layout checks and table-integrity hashes; source
+file hashes in historical records do not pin execution. New admission records
+retain actual backend/layout and version observations, not source-file digests.
+Unscoped runner GPU work remains visible as coverage gaps; complete model
+boundaries do not imply complete step-time accounting or a zero-gap CLI result.
+
+KDA's projections and recurrent core are separate. Native MLA's q-LoRA phase
+joins concurrently executing gate and attention branches; its per-call device
+union must remain one atomic cost. This concurrent boundary is the exception
+to splitting independent scaling axes: independently adding the branches
+double-counts overlap. The gate application and output projection remain separate.
+
+Schema-3 callable contexts preserve declared scalar arguments and tensor
+metadata, never values or CPU duration. Contextual dense rows cannot enter
+the token-only sink. The hybrid/residual planner uses original-depth source roles
+through the unchanged native function, not the reduced engine's pooled calls.
+Its isolated synthetic arguments, native ABI and CUDA call evidence are validated
+before publication. Root `per_tp[tp]` retains category records under `categories`,
+context contracts/receipts under `contexts.{ordinary,callables}`, and callable
+options, plans and compact per-shot summaries under `callables.callables`.
+Keep `callables/dense_context.csv` as timing data; do not write new raw CUDA
+ledger/evidence JSON files. Historical sidecars remain read fallbacks. Lookup validates
+them once, then interpolates tokens only within an identical structural context,
+without cross-context fallback or extrapolation. Keep the fixed allocation
+bound explicit; do not silently reduce context capacity to fit it.
+
+`ContextualProfileBundle` requires complete ordinary and residual tables, local
+TP1/PP1/EP1 eager text execution and explicit `duration_replay_only=True`.
+Source-role residuals disable transformer-block copying. Logical byte triples
+are not resident capacity or traffic. Distributed, graph-padded, speculative,
+offloaded, prefix-cached, power and roofline execution remain unsupported;
+do not present bounded profiling/trace readiness as full-depth GPU execution
+or end-to-end accuracy. The hybrid/residual path does not enable skew acquisition.
+Shared geometry and trace routing read expert top-k through `expert_top_k`;
+preserve the existing expert-group selection semantics.
+
+`capture_scope_contract.py` projects the whole architecture to ordinary, coverage
+and skew RPCs, preserving exclusions across category slices and including them
+in host/worker identities. Methods/operators use schema 1; explicit callable
+declarations add schema-2 `callables`, including inactive alternatives, and
+argument/layout declarations use schema 3. Common
+`embed_input_ids`/`compute_logits` method scopes provide runtime ancestry for direct
+calls, not independently bindable costs or arbitrary-method instrumentation.
+Restore exact instance state; reject foreign replacement, async/generator methods
+and ambiguous normalization. Exact native `operator:` scopes own CUDA activities,
+never CPU duration; reject wildcards, launch APIs, collisions and ambiguous or
+out-of-forward/thread scopes. Contexts add no descendant normalization units:
+consume returned normalized components, not an augmented tree via an old extractor.
+
+Each catalog entry chooses exactly one `vllm`, `operator` or typed `callable`
+binding. A declared function resolves an exact attribute of an already loaded
+module; a declared method resolves an exact object path under an observed runtime
+owner, including subclasses. Do not import targets, dispatch by model family or
+replace kernel implementations. Callable scopes remain transparent to descendant
+normalization; their own timings are per-call CUDA unions, never CPU duration.
+An explicit `normalization` chooses `parent` or `invocations`; omission preserves
+ordinary parent and whole-MoE invocation defaults. Check that the selected unit
+matches one trace component rather than using normalization as a fitted factor.
+
+Unavailable targets remain visible in `callable_audit` and once-per-runner
+warnings. They are not zero measurements or proof of selected-layout coverage.
+Reject failing descriptors, unsupported async/generator or data-descriptor targets,
+ambiguous ownership, kind collisions and overlapping canonical claims. Restore
+exact prior attributes on exit; preserve a foreign replacement and invalidate the
+capture rather than overwriting it. Both acquisition identities include the
+full declarations and their capture semantics, not source-file hashes.
+Preserve historical simulation inputs,
+but never relabel them to resume an incompatible acquisition.
+
+`CoverageReport.canonical_invocations` preserves actual per-measured-forward
+module/operator/callable counts, positive-CUDA call counts and raw CUDA activity
+counts separately. Normalization groups retain their exact divisors; never sum
+them into a fabricated call count. Check expected calls against the source-reviewed
+execution path, not the denominator or a coverage percentage. CPU-only calls do
+not establish CUDA coverage, and missing entries must not become zero timings.
+Warmup/preparation calls are excluded; this audit changes no latency formula.
+
+`component_layouts.py` is a shared CPU-only contract for declared historical and
+alternative decompositions over `dense`, `linear_attention` and `attention`. Select a
+unique variant from positive prefill/decode/mixed CUDA coverage on every worker
+and check every acquired shot. Never infer it from model/version names or absent
+kernels. Small probes do not certify unmeasured shapes, backends or deployments.
+Discovery uses fixed `runner._COVERAGE_REGIMES`, not limits-adapted probes; small
+engine envelopes can reject discovery even when their requested grid is valid.
+Validate all fixed probes on the host before the first worker RPC. Their minimum
+envelope is 5 requests, `max_model_len >= 258` and an acquisition token buffer
+of at least 68 (the logical token budget plus `max_num_seqs`). Refuse an undersized
+envelope without resizing or skipping probes. `hooks.batch.validate_shot_limits`
+also checks ordinary synthetic request count, query-token total and per-request
+history plus query plus one output against actual engine buffers before page
+allocation or GPU work; preserve this guard for direct worker calls.
+
+`meta.yaml.component_layouts` (`component-layouts`, per TP) is the sole authority.
+Publish `pending` before clearing, `writing` with identity, then `complete` only
+after row validation. Changed shared identity requires explicit force across
+coupled categories; changed representation/definition requires fresh output.
+Resume whole valid shots, preserve unrelated TP-stable identities, and refuse
+pending/mixed/stale/malformed data or missing complete-table regimes.
+`writing` categories may resume before their first measured shot, including when
+only valid TP1 replicas remain at TP2; validate replicas before exempting them from
+local coverage. Empty/replica-only categories cannot become `complete`. Unmarked
+historical tables keep their old sequence; alternative-only rows require metadata.
+Qwen's packed core includes its norm, so refresh dense and linear_attention together.
+Use one writer per variant root and immutable published bundles: atomic replacement
+is recovery, not locking. See the output-bundle guide for the full publication rules.
+
+Site-scoped alternatives name existing `blocks`/`shared` paths. Apply replacements
+once; a `layer0` prefix may be consumed only at absolute target layer 0 by the
+declared active prologue endpoint after its expected prefix matches. Never remove
+an MTP or later-layer norm by analogy. `site-scope-calls` checks actual canonical
+calls and timing divisors against the resolved prefix before publishing each shot.
+
+`native-dsa-eager-tail` binds original source configuration and logical TP/EP
+to live native runtime facts. Keep configured FP8/BF16 matrix widths separate
+from BF16 activations;
+do not shrink model width, emulate another TP or accept skipped/shared indexers.
+The physical acquisition is local TP1/PP1/DP1/EP1, eager decode q=1, without MTP,
+offload, sequence parallelism, dense-MHA prefill or quantized query input.
+Retain packed cache geometry and the actual unwrapped sampler class/entrypoint
+and entrypoint ABI. Source hashes and library versions are observations, not
+admission locks. Sampler payload width is source-backed, not observed
+tensor data; V1 returns int32, V2 int64. Do not force a runner to fit a byte formula.
+
+New native DSA publication requires `dense`, `per_sequence` and `attention` with
+matching runtime identity and per-category engine facts inside the existing per-TP
+component-layout record. Native MoE components publish independently under their
+deployment contract; new ordinary records must not require the removed `moe.csv`
+acquisition. Historical records containing `moe` retain their original completion
+checks. Never bless old rows by adding these fields. The combined tail includes indexer work and must use full-context
+coordinates, not the historical sparse-attention cap. Historical representations
+and MiniMax's independent native attention contract remain unchanged.
+
+Native DSA traces require explicit `duration_replay_only=True`; default serving
+must refuse the native 656+132-byte cache until capacity integration exists.
+Logical component bytes are not traffic or allocator residency. Refuse distributed,
+P/D, offload, PIM, speculative, graph-padded, prefix-cache, power and roofline modes.
+Cache layout decisions and immutable substitutions by TP/site, sharing lazy caches
+across TP views; recheck source configuration on native byte-contract cache hits,
+including mutations of an already seen dictionary. Do not apply new restrictions
+to historical unmarked bundles.
 
 Ordinary category sweeps checkpoint the accumulated CSV between completed
 shots, including early in a new run. `DedupSink.flush(clear=False)` retains
 all rows, acquisition identities and duplicate counts; writing only the most
-recent rows would erase earlier progress. Failed worker calls or interrupted
-writes leave the previous checkpoint available for compatible resume. This
+recent rows would erase earlier progress. Stage the measurement metadata until
+the replacement CSV is serialized and fsynced. Publish
+root `per_tp[tp].measurements.<category>.publication` with `state: pending` and the intended
+`csv_sha256`, replace the CSV and fsync its directory, then mark the publication
+`complete`. Apply the same ordering to later checkpoints and TP-stable replication.
+Resume validates the CSV against either state's checksum: matching pending data
+are reusable, while mismatches require fresh output or explicit `--force`.
+Checking/preloading neither finalizes pending metadata nor stamps older metadata
+that lacks a publication record. Keep these data-generation seals separate from
+source/version provenance and category-coverage completion. A prior checkpoint
+is resumable only with compatible metadata; never accept old CSV bytes under a
+new forced-acquisition identity after an interrupted replacement. This
 does not turn a partially acquired table into a completed simulation bundle:
 finish the requested sweep before adopting it. Checkpoint I/O is outside the
 CUDA timing context and does not add simulated CPU time.
@@ -730,21 +1033,46 @@ precision. Do not round only the planned key: weighted prefill coordinates
 can have more than three decimal places and would miss their stored rows.
 This identity alignment changes neither measurement protocol nor saved timings.
 
-Module-tree repair alone is insufficient: CUDA leaves can remain beside the
-module that launched them. `hooks/activity_ownership.py` connects each retained
-CUDA activity's native correlation ID to its runtime/driver launch and selects
-the innermost containing CPU module call. Match Python-call intervals to native
-OS-thread resource IDs first; logical thread IDs across event namespaces are
-not interchangeable. Missing or ambiguous ownership invalidates the shot.
-Preserve every retained activity and its duration; never assign ownership by
-GPU timestamp containment or add CPU duration. The skew measurement fingerprint
-includes this helper, so older acquisitions cannot satisfy the new resume check.
+The common `hooks/activity_collector.py` captures actual runtime module
+ancestry, including shared objects and repeated calls. Native OS-thread CPU
+scopes and launch correlations establish ownership; never use GPU timestamp
+containment. Duplicate, missing, cross-forward or ambiguous ownership fails
+closed. Ordinary shots require the same positive active canonical set in every
+forward, without requiring inactive catalog alternatives to execute. Reject
+overlapping canonical claims before storing timings. Coverage keeps a unique
+native kernel/copy/memset ledger and explicitly reports unscoped work; never
+silently label it preparation or add it to an arbitrary layer. Preserve overlap
+errors through the host CoverageReport and CLI exit status.
 
-Raw CSV rows preserve ordered requests, query roles, repetitions, protocol
-and actual time. Complete kernel sets and sufficient repetitions are required
+Untimed recurrent warmup checks must bind each query/history pair to its own
+assigned state pages, including reused backend metadata. The audited ordinary
+GDN contract uses cache mode `none`. Native vLLM 0.31 KDA has a separate,
+native API/metadata contract: it consumes the complete non-speculative view, including
+the decode prefix of a mixed batch, and does not populate GDN's prefill-only
+views. Keep state-page, query/history, initial-state and token-conservation checks
+for both. Reject unsupported APIs/schemas and active speculative, checkpoint,
+RecoverSSM or optional FlashInfer partitions. This warmup guard does not certify
+a model's catalog, acquisition grid or serving support. Changed acquisition
+semantics require remeasurement, not metadata relabeling.
+MTP shots require every requested canonical
+entry, rather than publishing a partially observed drafter table.
+
+`hooks/cache_pages.py` allocates all cache groups from one shared physical
+pool, reserving null block 0. Group IDs must not overlap even when typed views
+have different logical shapes. Check the sum of all groups' physical page
+requirements against capacity. Initialize only assigned spans, respecting
+backend block axes and kernel subdivisions; preserve null and unassigned pages.
+Recurrent caches retain zero-start state. Unsupported state modes and packed
+layouts fail explicitly. Record allocation semantics in ordinary and skew
+method metadata; incompatible rows require remeasurement, not relabelling.
+
+Raw skew CSV rows preserve ordered requests, query roles and actual times;
+metadata records repetitions and method. Complete kernel sets and sufficient repetitions are required
 for resume. Failed acquisition raises after checkpointing instead of silently
-publishing partial coverage. `skew.meta.yaml` records the actual per-TP plan,
+publishing partial coverage. Root `per_tp[tp].skew` records the actual per-TP plan,
 resolved limits and completion; metadata must not fabricate this from defaults.
+If all planned skew rows were saved before a completion-update interruption,
+resume may seal that record without new timings or acquisition provenance.
 `profiler plan-skew` previews the same plan and outstanding cases on CPU from
 an existing bundle's resolved engine limits. Both `plan-skew` and
 `profile --only-skew` accept an independent positive TP selection such as
@@ -766,13 +1094,15 @@ Unsupported cells use their own kernel/query pooled fallback; missing
 kernel/query data means zero correction. No cross-model, hardware, TP or
 query borrowing is permitted.
 
-Only `runtime-skew-calibration-v1` tables can be enabled. Remove, rather than
+Only the supported `runtime-skew-calibration` format can be enabled. Remove, rather than
 revive, old inline alpha and legacy bucket lookup code. Disabled bundles need
 no migration; the RTX4090 bundle remains untouched. The normal writer and
 CPU-only `profiler refit-skew` use the same compiler. Identity, attention,
 table, lookup-code and saturation fingerprints are checked before execution.
-An empty rebuild is an error and must not enable a disabled fit. A sidecar
-marked incomplete also blocks rebuilding until acquisition is resumed.
+An empty rebuild is an error and must not enable a disabled fit. A root skew
+record marked incomplete also blocks rebuilding until acquisition is resumed.
+Repeat-level skew CSVs require complete root acquisition metadata; unmarked
+historical tables retain their existing behavior.
 `--skip-skew` skips new acquisition, not existing data; `--only-skew` requires
 existing attention references before GPU work begins.
 
@@ -793,7 +1123,9 @@ profiled GPU work or add CPU launch/preparation time to simulated GPU latency.
 Use matched query/KV shapes, execution modes and measurement boundaries when
 checking a residual. Tick-level throughput aggregates and end-to-end agreement
 cannot identify a per-layer error or establish a universal per-step adjustment.
-Native MoE components have separate eager/graph acquisition contracts.
+New native MoE components use eager-only acquisition, without isolated graph
+capture. Serving graph padding is separate and still determines lookup rows.
+Historical eager/graph component tables retain their measured mode selection.
 
 Calibrate communication from primitive measurements using the backend's
 actual cost model, not by fitting model benchmark errors. Keep raw samples,
@@ -889,8 +1221,11 @@ hypothetical explicit interconnect never silently gains the measured card's
 operation curves.
 
 The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples omit all three
-link keys and consume the measured operation defaults automatically. Refresh
-each example's recorded NCCL truth, simulator output, validation plots and
+link keys and consume the measured operation defaults automatically. Their
+vLLM 0.31 references preserve the recorded custom-all-reduce setting: disabled
+for Qwen3-32B TP2, not disabled for Llama TP1 or Qwen3-30B TP1/DP2/EP2.
+Neither TP1 deployment exercises the TP custom-all-reduce path. Refresh
+each example's recorded truth, simulator output, validation plots and
 regression digests together when adopting a changed interconnect. Do not
 pair refreshed hardware defaults with an older transport reference.
 
@@ -997,10 +1332,21 @@ then 139.3 at 2048 and 138.3 at 8192 -- flat from exactly `index_topk`. The
 same sweep on Llama rises throughout (8.5, 18.8, 51.2, 181.1), because a dense
 query reads its whole causal window.
 
-`stack.probe_key_saturation` reads the bound off the checkpoint -- `index_topk`
-for DeepSeek/GLM, `sparse_topk_blocks` x `sparse_block_size` plus the
-always-included initial and local blocks for MiniMax-M3 (17 x 128 = 2176) --
-and the catalog's `key_saturates` says which entries are subject to it. That
+`stack.probe_key_saturation` reads `index_topk` for DeepSeek/GLM. For MiniMax-M3
+it retains the committed tables' historical lookup rule, including the initial
+and local block adjustment (17 x 128 = 2176). New native acquisitions instead
+use `attention_lookup.py` and `meta.yaml.attention_lookup.per_tp`: the inspected
+vLLM 0.31 Triton indexer/attend pair uses the configured selected-block count
+with the reviewed 128-token block layout (2048 tokens for the shipped config)
+for `sparse_attention` prefill lookup only. Initial/local blocks are part of that
+total, not an addition. Exact selected classes, callable API, BF16
+indexer/KV storage, selection-buffer layout and model/catalog parameters must
+match; speculative acquisition and unreviewed backends/layouts are refused.
+Native attention publication reads the current measurement metadata and recognizes
+explicitly supported historical row protocols. Recognition does not waive
+semantic acquisition compatibility or completion checks and never converts
+historical measurements. Source-file hashes and version labels are not vetoes.
+The catalog's `key_saturates` says which entries are subject to the bound. That
 is a per-**kernel** property, not a per-model one: M3 is sparse only from its
 fourth layer on, and a sparse model's `indexer` scores the whole KV to make
 the selection and never saturates (52 -> 101 us from kv 2048 to 16384).
@@ -1011,6 +1357,22 @@ single cell. `BatchCtx` carries the mean both ways because the clip is per
 sequence and must precede the mean -- `mean(min(x, cap))` is not
 `min(mean(x), cap)`.
 
+Native row protocols bind the per-TP semantic digest to the acquisition identity.
+Pending records cannot be consumed; completed attention tables carry a checksum.
+Missing contracts for marked rows, changed bytes or unknown schemas fail closed.
+Never relabel historical rows, add a contract after acquisition, or change the
+historical helper/fingerprint to migrate existing fits. Refresh in a separate
+root, or explicitly remeasure the affected category. Serving, skew fitting,
+support completion and `plan-skew` share this resolver and select each TP's cap
+without mutating the shared cached database. Decode-history coordinates remain
+uncapped. Partial non-attention refreshes preserve the authoritative contract.
+Native skew publication also checks row identity and completion; a zero-case
+plan creates no skew artifact, changes no existing artifact even with `--force`,
+and contributes no new skew provenance or fit trigger to the caller.
+TP1 prefix acquisition and boundary checks do not certify multi-TP deployment,
+memory capacity, a full grid or end-to-end benchmark accuracy. See the
+[public contract](docs/docs/profiler/output-bundle.md#native-attention-lookup-contract).
+
 **The same flag governs the skew guard.** `alpha` is where a skewed batch
 lands on the line between the two uniform attention-table lookups. That line
 does not care which end is higher; the fitter and simulator accept either
@@ -1020,14 +1382,43 @@ gap is noise -- and wrong for a saturating kernel, where the gap is negative
 for essentially every case, so a sparse skew sweep would have had almost every
 row dropped as `nan`.
 
+### Target graph coordinates and eager acquisition
+
+`profiler/core/sampling.py` combines geometric points with target serving graph
+coordinates through the shared `serving/core/cudagraph.py` resolver. Acquisition
+always remains eager. Explicit `--cudagraph` JSON overrides the target policy;
+otherwise prefer a scope-matching completed worker capture observation and derive
+candidates only when none matches. Label observed captures, explicit options and
+derived candidates separately. Acquisition-backend capability and a requested
+grid do not establish full-model capture. Resolve from logical scheduler limits,
+not padded acquisition buffer sizes; retain runner, query length, TP/compiler-SP
+and hardware distinctions. Explicit `NONE` disables graph anchors.
+
+Dense token grids include forward anchors; TP1 also unions the requested TP
+degrees' anchors for TP-stable replication. Target logits and sampler execute
+outside the backbone graph, so per-sequence sampling stays geometric. Attention
+and linear attention add pure-decode request anchors only for FULL-capable modes
+at the supported query length, and pure-prefill anchors only for `FULL`; mixed
+shots retain geometric axes. Keep context, block-rounded KV and scheduler
+feasibility checks. MTP adds drafter request anchors only: its table has no
+complete first-pass query/token dimension. Skew keeps independent axes.
+
+Root `per_tp[tp].sampling[category]` records the feasible plan, factors, target
+coordinates, provenance and category limitations; it does not certify completed
+measurements. Report excluded dense capture points. Native MoE records transformed
+`expert_sampling.capture_tokens` and `sampling_graph` in each target contract;
+do not place metadata in CSV columns or reinterpret eager timings as graph times.
+
 ### Attention-grid density and acquisition cost
 
-`SQRT2 = 2.0 ** 0.5` in `profiler/core/config.py` is the default factor for
-the three attention factor settings, covering four shape axes: the KV factor
-controls both prefill-key and decode-KV. The editable `profile.sh` leaves
+`--grid-factor` defaults to 2 for ordinary geometric token/request coordinates.
+Attention chunk/KV, skew and native MoE retain separate factor controls, all
+defaulting to 2; only attention request counts retain `SQRT2 = 2.0 ** 0.5`.
+The KV factor controls both prefill-key and decode-KV. The editable `profile.sh` leaves
 optional settings unset and forwards only explicit nonempty values, so the
 CLI owns its defaults. Keep every `profile` option reachable from the template,
-including `DP_DEGREES` (`--dp`), `MOE_ROUNDS` and explicit logging; do not
+including `GRID_FACTOR`, JSON-valued `CUDAGRAPH`, `DP_DEGREES` (`--dp`),
+`EP_DEGREES` (`--ep`), `MOE_ROUNDS` and explicit logging; do not
 silently enable a TP sweep or native DP acquisition. The separate multi-model
 `profile-all.sh` remains an explicitly configured campaign, not a default-parity
 wrapper. What picks sqrt(2)
@@ -1099,11 +1490,10 @@ different kind of evidence from the one that reverted `attention_chunk_factor`
 different vLLM versions, while this is measured against the same engine in the
 same run.
 
-**For chunk and kv there is no accuracy evidence at all**, and the one A/B
-there says density did *not* help: on a 0.28-eager truth the x2 grid read
-|err| p50 2.7% against the 1.5 union's 3.4%. sqrt(2) on those axes is an
-operational choice -- future refreshes stay incremental -- not an accuracy
-one. Do not let the `n_decode` result launder a claim about them.
+Chunk and KV axes default to doubling. The request-count evidence above does
+not establish an accuracy benefit from densifying those other axes. Target
+graph anchors add relevant pure-regime coordinates without changing their
+geometric defaults or turning eager measurements into graph measurements.
 
 **Skew acquisition density is separate from fit resolution.** Its geometric
 factors retain their defaults in `ProfileArgs`; the new compiler creates N
@@ -1114,14 +1504,14 @@ remain dimensionless and fixed. Other measured shape axes still affect which
 observations are pooled. Validate changed coverage through
 the committed bench examples rather than assuming that more rows are better.
 
-**A refresh has to restate the other axes.** Every committed RTXPRO6000
-Llama/Qwen bundle carries `chunk_factor: 1.5, kv_factor: 1.5` and
-`max_num_seqs: 256`, and every other bundle is at 2.0, so
-`slice --group attention` at the defaults silently re-grids axes besides the
-one being refreshed -- and a lower `--max-num-seqs` silently *narrows* the
-grid through the feasibility filters. Pass the bundle's own
-`--attention-chunk-factor`, `--attention-kv-factor`, `--attention-max-kv` and
-`--max-num-seqs`, all of which `meta.yaml` records.
+**A refresh has to restate the other axes.** Read each bundle's recorded
+acquisition settings instead of assuming that historical profiles used today's
+defaults. A category slice can change the grid when its factors or resolved
+limits differ; a lower `--max-num-seqs` narrows support through feasibility
+filters. Match the recorded chunk, KV and request factors, decode query lengths,
+maximum KV, request/token limits and target graph policy when retaining the
+same sampling envelope. A changed envelope is a new acquisition choice, not a
+row-for-row refresh.
 
 **A long sweep prints a heartbeat.** The rich progress bar needs a TTY.
 Ordinary categories also write periodic atomic CSV checkpoints between
@@ -1181,7 +1571,7 @@ The **`linear_attention`** category is keyed on `(prefill_tokens, n_decode)`,
 and that key is what makes it regime-aware: a gated-DeltaNet block runs a
 *different set of kernels* for a pure prefill, a pure decode and a mixed batch,
 so a kernel simply has no rows for a regime it does not fire in, and the
-simulator emits nothing for it there. Measured on Qwen3.8-27B:
+simulator emits nothing for it there. The historical Qwen3.8-27B decomposition:
 
 | kernel | prefill | decode | mixed |
 |---|---|---|---|
@@ -1197,6 +1587,14 @@ layers stay in `dense`, which is why the split is per layer rather than per
 block. Use `python -m profiler coverage` to find out which is which; it reports
 per regime.
 
+The selected packed layout replaces the GDN conv/scan/norm components with
+`gdn_core`; projections and outer glue stay separate. Its size is packed qkvz+ba
+input, gated-normalized value output, and owned conv/dt_bias/A_log/norm parameters;
+persistent state capacity remains per sequence. Use model activation dtype (A_log
+is float32), require positive TP-divisible heads, and reject unverified quantized
+BA layouts. Sequence expansion is cached by TP and original sequence without
+mutating the catalog or changing latency interpolation.
+
 The `attention` category holds **more than one kernel** on a sparse model, and
 they are not interchangeable — the lookup takes a layer name
 (`attention_by_layer`) and so does the skew alpha. MiniMax-M3 profiles
@@ -1207,11 +1605,11 @@ a sparse layer got the dense kernel's latency (2.1x per layer on M3).
 
 Names beyond this table are per-family and live in the catalogs
 (`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `mtp_*`, `*_glue`).
-**`calculate_sizes` in `memory_model.py` raises on a name it does not know**,
-so a new family needs its tensor-size formulas added there before it can be
-simulated at all. Every name in every shipped catalog has one today — 26 for
-Qwen3.5 and DeepSeek/GLM, 21 for MiniMax-M3 — which is checkable in seconds
-by calling `calculate_sizes` for every name in every shipped catalog.
+**Ordinary catalogs require `calculate_sizes` coverage in `memory_model.py`.**
+Admitted native/contextual representations instead use their selected providers
+in `component_sizes.py`; their logical trace bytes do not establish resident
+capacity. Check every selected canonical name through its actual sizing path.
+Catalog presence alone does not establish a valid shape or deployment.
 
 ### Trace generator structure
 `trace_generator.py` walks the architecture yaml's `blocks:` section to emit
@@ -1229,15 +1627,18 @@ each iteration. Composable helpers:
   emit for `pre_attn` / `post_attn` / `mlp`", consulting
   `blocks.sparse_attn` first and falling through to `blocks.attn`.
 - `_emit_sequence()` — walks a list of canonical names from a block, attaches
-  TP ALLREDUCE to `o_proj`/`down_proj`, swaps in PIM attention before the
+  TP ALLREDUCE to `o_proj`/`down_proj` and declared row-output projections,
+  caches selected component sequences per TP, swaps in PIM attention before the
   NPU attention kernel when offloading is enabled, and one-shot-warns when a
   layer is missing from the profile CSVs.
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
   `_emit_final_layers()` — thin wrappers over `_emit_sequence`.
 - `_block_copy_key()` — the reuse key for a built block: `None` when it must be
-  rebuilt (block mode, or a non-deterministic MoE router), otherwise the
-  layers' own `LayerSpec`s. Build once per distinct block *shape*, replay for
-  every layer that shares it.
+  rebuilt (block mode, contextual profiles, or MoE with copying disabled),
+  otherwise the layers' `LayerSpec`s and any site-specific resolved sequences.
+  Build once per matching key and replay its rows. Deterministic BALANCED/RR
+  routing is exact at a fixed batch shape; RAND copying reuses a draw and
+  suppresses per-layer variation rather than automatically disabling reuse.
 - `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
   sub-batch interleaving.
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
@@ -1325,16 +1726,17 @@ when the selected alpha is zero. New calibration tables use a kernel/query/
 prefill/lever partition and binary search over supported N anchors.
 `_hydrate_skew_fit_tables` validates and loads the table once; no fitting,
 measurement-neighbor interpolation or file access occurs per batch.
-Enabled unversioned fits are rejected with a `profiler refit-skew` instruction.
+Enabled fits without a recognized calibration format are rejected with a
+`profiler refit-skew` instruction. The current format is `runtime-skew-calibration`.
 Disabled skew bundles, including RTX4090, bypass calibration unchanged.
 
 Profile CSV path: `profiler/perf/<hardware>/<model>/<variant>/tp<N>/{dense,
 per_sequence,attention,moe,skew,skew_fit}.csv` (resolved as
 `../profiler/perf/...` from the `astra-sim/` working directory).
 
-Variant resolution: `trace_generator.resolve_variant(model_config)` mirrors
-the profiler's `effective_variant`, and is a **pure function of the model
-config** — it takes no dtype argument, because the simulator has no dtype
+Variant resolution: `trace_generator.resolve_variant(model_config)` selects the
+checkpoint-default folder and is a **pure function of the model config** —
+it takes no dtype argument, because the simulator has no dtype
 input. Weight dtype is `utils.config_weight_dtype` (`quantization_config`
 first, then `torch_dtype` / `dtype`), KV dtype is `utils.config_kv_cache_dtype`
 and appends a `-kv<short>` suffix when not `auto`. Runtime lookups verify the
@@ -1342,7 +1744,9 @@ resulting folder exists; a miss raises a clear `FileNotFoundError` pointing at
 the missing variant. The profiler can still *write* other variants for the same
 model (`--variant`, `--dtype`, `--kv-cache-dtype`), which is how a deliberate
 second precision is measured and kept beside the first; the simulator just
-never asks for one.
+never asks for one. Do not assume universal profiler/consumer name equality:
+nested-only quantization, FP32 auto conversion and auto-promoted KV dtypes
+retain compatibility-label limitations documented in the profiler running guide.
 
 Runtime vs. profiled warnings: on first load of a `(hardware, model, variant)`,
 the simulator compares the CLI's `--max-num-batched-tokens` and `--max-num-seqs`
@@ -1401,10 +1805,11 @@ arrival time to avoid busy-looping.
   advances the clock only for arrivals still pending in the *router*, so a
   request already sitting in `waiting` behind a stale cutoff would be invisible
   forever and the run would answer "pass" at a clock that never moves.
-  Worth ~0.6 step of TTFT. Invisible on a saturated run (RTXPRO6000/Qwen3-32B
-  is +1.3% either way, since its TTFT is 37 s) and a fifth of the median on a
-  light one -- it moved the DP+EP example's TTFT mean from -5.6% to -1.2% and
-  P90 from -3.5% to -1.1%, leaving TPOT and latency untouched
+  At `pp_size > 1`, this additional lag applies only when the scheduler's
+  `_uses_v2_model_runner` classification is true; the modeled V1 pipeline
+  already supplies its in-flight window. The classification currently treats
+  non-MoE, non-hybrid stacks as V2 and is separate from `cudagraph.runner`.
+  Admission and TTFT effects depend on workload and batch composition.
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
 - **There is no prefill phase or decode phase.** A request just catches up to
@@ -1432,13 +1837,17 @@ arrival time to avoid busy-looping.
   so the simulator's capacity is an upper bound at the same utilization. That only matters
   when a run **saturates** the KV cache: below the ceiling nothing is preempted and the
   configured capacity is invisible in the results. **For a run that does saturate,
-  calibrate `mem_util` so the block count matches `kv_cache.num_gpu_blocks` in the bench
-  run's `meta.json` before comparing latency at all.** On the bundled RTX 4090 example
-  (24 GB, pinned at its ceiling) the matched value is `0.833919`, which moves TTFT mean
-  from -20.7% to +0.6% and TPOT mean from +12.9% to +0.2% against the same vLLM run. The
-  RTXPRO6000 examples peak at 58-97% of budget on a 96 GB card and stay at `0.9` --
-  calibrating them would change nothing, so do not treat `mem_util` as a general
-  explanation for validation error
+  calibrate `mem_util` so each instance's block count matches its observed engine
+  pool in the bench run's `meta.json` before comparing latency at all.** New runs
+  record `kv_cache.capacity.per_engine`; require its complete status rather than
+  interpreting a DP client aggregate as one pool. Historical single-engine
+  references retain their recorded `kv_cache.num_gpu_blocks`. The RTX 4090
+  example matches 2,588 blocks with `mem_util: 0.833919`. The refreshed Qwen3-30B
+  example matches 38,256 blocks per DP rank; Llama and Qwen3-32B retain the
+  recorded utilization without claiming a complete per-engine capacity match.
+  Inspect preemption and request scheduling before attributing latency error
+  to capacity; heartbeat occupancy percentages have different cache accounting
+  from vLLM and do not establish equivalent pools.
 - `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
   `memory_model.py` keeps the static sizing math and a byte-level view; `npu_used` is a
   property over the pool, so there is one ledger per tier
@@ -1522,13 +1931,12 @@ up shot for shot with a re-profile.
 
 Two shapes of the grid are worth knowing when planning a run:
 
-- **The split.** `q > 1` never yields a pure-prefill shot, and `decode_q_len`
-  is part of the sink's row key, so a `q=1` sweep and a `q=N` sweep are
-  disjoint and their union is exactly the combined grid. One model's attention
-  sweep can therefore run one half per GPU and the CSVs concatenate. Pin
-  `--attention-max-kv` on both halves when doing this: the resolver reads
-  `max(decode_q_lens)`, so the halves would otherwise derive different caps and
-  sweep different kv sets.
+- **Query coverage.** Each requested query length adds decode-containing shots;
+  pure prefill is emitted once at `q=1`, even if `1` is not requested. Separate
+  sweeps can therefore overlap on prefill rows. Prefer a combined acquisition;
+  independent runs need separate output roots, an explicit common KV bound and
+  compatible identities before any merge. `decode_q_len` remains part of the row
+  key. FULL-prefill anchors union the target configurations' capture sizes.
 - **The reach.** `--attention-max-kv` defaults to the model's own context,
   `max_model_len - max(decode_q_len) - 1` — not `max_model_len`, which gets
   the top point filtered (a decode occupies `kv + q` positions and needs one
@@ -1632,19 +2040,31 @@ Note the weight row is the profiler's **variant folder name**, not vLLM's
 quant method, while the folder has to encode the quantization or two bundles
 collide. That divergence is deliberate; the other four match vLLM exactly.
 
+Profiler `--dtype auto` uses the omitted-dtype naming path. An explicit BF16/FP16
+matching a quantized checkpoint's declared activation dtype keeps the quantization
+base; another activation dtype gets `-act<dtype>` (for example `fp8-actfp16`).
+Explicit FP32 is not an auto match: vLLM may downcast an FP32 checkpoint.
+HF precision-field or any nested `text_config` override requires `--variant`;
+ambiguous dtype aliases or nested-only quantization with explicit `--dtype`
+also require an intentional label. These names never change engine quantization.
+Serving still selects only the checkpoint-default variant. Do not rename or
+restamp old acquisitions to represent a new precision or measurement identity.
+
 To simulate a different precision, **profile it** — the profiler's flags write
 a separate bundle and the simulator reads the one the checkpoint names.
 
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
-- `--skip-prefill` — skip the prefill phase (decode only)
+- `--skip-prefill` — legacy first-token bookkeeping flag; it does not skip
+  prompt computation or prepare cached KV and is not a decode-only generator
 - `--request-routing-policy` (`LOAD`, `RR`, `RAND`, `CUSTOM`) — request routing across instances
 - `--expert-routing-policy` (`BALANCED`, `RR`, `RAND`, `CUSTOM`) — expert token routing for MoE.
   `CUSTOM` reads the measured distinct-expert count from `--gate-stats` rather than
   deriving it from a uniform gate; see the gate-stats section
   (block-copy optimization is controlled separately via `--enable-block-copy`, default on)
-- Boolean flags use `argparse.BooleanOptionalAction` (e.g., `--enable-prefix-caching` /
-  `--no-enable-prefix-caching`)
+- Reversible boolean flags use `argparse.BooleanOptionalAction` (e.g.,
+  `--enable-prefix-caching` / `--no-enable-prefix-caching`). Opt-in `store_true`
+  switches have no automatic negative form; document the actual parser.
 
 Before release, compare each public entry point's registered arguments with
 its directory README index and complete website reference, including negative
@@ -1666,6 +2086,19 @@ kv_dim = kv_head * head_dim      # NOT n_embd // group
 `(input, weight, output)` bytes **per rank** for one canonical layer, and
 **raises** on a name it does not know — so a catalog entry without a formula
 here makes the model unsimulable, not merely mis-sized.
+
+MiniMax-M3's canonical `indexer` is resolved before the separate DeepSeek
+formula. Its index query and key-only cache use their independent BF16 dtype;
+its output is int32 `[tokens, local index heads, topk blocks]`. The trace passes
+exact prefill and decode cached histories through `kv_lens` for M3 `indexer`
+and `sparse_attention` only: the indexer sums them whole, while sparse attention
+sums `min(history, sparse_topk_blocks * sparse_block_size)` per request.
+Do not reconstruct those histories from a floored decode mean or cap their
+sum once. These are logical query plus preexisting-cache bytes, not kernel
+DRAM transactions, workspace, capacity or causal-prefill read multiplicity.
+The existing byte cap and historical lookup cap remain separate; this sizing
+rule does not establish arbitrary runtime indexer dtypes or whole-model TP
+correctness. Unknown indexer layouts and malformed M3 geometry are refused.
 
 `get_weight()` walks the architecture yaml's blocks and the checkpoint's own
 per-layer composition (`utils.get_architecture` / `utils.get_layer_stack`), one
@@ -1704,12 +2137,16 @@ the DSA indexer (0.852B) that is 671.026B — V3's published 671B, with the
 difference being exactly what V3.2 adds.
 
 ### Model configs
-Model architecture configs live in `configs/model/{org}/{model}.json`. These are subsets
-of HuggingFace `config.json` containing fields the simulator needs (`hidden_size`,
-`num_attention_heads`, `num_hidden_layers`, `num_key_value_heads`, `intermediate_size`,
-`vocab_size`, `head_dim`, `num_local_experts`, `num_experts_per_tok`).
+Model configs live in `configs/model/{org}/{model}.json` and must retain the
+fields and structure required by the checkpoint's native configuration class,
+not just the fields read by simulator sizing. MiniMax-M3 and Kimi-K3 preserve
+their nested text wrappers; the shipped Qwen text tower uses its native flat
+text configuration. Do not flatten or prune a different family by analogy.
 
 The simulator loads these via `get_config(model_name)` in `utils.py`.
+`get_source_config(model_name)` retains the original wrapper for independent
+native-profile validation. Preserve its cache boundary: the flattened simulator
+config is a separate deep copy, not a mutation of the original source object.
 
 ### Cluster configs
 Cluster configs in `configs/cluster/` define hardware topology. Key instance fields:
@@ -1751,18 +2188,31 @@ multiple instances with the same `dp_group`.
 - `astra-sim/inputs/memory/memory_expansion.json` — remote (CPU) memory config
 
 ### Working directory
-`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the simulator
-resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`, `profiler/`
-are relative to the repo root and prefixed with `../` in code.
+Run `python -m serving` from the repository root. The entry point changes cwd
+to `astra-sim/` internally, but relative cluster, dataset, output and gate-stat
+paths are handled relative to the invocation root. Use repository-relative
+dataset paths: that loader prepends `../` even to an absolute input.
+An explicit relative `--inputs-root` instead resolves from `astra-sim/`;
+use an absolute path when selecting a separate intermediate directory.
 
 ### Communication sizes for ASTRA-Sim
 ASTRA-Sim's data-size convention depends on the collective: AllReduce and
 ReduceScatter take the full pre-partition tensor; AllGather takes a local chunk.
 Ring divides the former by its rank count, not the AllGather chunk.
 - ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
+- Dense `tp_output_reduction: all_reduce` entries reduce their full projection
+  output at activation dtype, not the sharded input. For Qwen `gdn_out_proj`,
+  that is effective token rows × hidden size × activation bytes.
+  No reduction at TP1; the declaration applies only when the row is emitted.
+  Historical and packed GDN layouts both use this declaration.
 - MoE: **not** one size. Dispatch AllGathers take per-rank chunks, while the
   combine ReduceScatter takes a pre-scatter total. Native dispatch has three
   tensor collectives; the legacy path combines its dispatch payload. See the MoE section.
+
+An MoE entry's `attention_sequence_parallel: true` requires `sequence_parallel: true`.
+Serving refuses its TP>1, PP1, DP+EP-spanning deployment before trace emission:
+attention-wide sequence shards need different gathers/scatters and local row counts,
+not a wrapper-only restore. The guard is not certification of every other topology.
 
 ### Multi-dimensional topology and `involved_dim`
 For DP configurations the network topology is multi-dimensional, innermost dimension
@@ -1859,7 +2309,7 @@ weights, inputs and batching, not a universal correction for that architecture.
   selection. It is not a control that holds everything except the distinct
   count fixed, and end-to-end agreement cannot bound an individual MoE table's
   error without separating other costs.
-- Legacy whole-block acquisition and native DP+EP components have different
+- Historical whole-block measurements and native components have different
   contracts. Neither a measured count curve nor matching CSV columns establish
   arbitrary-histogram or deployment coverage.
 
@@ -1870,7 +2320,7 @@ A matching native component table is preferred; otherwise the retained
 whole-block `moe.csv` path is used with a warning for unverified DP coverage.
 Other all-to-all backends need separate execution contracts.
 
-Native modular execution keeps local gate/routing, three ordered AllGathers
+Native DP+EP modular execution keeps local gate/routing, three ordered AllGathers
 (hidden states, top-k weights, top-k IDs), gathered expert computation,
 ReduceScatter and local finalization separate. Tensor widths follow the
 recorded dtypes. Sequence-parallel wrappers dispatch over EP and restore the
@@ -1902,36 +2352,141 @@ active experts, not the number of unique tokens with a local expert from
 work must keep separate row domains on the native path. Attention/request
 geometry and head rows remain separate from model-forward padding.
 
-### Native DP+EP component profiles
+### Native local and DP+EP component profiles
 
-Explicit profiler `--dp` uses the native component adapter rather than shrinking
-the checkpoint's global expert count/top-k. The target is full EP=TP*DP with
-DP>=2, independently of the one-GPU acquisition process. `MoeTarget` is shared
+MoE acquisition defaults to native DP1 components; `--dp` selects other degrees.
+Use `tp_degrees`, `dp_degrees` and `ep_degrees` for internal settings, with
+`--tp`, `--dp`, `--ep` and corresponding uppercase shell variables. Optional
+EP degrees filter the supported TP/DP targets; they never change expert sharding
+or infer additional TP/DP degrees. Omitted EP keeps every target. Reject unmatched
+EP degrees before any engine starts; a slice matches only `--tp-refresh`.
+The filter affects only MoE components, not ordinary categories at the other TPs.
+The removed whole-block path no longer shrinks global expert count/top-k.
+The target is full EP=TP*DP with
+DP>=1, independently of the one-GPU acquisition process. `MoeTarget` is shared
 with serving: local gate/finalization rows and gathered expert rows differ,
 and sequence-parallel wrappers require per-member ceil division before gathering.
 Pass the full already-padded DP vector through both wave-completion paths; its
 sum/minimum cannot reconstruct the sequence-parallel geometry.
 
-The index `tp<N>/moe_components.json` selects immutable contracts containing
-rank ownership, native backend, dtypes, source fingerprints, coverage and CSV
-checksums. `moe_components` metadata is separately owned; a MoE refresh must not
+The unquantized modular DP1 path is non-SP. Select its backend from the resolved target,
+not the DP+EP selection: native priorities can differ. NoDPEP preparation must
+preserve the input and return no scale or token metadata; with a NoOP reduction,
+experts write directly to the caller's output alias. Observe no CUDA work in
+prepare/finalize before recording `local_execution` and omit `finalize_copy`
+entirely. Preserve the alias in every conditioned eager variant. DP1
+traces contain gate/routing, experts and optional TP AllReduce, no DP collectives.
+Full EP at TP>1 owns whole experts and is not plain tensor-sharded TP. Missing
+DP1 native coverage falls back only when a historical whole-block table exists,
+without consuming a mismatched EP component table. Match the legacy lookup's TP
+choice (TP1 when present, otherwise its first available degree); a fresh bundle
+without that table requires a complete matching component acquisition.
+Cache missing deployment coverage for the lifetime of the simulation, just like
+loaded native tables: bundles are immutable during a run. Do not reread the same
+metadata on every layer. Corrupt contracts remain errors, never cached misses.
+Initialize `native_moe_index_present` and `native_moe_components` on the persistent
+perf DB before creating per-batch shallow copies. Otherwise the copies discard
+new cache entries and rebuild metadata and interpolation support every batch.
+Keep TP-specific attention caps on each view and native deployment keys separate;
+cache reuse changes host work, not measured latency or routing.
+
+Read `FusedMoEConfig.use_deferred_moe_finalize` as a strict boolean effective
+capability. `defer_moe_finalize` is a request flag in 0.28 and a request method
+in 0.31, not a stable execution-mode predicate. Reject an unknown/non-boolean
+API; never invoke the request method or silently assume finalization is local.
+Check actual native APIs, geometry, dtypes, backend and conditioning semantics;
+source-file hashes and exact versions are not acquisition admission or grouping
+keys. Do not restamp historical measurements after a semantic adapter change.
+
+The separate live adapter admits actual APIs, standard token layouts and native
+capabilities at TP1/DP1/EP1. Preserve processed weights/scales, native backend,
+routing and activation parameters; do not rebuild an unquantized approximation.
+Its `gate_routing` includes external routing, or projection only when routing is
+inside the expert kernel. `experts` includes native preparation and finalization.
+`wrapper` executes the native parent and accounts for shared experts, latent
+transforms, normalization, scaling and combination outside the excluded gate/router
+and routed-kernel scopes. Use launch ownership and conservation checks, not
+subtraction of unrelated profile captures. Sum unique CUDA activity durations;
+this is not an interval union or elapsed critical path across concurrent branches.
+Compare every routing stimulus and each cloned bank exactly with the native method
+outside timing and verify native state remains unchanged.
+These guards compare parameter bindings/layouts, available version counters,
+effective configuration and callable identities, not all device-memory contents.
+Do not describe them as bytewise weight checks or arbitrary CUDA-write detection.
+
+Keep gate dtype/width, model width and physical expert width explicit. Count unique
+native weight/scale storage separately from all cloned bank storage; preserve
+storage aliases, offsets and strides. Bank allocation uses the actual processed
+bank footprint plus native workspace/free-memory reserve, not the unquantized
+conversion-buffer heuristic. Missing or unsupported capability statements are
+errors, including deferred, input-weighted, fused-shared-gate, biased/redundant,
+LoRA, EPLB and padded-hidden execution. Monolithic routing requires native replay
+evidence; a matching model name is not an admission.
+
+The isolated MoE engine uses the MLP prefix and declared native-profile settings.
+Its private `kv_cache_memory_bytes` override defaults to 1 GiB and accepts only a
+positive integer. The internal caller may raise this resource cap, but never
+reduce requested token/sequence/context limits to fit it. vLLM must validate native
+capacity. Record resolved component-engine settings only in MoE observations,
+never as main-engine cache facts or replacement target graph policy. Read nested
+source geometry through `text_config`; local Kimi DP1/EP1 selectors are admitted,
+distributed selectors remain refused. Preserve DSA/Kimi's duration-only consumers
+and their separate capacity/serving restrictions.
+
+Root `per_tp[tp].moe_components` selects deployment entries containing semantic
+contracts, observations, coverage and CSV checksums. Paths locate tables; folder
+names do not establish contract identity. No new index/contract/coverage JSON
+sidecars are written. `moe_components` metadata is separately owned; a MoE refresh must not
 restamp attention/skew or the main engine. Individual CUDA activities are counted
-once per forward, in separate eager/graph measurements. No CPU duration is added.
+once per forward during eager measurements. No CPU duration is added.
+No-op resume preserves original runtime observations. Record distinct later
+`acquisition_contexts` only after validating new work; this list is not a count
+of durable or completed measurement rows.
 Expert measurements rotate positions and L2-sized weight banks, compare B/2B
-under identical complete-cycle work, independently verify graph outputs and
+under identical complete-cycle work, independently verify eager outputs and
 require the recorded stability gate before publication. Those rules condition
 the measurement; they do not prove full-model cache equivalence.
+Publish only `coverage.conditioning_summary` with `checked_points`,
+`failed_points` and `max_relative_change`; retain the tolerance in
+`contract.expert_conditioning`. Individual control points and timings belong to
+raw resume checkpoints, not published metadata. Preserve runtime observations,
+geometry, dtypes, parallelism, backend, completion and the CSV integrity check.
 
-Serving automatically consumes matching tables for the supported modular,
-unquantized DP+EP path. Local components use token interpolation, experts use
-the feasible token/active-expert surface with balanced assignment totals, and
-caches are bounded. Missing deployment/policy coverage warns and retains the
-legacy EP table; corruption and out-of-support queries are errors. Shared,
-quantized, monolithic, deferred, tensor-sharded and arbitrary-routing variants
-need separate contracts, not guessed aliases. Keep historical acquisition
+New plans use `--moe-grid-factor` (default 2) for input rows N, active local
+experts A and local assignments M, including feasible endpoints, envelope
+corners and balanced-total anchors. At EP1 M=N*k collapses the assignment axis.
+`expert_sampling` belongs in the root contract; CSV columns remain unchanged.
+Target serving capture tokens G take precedence on token axes after
+`target.token_domains((G,) * target.dp)` maps them to local and expert rows.
+Use geometric points only in uncovered token ranges, retaining endpoints and
+feasibility corners. Decode-only/NONE policies require the full eager range;
+an out-of-capture DP peer can require small local eager rows on every member.
+Include MRV1 compiler-SP rounding in physical bounds before native initialization.
+Capture sizes never determine A or M. Keep transformed anchors, logical budget
+and eager ranges in `expert_sampling`; source/target information belongs in
+`sampling_graph`. Absent range metadata retains an existing acquisition plan;
+a changed semantic plan requires a fresh output root.
+New acquisition must not create CUDA graphs; eager timing and serving-padded
+coordinates are distinct.
+
+Serving automatically consumes matching tables for the supported modular
+local/DP+EP or separately admitted live local path. Local components use token interpolation.
+New experts use physical N/A/M interpolation: construct affine-rank-reduced
+simplices at table load, then use nonnegative barycentric weights and bounded
+query caches. Do not normalize by query-dependent feasible ranges: doing so
+can reduce assignment work during interpolation. Check feasible geometry and
+measured support; never extrapolate. Historical balanced-total tables retain
+their original interpolation and graph/eager selection. The routing policy
+supplies A/M; BALANCED and measured active-count CUSTOM use rounded expectations,
+RR/RAND use selected pairs and native rank ownership. Within-rank imbalance is
+not a fourth measured axis. Missing deployment/policy coverage warns and retains the
+legacy EP table only when it exists; corruption and out-of-support queries are
+errors. Shared, quantized and supported monolithic local execution require the
+live contract, never guessed aliases. Deferred and tensor-sharded execution remain
+unsupported. Keep historical acquisition
 fingerprints as provenance; do not relabel old samples after changing a method.
 
-Trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,
+DP+EP trace order is gate/routing, hidden/top-k-weights/top-k-IDs AllGathers, experts,
 ReduceScatter, finalize-copy, then the wrapper's optional TP AllGather (SP) or
 AllReduce (non-SP). Chakra must chain every marker collective and retain the
 last dependency through ranks it skips. The ragged Ring envelope and independent
@@ -1956,16 +2511,9 @@ Refresh benchmark outputs, summaries and public plots together.
 
 ### The legacy MoE grid is per EP degree
 
-Whole-block MoE token coordinates use the shared `_token_grid`, not powers of
-two: long token intervals can conceal grouped-kernel cost changes. Keep the
-grid independent of benchmark requests and hardware tile constants. Resolved
-token/context/cache limits still bound it, and active-expert feasibility is
-unchanged. This improves sampling resolution, not an error guarantee between
-knots. Runtime interpolation and native DP+EP component acquisition are separate
-contracts. A compatible resume adds missing token coordinates; code changes
-alone do not densify stored tables.
-
-The following describes retained `moe.csv` acquisition and fallback, not the
+Historical whole-block acquisition used a per-EP token grid. That acquisition
+path has been removed; only its stored `moe.csv` lookup remains until remeasurement.
+The following describes those historical measurements and their fallback, not the
 native full-top-k component contract above. A reduced-top-k checkpoint is an
 approximation and must not be presented as the native distributed kernel.
 An EP rank does not run the model's MoE block; it runs a **slice** of it, and
@@ -1998,13 +2546,10 @@ permute cost does not vanish with the expert count. The curve saturates from
 ep=8 on (28.1 / 27.5 / 27.7 us on DeepSeek) for the same reason: once `k/ep`
 floors at 1 only one expert plus that fixed cost is left.
 
-`--moe-ep-degrees 1,2,4,8,...` sweeps it. Each degree past 1 costs one engine
-boot and the same ~57 shots, so a full sweep is ~10 minutes per model. The
-slice is written into the materialized **config file**, not passed as
-`hf_overrides`, for the same reason `_cap_mtp_modules` is: on a wrapped
-checkpoint the expert fields live under `text_config`, where a top-level
-override never lands (MiniMax-M3 is exactly that shape). `n_group` must divide
-the local expert count, which costs DeepSeek-V3.2 only `ep=64`.
+These are historical reduced-expert measurements, not the current acquisition
+plan or runtime estimate. `--moe-ep-degrees` and its config-slicing path were
+removed. New component sweeps use `--tp`, `--dp`, optional `--ep` and unchanged global top-k;
+unsupported native adapters fail rather than falling back to old acquisition.
 
 The simulator picks the table for the instance's **total** EP degree and falls
 back to the nearest profiled one with a one-shot warning. Not interpolated, for
@@ -2061,20 +2606,46 @@ through two mechanisms:
 
 **Local graph padding precedes DP synchronization; it also applies at DP=1.**
 `serving/core/cudagraph.py` resolves the target MRV1 capture grid and local
-FULL/PIECEWISE/NONE mode. Both DP completion paths and the independent-instance
+FULL/PIECEWISE/NONE mode by default, or MRV2 when selected explicitly or by a
+matching serving observation. Both DP completion paths and the independent-instance
 path share that resolver. Small prefills can use PIECEWISE graphs. The common
 DP mode is the minimum of the local modes: non-NONE broadcasts the largest
 locally padded size; NONE retains each local padded count. With an 8-token
 capture point and maximum 256, `[6, 1529]` therefore becomes `[8, 1529]`.
 Do not replace this with a threshold-only `max <= cap` rule.
+MRV2 instead returns to raw local token counts when any DP rank selects NONE;
+otherwise it redispatches using the common token maximum and decode eligibility.
+Its FULL decode candidate sizes are distinct from PIECEWISE token sizes. A first
+one-token prefill is not decode-eligible; a one-token extension over cached history
+can be. Preserve historical MRV1 behavior when no target runner was recorded.
 
 The per-instance `cudagraph` object describes deployment behavior independently
 of the profiler's eager settings. Defaults derive the grid from scheduler
 limits, speculative query length and hardware compute capability; explicit
-mode/grid/cap and compiler-SP overrides describe other targets. Use the effective
+mode/grid/cap, runner and compiler-SP overrides describe other targets. Use the effective
 mode after attention-backend resolution. LoRA keys, cascade/encoder restrictions,
-DBO, MRV2 and drafter graph dispatch are not inferred. Attention offloading is
+DBO, dynamic/variable speculative decoding and drafter graph dispatch are not inferred. Attention offloading is
 outside this GPU graph contract and uses NONE.
+
+Bench startup may record a read-only worker `execution` observation after graph
+capture, separately from the frontend's resolved configuration. Unsupported or
+incomplete observations remain unknown. Preserve complete capture lists even when
+they exceed generic diagnostic list limits. Collect every DP engine's response;
+the public load-balancing RPC may return only the first engine's result.
+`profiler import-execution` can save
+a matching observation under `meta.yaml.serving_execution`; require matching
+model configuration, device, precision and deployment scope. Resolve local
+declarations through the worker's native config class
+before binding aliases/defaults to effective model fields; do not maintain an
+offline model-specific config alias table. Keep only the matched declaration,
+not a duplicate expanded config. A custom variant label needs explicit matching
+acquisition precision. Keep one observation
+per scope, not an execution history. Explicit instance `cudagraph` settings win;
+otherwise serving uses a matching observation or derives settings with a warning
+when saved observations do not match. Versions are provenance, not execution locks.
+Acquisition metadata stays separate: importing graph settings neither changes
+latency CSVs nor certifies eager measurements as graph measurements. Reduced-stack
+diagnostics must not become full-model serving references.
 
 Padding changes model-forward rows, not requests, query/KV lists, decode counts
 or head rows. Keep those domains separate in trace lookup and completion
@@ -2170,8 +2741,8 @@ backstop. Optional GPU monitoring identifies one physical UUID but neither
 reserves it nor establishes permission or exclusive access.
 
 - **vLLM container** (used by GPU acquisition, `python -m bench run`, and
-  `python -m workloads.generators`): `vllm/vllm-openai:v0.28.0` (or
-  `v0.28.0-cu129` on a CUDA 12.9 host)
+  `python -m workloads.generators`): `vllm/vllm-openai:v0.31.0` (CUDA 13;
+  requires a compatible NVIDIA driver)
   - Launched via `scripts/docker-vllm.sh`. Set `VLLM_GPUS` to a docker
     device spec to keep it off GPUs someone else is using; the inner
     quotes are part of the value (`VLLM_GPUS='"device=2,3"'`), and
@@ -2179,8 +2750,17 @@ reserves it nor establishes permission or exclusive access.
     is every GPU on the host
   - Mounts the **LLMServingSim repo root** as `/workspace`; container cwd
     is `/workspace`, so `python -m profiler …` etc. work directly
-  - Installs `datasets`, `matplotlib`, `pandas` and the pinned NCCL dependency,
-    and applies the repository's vLLM patches
+  - Installs `datasets`, `matplotlib`, `pandas` and Torch's declared
+    `nvidia-nccl-cu13==2.29.7` dependency. This package pin does not force
+    NCCL-only communication or change the benchmark's communication policy
+  - Applies the MiniMax-M3 MTP namespace fix and inert-by-default observers.
+    The SM120 sparse-MLA fix is upstream in 0.31.0; do not reapply its obsolete
+    backport. `VLLM_STEP_SHAPE_LOG` is an optional CPU-entry cadence diagnostic,
+    not a GPU step timer. `bench --record-gate-stats` enables the modular-router
+    observer and requires eager execution; monolithic MoE paths can bypass it
+  - `scripts/install-vllm.sh` targets Python 3.12 in the repository's `.venv`,
+    uses uv's `--torch-backend cu130`, and applies the same dependency pin and
+    patches. Check installed versions and live model/backend coverage separately
   - Export `HF_TOKEN` in the shell for gated-config auto-download; the launcher
     forwards it without embedding credentials in the script
 - **Simulator container**: `astrasim/tutorial-micro2024` + Python deps
@@ -2199,7 +2779,9 @@ The repo has two documentation surfaces with deliberate scope:
   Contact / Changelog) point everything else out to the website. **Do not
   re-add detailed content (CLI flag tables, dataset schema, profiler
   walkthroughs, validation plots, etc.) to the README** — it lives on the
-  website now.
+  website now. Keep Getting Started to runnable commands, the CPU/GPU boundary,
+  runtime versions and documentation links. Measurement internals, model-specific
+  limits and contribution policies belong in the guides.
 - **`docs/`** — the public docs site (Docusaurus 3, deployed at
   `https://llmservingsim.ai`). All long-form content lives here. See
   `docs/AGENTS.md` for site-specific conventions.
@@ -2207,6 +2789,10 @@ The repo has two documentation surfaces with deliberate scope:
 When you add a new feature with user-visible behavior, document it on the
 website (not the README).
 
+Start directory READMEs with a short introduction to their purpose, inputs and
+outputs, plus links to the main usage sections. Put detailed measurement rules,
+model-specific limits and recovery contracts under topic headings after the
+usage entry points; do not accumulate change descriptions in the introduction.
 Directory READMEs use `## Layout` for source trees and `## Output schema` for
 generated bundles. Use `text` fences, `├──` / `└──` / `│` connectors and four-column
 nesting; keep explanations outside trees and label selected inventories as such.
@@ -2214,6 +2800,15 @@ Use language-tagged code fences, sentence-case section headings, and blank lines
 after headings and before lists or code blocks. Do not rewrite dependency
 READMEs for cosmetic consistency. Latest News links completed work to its PR;
 in-progress entries are roadmap statements, not supported behavior or accuracy claims.
+
+## Workload generation
+
+ShareGPT free generation forwards `--vllm-repetition-penalty` to
+`SamplingParams.repetition_penalty` with the parsed default of `1.1`;
+`1.0` disables the penalty. Keep registered sampling options connected to
+the generation call and check both defaults and explicit overrides. This path
+requires `--use-vllm` without `--fix-len`; existing workload files are unchanged.
+Do not promise an output length or EOS behavior from the penalty alone.
 
 ## Commit & Pull Request Guidelines
 
@@ -2237,6 +2832,8 @@ in-progress entries are roadmap statements, not supported behavior or accuracy c
   changes and limitations only. Never publish session diaries, investigation
   checkpoints or intermediate experiment notes, including on contributor pages
   or in this file.
+  Public documentation and reproduction instructions must not reference or
+  depend on private archives or untracked intermediate experiment scripts/results.
 - Keep one changelog section per release and one heading per change category.
   Consolidate related Unreleased entries into short, user-facing summaries;
   retain migration requirements, limitations and contributor credit. Link to
@@ -2258,22 +2855,22 @@ in-progress entries are roadmap statements, not supported behavior or accuracy c
 
 ## Comparing against a bench run: the metric definitions
 
-The benchmark communication baseline is **NCCL-only**. `bench run` explicitly
-sets `disable_custom_all_reduce=True` and records that input in `engine_kwargs`.
-Check `resolved_config.parallel_config.disable_custom_all_reduce` and the vLLM
-backend-selection log as well. The runner pins `VLLM_ALLREDUCE_USE_SYMM_MEM=0`
-and `VLLM_ALLREDUCE_USE_FLASHINFER=0` before importing vLLM; these independent
-paths are not controlled by the custom flag. Effective overrides are recorded
-in `meta.json` under `hardware.all_reduce_environment`. Historical artifacts
-keep their recorded settings and must not be relabelled as NCCL-only without evidence.
-The runner also pins `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`:
-these compiler passes can bypass the communicator via non-NCCL fused kernels.
-Record these explicit overrides under `engine_kwargs.compilation_config`.
-Ordinary compute compilation and CUDA graphs retain their defaults. Custom
-all-reduce is excluded. Simulator-side collective link parameters may be
-calibrated from NCCL primitive measurements; they do not change the benchmark's
-communication backend. Keep each example's network parameters consistent with
-its recorded hardware environment.
+Benchmark communication backend selection defaults to **vLLM's own choice,
+not NCCL-only**. Do not force all-reduce environment values. Separately retain
+the benchmark's `fuse_allreduce_rms=False` and `fuse_gemm_comms=False`, recording
+both under `engine_kwargs.compilation_config`: changing backend selection does
+not authorize enabling these two compiler fusions. Ordinary compute compilation
+and CUDA graphs stay enabled; model-native fused operations are not governed
+universally by these switches. `--disable-custom-all-reduce` is an explicit opt-in, off by default;
+the shell template exposes it as `DISABLE_CUSTOM_ALL_REDUCE=1`. This flag alone
+does not disable other optimized or model-native fused paths. Record the argument
+in `engine_kwargs`, inherited communicator variables (including unset values)
+in `hardware.all_reduce_environment`, and resolved parallel/compiler settings
+in `resolved_config`. Configuration is not proof of actual collective dispatch.
+Do not add source patches to force NCCL as the default. Historical NCCL-only
+examples retain their recorded settings and are not relabelled. Simulator-side
+NCCL calibration does not select the benchmark backend; keep every comparison's
+network model, recorded backend and hardware environment matched.
 
 Snapshot resolved engine settings and KV capacity before shutdown. Normal
 serving runs write `engine_start.json` before submitting requests, exclusively;
@@ -2283,6 +2880,19 @@ diagnostic inputs while retaining legacy request/timeseries compatibility.
 `--kv-cache-memory-bytes` fixes an explicit per-GPU budget, but comparisons must
 still verify resolved block counts. Dummy weights do not establish equivalent
 backend selection, routing or scheduling for a real checkpoint.
+
+`bench/core/kv_cache_metadata.py` observes native READY payloads only during the
+standalone synchronous constructor. Restore the callback before decoding or
+request submission; add no worker RPC, request hook or simulated latency.
+The reviewed vLLM 0.31 client sums connected engine block counts and retains the
+last READY block size. Preserve those raw fields; their product is not generally
+an aggregate token capacity. Match each instance to its directly observed DP
+rank under complete `kv_cache.capacity.per_engine`, never an inferred division.
+Unsupported callback/response APIs, replaced callbacks, client/topology mismatches
+or incomplete observations remain explicit unknowns. Record the observed version,
+callback signature and response fields; exact version equality is not required.
+These startup scheduler-pool facts neither measure physical per-GPU allocation
+nor track later elastic changes. Do not relabel historical benchmark metadata.
 
 Use `bench/core/validate.py::_bench_latencies`, the implementation shared by
 `bench validate` and committed summaries, rather than ad hoc metric formulas.
@@ -2325,6 +2935,20 @@ shot counts are examples, not current-default runtime estimates.
 
 The example wrappers discover `bench/examples/*/*/config.json`, including
 stored diagnostics beyond the headline benchmarks. Reproduction uses the
+example's target graph policy and memory configuration. The RTXPRO6000 headline
+configs inherit transport from the hardware bundle. Llama and both Qwen
+bundles contain refreshed TP1 and TP2 acquisition data; headline validation
+covers Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 only. Preserve
+adopted generated values and rows: profile and hardware metadata, measurement
+tables, benchmark metadata, simulation outputs, validation files and logs.
+The only publication exception is portable identifiers for environment-dependent
+dataset and local model paths. Use repository-relative dataset paths and canonical
+model identifiers where equivalent; temporary sharded-model identifiers must
+retain their TP-shape semantics. Do not prune records or change measurements,
+settings, hashes or validation results. Publish the runtime tables
+described by the generated bundle metadata. Qwen3-30B's
+instance memory fractions match the complete per-engine READY block counts,
+not the aggregate client count or an end-to-end latency target. Reproduction uses the
 recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
 If that metadata is absent, omit the flag so serving resolves its default;
 do not force a dense-only page size onto sparse or hybrid examples.
@@ -2376,12 +3000,12 @@ than assuming only the stack and catalog resolvers can affect simulation.
    share no common prefix, so an entry legitimately binding several kernels
    under one parent (M3's `sparse_attention`, any `*`-prefixed glue) is not
    flagged. Qwen3.5's `mtp_norms` read **1287 us for two RMSNorms** and its
-   `embedding` read **2.1x** while passing coverage at 100%. This is also the
-   only check that catches an entry that names a real class and measures
-   **nothing** —
-   the profile tree holds only modules that launch a kernel of their own, and
-   the module tree cannot tell you which those are. Every one of the four
-   modern families had at least one such entry.
+   `embedding` read **2.1x** while passing coverage at 100%. Inspect dynamic
+   invocations, native activities and unscoped gaps, not only the static module
+   inventory. Coverage does not prove every declared alternative executed:
+   an entry absent from every forward can leave no activity gap. Required-entry
+   checks, including the MTP slice check, are separate. Shared-activity overlaps
+   must never be suppressed by the target/drafter repeated-role exemption.
 
 DP/TP/PP scenarios with uneven request streams can change round pairing when
 a component cost changes. Total clocks may then move non-monotonically even
@@ -2425,11 +3049,11 @@ emitted, and the stacks are 60-78 deep.
   invisible on a uniform model: an earlier version emitted **one** block
   instead of `num_hidden_layers` whenever block copy was disabled, understating
   the clock 3.1x on 48 layers, and the recorded baseline enshrined it
-- **Don't add a layer name to a catalog without a `calculate_sizes` formula.**
-  `memory_model.calculate_sizes` **raises** on an unknown name, so the model
-  becomes unsimulable rather than merely mis-sized. Every shipped catalog is
-  covered, and calling `calculate_sizes` for every name in every one of them
-  re-checks that in seconds
+- **Don't add a layer name without a formula on its selected sizing path.**
+  Ordinary catalogs use `memory_model.calculate_sizes`; native/contextual
+  profiles use the admitted providers in `component_sizes.py`. Check the
+  selected layout, not every native name against the ordinary dispatcher.
+  Logical bytes in a duration trace do not imply serving-capacity support
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
   into the container's site-packages by `scripts/compile.sh`, so editing

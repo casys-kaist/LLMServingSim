@@ -37,10 +37,15 @@ def write_meta(output_dir: Path, **fields: Any) -> None:
     Optional, written by ``runner.py`` when the engine can be interrogated:
 
     ``kv_cache``
-        What vLLM actually allocated -- ``num_gpu_blocks``, ``block_size``,
-        ``num_kv_tokens``, ``gpu_memory_utilization``. ``num_gpu_blocks`` is the
-        number a simulator has to match, and the only place the activation peak
-        and CUDA context vLLM subtracts from its budget become visible.
+        Raw client cache fields: ``num_gpu_blocks``, ``block_size``,
+        ``num_kv_tokens``, ``gpu_memory_utilization``. In reviewed vLLM 0.31
+        DP clients, the block count sums connected engines and block size is
+        the last READY value; their product is not a general token capacity.
+        Additive ``capacity`` schema 1 qualifies these fields and records
+        complete per-engine startup READY facts when the installed source and
+        topology are supported. Otherwise ``per_engine`` is null with an
+        unknown status and reason. Match simulator instances to observed engine
+        block pools, never to an inferred division of the raw client scalar.
     ``hardware``
         Accelerator name, total memory, compute capability, CUDA/torch
         versions -- enough to match a run against a ``profiler/perf/<hw>/``

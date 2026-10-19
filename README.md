@@ -15,15 +15,16 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 
 ## Latest News
 
-- **[In progress]** Replacing ASTRA-Sim with an **in-house network backend** for faster simulation, improved communication-model accuracy, and broader network topology support.
-- **[In progress]** Expanding **model architecture support and validation** — DeepSeek, GLM, Kimi, MiniMax, Qwen3.8, and more.
-- [2026/10] **vLLM 0.28.0 compatibility update** — bug fixes and improved simulation accuracy, validated against the RTXPRO6000 Llama and Qwen benchmark examples. ([#76](https://github.com/casys-kaist/LLMServingSim/pull/76))
+- **[In progress]** Porting the **entire simulator to Rust**, including an **in-house network backend** replacing ASTRA-Sim, for faster simulation, improved communication-model accuracy, and broader network topology support.
+- **[In progress]** Expanding **end-to-end validation** for existing model catalogs — DeepSeek, GLM, Kimi, MiniMax, Qwen3.8, and more.
+- [2026/10] **vLLM 0.31.0 / CUDA 13 update** — **~7x faster end-to-end profiling**, Kimi-K3 model catalog, bug fixes, and improved Llama/Qwen accuracy with refreshed profiles and benchmarks. ([#77](https://github.com/casys-kaist/LLMServingSim/pull/77))
+- [2026/10] **vLLM 0.28.0 compatibility update** — added DeepSeek, GLM, MiniMax, and Qwen hybrid-model catalogs, fixed bugs, and improved simulation accuracy, validated against the RTXPRO6000 Llama and Qwen benchmark examples. ([#76](https://github.com/casys-kaist/LLMServingSim/pull/76))
 - [2026/08] Simulation is **~11x faster** with byte-identical results — the four `bench/examples` runs go 16m 40s → 1m 26s. ([#67](https://github.com/casys-kaist/LLMServingSim/pull/67))
 - [2026/08] **TP / PP / EP / DP** run in every combination, checked by 58 recorded scenarios (`serving/validate.sh`). ([#68](https://github.com/casys-kaist/LLMServingSim/pull/68))
 - [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on mean TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
 
-See the [changelog](https://llmservingsim.ai/changelog) for the **v1.2.0**
-release summary, validation scope and upgrade requirements.
+See the [changelog](https://llmservingsim.ai/changelog) for **v1.3.0** changes,
+validation scope and upgrade requirements, alongside earlier release notes.
 
 ## About
 
@@ -39,31 +40,23 @@ cd LLMServingSim
 ./serving/run.sh                  # run the example simulations
 ```
 
-For installation details, container choices, configuration layout, CLI
-flags, and the full set of example workloads, see the
+For installation, configuration, and examples, see the
 [documentation](https://llmservingsim.ai/docs/getting-started/overview).
-Complete CLI references: [simulator](https://llmservingsim.ai/docs/reference/cli-flags),
+Existing users should follow the
+[update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes)
+to synchronize submodules and rebuild ASTRA-Sim and Chakra.
+
+Simulation and comparison against recorded benchmarks are **CPU-only**.
+GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**.
+
+CLI references: [simulator](https://llmservingsim.ai/docs/reference/cli-flags),
 [profiler](https://llmservingsim.ai/docs/profiler/running#calling-python--m-profiler-directly),
 [bench](https://llmservingsim.ai/docs/reference/bench-cli), and
 [workload generator](https://llmservingsim.ai/docs/workloads/sharegpt-generators).
-When updating an existing clone, synchronize its recursive submodules and
-rebuild ASTRA-Sim and Chakra together; see the
-[update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
-
-GPU profiling and new benchmarks target **vLLM 0.28.0**; simulation and comparison
-against recorded benchmarks are CPU-only. See the
-[profiler guide](https://llmservingsim.ai/docs/profiler/overview) for acquisition,
-skew calibration and native MoE components, and the
-[bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for NCCL-only recording.
-
-The [validation results](https://llmservingsim.ai/docs/validation) describe the
-committed profile bundles and recorded workloads, not a complete remeasurement
-with every current profiler change. Architecture support and fresh-profile
-accuracy are separate checks; the retained RTX 4090 reference uses vLLM 0.19.0.
-
-Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
-every commit includes documentation updates; intermediate experiments and
-temporary verification scripts or tests stay local.
+See the [profile bundle guide](https://llmservingsim.ai/docs/profiler/output-bundle)
+for model-specific support and profiling requirements, and
+[validation results](https://llmservingsim.ai/docs/validation)
+for measured accuracy and benchmark configurations.
 
 ## Publications
 

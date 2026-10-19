@@ -1,17 +1,33 @@
 """Worker-local native component acquisition, with explicit token domains."""
-import hashlib
-import inspect
-from pathlib import Path
-
 import torch
 
 from .moe_expert_region import NativeExpertRegion
 from .moe_hook import single_moe_runner
 from .skew_measurement import MARKER
-from .graph_measurement import extract_graph_forwards
 from .eager_measurement import extract_eager_forwards
 from ..moe_deployment import MoeTarget
 from ..moe_geometry import ExpertPlacement
+from ..metadata_names import (MOE_WEIGHT_POLICY, MOE_CONDITIONING_POLICY,
+                              EAGER_ATTRIBUTION)
+
+
+def _deferred_finalize_enabled(config):
+    """Read vLLM's effective capability, never its request flag or method.
+
+    Both supported APIs expose ``use_deferred_moe_finalize`` as a boolean
+    property. In 0.28 ``defer_moe_finalize`` is a request flag; in 0.31 it is
+    a request method, whose truthiness does not describe the running path.
+    Unknown APIs are unsafe for this component boundary and fail closed.
+    """
+    try:
+        enabled = config.use_deferred_moe_finalize
+    except AttributeError as exc:
+        raise NotImplementedError(
+            "Native MoE components require use_deferred_moe_finalize"
+        ) from exc
+    if type(enabled) is not bool:
+        raise TypeError("use_deferred_moe_finalize must be a boolean property")
+    return enabled
 
 
 class ProfileCall(torch.nn.Module):
@@ -24,22 +40,33 @@ class ProfileCall(torch.nn.Module):
 
 
 class ComponentMeasurement:
+    def __new__(cls, model_runner, target, local_budget):
+        runner = single_moe_runner(model_runner)
+        if (model_runner.vllm_config.quant_config is not None
+                or getattr(runner, '_shared_experts', None) is not None
+                or getattr(runner, 'routed_output_transform', None) is not None
+                or getattr(runner, 'routed_input_transform', None) is not None
+                or runner.moe_config.skip_final_all_reduce):
+            from .moe_live_components import LiveComponentMeasurement
+            try:
+                return LiveComponentMeasurement(model_runner, target, local_budget)
+            except Exception as exc:
+                import traceback
+                raise RuntimeError('Native live MoE initialization failed:\n'+traceback.format_exc()) from exc
+        return super().__new__(cls)
+
     def __init__(self, model_runner, target, local_budget):
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
         from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import TopKWeightAndReduceNoOP
-        from ..moe_conditioning import expert_conditioning
-        from .moe_conditioned import measure_experts
 
         self.target = MoeTarget(**target)
-        if self.target.dp == 1:
-            raise NotImplementedError("The native component contract currently covers DP+EP; DP1 needs its own prepare/finalize adapter")
         self.runner = single_moe_runner(model_runner)
         runner = self.runner
         if model_runner.vllm_config.quant_config is not None:
             raise NotImplementedError("Quantized MoE requires a quantization-aware component adapter")
         cfg = runner.moe_config
         if (getattr(runner, '_shared_experts', None) is not None
-                or cfg.defer_moe_finalize or cfg.skip_final_all_reduce
+                or _deferred_finalize_enabled(cfg) or cfg.skip_final_all_reduce
                 or cfg.hidden_dim != cfg.hidden_dim_unpadded
                 or getattr(runner.routed_experts, 'apply_router_weight_on_input', False)):
             raise NotImplementedError("Shared, deferred, padded-hidden or input-weighted MoE needs a separate component contract")
@@ -68,42 +95,69 @@ class ComponentMeasurement:
         self.reduction = self.expert.experts.finalize_weight_and_reduce_impl()
         if not isinstance(self.reduction, TopKWeightAndReduceNoOP):
             raise NotImplementedError("Post-expert weight reduction needs a separately timed pre-combine region")
-        self.finalize = naive_dp_ep.MoEPrepareAndFinalizeNaiveDPEPModular(self.target.sequence_parallel)
-        hidden = torch.randn((2, h), device=self.device, dtype=self.cfg.in_dtype, generator=gen)
+        if self.target.dp == 1:
+            from vllm.model_executor.layers.fused_moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEPModular
+            self.finalize = MoEPrepareAndFinalizeNoDPEPModular()
+        else:
+            self.finalize = naive_dp_ep.MoEPrepareAndFinalizeNaiveDPEPModular(self.target.sequence_parallel)
+        probe_rows = min(2, self.cfg.max_num_tokens)
+        hidden = torch.randn((probe_rows, h), device=self.device, dtype=self.cfg.in_dtype, generator=gen)
         with torch.inference_mode():
             weights, ids = self._gate(hidden)
         self.indices_dtype = ids.dtype
-        if tuple(ids.shape) != (2, self.cfg.experts_per_token) or weights.dtype != torch.float32:
+        if tuple(ids.shape) != (probe_rows, self.cfg.experts_per_token) or weights.dtype != torch.float32:
             raise ValueError("Unexpected native router output contract")
-        sources = (type(self), type(self.gate), type(runner.router), type(self.finalize), type(self.reduction))
         props = torch.cuda.get_device_properties(self.device)
-        self.contract = dict(metadata, schema='moe-components-v1', expert_region=self.expert.contract,
-            components=['gate_routing', 'experts', 'finalize_copy'], modes=['eager', 'graph'],
+        self.contract = dict(metadata, schema='moe-components', expert_region=self.expert.contract,
+            components=list(self.target.components), modes=['eager'],
             topk_ids_dtype=str(ids.dtype), topk_weights_dtype=str(weights.dtype),
             hidden_dim=h, intermediate_size=inter, input_dtype=str(self.cfg.in_dtype),
             gate_weight_bytes=self.gate.weight.numel()*self.gate.weight.element_size(),
             expert_weight_bytes=w13.numel()*w13.element_size()+w2.numel()*w2.element_size(),
             activation=str(self.cfg.activation),
-            measurement_context='native_rotated_expert_weights_v1',
-            expert_conditioning=dict(schema='rotated-weight-cycles-v2',
+            measurement_context=MOE_WEIGHT_POLICY,
+            expert_conditioning=dict(schema=MOE_CONDITIONING_POLICY,
                 l2_bytes=int(props.L2_cache_size),capacity_multiple=2,
                 minimum_banks=2,
                 quality_relative_tolerance=.03,representative='higher_bank_control',
                 local_components='isolated_warm',warmup_complete_cycles=3),
             routing_stimulus='balanced_local_histogram_with_full_global_topk',
-            graph_attribution='native_graph_launch_correlation_v1',
-            graph_memory_pool='independent_per_variant',
-            eager_attribution='native_eager_launch_correlation_v1',
-            graph_output_reference='independent_pre_capture_clone',
+            eager_attribution=EAGER_ATTRIBUTION,
+            expert_output_reference='independent_eager_clone',
             torch_version=str(torch.__version__), cuda_version=torch.version.cuda,
             synthetic_expert_weights=True,
-            source_sha256={f'{c.__module__}.{c.__name__}': hashlib.sha256(
-                Path(inspect.getfile(c)).read_bytes()).hexdigest() for c in (*sources,
-                    extract_graph_forwards, extract_eager_forwards, MoeTarget, ExpertPlacement,
-                    expert_conditioning,measure_experts)},
-            gpu=dict(name=props.name, uuid=str(props.uuid), total_memory=props.total_memory,
+            gpu=dict(name=props.name, total_memory=props.total_memory,
                      capability=list(torch.cuda.get_device_capability(self.device))),
             excluded=['collectives', 'cpu_time', 'launch_gaps', 'shared_experts'])
+        if self.target.dp == 1:
+            self._verify_local_boundary(hidden, weights, ids)
+            self.contract['local_execution'] = dict(
+                prepare='identity', finalize='output_alias_noop', expert_output_alias=True)
+
+    @torch.inference_mode()
+    def _verify_local_boundary(self, hidden, weights, ids):
+        """Omit DP1 boundaries only after observing their native no-op contract."""
+        from torch.autograd import DeviceType
+        from vllm.model_executor.layers.fused_moe.config import FUSED_MOE_UNQUANTIZED_CONFIG
+
+        output = torch.empty_like(hidden)
+        call = self.expert.bind(hidden, ids, weights, output_alias=output)
+        if call() is not output:
+            raise NotImplementedError('Native DP1 expert output does not preserve its output alias')
+        reference = output.clone()
+        torch.cuda.synchronize()
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                               torch.profiler.ProfilerActivity.CUDA]) as hook:
+            prepared = self.finalize.prepare(hidden, weights, ids, self.cfg.num_experts,
+                self.expert.mapping, False, FUSED_MOE_UNQUANTIZED_CONFIG)
+            self.finalize.finalize(output, output, weights, ids, False, self.reduction)
+        if (len(prepared) != 5 or prepared[0] is not hidden
+                or any(value is not None for value in prepared[1:])):
+            raise NotImplementedError('Native DP1 preparation is not an unquantized identity')
+        if any(event.device_type() == DeviceType.CUDA and not event.is_user_annotation()
+               for event in hook.profiler.kineto_results.events()):
+            raise NotImplementedError('Native DP1 prepare/finalize performs unprofiled CUDA work')
+        torch.testing.assert_close(output, reference, atol=0, rtol=0)
 
     def _gate(self, hidden):
         logits, _ = self.gate(hidden)
@@ -112,10 +166,15 @@ class ComponentMeasurement:
 
     @torch.inference_mode()
     def measure(self, point, iterations, failure_dir=None):
+        if point['mode'] != 'eager':
+            raise ValueError('Native MoE component acquisition requires eager mode')
+
         from torch.profiler import record_function
         from vllm.model_executor.layers.fused_moe.prepare_finalize import naive_dp_ep
 
         n = point['tokens']
+        if point['component'] not in self.target.components:
+            raise ValueError('Component is not part of the native target execution')
         if type(iterations) is not int or iterations < 1:
             raise ValueError("Measurement needs positive iterations")
         if point['component'] == 'experts':
@@ -158,26 +217,6 @@ class ComponentMeasurement:
             if point['component'] == 'finalize_copy':
                 torch.testing.assert_close(result, hidden, atol=0, rtol=0)
             torch.cuda.synchronize()
-            if point['mode'] == 'graph':
-                # Native expert outputs may alias a shared workspace. Keep
-                # independent values before capture can overwrite that storage.
-                expected_values = tuple(value.clone() for value in outputs)
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph):
-                    captured_result = call()
-                def replay():
-                    graph.replay()
-                    return captured_result
-                wrapped = ProfileCall(replay)
-                captured = wrapped()
-                torch.cuda.synchronize()
-                captured_values = captured if isinstance(captured, tuple) else (captured,)
-                if len(expected_values) != len(captured_values):
-                    raise ValueError('Captured component output structure changed')
-                for expected, actual in zip(expected_values,captured_values):
-                    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-            elif point['mode'] != 'eager':
-                raise ValueError("Unknown measurement execution mode")
             context = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                        torch.profiler.ProfilerActivity.CUDA])
             with context as hook:
@@ -185,18 +224,6 @@ class ComponentMeasurement:
                     with record_function(MARKER+str(index)):
                         wrapped()
             torch.cuda.synchronize()
-            if point['mode'] == 'graph':
-                try:
-                    raw = extract_graph_forwards(hook.profiler.kineto_results, iterations)
-                except Exception as exc:
-                    if failure_dir is not None:
-                        import tempfile
-                        Path(failure_dir).mkdir(parents=True, exist_ok=True)
-                        diagnostic = Path(tempfile.mkdtemp(prefix='graph-', dir=failure_dir))/'trace.json'
-                        hook.export_chrome_trace(str(diagnostic))
-                        raise ValueError(f'{exc}; original CUDA trace: {diagnostic}') from exc
-                    raise
-                return dict(raw, verified=True, geometry=details)
             raw = extract_eager_forwards(hook.profiler.kineto_results, iterations)
             return dict(raw, verified=True, geometry=details)
         finally:

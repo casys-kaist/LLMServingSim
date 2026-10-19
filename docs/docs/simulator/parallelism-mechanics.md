@@ -41,9 +41,12 @@ When `tp_size > 1`, the trace generator attaches an ALLREDUCE
 
 - `o_proj` (attention output projection)
 - `down_proj` (MLP output projection)
+- Catalogued `tp_output_reduction: all_reduce` projections, such as GDN's `gdn_out_proj`
 
-These are the two layers where each TP rank holds a different head
-slice of the output and needs to sum across ranks.
+Each computes a partial hidden-state output that must be summed across TP ranks.
+For a declared reduction, the payload is the full projection output at activation
+dtype, not the sharded input or quantized weight size. For Qwen's `gdn_out_proj`,
+this is effective token rows × hidden size × activation bytes. TP1 emits none.
 
 The `comm_size` on each ALLREDUCE is the full output tensor size
 (not per-rank, ASTRA-Sim divides internally based on
@@ -52,7 +55,18 @@ The `comm_size` on each ALLREDUCE is the full output tensor size
 `qkv_proj`, `gate_up_proj`, etc. don't need ALLREDUCE because they
 *split* the input along the head dim, those layers' output is
 already correctly sharded for the next layer. TP's collective cost
-includes `o_proj` + `down_proj`, two ALLREDUCEs per dense decoder block.
+includes the attention output projection plus `down_proj` for an ordinary dense
+decoder block; GDN uses `gdn_out_proj` in place of `o_proj`.
+
+### Attention-wide sequence parallelism
+
+A MoE catalog entry can declare `attention_sequence_parallel: true` alongside
+`sequence_parallel: true`. At TP>1, PP1 with EP spanning DP instances, this path
+keeps sequence shards through attention and MoE. It needs attention-side
+AllGather/ReduceScatter, local norm/MoE rows and a final AllGather, not the
+wrapper-only MoE restore implemented by the simulator. Such deployments are
+refused before trace emission. Use TP1 for DP+EP or DP1 for ordinary TP work;
+those alternatives still require matching profile coverage and validation.
 
 ### Once-per-forward vocab-parallel endpoints
 
@@ -184,6 +198,9 @@ of hidden-state output. Sequence-parallel wrappers dispatch over EP and restore
 TP output with an AllGather; non-SP wrappers dispatch within DP and restore
 TP output with an AllReduce when TP is greater than one. The complete padded
 DP token vector determines local/gathered rows, including SP ceil division.
+New expert tables additionally use the routing policy's active local expert and
+assignment counts. Eager acquisition does not remove serving graph padding:
+the same resolved rows drive component lookup and collective sizes.
 
 Chakra chains every collective a marker carries and preserves the latest
 compute/communication dependency through skipped expert ranks. Reinstall the
@@ -271,13 +288,20 @@ outstanding at once. When a wave assembles:
   selects a supported FULL or PIECEWISE graph and rounds its forward rows
   up to that graph's capture size. Small prefill/mixed batches can use
   PIECEWISE; prefill is not categorically outside the graph range.
-- **DP synchronizes modes after local dispatch.** The common mode is the
-  minimum across ranks. When it is non-NONE, all ranks use the largest
-  locally padded size. When it is NONE, each rank **retains its local
+- **DP synchronizes modes after local dispatch.** With the historical MRV1
+  contract, the common mode is the minimum across ranks. When it is non-NONE,
+  all ranks use the largest locally padded size. When it is NONE, each rank **retains its local
   padding**, not its original unpadded count. With a grid containing 8 and
   ending at 256, `[6, 1529]` executes as `[8, 1529]`, not `[6, 1529]` or
   `[1529, 1529]`. A single independent six-token batch can likewise use
   eight forward rows.
+- **MRV2 has a different NONE fallback.** If any rank selects NONE, every rank
+  returns to its raw token count: `[6, 1529]` stays `[6, 1529]`. Otherwise it
+  redispatches using the common token maximum and decode eligibility. For
+  example, `[6, 129]` can use PIECEWISE `[136, 136]`. Select `runner: "v2"`
+  explicitly or import a matching worker observation; an unrecorded runner
+  keeps MRV1 behavior. A first one-token prefill is not decode-eligible, while
+  a one-token extension over cached history can be.
 - **Padding does not create requests.** Dense/model-forward work and its
   collectives use padded rows; attention lookup retains real query and KV
   geometry, and the head uses real selected rows. Zero-length graph padding

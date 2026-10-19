@@ -1,4 +1,5 @@
 import math
+import copy
 import os
 import sys
 from functools import lru_cache
@@ -95,6 +96,16 @@ def get_config(model_name):
     catalog is keyed by; the backbone's dimensions win where they collide.
     A flat config comes back unchanged.
     """
+    return _stack_module().text_config(copy.deepcopy(get_source_config(model_name)))
+
+
+@lru_cache(maxsize=None)
+def get_source_config(model_name):
+    """Load the independent original wrapper for source-bound runtime admission.
+
+    As with get_config, callers must treat the cached mapping as read-only.
+    Text-only simulator callers continue to use get_config's flattened view.
+    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     serving_dir = os.path.dirname(base_dir)
     repo_root = os.path.dirname(serving_dir)
@@ -118,7 +129,7 @@ def get_config(model_name):
             f"{', '.join(candidate_paths)}. Please add the corresponding config file."
         )
 
-    return _stack_module().text_config(config)
+    return config
 
 
 

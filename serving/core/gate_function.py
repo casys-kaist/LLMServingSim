@@ -2,7 +2,7 @@ import json
 import os
 import random
 from bisect import bisect_left
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import comb
 from .logger import get_logger
 
@@ -70,6 +70,7 @@ class RoutingResult:
     local_tokens: list     # [rank] -> tokens a dispatching backend would send here
     activated_experts: list # [rank] -> number of distinct experts activated on this rank
     source_tokens: list    # [rank] -> token count originating from this rank before dispatch
+    local_assignments: list = field(default_factory=list)  # [rank] -> token-expert pairs, not unique tokens
 
 
 class GateRouter:
@@ -255,7 +256,7 @@ class GateRouter:
         """Determine which EP rank owns a given expert. Even distribution across ranks."""
         return min(int(expert_id * ep_size // num_experts), ep_size - 1)
 
-    def _rank_group_overlap(self, ep_size):
+    def _rank_group_overlap(self, ep_size, owners=None):
         """``m[r][g]`` -- how many of EP rank r's experts lie in group g.
 
         Groups are contiguous expert ranges (vLLM reshapes the score vector to
@@ -267,10 +268,11 @@ class GateRouter:
         per_group = self.E // self.n_group
         m = [[0] * self.n_group for _ in range(ep_size)]
         for e in range(self.E):
-            m[self.expert_owner(e, ep_size, self.E)][e // per_group] += 1
+            owner = owners[e] if owners is not None else self.expert_owner(e, ep_size, self.E)
+            m[owner][e // per_group] += 1
         return m
 
-    def _hit_probs(self, ep_size):
+    def _hit_probs(self, ep_size, owners=None):
         """Per-rank P(a token sends at least one of its k experts to rank r).
 
         Exact under a balanced gate, by enumerating how many of rank r's
@@ -284,14 +286,14 @@ class GateRouter:
         ``1 - ((ep-1)/ep)**k`` modelled k independent draws, which double
         counts and reads ~1% low even with no grouping at all.
         """
-        key = ep_size
+        key = ep_size if owners is None else (ep_size, tuple(owners))
         cached = self._hit_cache.get(key)
         if cached is not None:
             return cached
 
         E, k, ng, tg = self.E, self.k, self.n_group, self.topk_group
         reach = E * tg // ng            # experts the selected groups hold
-        m = self._rank_group_overlap(ep_size)
+        m = self._rank_group_overlap(ep_size, owners)
         subsets = comb(ng, tg)
         probs = []
         for r in range(ep_size):
@@ -356,14 +358,17 @@ class GateRouter:
         )
         return counts
 
-    def route_ep(self, layer_num, batch_id, total_len, ep_size):
+    def route_ep(self, layer_num, batch_id, total_len, ep_size, *, native=False):
         """EP-aware routing: returns per-rank token counts and activated experts.
 
         Source-token counts here are a synthetic even split, not the real
         DP batch vector used to size communication. Each token selects k
         experts; the owning rank receives the token for local
         execution. Expert-to-rank assignment uses even partitioning:
-        ``expert_id * ep // num_experts``.
+        ``expert_id * ep // num_experts`` for historical tables. Native
+        component tables use vLLM's contiguous remainder-to-first-ranks map.
+        Native BALANCED/CUSTOM assignment totals are rounded expectations,
+        not a sampled histogram; RR/RAND count the actual selected pairs.
 
         BALANCED short-circuits the per-token draw and uses the
         pigeonhole expression — trained MoE gates (Qwen3, Mixtral,
@@ -372,6 +377,15 @@ class GateRouter:
         """
         total_len = int(total_len)
         ep_size = max(1, int(ep_size))
+        owners = None
+        placements = None
+        if native:
+            from profiler.core.moe_geometry import ExpertPlacement
+            placements = [ExpertPlacement(self.E, self.k, ep_size, r) for r in range(ep_size)]
+            owners = [0]*self.E
+            for place in placements:
+                for expert in place.local_global_ids:
+                    owners[expert] = place.rank
 
         # Distribute source tokens evenly across EP ranks
         base = total_len // ep_size
@@ -384,19 +398,40 @@ class GateRouter:
         # or the measured curve. Both are deterministic in ``total_len``, which
         # is what keeps ``block_copy`` safe for either.
         if self.routing_policy in ("BALANCED", "CUSTOM"):
-            local_tokens, activated_counts = self._balanced_route_ep(
-                total_len, ep_size, source_tokens,
-            )
+            if native:
+                # Preserve the historical native balanced surface exactly.
+                # Routing owns this approximation; the lookup only prices it.
+                activated_counts, assignments = [], []
+                for place in placements:
+                    local_e = len(place.local_global_ids)
+                    pairs = (total_len*self.k*local_e+self.E-1)//self.E
+                    active = (round(local_e*(1-((self.E-self.k)/self.E)**total_len))
+                              if self.gate_curve is None else
+                              round(self._measured_activated(total_len)*local_e/self.E))
+                    active = (min(local_e, pairs, max((pairs+total_len-1)//total_len, active))
+                              if total_len else 0)
+                    assignments.append(pairs)
+                    activated_counts.append(active)
+                local_tokens = [max(int(total_len > 0), round(total_len*p))
+                                for p in self._hit_probs(ep_size, owners)]
+            else:
+                local_tokens, activated_counts = self._balanced_route_ep(
+                    total_len, ep_size, source_tokens,
+                )
+                assignments = [(total_len*self.k+ep_size-1)//ep_size]*ep_size
         else:
             local_tokens = [0] * ep_size
+            assignments = [0] * ep_size
             activated_experts = [set() for _ in range(ep_size)]
 
             for token_idx in range(total_len):
                 selected = self._token_experts(token_idx)
                 dest_ranks = set()
                 for expert_id in selected:
-                    owner = self.expert_owner(expert_id, ep_size, self.E)
+                    owner = (owners[expert_id] if owners is not None else
+                             self.expert_owner(expert_id, ep_size, self.E))
                     activated_experts[owner].add(expert_id)
+                    assignments[owner] += 1
                     dest_ranks.add(owner)
                 for owner in dest_ranks:
                     local_tokens[owner] += 1
@@ -413,6 +448,7 @@ class GateRouter:
             local_tokens=local_tokens,
             activated_experts=activated_counts,
             source_tokens=source_tokens,
+            local_assignments=assignments,
         )
 
     def _balanced_route_ep(self, total_len, ep_size, source_tokens):

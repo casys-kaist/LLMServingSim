@@ -25,12 +25,13 @@ node has is derived from that node's `cpu_mem.mem_size`, not declared in the INI
 ## Key parameters
 
 `load_flat_config()` ignores `[section]` headers and flattens the whole file
-into one dict, so key names must be unique across the file. Of the ~50 keys in
-a bundled config, the simulator reads **eleven**:
+into one dict, so key names must be unique across the file. The simulator uses
+the following keys:
 
 - **Per-channel capacity** (`dimm_size`): from `bankgroups`, `banks_per_group`,
   `rows`, `columns`, `device_width`, `bus_width`, and `channel_size`.
-  `channel_size` is a target in MB, snapped down to a whole number of ranks.
+  `channel_size` is a target in MB, raised to one rank's capacity if smaller;
+  larger targets are retained without rounding to whole ranks.
 - **Per-channel bandwidth**: `bus_width / 8 * data_rate / 1000` GB/s. `BL` and
   `tCK` are *not* part of this.
 - **Channel count and aggregate bandwidth**:
