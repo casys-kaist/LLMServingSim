@@ -69,8 +69,8 @@ sequenceDiagram
 ```
 
 `Router.has_deferred_sessions()` keeps the main loop from exiting
-while sessions are still active (otherwise a workload with a long
-final tool_duration could exit prematurely between sub-requests).
+while sessions still have deferred calls, including tool waits between
+sub-requests. A tool duration after the final call is ignored.
 
 For the full lifecycle, see
 **[Simulator → Request lifecycle](/docs/simulator/request-lifecycle#agentic-sessions-when-stage-10-is-not-the-end)**.

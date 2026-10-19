@@ -24,6 +24,7 @@ and compare against the bundled architectures:
 | `qwen3_5`, `qwen3_5_moe` (and their `_text` forms) | `qwen3_5.yaml` | Qwen3.5 / 3.6 / 3.8, dense **and** MoE — gated DeltaNet interleaved with full attention 3:1 |
 | `deepseek_v32`, `glm_moe_dsa` | `deepseek_v32.yaml` | DeepSeek-V3.2, GLM-5 — MLA plus a token-level sparse indexer (`index_topk`); the recorded vLLM 0.28 decomposition shares `deepseek_v2`, not a guarantee of later runtime compatibility |
 | `minimax_m3_vl` | `minimax_m3_vl.yaml` | MiniMax-M3 — block-level sparse attention (top-`k` blocks of `sparse_block_size` tokens) over GQA, non-sparse on the first few layers |
+| `kimi_k3` | `kimi_k3.yaml` | Kimi-K3's native `hybrid-residual` adapter: bounded eager TP/PP/DP/EP1 acquisition with BF16 activations and admitted native expert backends; see the [runtime contract](./output-bundle#native-kimi-acquisition). Skew, MTP and distributed acquisition are outside this contract |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
 
@@ -150,7 +151,8 @@ type under `model_types:` without becoming a second claimant.
 Alias only what is genuinely the same implementation. `qwen3_next` has the same
 gated-DeltaNet structure as `qwen3_5` but different classes
 (`Qwen3NextDecoderLayer`, plain `RMSNorm` where Qwen3.5 uses `GemmaRMSNorm`),
-so it gets its own file.
+so it would need a separately verified catalog. No `qwen3_next` catalog or alias
+is currently shipped.
 
 ## YAML structure
 
@@ -336,7 +338,7 @@ share a granularity.
 | `normalization` | optional | `parent` divides by parent calls × sequence occurrences; `invocations` divides by matched calls. Defaults to `parent`, except whole-block `moe` entries default to `invocations` |
 | `within` | optional | An observed **ancestor** class, declared operator name or callable semantic name. The name must match and, when `within` is set, at least one alternative must occur in runtime ancestry. Accepts a list |
 | `not_within` | optional | Ancestor class(es) that **disqualify** a node. For when one class plays two roles that `within` cannot separate because it is the immediate parent in both — DeepSeek's shared expert is a `DeepseekV2MLP`, exactly like a dense layer's own `mlp`, and is 9x narrower. Accepts a list |
-| `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1 and replicated into every `tp<N>/` folder by the writer |
+| `tp_stable` | optional (default `false`) | `true` if the layer's latency doesn't depend on TP degree (layernorms, sampler). Profiled once at TP=1; the writer replicates stable `dense`/`per_sequence` rows, while stable MTP rows are read directly at TP1 |
 | `tp_output_reduction` | optional | `all_reduce` on a `dense` row-output projection; emits a TP reduction of its full output at activation dtype |
 | `sequence_parallel` | optional | Whether a MoE wrapper sequence-shards inputs under DP+TP |
 | `attention_sequence_parallel` | optional | Declares attention-wide sequence shards; requires `sequence_parallel: true` on a MoE entry and triggers the unsupported-deployment guard described in [parallelism mechanics](../simulator/parallelism-mechanics#attention-wide-sequence-parallelism) |
@@ -805,7 +807,8 @@ Gemma-style dense model) and adjust:
 - Update `vllm` class names to match the model's, and set `within`
   wherever the same class shows up more than once.
 - Add any extra layers (e.g., Gemma 2's post-MLP layernorm) to the
-  catalog and `sequence`.
+  catalog and the appropriate `blocks` or `shared` list. The removed `sequence`
+  schema is not accepted.
 - Set `tp_stable: true` on layers whose latency doesn't depend on
   TP.
 
@@ -895,35 +898,37 @@ calling a parent can include all its descendants, so audit overlaps as well.
 ### 4. Try profiling
 
 ```bash
-MODEL="google/gemma-2-9b" \
-HARDWARE="<your-hw>" \
-TP_DEGREES=1 \
-SKIP_SKEW=1 \
-./profiler/profile.sh
+python -m profiler profile google/gemma-2-9b \
+  --hardware "<your-hw>" --tp 1 --skip-skew \
+  --max-num-batched-tokens 128 --max-num-seqs 8 \
+  --attention-max-kv 128 --max-model-len 512
 ```
 
-Start with TP=1 and `SKIP_SKEW=1` for the fastest feedback. The
-profiler will:
+Start with TP1 and `--skip-skew` for bounded initial feedback. If using
+`profile.sh` instead, edit its `MODEL` and `HARDWARE` assignments: those two
+assignments override environment values.
 
-- Warn loudly if any layer in `sequence` isn't found on the model
-  via the `cls` you specified.
-- Skip layers it can't find (with a warning), so you can iterate.
-
-If the YAML is right, you'll get clean CSVs. Run a tiny simulation
-to confirm.
+Review coverage and the resulting canonical rows against `catalog`, `blocks`
+and `shared`. An unexecuted alternative may have no row; missing required
+measurements, invalid ownership and incompatible native/layout contracts can
+fail acquisition. Do not treat a completed command or an omitted row as proof
+of a complete model decomposition. Run a small simulation only after checking
+the required profile coverage.
 
 ### 5. Try simulating
 
-In your `cluster_config.json`:
+In the appropriate instance under your cluster configuration's
+`nodes[].instances[]` (see the [cluster schema](../reference/cluster-config)):
 
 ```json
 {
   "model_name": "google/gemma-2-9b",
   "hardware": "<your-hw>",
-  "tp_size": 1,
-  ...
+  "tp_size": 1
 }
 ```
+
+This is an instance-field excerpt, not a complete cluster configuration.
 
 Run `python -m serving --cluster-config ... --dataset workloads/example_trace.jsonl ...`.
 

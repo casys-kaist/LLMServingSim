@@ -11,10 +11,11 @@ describes `meta-llama/Llama-3.1-8B`.
 
 ## What goes in
 
-The full raw `config.json` from the model's HuggingFace repo. vLLM
-consumes it directly via a temp directory at profile time, so the
-file must contain every field vLLM needs to instantiate the model
-under `load_format=dummy`:
+A native-class-compatible model configuration, preserving every field vLLM
+needs under `load_format=dummy`. Most files retain the original HF shape;
+the shipped Qwen text tower is flattened for its text config class, while
+MiniMax-M3 and Kimi-K3 must remain nested. vLLM loads the materialized
+configuration through a temporary model directory during profiling:
 
 | Field | Purpose |
 | --- | --- |
@@ -30,8 +31,8 @@ under `load_format=dummy`:
 | `rope_theta`, `rope_scaling` | Rotary embedding setup (critical for Llama 3's rope_type) |
 | `tie_word_embeddings` | Whether lm_head shares weights with embedding |
 | `attention_bias`, `mlp_bias` | Linear layer biases |
-| `torch_dtype` | Weight dtype, and the variant folder name derives from it. `quantization_config.quant_method` wins when present — on a quantized checkpoint the dtype fields describe the *activations* |
-| `num_local_experts` or `num_experts` or `n_routed_experts`, `num_experts_per_tok`, `moe_intermediate_size` | MoE only. Three spellings for the expert count, because the families disagree |
+| `torch_dtype` / `dtype` | Floating dtype, read legacy spelling first. `quantization_config.quant_method` wins for weight precision and the default variant — on a quantized checkpoint the floating fields describe the *activations* |
+| `num_local_experts` or `num_experts` or `n_routed_experts`, `num_experts_per_tok` / `num_experts_per_token` / `moe_k`, `moe_intermediate_size` | MoE count, top-k and expert width. Declared top-k aliases must be positive integers and agree |
 | `n_group`, `topk_group` | Group-limited expert routing (DeepSeek-V3/V3.2, GLM). Restricts a token's experts to `topk_group` of `n_group` groups, which narrows the EP ranks it reaches |
 | `layer_types`, `full_attention_interval` | Which layers are linear attention vs full attention on a hybrid stack |
 | `first_k_dense_replace`, `decoder_sparse_step`, `moe_layer_freq`, `mlp_only_layers` | Which layers run MoE vs a dense MLP. The rules disagree on the off-by-one between vendors — `profiler/core/stack.py` owns them |
@@ -42,10 +43,9 @@ under `load_format=dummy`:
 | `kv_lora_rank`, `qk_rope_head_dim`, `index_head_dim` | MLA latent and sparse-indexer cache shapes (DeepSeek, GLM) |
 | `num_nextn_predict_layers` / `num_mtp_modules` / `mtp_num_hidden_layers` | MTP module count — the model's own drafter, for speculative decoding |
 
-Leave everything verbatim from the HF repo — the profiler / simulator
-ignore keys they don't need, so extra fields are harmless. The only
-hard requirements are `architectures`, `model_type`, and the
-dimensional fields.
+Preserve the selected config class's structure and fields rather than reducing
+the file to the list above. Native classes and admission checks can require
+additional normalization, routing or layout fields that ordinary sizing ignores.
 
 ## Provided configurations
 
@@ -88,7 +88,9 @@ decoder prefix; the stored config and trace layer order stay intact.
 `get_source_config` retains that original wrapper independently of the simulator's
 flattened `get_config` copy. Its current native path
 is bounded local profiling and explicit duration replay, not full serving or
-benchmark validation. See [native Kimi acquisition](../../docs/docs/profiler/output-bundle.md#native-kimi-acquisition).
+benchmark validation. No Kimi performance bundle is committed; complete
+runtime-admitted category and residual tables are required for replay.
+See [native Kimi acquisition](../../docs/docs/profiler/output-bundle.md#native-kimi-acquisition).
 
 > **`MiniMax-M3.json` must stay nested**, keeping its `text_config`
 > key: vLLM's `MiniMaxM3Config` is a wrapper that builds its backbone

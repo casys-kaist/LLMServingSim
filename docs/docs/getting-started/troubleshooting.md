@@ -72,6 +72,10 @@ If the host's `nvidia-smi` works but the container's doesn't, the
 toolkit is the problem. If the host's `nvidia-smi` fails too, install
 the NVIDIA driver first.
 
+A successful CUDA 12.4 visibility probe does not verify the CUDA 13 runtime
+required by the default vLLM image. Check that image separately using the
+[vLLM setup instructions](./installation/vllm).
+
 ## Hugging Face: gated model / 401 / 403
 
 **Symptom:** When profiling a Llama 3.x or gated Qwen variant:
@@ -92,8 +96,12 @@ meta-llama/Llama-3.1-8B is restricted...
    ./scripts/docker-vllm.sh
    ```
 
-The token gets forwarded into the container automatically. Confirm
-with `echo $HF_TOKEN` inside the container.
+The token gets forwarded into the container automatically. Check that it is
+set without printing the secret:
+
+```bash
+test -n "$HF_TOKEN" && echo "HF_TOKEN is set"
+```
 
 ## ASTRA-Sim build fails
 
@@ -261,11 +269,17 @@ especially with MoE + EP or large prefix caches.
 
 **Common causes & fixes:**
 
+- **Read-only backend output paths.** The analytical backend writes to
+  `astra-sim/log/` and `astra-sim/tmp__mem/`, in addition to the selected
+  inputs directory. A read-only source mount needs writable mounts for these
+  output directories; `--inputs-root` alone does not relocate the backend's
+  logs or temporary memory files. Check backend startup errors before treating
+  an apparent wait as a slow simulation.
 - **Block-copy disabled.** For MoE, keep `--enable-block-copy`
-  on (the default). It replays one transformer block's trace across
-  every layer instead of re-computing routing per layer. Safe with
-  `--expert-routing-policy BALANCED` (default, deterministic);
-  `RR`/`RAND` average out per-layer variance.
+  on (the default) to reuse rows for matching block/site sequences.
+  This is exact for deterministic BALANCED/RR routing at a fixed batch shape.
+  RAND reuses a draw and suppresses per-layer variation; turn copying off when
+  that variation matters. Contextual profiles disable copying.
 - **Verbose logging.** `--log-level DEBUG` writes a lot. Drop to
   `--log-level INFO` or `WARNING`.
 - **`--log-interval` too small.** Setting it to `0.1` makes the

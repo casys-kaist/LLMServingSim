@@ -48,8 +48,8 @@ Two containers, one per role:
 
 | Container | Image | When you need it |
 | --- | --- | --- |
-| `scripts/docker-sim.sh` | `astrasim/tutorial-micro2024` + Python deps | Running the simulator. **Always.** |
-| `scripts/docker-vllm.sh` | `vllm/vllm-openai:v0.31.0` (CUDA 13) | Profiling new hardware, running the bench, generating workloads from ShareGPT. **Only if you touch those.** |
+| `scripts/docker-sim.sh` | `astrasim/tutorial-micro2024` + Python deps | Running the simulator and comparing stored results with `bench validate`; no GPU required. |
+| `scripts/docker-vllm.sh` | `vllm/vllm-openai:v0.31.0` (CUDA 13) | GPU acquisition, recording new references with `bench run`, and generating workloads from ShareGPT. |
 
 For most contributor work (scheduler, memory model, trace generator,
 configs), the sim container is all you need:

@@ -79,8 +79,8 @@ of the `sub_requests` key.
 ### ShareGPT traces
 
 Generated on demand by `python -m workloads.generators sharegpt --model <hf-id>
---num-reqs <n> --sps <r>` (see `generators/`). Output files land directly in
-this directory and follow the flat-request format above with `input_tok_ids`
+--num-reqs <n> --sps <r> --output workloads/<name>.jsonl` (see `generators/`).
+The required `--output` selects the destination. Files follow the flat-request format with `input_tok_ids`
 populated for prefix-cache hashing.
 
 

@@ -128,15 +128,17 @@ boundaries first; do not publish a table with missing or double-counted work.
 
 ```bash
 # Native DeepSeek-V3.2 — fresh admitted tables, local duration replay only
-MODEL="deepseek-ai/DeepSeek-V3.2-Exp" HARDWARE=RTXPRO6000 \
-  TP_DEGREES="1" MOE_EP_DEGREES="1" ./profiler/profile.sh
+python -m profiler profile deepseek-ai/DeepSeek-V3.2-Exp \
+  --hardware RTXPRO6000 --tp 1 --ep 1 --out-root profiler/perf-native
 
 # MiniMax-M3 — block size 128 is REQUIRED
-MODEL="MiniMaxAI/MiniMax-M3" HARDWARE=RTXPRO6000 BLOCK_SIZE=128 ./profiler/profile.sh
+python -m profiler profile MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 \
+  --tp 1 --block-size 128 --out-root profiler/perf-native
 ```
 
-Check the catalog first; it is the only check that catches an entry that
-names a real class and measures nothing:
+Inspect coverage before a sweep to check active bindings and uncovered CUDA
+work. Runtime admission and category publication also validate required
+components; a coverage report alone does not establish a complete bundle:
 
 ```bash
 python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 --block-size 128
@@ -155,8 +157,9 @@ python -m profiler coverage MiniMaxAI/MiniMax-M3 --hardware RTXPRO6000 --block-s
 :::
 
 Ordinary historical TP profiling is single-GPU — per-rank shapes are
-emulated by dividing `hidden_size` / `num_attention_heads` via
-`hf_overrides`, and collectives are left to ASTRA-Sim. So a 671B model
+emulated by dividing the declared sharded dimensions, including attention
+head counts and MLP intermediate widths, through `hf_overrides`;
+`hidden_size` stays unchanged. Collectives are left to ASTRA-Sim. So a 671B model
 profiles on one card: the profiler shrinks the stack to the 4 layers
 needed to reach every block type (3 dense MLP + 1 MoE, sparse throughout).
 The native DSA acquisition contract currently permits only actual/logical TP1

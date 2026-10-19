@@ -23,7 +23,7 @@ A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructu
 - [2026/08] **RTX 4090** joins the profile library — within **1%** of a real vLLM run on mean TTFT / TPOT / latency. ([#59](https://github.com/casys-kaist/LLMServingSim/pull/59))
 
 See the [changelog](https://llmservingsim.ai/changelog) for the **v1.2.0**
-release summary, validation scope and upgrade requirements.
+release and upcoming **v1.3.0** changes, validation scope and upgrade requirements.
 
 ## About
 
@@ -51,74 +51,27 @@ When updating an existing clone, synchronize its recursive submodules and
 rebuild ASTRA-Sim and Chakra together; see the
 [update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).
 
-GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**; simulation and comparison
-against recorded benchmarks are CPU-only. Start with the
-[profiler README](profiler/README.md#overview) for local usage, and see the
-[profiler guide](https://llmservingsim.ai/docs/profiler/overview) for GPU-only
-acquisition, typed and packed assigned-page dummy history, declarative scopes and resume/bundle
-contracts. New CSVs hold coordinates and timings; the variant-root `meta.yaml`
-holds methods, execution facts and compact publication summaries, including per-TP metadata.
-Saved method and format names are descriptive.
-Serving graph observations can be imported into that metadata separately from
-eager acquisition settings; matching deployments reuse the observed runner and
-capture grid without relabelling measured times.
-New eager sweeps include target serving graph coordinates alongside geometric
-samples; the [sampling guide](https://llmservingsim.ai/docs/profiler/running#sampling-policy)
-distinguishes observed captures from derived candidates and category-specific coverage.
-Actual backend/layout checks govern admission, not source hashes or folder names.
-CSV publication checks protect resume after an interrupted replacement without
-changing measured timings; TP-stable copies retain their source acquisition
-without substituting for unmeasured TP-local work.
-Native [MoE component profiling](https://llmservingsim.ai/docs/profiler/native-moe-components)
-defaults to local DP1 and supports DP+EP targets through consistent TP/DP/EP
-selectors and deployment-matched execution boundaries. New eager-only tables
-separate input rows, active local experts and local assignments. Token axes prefer
-serving capture sizes; uncovered token ranges and routing-work axes default to
-doubling, with required geometry boundaries retained. Historical
-whole-block and component tables remain readable until remeasurement. Serving
-reuses validated MoE lookup structures across batches. A separately
-admitted local path preserves native quantized experts and measures surrounding
-shared/wrapper work; its summed CUDA work durations do not model branch overlap.
-Recurrent warmup checks respect native metadata layouts without adding CPU time;
-the [acquisition contract](https://llmservingsim.ai/docs/profiler/output-bundle#cuda-activity-and-acquisition-identity)
-states their scope separately from model support.
-Capability-checked packed-weight and derived-buffer preparation is also untimed;
-see the [dummy-weight contract](https://llmservingsim.ai/docs/profiler/output-bundle#dummy-model-weight-preparation).
-Catalog-selected bounded native profiling shares category completion and contextual
-duration replay; Kimi-K3's configuration-derived residual path retains a
-source-specific contract. See its [scope and requirements](https://llmservingsim.ai/docs/profiler/output-bundle#native-kimi-acquisition).
-See the
-[trace guide](https://llmservingsim.ai/docs/simulator/trace-generation) for
-declared TP output reductions and runtime-selected hybrid components,
-the [trace byte reference](https://llmservingsim.ai/docs/reference/trace-format#minimax-m3-logical-bytes)
-for MiniMax-M3 query/cache accounting, and the
-[bench reference](https://llmservingsim.ai/docs/reference/bench-cli) for recording
-vLLM's default communication backend selection and explicit overrides;
-the benchmark retains its two disabled communication-fusion passes. New runs
-record source-qualified per-engine KV capacities for DP comparisons rather
-than treating the frontend's aggregate block count as one engine's capacity.
-MiniMax-M3's [native attention lookup contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-attention-lookup-contract)
-binds new sparse-prefill lookups to the measured backend and configured selection
-width per TP; historical bundles retain their original semantics.
-Profiler precision labels keep checkpoint quantization separate from floating
-activation overrides; see [variant naming](https://llmservingsim.ai/docs/profiler/running#precision-and-variant-names)
-before acquiring an alternate precision.
-Nested text-model overrides and TP head-width preservation are checked through
-native configuration file reloads;
-see [configuration and TP emulation](https://llmservingsim.ai/docs/profiler/running#reduced-model-configurations).
-Native DeepSeek-V3.2 acquisition has an explicit
-[four-table runtime contract](https://llmservingsim.ai/docs/profiler/output-bundle#native-dsa-acquisition).
-Its new representation supports opt-in duration trace replay, not ordinary serving
-or KV-capacity admission; historical bundles retain their existing behavior.
+GPU profiling and new benchmarks target **vLLM 0.31.0 / CUDA 13**.
+The profiler uses lightweight PyTorch/Kineto CUDA-activity collection and
+configurable sampling grids that include target serving graph coordinates.
+Acquisition remains eager; a graph-shaped measurement grid is not a measurement
+of graph replay. See the [profiler guide](https://llmservingsim.ai/docs/profiler/overview)
+for sampling, native MoE components and metadata/resume requirements.
 
-The [validation results](https://llmservingsim.ai/docs/validation) describe the
-committed profile bundles and recorded workloads, not a complete remeasurement
-with every current profiler change. Architecture support and fresh-profile
-accuracy are separate checks. The RTXPRO6000 headline examples use refreshed
-vLLM 0.31.0 profiles, acquired at TP1 and TP2 for Llama and both Qwen models.
-Recorded accuracy covers Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2;
-other acquisition scopes require their own validation. The RTX 4090 reference
-remains on vLLM 0.19.0.
+Architecture support is scope-specific. Kimi-K3 has a catalog, admitted local
+profiling and opt-in contextual duration replay; that does not establish ordinary
+serving, resident-memory capacity or distributed benchmark accuracy. Native
+DeepSeek-V3.2 profiles also use an explicit duration-replay contract. See the
+[profile bundle guide](https://llmservingsim.ai/docs/profiler/output-bundle)
+and [trace guide](https://llmservingsim.ai/docs/simulator/trace-generation)
+for supported paths and restrictions.
+
+Simulation and comparison against recorded benchmarks are CPU-only.
+The [validation results](https://llmservingsim.ai/docs/validation) cover the
+refreshed vLLM 0.31.0 Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2
+examples on RTXPRO6000. Their bundles include TP1 and TP2 acquisition data,
+but other deployments require their own accuracy validation.
+The RTX 4090 reference retains vLLM 0.19.0.
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

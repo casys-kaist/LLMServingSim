@@ -385,28 +385,31 @@ The full DP+EP wave-sync mechanics live on
 
 ## Block copy optimization
 
-Layers that resolve to the same block shape produce identical trace rows — the
-rows carry the canonical layer name, and the writer numbers the lines — so
-building each one separately is wasted work. By default
+With deterministic routing, layers with the same resolved block and site
+sequence produce identical trace rows. Rows carry canonical names, and the
+writer numbers the lines, so rebuilding each layer is unnecessary. By default
 `enable_block_copy=True`:
 
 - **Build** a block's rows once per distinct block shape.
 - Append that same list once per layer sharing the shape.
 
-The emitted trace is unchanged: it still has every layer's rows. This is a
+For these deterministic cases, the emitted trace is unchanged and still has
+every layer's rows. This is a
 trace-*generation* optimization, saving the per-layer latency lookups and size
 computations, and there is no `block_copy` instruction in the trace or in
 Chakra. Row count depends on the active component and communication path.
 
-The reuse key is the layer's resolved block shape, so a heterogeneous stack
-gets one built block per shape rather than one for the whole model — Qwen3.5's
-gated-DeltaNet and full-attention layers are never shared.
+The reuse key includes the layer's resolved block shape and, for site-aware
+catalogs, its resolved component sequences. A heterogeneous stack gets a block
+per key rather than one for the whole model — Qwen3.5's gated-DeltaNet and
+full-attention layers are never shared. Contextual profiles disable copying.
 
 Exact for dense models and deterministic MoE routing at a fixed batch shape.
 RR advances token positions but resets at each layer invocation, so block copy
-is exact for it too. RAND and custom policies with layer-dependent variation
-need separate checks; do not assume suppressed variation is harmless merely
-because a batch is large.
+is exact for it too. RAND reuses a draw and suppresses per-layer variation;
+use `--no-enable-block-copy` when that variation matters. Custom policies with
+layer-dependent variation need separate checks; do not assume suppressing it
+is harmless merely because a batch is large.
 
 ## Per-rank latency for MoE
 

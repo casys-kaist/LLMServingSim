@@ -226,8 +226,10 @@ hardware. If you have access:
   layer types the simulator's architecture YAML declares
   (`qkv_proj`, `attention`, `down_proj`, etc.).
 - Sweep the same axes the GPU profiler does
-  (`tokens`, `(prefill_chunk, kv_prefill, n_decode, kv_decode)`,
-  `(tokens, activated_experts)`).
+  (`tokens`, `sequences`, and attention's
+  `(prefill_chunk, prefill_key, n_decode, kv_decode)` for each kernel and
+  `decode_q_len`). Use the category-specific schema for linear attention,
+  MTP and MoE; native MoE component tables require their matching contracts.
 - Write CSVs in the schema documented on
   **[Output bundle](./output-bundle)**.
 
@@ -247,9 +249,11 @@ declare which kernels you need to time. For each entry in the
 
 - For `dense` category: latency as a function of `tokens`.
 - For `per_sequence`: latency as a function of `sequences`.
-- For `attention`: 4D table over `(prefill_chunk, kv_prefill,
-  n_decode, kv_decode)`.
-- For `moe`: 2D table over `(local_tokens, activated_experts)`.
+- For `attention`: a table per kernel and `decode_q_len`, interpolated over
+  `(prefill_chunk, prefill_key, n_decode, kv_decode)`.
+- For `linear_attention`, MTP and MoE: follow the matching
+  [output schema](./output-bundle). Include the linear-attention regimes,
+  drafter entries or MoE contracts required by the model and deployment.
 
 #### 3. Hand-authored from datasheets / public benchmarks
 
@@ -323,8 +327,10 @@ heterogeneous-decode measurements.
 - `moe.csv` if you're not modeling MoE on this hardware (only needed
   when running MoE models).
 - `tp<N>/` folders for TP degrees you don't need to simulate. Note the
-  mechanism: `_load_perf_db` loads **every** `tp*/` folder it finds and
-  then checks that the ones your cluster config needs are among them.
+  mechanism: `_load_perf_db` discovers available `tp*/` folders and checks
+  that the degrees your cluster config needs are present. Category tables
+  are loaded lazily on lookup; TP1 can still be needed for stable entries
+  and MoE even when the deployment uses another TP degree.
   A missing one is a hard error, not a fallback:
 
   ```text
@@ -333,12 +339,13 @@ heterogeneous-decode measurements.
   including 4.
   ```
 
-### What you cannot skip
+### Required inputs
 
-- `dense.csv`: every model uses dense linears.
-- `per_sequence.csv`: `lm_head` and `sampler` always run.
-- `attention.csv`: every model has attention.
-- `meta.yaml`: without it the simulator can't resolve the variant.
+- The category tables and canonical entries required by the model's resolved
+  catalog and deployment, including linear-attention or MTP tables when used.
+  See the [output schema](./output-bundle) for category coordinates and metadata.
+- `meta.yaml`, which the simulator requires to load the bundle's metadata.
+  The variant folder name itself is derived from the model configuration.
 
 ### Validation
 

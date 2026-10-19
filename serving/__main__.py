@@ -509,9 +509,10 @@ def main():
     parser.add_argument('--num-speculative-tokens', type=int, default=0,
                         dest='num_speculative_tokens',
                         help='speculative decoding draft length N (vLLM\'s num_speculative_tokens). '
-                        '0 (default) disables it. Omit --spec-acceptance-rate to take the model\'s '
-                        'own published N and acceptance from configs/spec_decode.json; pass -1 to '
-                        'use that N explicitly. Override per instance with "num_speculative_tokens"')
+                        '0 (default) disables it when no acceptance rate is supplied. '
+                        'Positive values set N; -1, or 0 with an explicit rate, requests '
+                        'the published N from configs/spec_decode.json. A missing rate '
+                        'uses the published acceptance. Override per instance with "num_speculative_tokens"')
     parser.add_argument('--spec-acceptance-rate', type=float, default=None,
                         dest='spec_acceptance_rate',
                         help='fraction of drafted tokens the target model accepts, so the mean '
@@ -527,7 +528,8 @@ def main():
                         'draft position -- same mean, different spread), CUSTOM (user-defined)')
     parser.add_argument('--request-routing-policy', type=str, choices=['LOAD', 'RR', 'RAND', 'CUSTOM'], default='LOAD',
                         help='request routing policy across instances: LOAD (vLLM-style weighted least-loaded, default), '
-                        'RR (round-robin), RAND (random), CUSTOM (user-defined)')
+                        'RR (round-robin), RAND (random), CUSTOM (requires implementing '
+                        'the shipped NotImplementedError stub in serving/core/router.py)')
     parser.add_argument('--expert-routing-policy', type=str,
                         choices=['BALANCED', 'RR', 'RAND', 'CUSTOM'],
                         default='BALANCED',
@@ -544,21 +546,16 @@ def main():
                         '`bench run --record-gate-stats`. Read only under '
                         '--expert-routing-policy CUSTOM, where it replaces the '
                         'uniform-gate closed form with the real gate\'s '
-                        'measured distinct-expert count. A trained gate '
-                        'concentrates on popular experts, so the closed form '
-                        'over-counts -- on Qwen3-30B-A3B by 13%% through the '
-                        'middle of the range and 6%% at a saturated decode. A '
+                        'measured distinct-expert count. A '
                         'missing, unreadable or mismatched file falls back to '
                         'the closed form with a warning.')
     parser.add_argument('--enable-block-copy', action=argparse.BooleanOptionalAction,
                         default=True,
-                        help='Replay one transformer block\'s trace across every '
-                        'layer instead of re-computing the routing per layer — '
-                        'cuts trace-generation time roughly num_hidden_layers× '
-                        'on MoE models. Safe with BALANCED (deterministic); '
-                        'RR/RAND get a small per-layer variance averaged out. '
-                        'Disable only for CUSTOM policies that need faithful '
-                        'per-layer variance.')
+                        help='Reuse trace rows across matching resolved block/site '
+                        'sequences. Exact for deterministic BALANCED/RR routing at a '
+                        'fixed batch shape. RAND reuses a draw and suppresses per-layer '
+                        'variation; disable when that variation matters. Contextual '
+                        'profiles disable copying.')
     parser.add_argument('--enable-prefix-caching', action=argparse.BooleanOptionalAction, default=True,
                         help='enable prefix caching to reuse KV cache blocks across requests '
                         'with shared prefixes (default: enabled). Use --no-enable-prefix-caching to disable')
@@ -573,10 +570,11 @@ def main():
                         help='enable weight offloading to local (NPU) memory. '
                         'Recommended to disable unless weight memory access is not counted in profiling')
     parser.add_argument('--enable-attn-offloading', action='store_true', default=False,
-                        help='enable attention computation offloading to PIM (Processing-In-Memory) devices')
+                        help='offload decode attention to PIM (Processing-In-Memory); '
+                        'prefill attention remains on the NPU')
     parser.add_argument('--enable-sub-batch-interleaving', action='store_true', default=False,
                         help='enable sub-batch interleaving to overlap XPU and PIM computation. '
-                        'Requires --enable-attn-offloading')
+                        'Requires attention offloading, PP=1 and graph replay disabled')
     parser.add_argument('--reserve-full-isl', action=argparse.BooleanOptionalAction, default=True,
                         help='admit a request only if its whole sequence fits in the KV cache, '
                         'not merely its first chunk. Mirrors vLLM\'s scheduler_reserve_full_isl '
@@ -584,11 +582,10 @@ def main():
                         'the KV cache. Override per instance with "reserve_full_isl"')
     parser.add_argument('--async-scheduling', action=argparse.BooleanOptionalAction, default=True,
                         help="compose the next batch while the current one is still running, "
-                        "as vLLM's scheduler_config.async_scheduling does (True there too). "
-                        "It makes max_concurrent_batches 2 at pp_size 1, so a request that "
-                        "arrives after the next batch was composed waits one more step -- "
-                        "worth ~0.6 step of TTFT, which is invisible on a saturated run and "
-                        "a fifth of the median TTFT on a light one. Override per instance "
+                        "applying admission lookahead at PP=1 and for scheduler-classified "
+                        "V2 pipelines. Modeled V1 pipelines already supply the in-flight "
+                        "window. Idle instances admit current arrivals; the TTFT effect "
+                        "depends on workload and batching. Override per instance "
                         'with "async_scheduling"')
     parser.add_argument('--npu-memory-utilization', type=float, default=0.9,
                         help='fraction of NPU memory an instance may use for weights plus '
@@ -600,14 +597,12 @@ def main():
                         'resulting capacity is an upper bound on vLLM\'s at the same value')
     parser.add_argument('--block-size', type=int, default=None,
                         help='KV cache block size in tokens. When omitted, taken from the '
-                        'profile bundle\'s recorded engine_resolved.block_size -- vLLM derives '
-                        'this from the backend rather than accepting what it is given, so a '
-                        'MiniMax-M3 run is 128 and a Qwen3.8 hybrid is 784 whatever you ask for. '
-                        'An explicit value that disagrees is simulating a configuration vLLM '
-                        'cannot serve, and says so. Falls back to 16 when the bundle predates '
+                        'profile bundle\'s engine_resolved metadata for the selected TP. '
+                        'An explicit value that differs is allowed with a warning; verify '
+                        'backend support and profile compatibility. Falls back to 16 when the bundle predates '
                         'the field. Override per instance with "block_size"')
     parser.add_argument('--dataset', type=str, default=None,
-                        help='path to .jsonl dataset file with request traces. '
+                        help='repository-relative path to a .jsonl request trace. '
                         'If None, requests must be added manually in serving/__main__.py')
     parser.add_argument('--output', type=str, default=None,
                         help='path for per-request CSV output with latency metrics (TTFT, TPOT, ITL). '
@@ -617,7 +612,8 @@ def main():
                         'astra-sim/inputs/runs/<run-id>. If omitted, a process-unique id is generated')
     parser.add_argument('--inputs-root', type=str, default=None,
                         help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
-                        'astra-sim/inputs/runs/<run-id>')
+                        'astra-sim/inputs/runs/<run-id>. Explicit relative paths resolve '
+                        'from astra-sim/; backend logs and temporary memory files stay there')
     parser.add_argument('--save-trace-text', action=argparse.BooleanOptionalAction, default=False,
                         help='write each batch\'s trace as text, for inspection (default: '
                         'disabled). Nothing in the pipeline reads it -- the Chakra converter takes '
@@ -632,7 +628,9 @@ def main():
                         'system and memory configs, so a run can be replayed through ASTRA-Sim by '
                         'hand. Replaces --cleanup-inputs, whose polarity was inverted')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
-                        help='skip the prefill phase, running decode only')
+                        help='legacy flag marking requests past first-token bookkeeping. '
+                        'Does not skip prompt computation or prepare cached KV; '
+                        'not a decode-only workload generator')
     parser.add_argument('--num-reqs', type=int, default=0,
                         help='number of entries (requests or sessions) to load from the dataset. '
                         'For agentic datasets, each entry is a session with multiple sub-requests. '

@@ -184,15 +184,20 @@ For deeper detail on the validation methodology, see
 
 ## 4. Profiler-side changes (if you touched `profiler/`)
 
-Profiler changes don't show up in the simulator until you regenerate
-the perf bundle. Run a small profile to confirm your edit doesn't
-break the pipeline:
+Acquisition-only changes affect simulated timings when new tables are adopted.
+Shared lookup, layout, geometry and metadata helpers can affect the simulator
+immediately, so inspect their consumers and run the corresponding CPU regression
+checks. For acquisition changes, run a profile with explicitly bounded grids
+and resource limits to confirm the pipeline still works. The command below
+uses CLI default sweep sizes; it is not a small smoke test by default:
 
 ```bash
 # Inside the vLLM container
-MODEL=meta-llama/Llama-3.1-8B HARDWARE=RTXPRO6000 \
-    ./profiler/profile.sh
+python -m profiler profile meta-llama/Llama-3.1-8B --hardware RTXPRO6000
 ```
+
+If using `profiler/profile.sh` instead, edit its `MODEL` and `HARDWARE`
+assignments first; those assignments override exported environment values.
 
 Then verify the simulator still loads it cleanly:
 `./serving/validate.sh --clocks-only single`.

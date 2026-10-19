@@ -67,6 +67,10 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 You should see your GPU listed. If not, see
 [Troubleshooting → GPU not detected](../troubleshooting#gpu-not-detected).
 
+This CUDA 12.4 probe checks container GPU visibility. It does not establish
+driver compatibility with the default CUDA 13 vLLM image; verify that image
+separately during [vLLM setup](./vllm).
+
 ## Hugging Face token (optional)
 
 Some model configs (e.g., Llama 3.x, gated Qwen variants) live behind

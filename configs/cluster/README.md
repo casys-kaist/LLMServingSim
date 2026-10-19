@@ -69,7 +69,7 @@ topology assumptions in the general scenarios in this directory.
 | Field | Type | Description |
 | --- | --- | --- |
 | `num_instances` | Integer | Number of instances on this node |
-| `cpu_mem.mem_size` | Float | CPU memory capacity in GB |
+| `cpu_mem.mem_size` | Float | CPU memory capacity in GiB |
 | `cpu_mem.mem_bw` | Float | CPU memory bandwidth in GB/s |
 | `cpu_mem.mem_latency` | Float | CPU memory latency in ns |
 

@@ -513,6 +513,11 @@ output root or explicit `--force`, which replaces the categories and TP degrees
 selected by the run. A fully skipped ordinary category keeps its prior
 measurement timestamp. Updating profiler code alone never updates stored times.
 
+Native MoE contracts reject `--force`. A full MoE `profile --force` is therefore
+rejected because it acquires native components. Use a new output root for a full
+remeasurement, an ordinary category `slice --force` for that category alone, or
+`profile --only-skew --force` for skew alone.
+
 Skew feasibility uses the resolved block size for the actual heterogeneous
 shot; uniform reference batches are looked up offline, not measured. Skew checkpoints use atomic file
 replacement and preserve existing permissions. Corrupt CSVs fail explicitly
@@ -1088,8 +1093,9 @@ catalog:
 ```
 
 `tp_stable: true` marks layers whose kernel cost doesn't change with
-TP (layernorms, sampler). They're profiled once at TP=1 and replicated
-to other tp folders by the writer.
+TP (layernorms, sampler). They're profiled once at TP=1. The writer copies stable
+`dense` and `per_sequence` rows to other TP folders; stable MTP rows remain at
+TP1 and the simulator reads them there.
 
 A `vllm:` name may also be a **raw CUDA kernel name** (matching strips a
 trailing `(...)`, and kernel nodes have no parentheses), a **list** of names —
@@ -1136,10 +1142,13 @@ subtrees, retaining only direct decoder residual work. Refresh old Phi dense
 rows as well. These exclusions also apply to category slices. The collector
 rejects overlapping canonical CUDA claims within a capture before saving timings.
 
-Coverage reports what is *un*bound, so it is blind to an entry that also claims
-the **target's** nodes. That happens whenever the guard is missing or wrong —
-the drafter's modules are the same classes as the target's, and so is
-DeepSeek's shared expert against a dense layer's `mlp`. Qwen3.8-27B's
+Coverage checks unbound work and overlapping or structurally unrelated claims.
+With MTP enabled, it suppresses expected non-MTP matches on the drafter's
+replayed block, but still rejects MTP overmatches and shared CUDA ownership.
+An unexecuted catalog alternative may leave no activity gap, and structurally
+plausible bindings still need a semantic audit. The drafter's modules share
+classes with the target, as DeepSeek's shared expert does with a dense layer's
+`mlp`. Qwen3.8-27B's historical
 `mtp_norms` recorded **1287 µs at one sequence** for two RMSNorms with a
 perfectly smooth monotone curve. Dump the profile tree and read the ancestor
 chains: boot at the depth in question -- with `--profile-mtp` for a drafter --
@@ -1168,12 +1177,13 @@ assuming every kernel, query length and backend is purely bandwidth-bound.
 1. **Drop its HF `config.json`** at `configs/model/<org>/<name>.json`.
    (Or let the profiler auto-download on first run if `HF_TOKEN` is
    set in the container.)
-2. **If the model's `model_type` is already supported** (llama / qwen3 /
-   qwen3_moe / qwen3_5 / qwen3_5_moe / deepseek_v32 / glm_moe_dsa /
-   minimax_m3_vl / mixtral / phimoe), you're done — edit `MODEL=` in
-   `profiler/profile.sh` and run. A hybrid stack needs no extra setting: the
-   layer count is resolved from the checkpoint's config and logged
-   (`NUM_HIDDEN_LAYERS` still overrides it).
+2. **If the model's `model_type` resolves to an existing catalog**, check live
+   coverage, cache layout and the applicable [execution scope](#execution-scope)
+   before acquisition. A catalog or alias alone does not establish support for
+   another backend, deployment or runtime version. Edit `MODEL` and `HARDWARE`
+   in `profiler/profile.sh` and choose settings within the admitted scope.
+   Category depth is resolved from the checkpoint and logged; leave
+   `NUM_HIDDEN_LAYERS` unset unless the acquisition contract permits an override.
 3. **If it's a new architecture family** (e.g., `gemma2`):
    * Create `models/<model_type>.yaml` mapping the new family's vLLM
      classes to canonical names.

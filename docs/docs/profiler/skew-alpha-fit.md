@@ -119,8 +119,10 @@ Mixed batches include the scheduled-token frontier.
 Geometric axes follow configured sequence/token/context bounds and resolved
 engine capacity, not model names or benchmark distributions. The four
 `--skew-*-factor` flags control density; `--skew-samples-per-cell` defaults to
-32 distribution draws per operating cell. `--skew-seed` defaults to zero and
-`--skew-rounds` to three. See [Running the profiler](./running).
+32 distribution draws per operating cell and requires at least one draw per
+family (currently eight). `--skew-seed` defaults to zero and `--skew-rounds`
+to three. Both the round count and `--measurement-iterations` must be positive.
+See [Running the profiler](./running).
 
 The operating grid is not the lookup grid. The profiler checks its base
 draws in the compiler's kernel/query/prefill/leverage partitions and selects
@@ -271,6 +273,8 @@ python -m profiler refit-skew meta-llama/Llama-3.1-8B \
 The command requires the local model config, `meta.yaml`, `attention.csv`
 and `skew.csv`. A bundle with no raw skew measurements is an error: its
 metadata stays unchanged and a disabled calibration is not enabled.
+When valid raw measurements are present, an explicit refit enables the rebuilt
+calibration even if it was previously disabled.
 Skew acquisition and calibration records are read from the root `meta.yaml`;
 `skew.meta.yaml` is not loaded by acquisition, refitting or runtime lookup.
 Refitting requires a present root acquisition record to be marked complete.

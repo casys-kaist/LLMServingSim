@@ -1,9 +1,10 @@
 #!/bin/bash
-# Generate sharegpt-qwen3-32b-300-sps10.jsonl via real vLLM (free-gen).
+# Generate sharegpt-qwen3-32b-300-sps10.jsonl with tokenizer-only defaults.
+# Optional --use-vllm generates new replies; see the flags below.
 #
 # Run inside the vLLM Docker (scripts/docker-vllm.sh) at /workspace.
-# TP=2 across two visible GPUs for faster throughput on the dense 32B
-# model. ``--model`` accepts an HF id (auto-downloaded into the cache)
+# The optional vLLM example uses TP=2 and needs two visible GPUs.
+# ``--model`` accepts an HF id (auto-downloaded into the cache)
 # or a local checkpoint path.
 
 set -euo pipefail
@@ -18,7 +19,10 @@ python3 -m workloads.generators sharegpt \
     --min-input-toks 256 --min-output-toks 512 \
     --output workloads/sharegpt-qwen3-32b-300-sps10.jsonl
 
-    # Use these to use vLLM for generation
+    # To enable vLLM generation, append these flags to the Python command:
+    # add a trailing backslash to its --output line, then place the flag
+    # lines immediately after it with their comment prefixes removed.
+    # Do not leave blank or comment lines inside the continued command.
     # --use-vllm \
     # --vllm-tp 2 \
     # --vllm-dtype bfloat16 \

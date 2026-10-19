@@ -50,202 +50,33 @@ contracts belong under topic headings after the usage entry points.
 Root Latest News entries link shipped changes
 to their PR and label future backend/model work as in progress.
 
-The [native MoE guide](docs/profiler/native-moe-components.md) distinguishes
-local DP1 from DP+EP execution, and full expert parallelism from tensor-sharded
-experts. Its separate live TP1 path retains native quantized weights and wrapper
-work, including shared experts and latent transforms, under explicit capability
-and exact native-reference checks. Summed CUDA work durations do not model branch
-overlap or establish a new published benchmark result. Isolated component-engine
-KV budgets preserve requested limits and remain separate from main cache metadata.
-Its deployment tables and coverage-selection cache persist across batch views
-of an immutable bundle; missing coverage and corrupt installed data have
-different failure behavior.
-New acquisition defaults to DP1, measures eagerly without graph capture and uses
-configurable independent input-row, active-expert and assignment axes. Historical
-tables retain their reading semantics. MoE token axes prefer target graph
-coordinates after DP/SP transformation, with geometric fallback for uncovered
-regimes and independent active-expert/assignment axes. Physical bounds include
-compiler-SP padding. The [sampling guide](docs/profiler/running.md#sampling-policy)
-documents observed versus derived captures, eager-only acquisition, category
-limits and the optional target-only `--cudagraph` and `--grid-factor` controls.
-The [resume guide](docs/profiler/running.md#resume-vs-force) separates TP-stable
-copies from local measurement coverage for ordinary and coupled catalogs alike.
+## Guide responsibilities
 
-The [vLLM setup guide](docs/getting-started/installation/vllm.mdx) targets vLLM
-0.31.0 / CUDA 13, with matching Docker/bare-metal package pins and retained
-source patches. It separates optional observers from correctness fixes and
-keeps historical validation versions explicit; an environment upgrade is not
-model/backend certification or a remeasurement of the committed bundles.
+Keep detailed contracts in their topic guides instead of duplicating them in
+this index. During a release pass, check copy-pasted commands against the actual
+wrappers: an editable template can overwrite an exported environment variable.
+Distinguish accepted arguments from applied behavior and explicit refusals.
 
-The [bench reference](docs/reference/bench-cli.md#kv-capacity-metadata) distinguishes
-raw client KV fields from source-qualified per-engine startup observations.
-Capacity-matching guides must preserve this distinction for DP runs and retain
-historical artifact semantics; unknown observations are not inferred budgets.
-The [serving observation contract](docs/profiler/output-bundle.md#serving_execution)
-separates completed worker graph captures from frontend requests and eager
-acquisition. Document explicit overrides, scope-matched metadata reuse and
-MRV1/MRV2 fallback rules without implying that padding certifies timing accuracy.
+| Topic | Authoritative guide |
+| --- | --- |
+| GPU setup, package pins and retained source patches | [vLLM installation](docs/getting-started/installation/vllm.mdx) |
+| CLI options, sampling grids and resume/force conditions | [Running the profiler](docs/profiler/running.md) |
+| CUDA-only timing, dummy preparation, root metadata and native support limits | [Profile bundle](docs/profiler/output-bundle.md) |
+| Local and DP+EP MoE acquisition, routing axes and deployment coverage | [Native MoE components](docs/profiler/native-moe-components.md) |
+| Raw skew measurements and explicit CPU-only calibration | [Skew calibration](docs/profiler/skew-alpha-fit.md) |
+| Collective measurement, units and configuration precedence | [Adding hardware](docs/profiler/adding-hardware.md) and [cluster configuration](docs/reference/cluster-config.md) |
+| Recorded backend, per-engine KV capacity and serving graph observations | [Bench CLI](docs/reference/bench-cli.md) |
+| Flat benchmark inputs, workload generation and agentic simulation boundaries | [ShareGPT generator](docs/workloads/sharegpt-generators.md) and [agentic sessions](docs/workloads/agentic-sessions.md) |
+| Kimi/native DeepSeek duration replay versus ordinary serving | [Trace generation](docs/simulator/trace-generation.md) |
+| Logical bytes, native MoE payloads and unsupported traffic/capacity claims | [Trace format](docs/reference/trace-format.md) |
+| Official reference scopes and all latency statistics | [Validation](docs/validation.md) |
+| Submodule publication and repeatable regression checks | [PR workflow](docs/contributor/pr-workflow.md) and [validation workflow](docs/contributor/validating-changes.md) |
 
-The [skew calibration guide](docs/profiler/skew-alpha-fit.md) documents the
-current table contract, required measurement inputs, CPU-only rebuild command,
-dynamic acquisition, resumable repetitions, independent skew-only TP selection,
-automatic reference-cell support completion, and migration of enabled bundles.
-It also describes common-metadata geometry validation for sparse indexers
-whose backend-specific metadata does not retain query boundaries.
-Skew timing documentation separates launch-correlated kernel ownership from
-latency: CPU scopes identify the launching module but contribute no time.
-The [output guide](docs/profiler/output-bundle.md#cuda-activity-and-acquisition-identity)
-defines lightweight PyTorch/Kineto capture, per-call CUDA interval unions, root acquisition metadata and
-interrupted-start recovery and catalog/runtime-bound skew resume; existing tables
-are not automatically converted.
-It distinguishes GDN and native KDA warmup metadata contracts without
-equating a metadata check with complete model or serving support.
-The [parallelism guide](docs/simulator/parallelism-mechanics.md) documents
-catalog-declared TP output reductions and their activation-sized payloads.
-The profiler guides distinguish runtime ownership contexts from GPU timing and
-document coupled component-layout publication. The
-[architecture guide](docs/profiler/adding-model-architecture.md#declared-callable-boundaries)
-also specifies declared function/method targets, normalization and restoration;
-the coverage and output guides distinguish unavailable alternatives from positive
-CUDA coverage, separate observed invocation counts from normalization divisors,
-and require compatible acquisition identities for resume.
-The [dummy-weight contract](docs/profiler/output-bundle.md#dummy-model-weight-preparation)
-separates capability-checked packed/derived initialization and postload layout
-observations from forward correctness or model support.
-The [native Kimi contract](docs/profiler/output-bundle.md#native-kimi-acquisition)
-describes catalog-selected native adapters using common category completion,
-callable publication and contextual bundle loading. Geometry comes from the
-independently supplied configuration and validated runtime, not fixed checkpoint
-dimensions. Its CLI and trace guides distinguish original-width prefix acquisition
-and standalone residual calls from full-model GPU execution, retaining native API/ABI
-checks and local duration-only limits. Changed execution semantics require fresh
-acquisition; historical artifacts cannot be relabeled into the new contracts.
-New CSVs retain coordinates and timings only; the variant-root `meta.yaml`
-describes the collector, CUDA-union aggregation, dummy inputs and observed runtime
-versions. Its `per_tp[tp]` records centralize measurement, category, contextual,
-callable, skew and native MoE metadata; existing root-only sections stay in place.
-New acquisitions write no standalone metadata sidecars. Historical reads retain
-narrow fallbacks except for `skew.meta.yaml`, which is no longer loaded.
-MoE metadata publishes settings and compact conditioning summaries, not individual
-control-point timings; raw repetitions may remain as acquisition checkpoints.
-Optional failure diagnostics are debugging artifacts, not metadata or required
-simulator inputs; public profile bundles do not include experimental diagnostics.
-Saved symbolic method/policy/format labels are descriptive; `metadata_names.py`
-holds shared names, not old-name aliases. Legacy file-layout fallbacks still
-require current method contracts. Real versions and numeric structural schemas
-are unchanged.
-Source hashes and exact versions are provenance, not execution vetoes. Actual
-API/backend, shape, dtype and layout guards remain mandatory.
-The trace and hybrid guides cover
-packed GDN sizing, declared row-output reductions and sequence-parallel refusals;
-small acquisition probes are not full-grid or deployment certification.
-The [native DSA contract](docs/profiler/output-bundle.md#native-dsa-acquisition)
-connects site-aware components, ordinary-category completion, separate native MoE
-publication and live source/runtime admission. The trace guide limits that representation to explicit local duration
-replay, keeping its 788-byte cache facts separate from legacy capacity accounting
-and deriving sampler output width from the actual inspected native route.
-The [trace byte reference](docs/reference/trace-format.md#minimax-m3-logical-bytes)
-defines MiniMax-M3 indexer query/cache dtypes, per-head selections and exact
-per-request history accounting, separately from physical memory traffic and
-the historical latency-lookup cap.
-The [native attention contract](docs/profiler/output-bundle.md#native-attention-lookup-contract)
-separates new per-TP MiniMax-M3 backend semantics from unchanged historical tables,
-derives the selected-block count from configuration and defines publication,
-protocol compatibility and skew-consumer checks without deployment claims.
-Coverage accounts for native kernels, copies and memsets, including work outside
-module scopes. The architecture guide also documents child exclusions for raw
-kernel wildcards and rejection of overlapping canonical activity claims.
-Synthetic requests reserve disjoint pages from the shared physical
-KV pool; null and unassigned pages are not initialized. The output guide describes
-layout validation and the remeasurement requirement after allocation changes.
-The running guide also describes preserving explicit layer-type prefixes when
-reducing a model for category-specific acquisition.
-Nested backbone-only overrides are consumed after materialization; the output
-guide distinguishes forwarded engine kwargs from the native text-config snapshot
-recorded per TP, without claiming complete wrapper or backend provenance.
-Its precision-naming section separates checkpoint quantization from explicit
-floating activation overrides, requires intentional labels for HF precision or
-nested text-config overrides, and documents compatibility-label limitations.
-The output guide distinguishes recorded engine arguments from resolved dtypes;
-alternate profiler variants are not automatically selected by the simulator.
-Naming changes do not migrate prior data or bypass acquisition identities.
-TP emulation resolves local native configuration defaults and user overrides
-before sharding, preserving head width through materialized-file reloads rather
-than in-memory updates. The running guide covers nested scalar-width pins and
-fresh acquisition of incorrectly shaped tables; source edits alone do not
-invalidate ordinary/skew resume keys.
-Its historical whole-block MoE section documents retained reads, not an available
-acquisition path. Native component grids and runtime interpolation are separate.
-The resume guide also distinguishes atomic progress checkpoints from complete
-bundles ready for simulation and documents exact fractional attention-key matching.
-CSV-generation seals detect interrupted metadata/data replacement, including
-forced refresh and TP-stable replication. Matching pending data can resume;
-mismatches require explicit remeasurement or fresh output. These checks do not
-change timings or introduce source/version locks.
-The [runtime guide](docs/profiler/running.md#expected-runtime) distinguishes CLI
-default inheritance in the single-model template, explicit TP/DP options and
-multiplicative attention-grid costs; a stage ETA is not a complete-bundle
-completion estimate. The multi-model script remains an explicit campaign.
-The acquisition guides document assigned-page dummy KV initialization outside
-timed query work, its content/layout limitations and asynchronous completion.
-The [packed-history contract](docs/profiler/output-bundle.md#packed-attention-history)
-specifies the supported NVIDIA MLA/indexer byte layouts, native scale rules,
-bounded source chunks and typed floating MLA indexer views with an omitted
-singleton head axis, validated against the cache spec and checked for
-non-overlapping strides, including padded and permuted views.
-This preparation support does not certify a new model catalog, trace or accuracy.
-They also distinguish request phase from query/history geometry: native decode
-requests need a completed prompt and separate output tokens for correct ordering.
-The [hardware guide](docs/profiler/adding-hardware.md) documents standalone
-hardware characterization, backend-aligned Ring calibration, bandwidth units,
-recorded residuals and the distinction from grouped MoE communication.
-It separates the bundled NVIDIA CUDA path from other accelerators that require
-an acquisition port; vLLM device support alone does not establish compatibility.
-The [collective-link schema](docs/reference/cluster-config.md#collective-specific-links)
-documents optional per-operation analytical Ring links and configuration
-precedence, without changing collective payloads or the common fallback.
-The [native MoE guide](docs/profiler/native-moe-components.md) describes default-DP1
-single-rank acquisition, uniform TP/DP/EP selectors, publication checks, component
-lookup and supported execution contracts. It distinguishes measured GPU work from analytical transport.
-Deferred finalization is checked through the effective vLLM capability;
-an unsupported API cannot silently become a supported component contract.
-The [profile table contract](docs/profiler/output-bundle.md#moecsv-legacy-whole-block-moe-profiles)
-also explains historical whole-block MoE normalization and why those rows cannot
-be relabelled as component measurements. New component stimuli preserve global
-top-k while varying local work; they do not establish trained-routing numerical
-equivalence or arbitrary within-rank histogram coverage.
-The same table guide explains non-overlapping sparse-indexer glue ownership
-and the dense-category refresh needed for older DeepSeek/GLM glue rows.
-The [validation page](docs/validation.md) reports refreshed vLLM 0.31.0
-RTXPRO6000 Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 profiles and
-references. The Qwen examples inherit the same measured hardware operation
-defaults; explicit graph and memory settings reproduce their serving scopes.
-Recorded custom-all-reduce settings remain distinct, and TP1 does not exercise
-that TP path. The three bundles include refreshed TP1 and TP2 acquisition
-data; the accuracy results cover only the listed deployments. Generated bundle
-values are preserved except portable dataset and local model path identifiers.
-The RTX 4090 reference remains historical.
-The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
-vLLM-default backend selection, the explicit custom-all-reduce opt-out, the two
-retained disabled communication-fusion passes, and recorded inherited communicator
-and resolved compilation settings. Historical
-NCCL-only references are not relabelled when the recording defaults change.
-It also documents phase-delimited gate observations and their exclusion from
-unperturbed latency references, without discarding concentrated workload gates.
-The [parallelism guide](docs/simulator/parallelism-mechanics.md) distinguishes
-local CUDA graph padding from DP synchronization; target graph overrides live
-in the [cluster reference](docs/reference/cluster-config.md#cuda-graph-contract).
-Its layer table distinguishes FULL attention metadata padding from PIECEWISE,
-invalid KV slots and the simulator's real-geometry attention approximation.
-It also separates non-speculative head rows from forward padding and explains
-why idle DP forwards run the backbone without logits or sampling, with
-independent TP/EP collective numbering in the backend.
-The [expert routing guide](docs/simulator/moe-expert-routing.md) distinguishes
-global EP-rank lookup from instance-local trace markers, and documents
-round-robin top-k assignment over gathered token positions.
-The [publication workflow](docs/contributor/pr-workflow.md#publishing-submodule-changes)
-explains how to publish Chakra, ASTRA-Sim and the frontend without leaving
-unavailable submodule commits in a public checkout.
+The RTXPRO6000 headline references cover Llama TP1, Qwen3-32B TP2 and
+Qwen3-30B TP1/DP2/EP2 with refreshed vLLM 0.31.0 data. Acquiring another TP
+or adding a catalog does not extend those accuracy claims. Kimi's local
+duration replay and native DeepSeek's duration-only representation remain
+distinct from ordinary scheduler/capacity admission; the guides state the limits.
 
 ## Installation
 

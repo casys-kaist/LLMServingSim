@@ -391,7 +391,10 @@ The new table records its calibration format and attention references. Rebuild a
 changing reference data or lookup semantics; serving rejects stale fits.
 Enabled fits without a recognized calibration format are rejected until rebuilt.
 The current descriptive name is `runtime-skew-calibration`.
-Disabled bundles remain unchanged.
+Disabled fits need no migration for simulation. Explicitly running `refit-skew`
+with valid raw measurements rebuilds and enables the calibration, even if it was
+previously disabled. With no raw measurements, the command fails without changing
+the metadata.
 See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 
 ## Resume vs force
@@ -399,6 +402,11 @@ See [Skew & alpha fit](./skew-alpha-fit) for migration and validation details.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FORCE` | unset | Set to `1` to replace the existing acquisitions for the categories and TP degrees selected by this run |
+
+Native MoE acquisition rejects `--force`, including an ordinary full `profile`
+of a MoE checkpoint, which automatically selects native components. Use a fresh
+output root for a complete remeasurement, or select an ordinary category with
+`slice --group ... --force`. A skew-only refresh can use `--only-skew --force`.
 
 Default is **resume** within the same acquisition method: existing CSVs are preloaded row by row, and
 only shots whose identity key isn't already present get fired. This
@@ -610,8 +618,8 @@ flags for any non-empty value, including `0`; unset them to disable.
 | `--skew-pc-factor` | `2.0` | `SKEW_PC_FACTOR` |
 | `--skew-kp-factor` | `2.0` | `SKEW_KP_FACTOR` |
 | `--skew-kvs-factor` | `2.0` | `SKEW_KVS_FACTOR` |
-| `--skew-samples-per-cell` | `32` | `SKEW_SAMPLES_PER_CELL` |
-| `--skew-rounds` | `3` | `SKEW_ROUNDS` |
+| `--skew-samples-per-cell` | `32`; minimum `8` | `SKEW_SAMPLES_PER_CELL` |
+| `--skew-rounds` | `3`; positive integer | `SKEW_ROUNDS` |
 | `--skew-seed` | `0` | `SKEW_SEED` |
 | `--force` | off (resume) | `FORCE=1` |
 | `--out-root` | `profiler/perf` | `OUT_ROOT` |
@@ -836,9 +844,10 @@ Read the ancestor chains before trusting an `mtp.csv`. Qwen3.8-27B's
 its guard was wrong, and the curve stayed smooth and monotone the whole
 way.
 
-The sweep itself is cheap. The `mtp` category has **one** axis (the
-pass's token count) rather than attention's four: 40 shots in under a
-minute. Refresh just that category with
+The `mtp` category has one request-count axis for a single drafter pass.
+Its shot count follows the sequence/token limits, geometric factor, target
+drafter graph anchors and cache feasibility. Measure a bounded sweep to estimate
+runtime for the intended model and device. Refresh just that category with
 `slice --group mtp --profile-mtp`.
 
 Two per-model requirements, both of which the profiler handles or

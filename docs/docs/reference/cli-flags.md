@@ -40,16 +40,16 @@ matching runtime knobs per `instances[i]`; see
 | `--reserve-full-isl` / `--no-reserve-full-isl` **(per-instance)** | flag | on | Admit a request only if its whole sequence fits, not merely its first chunk. Mirrors vLLM's `scheduler_reserve_full_isl`; without it chunked prefill over-admits and thrashes the KV cache |
 | `--async-scheduling` / `--no-async-scheduling` **(per-instance)** | flag | on | Model next-batch admission lookahead while the current batch runs. V1 pipeline parallelism already supplies the modeled in-flight window; V2 can add async lookahead. Idle instances admit current arrivals. The TTFT effect depends on workload and batching, not a fixed per-request delay |
 | `--block-size` **(per-instance)** | int | the profiled value, else `16` | KV cache block size in tokens. vLLM treats this as a **floor and an alignment unit**, not the answer: it takes `max(backend minimum, your value)` as the alignment, derives the smallest multiple of that whose attention page covers one mamba page, and raises the block size to it — never lowering it. On Qwen3.8-27B, asking for 16 gives **784** and asking for 64 gives **832**. The profiler records what the engine settled on in `meta.yaml::engine_resolved.per_tp[tp]` — **per TP degree**, since both the mamba page and the attention page scale with the rank's shard — and the simulator reads back the entry for the instance's `tp_size`, so lookups match the block size the latencies were measured at. An explicit value that disagrees is allowed but warned about. Bundles profiled before the field existed do not carry it and fall back to `16`; ones written before it was split by TP carry a flat value, which is read as a fallback |
-| `--skip-prefill` | flag | off | Skip prefill, run decode only |
+| `--skip-prefill` | flag | off | Legacy initialization flag: marks requests past first-token bookkeeping, but does not skip prompt computation or prepare cached KV. Not a decode-only workload generator |
 
 ## Routing
 
 | Flag | Choices | Default | Description |
 | --- | --- | --- | --- |
-| `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing |
+| `--request-routing-policy` | `LOAD` / `RR` / `RAND` / `CUSTOM` | `LOAD` | Cross-instance request routing. `CUSTOM` requires implementing the hook in `serving/core/router.py`; its shipped stub raises `NotImplementedError` |
 | `--expert-routing-policy` | `BALANCED` / `RR` / `RAND` / `CUSTOM` | `BALANCED` | MoE expert token routing. `CUSTOM` reads the **measured** distinct-expert count from `--gate-stats` instead of deriving it from a uniform gate |
 | `--gate-stats` | path | `None` | A `gate_stats.json` (or its benchmark directory) recorded by [`bench run --record-gate-stats`](/docs/reference/bench-cli), used only with `--expert-routing-policy CUSTOM`. It supplies observed distinct-expert counts, not a latency coefficient or arbitrary load histogram. Relative paths resolve against the repo root. Missing, unreadable or mismatched files warn and fall back to `BALANCED`; see [MoE expert routing](/docs/simulator/moe-expert-routing) |
-| `--enable-block-copy` **(per-instance)** | bool | `True` | Replay one block's trace across layers; use `--no-enable-block-copy` for per-layer EP variance |
+| `--enable-block-copy` / `--no-enable-block-copy` **(per-instance)** | bool | `True` | Reuse rows across matching block/site sequences. Exact for deterministic BALANCED/RR routing at a fixed shape; RAND copying suppresses per-layer variation. Contextual profiles disable reuse |
 
 ## Precision
 
@@ -112,8 +112,8 @@ MiniMax-M3's seven, +6.2% on Qwen3.8-27B.
 | `--enable-prefix-sharing` | off | Second-tier prefix pool shared across instances within a node |
 | `--prefix-storage` | `None` | Where the second-tier pool lives. `None` / `CPU` / `CXL` |
 | `--enable-local-offloading` **(per-instance)** | off | Weight offloading to NPU (counts weight reads in profiling) |
-| `--enable-attn-offloading` **(per-instance)** | off | Attention computation offloading to PIM |
-| `--enable-sub-batch-interleaving` **(per-instance)** | off | Overlap GPU compute with PIM attention. Requires `--enable-attn-offloading` |
+| `--enable-attn-offloading` **(per-instance)** | off | Attention computation offloading to PIM. Requires the node's `cpu_mem.pim_config`; target CUDA graph replay is unsupported |
+| `--enable-sub-batch-interleaving` **(per-instance)** | off | Overlap GPU compute with PIM attention. Requires attention offloading and `pp_size: 1`; invalid combinations are rejected |
 
 ## Dataset and output
 
@@ -127,8 +127,8 @@ MiniMax-M3's seven, +6.2% on Qwen3.8-27B.
 
 Each invocation writes ASTRA-Sim intermediates under a run-specific input
 root so parallel simulations do not overwrite each other's generated
-configs, traces, or Chakra workloads. Generated text traces are removed
-after Chakra conversion by default, and the run-specific input root is
+configs, traces, or Chakra workloads. Text traces are not generated by
+default, and the run-specific input root is
 removed after a successful simulation by default.
 
 | Flag | Type | Default | Description |

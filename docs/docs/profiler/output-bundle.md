@@ -41,8 +41,9 @@ selected by the simulator; check the naming limitations in the running guide.
 
 `tp<N>/` exists for each TP in `TP_DEGREES`. Layers tagged
 `tp_stable: true` in the architecture YAML (layernorms, sampler) are
-profiled once at TP=1 and **replicated** into other TP folders by the
-writer.
+profiled once at TP=1. The writer **replicates** stable `dense` and
+`per_sequence` rows into other TP folders. Stable MTP rows stay in `tp1/mtp.csv`;
+the simulator selects TP1 for their lookup.
 
 `hardware.yaml` sits one level up because it answers a different question. The
 CSVs are per **(model, hardware)**; the interconnect and the card's memory are
@@ -53,8 +54,10 @@ per **hardware**, so one file serves every model bundle underneath. Written by
 
 ## Times are microseconds
 
-All `time_us` columns are in **microseconds**. The simulator
-multiplies by 1000 and rounds to nanoseconds at load time. If you're
+All `time_us` columns are in **microseconds**. Ordinary category tables are
+converted to rounded nanoseconds at load time. Native MoE component tables retain
+microseconds for interpolation, then multiply by 1000 and round the lookup result
+to nanoseconds. If you're
 hand-authoring CSVs (see [Adding non-GPU hardware](./adding-hardware#adding-non-gpu-hardware)),
 remember to use μs.
 
@@ -1030,11 +1033,11 @@ to within noise on decode-sized batches while differing by 16–26% at 2048
 tokens.
 
 A refresh only rewrites what it measured. `engine_effective` and
-`engine_resolved` describe the **deepest main engine**, so a `--profile-mtp`
-refresh (which boots a different model — one extra full-attention layer and a
-conv state widened by `num_speculative_tokens`) and a per-category refresh
-(which boots a shrunk stack) both leave them alone. `attention_grid` may only
-be rewritten by a run that swept attention.
+`engine_resolved` describe the **deepest main engine**. An ordinary category
+slice updates them for its selected TP when its required depth equals the
+all-axis depth. A shallower slice or an MTP slice preserves them; the drafter
+engine has different cache requirements. `attention_grid` may only be rewritten
+by a run that swept attention.
 
 `attention_grid` uses a shorthand rather than
 listing every point:

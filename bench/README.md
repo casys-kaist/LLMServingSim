@@ -57,6 +57,12 @@ consumes). Each request's `input_tok_ids` and `output_toks` are pinned via
 vLLM run uses the same prompt token IDs and requested output lengths as the
 simulator. Generated token content and execution timing are not bit-identical.
 
+Benchmark replay supports **flat request rows with nonempty `input_tok_ids`**
+only. Rows containing `sub_requests` are skipped; session dependencies and
+tool delays are not replayed. Use a flat-only dataset when comparing against
+the simulator, since a mixed file would otherwise represent different workloads.
+The benchmark does not tokenize count-only requests.
+
 Communication backend selection follows vLLM's defaults and the caller's
 environment. The runner does not force NCCL or overwrite all-reduce environment
 variables. It retains `fuse_allreduce_rms=False` and `fuse_gemm_comms=False` to
@@ -133,8 +139,11 @@ Run options (also available through `python -m bench run --help`):
 | `--log-level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 There is no `--block-size`: vLLM picks the KV block size itself and records
-what it chose in `meta.json` under `kv_cache.block_size`. Pass that value to
-the simulator as `--block-size` to line the two up.
+what it chose in `meta.json`. For a new DP run, use the matched engine's block
+size under complete `kv_cache.capacity.per_engine` observations. Historical
+single-engine recordings retain `kv_cache.block_size`; the raw DP client value
+can describe only the last engine. Pass the matched value to the simulator as
+`--block-size` or a per-instance override.
 
 `bench.sh` is an editable run template, not a passthrough for every CLI flag.
 `DISABLE_CUSTOM_ALL_REDUCE=1` enables the same explicit opt-in; its default is `0`.
@@ -311,9 +320,14 @@ the target graph policy and memory settings; the wrapper does not reconstruct
 every engine option from metadata. Llama and Qwen3-32B use `mem_util: 0.92`;
 Qwen3-30B matches 38,256 recorded KV blocks per rank with
 `mem_util: 0.9043190002441406`, while its benchmark retains the recorded 0.92.
-To regenerate the vLLM side from scratch,
-use `bench/bench.sh` (or `python -m bench run`) from inside the vLLM
-container.
+To record a new vLLM reference, use `bench/bench.sh` or `python -m bench run`
+inside the vLLM environment. These commands do not reconstruct a committed
+recording's settings. The CLI exposes only a subset of vLLM options and has
+no `--gpu-memory-utilization`; the RTXPRO6000 references record 0.92, while
+a new run inherits the installed vLLM default. Match the effective engine
+settings, communication policy and observed KV capacity before treating a new
+recording as equivalent. `--kv-cache-memory-bytes` can set an explicit budget,
+but its resolved capacity must still be verified.
 
 Apart from portable dataset and local model path identifiers, adopted outputs
 retain their emitted values and rows, including measurements, engine settings,

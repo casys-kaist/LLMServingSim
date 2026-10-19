@@ -49,6 +49,9 @@ Kimi-K3's hybrid/residual sizing derives dimensions and roles from that config
 and observed layouts, without copying one layer's residual contexts across
 the stack. See [Kimi replay](../docs/docs/simulator/trace-generation.md#native-kimi-duration-replay)
 for its local eager scope and unsupported memory/distribution modes.
+The catalog and source config are included, but no Kimi performance bundle
+is committed. Ordinary `python -m serving` has no duration-replay flag and
+cannot use this path for scheduler capacity admission.
 
 ## Layout
 
@@ -297,9 +300,12 @@ kv_dim = kv_head * head_dim      # NOT n_embd // group
 
 ### Working directory
 
-`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the
-simulator resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`,
-`profiler/` are prefixed with `../` in code.
+Run `python -m serving` from the repository root. It changes cwd to
+`astra-sim/` internally, but relative cluster, dataset, output and gate-stat
+paths still refer to the invocation root through their respective handlers.
+Use repository-relative dataset paths; the dataset loader does not handle an
+absolute path. An explicit relative `--inputs-root` resolves from `astra-sim/`,
+so use an absolute path to select an unambiguous intermediate directory.
 
 ## Modules
 

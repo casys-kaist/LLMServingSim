@@ -57,8 +57,10 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", required=True,
                    help="HF model id passed verbatim to vllm.AsyncLLM.")
     p.add_argument("--dataset", required=True,
-                   help="Path to a LLMServingSim-format JSONL workload "
-                        "(produced by `python -m workloads.generators`).")
+                   help="Path to flat LLMServingSim-format JSONL requests with "
+                        "nonempty input_tok_ids. Session rows containing "
+                        "sub_requests are skipped; use a flat-only workload "
+                        "for a matched simulator comparison.")
     p.add_argument("--output-dir", required=True, dest="output_dir",
                    help="Output directory for this run "
                         "(meta.json/requests.jsonl/timeseries.csv).")
@@ -119,12 +121,11 @@ def register_args(p: argparse.ArgumentParser) -> None:
                         "(min_tokens == max_tokens, ignore_eos), so nothing "
                         "here tokenises input or reads generated text. What it "
                         "buys is the ability to bench a checkpoint whose "
-                        "tokenizer is not on disk: a gated model served from "
-                        "the repo's own configs/model/<org>/<name>.json (pass "
-                        "that directory as --model, the way the profiler boots "
-                        "one), or a synthetic config with no tokenizer at all. "
-                        "Not a speed knob: forcing detokenize off separately "
-                        "measured 0.18%% of run span, i.e. noise.")
+                        "tokenizer is not on disk. For a config-only diagnostic, "
+                        "create a separate directory containing config.json, "
+                        "pass it as --model and use --load-format dummy. Bench "
+                        "does not materialize the repository's named JSON files "
+                        "into that layout. Real-weight runs still need weights.")
     p.add_argument("--record-gate-stats", action="store_true",
                    dest="record_gate_stats", default=False,
                    help="Record the real gate's distinct-expert count per "
@@ -144,19 +145,11 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--enforce-eager", action="store_true",
                    dest="enforce_eager", default=False,
                    help="Run vLLM eager, with torch.compile and cudagraphs "
-                        "off. Not the production configuration -- leave it "
-                        "off for the headline comparison. What it buys is a "
-                        "ground truth in the same execution mode the profiler "
-                        "is forced into: layerwise_profile builds its tree "
-                        "from module events and compilation fuses the module "
-                        "boundaries away, so every profiled latency describes "
-                        "an eager engine. Recording both separates a cost-"
-                        "model error from the cudagraph speedup the simulator "
-                        "cannot see. On RTXPRO6000/Llama-3.1-8B the same "
-                        "simulator reads TTFT mean +4.9%% against the compiled "
-                        "truth and -1.0%% against the eager one; on "
-                        "DeepSeek-V3.2 cudagraphs are worth 26%% of a decode "
-                        "step.")
+                        "off. Leave it off for a compiled serving reference. "
+                        "An eager reference helps isolate execution-mode effects; "
+                        "ordinary layerwise acquisition preserves module "
+                        "boundaries. Record and match the target mode: simulated "
+                        "graph padding does not reproduce graph kernel fusion.")
     p.add_argument("--load-format", default="auto", dest="load_format",
                    help="vLLM load_format. 'dummy' skips reading weights and "
                         "initializes them randomly. Useful for controlled "

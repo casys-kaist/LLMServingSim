@@ -61,17 +61,21 @@ the same workload.
 ## Prerequisites
 
 - Simulator container set up
-- A profiled bundle for the model. **The repo does not ship one**, so
-  profile it first (see below).
+- A compatible profiled bundle. The repository includes historical RTXPRO6000
+  Qwen3.8-27B BF16 tables at TP 1 and 2, recorded with vLLM 0.28. Their
+  metadata does not establish acquisition compatibility with a newer runtime.
 
 ## Profiling it
 
 ```bash
 # inside the vLLM container
-MODEL="Qwen/Qwen3.8-27B" HARDWARE=RTXPRO6000 ./profiler/profile.sh
+python -m profiler profile Qwen/Qwen3.8-27B --hardware RTXPRO6000 \
+  --tp 1 --out-root profiler/perf-native
 ```
 
-Three things happen automatically and are worth knowing about:
+Use a separate output root for a new runtime's acquisition. The committed
+historical bundle remains available to the serving example below. Three
+things to check in a new acquisition are:
 
 - **The layer count resolves to 4, not 1.** A uniform stack is shrunk
   to one layer; a hybrid needs the smallest *prefix* that instantiates
@@ -95,9 +99,9 @@ or reduce `--measurement-iterations` with an explicit repeatability check.
 Neither runtime nor uncertainty is determined by that flag alone.
 :::
 
-Check the catalog binds every kernel before committing to a long run —
-this is the only check that catches an entry naming a real class and
-measuring **nothing**:
+Inspect coverage before a long run to check active bindings, alternative
+layouts and uncovered CUDA work. Runtime admission and publication perform
+additional required-component checks; coverage alone is not completion:
 
 ```bash
 python -m profiler coverage Qwen/Qwen3.8-27B --hardware RTXPRO6000
@@ -107,7 +111,7 @@ python -m profiler coverage Qwen/Qwen3.8-27B --hardware RTXPRO6000
 
 ```bash
 python -m serving \
-  --cluster-config 'configs/cluster/single_node_single_instance.json' \
+  --cluster-config 'configs/cluster/single_node_hybrid_instance.json' \
   --dataset 'workloads/example_trace.jsonl' \
   --output 'outputs/hybrid_run.csv' \
   --num-reqs 10

@@ -23,9 +23,9 @@ python -m workloads.generators sharegpt \
   --output workloads/sharegpt-llama-3.1-8b-300-sps10.jsonl
 ```
 
-That produces a flat-format workload with 300 requests arriving at
-10 sessions/second on average, tokenized with the Llama-3.1-8B
-tokenizer.
+That produces up to 300 flat requests at an average arrival rate of
+10 requests/second, tokenized with Llama-3.1-8B. The output can be shorter
+if the source runs out of turns that pass the length filters.
 
 `workloads/examples/` contains ready-to-edit templates for the
 bundled models, copy and tweak:
@@ -62,8 +62,8 @@ the container, see
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--num-reqs` | (required) | How many requests / sessions to emit |
-| `--sps` | (required) | Sessions per simulated second (Poisson arrival) |
+| `--num-reqs` | (required) | Maximum number of flat requests to emit |
+| `--sps` | (required) | Requests per simulated second (Poisson arrival) |
 | `--seed` | `42` | RNG seed for sampling and arrival times |
 | `--first-arrival-sec` | `0` | Initial arrival-clock offset; Poisson mode also adds an inter-arrival gap before the first request |
 
@@ -78,7 +78,12 @@ Drop requests outside these ranges from the source dataset:
 | `--min-output-toks` | `0` | Minimum output tokens |
 | `--max-output-toks` | `16384` | Maximum output tokens |
 | `--max-kv-toks` | `16384` | Cap `input + output` tokens (KV-cache footprint) |
-| `--max-sessions` | `5000` | Cap the number of source sessions sampled before filtering |
+| `--max-sessions` | `5000` | Cap the number of source rows loaded before filtering; `0` removes the cap |
+
+Filters apply to the source prompt and assistant reply before optional vLLM
+generation. Generated replies are limited by `--max-output-toks`, but are not
+rechecked against `--min-output-toks` or `--max-kv-toks`. Fixed-length mode
+bypasses these source filters.
 
 A reasonable starting point: `--min-input-toks 256 --min-output-toks
 512` filters out very short conversations that aren't representative
@@ -141,7 +146,7 @@ are unchanged. The output JSONL records tokens and lengths, not generation
 settings.
 :::
 
-The five `--vllm-*` engine knobs above are throughput settings for the
+The `--vllm-*` engine knobs above are throughput settings for the
 generation job itself. They have **no** bearing on the simulated run:
 the generator only records token counts and ids, so `--vllm-max-num-seqs
 1024` here does not mean the workload should be simulated at
@@ -161,10 +166,10 @@ Without `--use-vllm`:
   tokenizer for `input_tok_ids` and `output_tok_ids`.
 
 Use `--use-vllm` when you specifically want output token IDs to
-match what the model would actually produce. For most simulator
-runs this isn't needed (the simulator doesn't generate text, it
-just counts tokens), but it's useful for downstream evaluation or if
-you want fully self-consistent traces.
+come from the target model. Later turns' prompts still contain the original
+ShareGPT conversation history, including its original assistant replies;
+newly generated replies are not fed back into that history. These are
+independent requests rather than a closed-loop conversation replay.
 
 ## Output format
 

@@ -141,6 +141,12 @@ layer has from the checkpoint:
 | **+ sparse indexer** (the same two) | plus `index_head_dim + index_head_dim/128 * 4` — a **second** cache beside the latent, fp8 keys with one fp32 scale per 128 elements | no |
 | **Linear attention** (Qwen3.5/3.8 gated DeltaNet) | 0 — its state is fixed *per sequence*, not per token | n/a |
 
+These are the ordinary simulator's capacity formulas. New native DeepSeek-V3.2
+tables record a packed 656+132-byte cache per token per layer, which this
+historical capacity model does not admit. Their explicit duration replay,
+and Kimi's contextual replay, do not establish scheduler capacity or memory
+traffic. See [native trace boundaries](../trace-generation#native-dsa-duration-replay).
+
 The MLA row is the reason this matters rather than being a detail: sizing
 DeepSeek-V3.2 with the GQA formula reads 1,748,992 bytes per token where it
 actually caches 78,324, a 22x overstatement of the thing that decides how many

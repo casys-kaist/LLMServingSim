@@ -39,7 +39,7 @@ LLMServingSim/
 │   └── validate-baselines.txt  # the recorded values; refresh with validate.sh --update
 ├── configs/
 │   ├── cluster/                # Cluster topology configs (hardware, memory, instances)
-│   ├── model/                  # Model architecture configs (subset of HF config.json)
+│   ├── model/                  # Native-class-compatible HF model configs
 │   └── pim/                    # PIM device configs (DRAMSim3 INI format)
 ├── workloads/                   # Request trace datasets (.jsonl)
 │   └── generators/             # ShareGPT/etc → JSONL workload generators
@@ -197,10 +197,11 @@ the yaml. `profiler/core/stack.py` owns those rules and **both** the profiler
 and the simulator import it — the profiler to decide how many layers to
 instantiate, the simulator to decide which block each layer emits. Two
 implementations would drift, and the rules disagree on the off-by-one in
-opposite directions between vendors. Profiling a hybrid needs
-`--num-hidden-layers` raised to the smallest count that instantiates every
-block type — 4 for Qwen3.8-27B — since the default of 1 only ever reaches one;
-the profiler resolves that itself.
+opposite directions between vendors. The profiler automatically resolves the
+smallest prefix that instantiates every block type required by each category —
+4 for a Qwen3.8-27B category needing every attention type. Leave
+`--num-hidden-layers` unset to use that resolution; an explicit lower count can
+omit required block types.
 
 **How finely to divide is mostly not a choice.** An entry exists iff the
 profile tree holds a node carrying CUDA time that no other entry claims, and
@@ -373,23 +374,24 @@ sweep, the heterogeneous-decode skew sweep in `profiler/core/skew.py`, and
 the offline reference-aligned skew calibration in `profiler/core/skew_calibration.py` are
 developed in this repo.
 
-Each run produces a per-category CSV bundle:
+Acquisition writes the selected categories into a bundle. Historical whole-block
+MoE tables may remain alongside new native component measurements:
 
-```
+```text
 perf/<hw>/
-  hardware.yaml                          the card's spec + the measured interconnect;
-                                         one per hardware folder, shared by every model
-  <model>/<variant>/
-    meta.yaml                            profiler/vLLM version, effective engine kwargs, GPU,
-                                         timestamps, compact sweep specs, skew_fit summary
-    tp<N>/
-      dense.csv                          layer, tokens, time_us
-      per_sequence.csv                   layer, sequences, time_us
-      attention.csv                      layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
-      linear_attention.csv               layer, prefill_tokens, n_decode, time_us  (mamba/GDN only)
-      moe.csv                            ep, tokens, activated_experts, time_us  (MoE only)
-      skew.csv                           raw heterogeneous-decode shots        (skew enabled)
-      skew_fit.csv                       fitted per-bucket alpha table         (skew enabled)
+├── hardware.yaml                 # separately acquired device/interconnect facts
+└── <model>/<variant>/
+    ├── meta.yaml                 # shared and per-TP acquisition records
+    └── tp<N>/
+        ├── dense.csv             # layer, tokens, time_us
+        ├── per_sequence.csv      # layer, sequences, time_us
+        ├── attention.csv         # layer, prefill_chunk, prefill_key, n_decode, kv_decode, decode_q_len, time_us
+        ├── linear_attention.csv  # layer, prefill_tokens, n_decode, time_us (hybrid only)
+        ├── mtp.csv               # layer, sequences, time_us (opt-in drafter pass)
+        ├── moe.csv               # historical whole-block fallback; no new acquisition
+        ├── skew.csv              # raw heterogeneous-decode measurements
+        ├── skew_fit.csv          # derived per-bucket alpha table
+        └── moe_components/       # per-deployment components.csv and optional raw checkpoints
 ```
 
 **A refresh rewrites only what it measured.** `meta.yaml` describes more than
@@ -400,7 +402,9 @@ everything else over from the file:
   the one whose shapes the simulator will run, which is why `run_full` probes
   limits there. A `--profile-mtp` refresh boots a different model (one extra
   full-attention layer, a conv state widened by `num_speculative_tokens`), and
-  a per-category refresh boots a shrunk stack; neither is authoritative.
+  a category slice may boot a shallower stack. MTP and shallower slices are
+  not authoritative; an ordinary slice whose required depth equals the
+  all-axis depth updates the selected TP's main-engine metadata.
   Letting the MTP pass write them put `block_size: 800` and half the KV cache
   into Qwen3.8-27B's bundle where the main engine resolves **784** and
   19,839,182 — and `_resolve_block_size` reads that block size whenever
@@ -425,8 +429,9 @@ profiled before those columns existed holds one kernel and it is `attention`.
 overrides (e.g. `bf16`, `fp8-actfp16`, `fp8-kvfp8`) unless `--variant` is set.
 Ambiguous precision or nested HF overrides require an intentional label; names
 are not complete resolved-precision contracts. Times are in **microseconds**. Layers marked
-`tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1 and
-replicated into other `tp<N>/` folders by the writer.
+`tp_stable: true` in the yaml (layernorms, sampler) are profiled once at TP=1.
+The writer copies stable `dense` and `per_sequence` rows into other `tp<N>/`
+folders; stable MTP rows stay at TP1 and are looked up there by the simulator.
 
 **`tp_stable` is about the tensor a layer walks, not the weight it owns.** The
 test is whether the *work* is TP-invariant, and a norm's weight can be
@@ -507,15 +512,16 @@ path already calls `execute_model` then `sample_tokens(None)` inside one
 native CUDA-activity context. **`profiler coverage --profile-mtp` is how the
 `mtp:` sections were written** — it names the unbound nodes with their ancestor
 paths, so the profile tree is the source, as for every other block. For the
-opposite failure — an entry that binds *too much* — dump the profile tree
-itself: boot at the depth in question and print every node's class with its
-ancestor path, filtered to the class you suspect. Coverage cannot see that
-failure, because over-matching leaves nothing unbound.
+opposite failure — an entry that binds *too much* — coverage checks overlapping
+and structurally unrelated claims. Inspect the profile tree and ancestor paths
+as well: unexecuted alternatives and structurally plausible but semantically
+wrong bindings still require an audit.
 
 The `mtp` category has **one** axis, the pass's token count: the loop's passes
 are decode-shaped at `max_query_len = 1` (`llm_base_proposer.py`), where tokens
-and sequences are the same number. 40 shots in 38 seconds against attention's
-8,643 in four hours.
+and sequences are the same number. Shot counts depend on sequence/token limits,
+grid factors, target drafter graph anchors and cache feasibility. Use a bounded
+sweep to estimate acquisition time for the chosen model and device.
 
 Four things a catalog here must get right:
 
@@ -1498,14 +1504,14 @@ remain dimensionless and fixed. Other measured shape axes still affect which
 observations are pooled. Validate changed coverage through
 the committed bench examples rather than assuming that more rows are better.
 
-**A refresh has to restate the other axes.** Every committed RTXPRO6000
-Llama/Qwen bundle carries `chunk_factor: 1.5, kv_factor: 1.5` and
-`max_num_seqs: 256`, and every other bundle is at 2.0, so
-`slice --group attention` at the defaults silently re-grids axes besides the
-one being refreshed -- and a lower `--max-num-seqs` silently *narrows* the
-grid through the feasibility filters. Pass the bundle's own
-`--attention-chunk-factor`, `--attention-kv-factor`, `--attention-max-kv` and
-`--max-num-seqs`, all of which `meta.yaml` records.
+**A refresh has to restate the other axes.** Read each bundle's recorded
+acquisition settings instead of assuming that historical profiles used today's
+defaults. A category slice can change the grid when its factors or resolved
+limits differ; a lower `--max-num-seqs` narrows support through feasibility
+filters. Match the recorded chunk, KV and request factors, decode query lengths,
+maximum KV, request/token limits and target graph policy when retaining the
+same sampling envelope. A changed envelope is a new acquisition choice, not a
+row-for-row refresh.
 
 **A long sweep prints a heartbeat.** The rich progress bar needs a TTY.
 Ordinary categories also write periodic atomic CSV checkpoints between
@@ -1599,10 +1605,11 @@ a sparse layer got the dense kernel's latency (2.1x per layer on M3).
 
 Names beyond this table are per-family and live in the catalogs
 (`gdn_*`, `mla_*`, `indexer_*`, `sparse_*`, `mtp_*`, `*_glue`).
-**`calculate_sizes` in `memory_model.py` raises on a name it does not know**,
-so a new family needs its tensor-size formulas added there before it can be
-simulated at all. Check every selected canonical name with `calculate_sizes`;
-catalog presence alone does not establish a valid shape or deployment.
+**Ordinary catalogs require `calculate_sizes` coverage in `memory_model.py`.**
+Admitted native/contextual representations instead use their selected providers
+in `component_sizes.py`; their logical trace bytes do not establish resident
+capacity. Check every selected canonical name through its actual sizing path.
+Catalog presence alone does not establish a valid shape or deployment.
 
 ### Trace generator structure
 `trace_generator.py` walks the architecture yaml's `blocks:` section to emit
@@ -1627,9 +1634,11 @@ each iteration. Composable helpers:
 - `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
   `_emit_final_layers()` — thin wrappers over `_emit_sequence`.
 - `_block_copy_key()` — the reuse key for a built block: `None` when it must be
-  rebuilt (block mode, or a non-deterministic MoE router), otherwise the
-  layers' own `LayerSpec`s. Build once per distinct block *shape*, replay for
-  every layer that shares it.
+  rebuilt (block mode, contextual profiles, or MoE with copying disabled),
+  otherwise the layers' `LayerSpec`s and any site-specific resolved sequences.
+  Build once per matching key and replay its rows. Deterministic BALANCED/RR
+  routing is exact at a fixed batch shape; RAND copying reuses a draw and
+  suppresses per-layer variation rather than automatically disabling reuse.
 - `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
   sub-batch interleaving.
 - `_emit_final_layers()` — final_layernorm → lm_head → sampler (sampler output goes to REMOTE)
@@ -1796,10 +1805,11 @@ arrival time to avoid busy-looping.
   advances the clock only for arrivals still pending in the *router*, so a
   request already sitting in `waiting` behind a stale cutoff would be invisible
   forever and the run would answer "pass" at a clock that never moves.
-  Worth ~0.6 step of TTFT. Invisible on a saturated run (RTXPRO6000/Qwen3-32B
-  is +1.3% either way, since its TTFT is 37 s) and a fifth of the median on a
-  light one -- it moved the DP+EP example's TTFT mean from -5.6% to -1.2% and
-  P90 from -3.5% to -1.1%, leaving TPOT and latency untouched
+  At `pp_size > 1`, this additional lag applies only when the scheduler's
+  `_uses_v2_model_runner` classification is true; the modeled V1 pipeline
+  already supplies its in-flight window. The classification currently treats
+  non-MoE, non-hybrid stacks as V2 and is separate from `cudagraph.runner`.
+  Admission and TTFT effects depend on workload and batch composition.
 - Token budget controlled by `--max-num-batched-tokens` (default 2048) and `--max-num-seqs` (default 128)
 - `--long-prefill-token-threshold` caps per-request tokens per step for chunked prefill
 - **There is no prefill phase or decode phase.** A request just catches up to
@@ -2045,14 +2055,16 @@ a separate bundle and the simulator reads the one the checkpoint names.
 
 ### CLI argument conventions
 CLI flags follow vLLM naming where applicable:
-- `--skip-prefill` — skip the prefill phase (decode only)
+- `--skip-prefill` — legacy first-token bookkeeping flag; it does not skip
+  prompt computation or prepare cached KV and is not a decode-only generator
 - `--request-routing-policy` (`LOAD`, `RR`, `RAND`, `CUSTOM`) — request routing across instances
 - `--expert-routing-policy` (`BALANCED`, `RR`, `RAND`, `CUSTOM`) — expert token routing for MoE.
   `CUSTOM` reads the measured distinct-expert count from `--gate-stats` rather than
   deriving it from a uniform gate; see the gate-stats section
   (block-copy optimization is controlled separately via `--enable-block-copy`, default on)
-- Boolean flags use `argparse.BooleanOptionalAction` (e.g., `--enable-prefix-caching` /
-  `--no-enable-prefix-caching`)
+- Reversible boolean flags use `argparse.BooleanOptionalAction` (e.g.,
+  `--enable-prefix-caching` / `--no-enable-prefix-caching`). Opt-in `store_true`
+  switches have no automatic negative form; document the actual parser.
 
 Before release, compare each public entry point's registered arguments with
 its directory README index and complete website reference, including negative
@@ -2125,10 +2137,11 @@ the DSA indexer (0.852B) that is 671.026B — V3's published 671B, with the
 difference being exactly what V3.2 adds.
 
 ### Model configs
-Model architecture configs live in `configs/model/{org}/{model}.json`. These are subsets
-of HuggingFace `config.json` containing fields the simulator needs (`hidden_size`,
-`num_attention_heads`, `num_hidden_layers`, `num_key_value_heads`, `intermediate_size`,
-`vocab_size`, `head_dim`, `num_local_experts`, `num_experts_per_tok`).
+Model configs live in `configs/model/{org}/{model}.json` and must retain the
+fields and structure required by the checkpoint's native configuration class,
+not just the fields read by simulator sizing. MiniMax-M3 and Kimi-K3 preserve
+their nested text wrappers; the shipped Qwen text tower uses its native flat
+text configuration. Do not flatten or prune a different family by analogy.
 
 The simulator loads these via `get_config(model_name)` in `utils.py`.
 `get_source_config(model_name)` retains the original wrapper for independent
@@ -2175,9 +2188,12 @@ multiple instances with the same `dp_group`.
 - `astra-sim/inputs/memory/memory_expansion.json` — remote (CPU) memory config
 
 ### Working directory
-`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the simulator
-resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`, `profiler/`
-are relative to the repo root and prefixed with `../` in code.
+Run `python -m serving` from the repository root. The entry point changes cwd
+to `astra-sim/` internally, but relative cluster, dataset, output and gate-stat
+paths are handled relative to the invocation root. Use repository-relative
+dataset paths: that loader prepends `../` even to an absolute input.
+An explicit relative `--inputs-root` instead resolves from `astra-sim/`;
+use an absolute path when selecting a separate intermediate directory.
 
 ### Communication sizes for ASTRA-Sim
 ASTRA-Sim's data-size convention depends on the collective: AllReduce and
@@ -3031,11 +3047,11 @@ emitted, and the stacks are 60-78 deep.
   invisible on a uniform model: an earlier version emitted **one** block
   instead of `num_hidden_layers` whenever block copy was disabled, understating
   the clock 3.1x on 48 layers, and the recorded baseline enshrined it
-- **Don't add a layer name to a catalog without a `calculate_sizes` formula.**
-  `memory_model.calculate_sizes` **raises** on an unknown name, so the model
-  becomes unsimulable rather than merely mis-sized. Every shipped catalog is
-  covered, and calling `calculate_sizes` for every name in every one of them
-  re-checks that in seconds
+- **Don't add a layer name without a formula on its selected sizing path.**
+  Ordinary catalogs use `memory_model.calculate_sizes`; native/contextual
+  profiles use the admitted providers in `component_sizes.py`. Check the
+  selected layout, not every native name against the ordinary dispatcher.
+  Logical bytes in a duration trace do not imply serving-capacity support
 - **Don't edit `astra-sim/`** unless the change targets simulator integration
   (e.g., `llm_converter.py`, `Workload.cc`, input configs). Chakra is *installed*
   into the container's site-packages by `scripts/compile.sh`, so editing

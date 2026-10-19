@@ -1,10 +1,10 @@
 #!/bin/bash
 # Run a vLLM benchmark and write results under bench/results/<run_id>/.
 #
-# This is a thin host-side wrapper that:
+# Run this template in the vLLM container or an activated local vLLM venv.
+# It:
 #   1. Resolves the repo root.
-#   2. Launches python -m bench run inside the vLLM Docker container
-#      (or the local uv venv from scripts/install-vllm.sh).
+#   2. Launches python -m bench run with the current environment's python3.
 #
 # Edit the variables below for your run, then execute:
 #
@@ -60,9 +60,8 @@ RESOLVE_ONLY="${RESOLVE_ONLY:-0}"
 # for a config-only diagnostic. Unlike the profiler, bench does not create
 # that directory from the repository's named JSON configs.
 SKIP_TOKENIZER_INIT="${SKIP_TOKENIZER_INIT:-0}"
-# Run vLLM eager. Not the production configuration -- what it buys is a truth
-# in the same execution mode the profiler is forced into, which separates a
-# cost-model error from the cudagraph speedup the simulator cannot see.
+# Run vLLM eager to record an execution-mode control. Leave off for a compiled
+# serving reference; simulated graph padding does not reproduce kernel fusion.
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 TICK_SECONDS="${TICK_SECONDS:-1.0}"
 NUM_REQS="${NUM_REQS:-0}"            # 0 => replay the full dataset

@@ -33,12 +33,18 @@ Strict replay: the runner reads a LLMServingSim-format JSONL workload
 vLLM run therefore processes exactly the prompts the simulator sees,
 in the same order.
 
+Replay supports **flat requests with nonempty `input_tok_ids`** only. The
+loader skips rows containing `sub_requests`, so agentic-session dependencies
+and tool delays are not benchmarked. Use a flat-only dataset for a matched
+simulator comparison; mixed files would run different workloads on the two
+sides. Count-only requests cannot be tokenized by this runner.
+
 ### Required
 
 | Flag | Type | Description |
 | --- | --- | --- |
-| `--model` | string | HF model id, passed verbatim to `vllm.AsyncLLM`. Unlike the simulator, this is a real load: weights are downloaded and placed on GPU |
-| `--dataset` | path | LLMServingSim-format JSONL workload. See **[Workloads → JSONL format](/docs/workloads/jsonl-format)** |
+| `--model` | string | HF model id or local model directory, passed verbatim to `vllm.AsyncLLM`. The default loader reads checkpoint weights; `--load-format dummy` instead initializes random weights for diagnostics |
+| `--dataset` | path | Flat LLMServingSim-format JSONL requests with nonempty `input_tok_ids`; session rows are skipped. See **[Workloads → JSONL format](/docs/workloads/jsonl-format)** |
 | `--output-dir` | path | Where to write `meta.json` / `requests.jsonl` / `timeseries.csv`. Conventionally `bench/results/<run_id>/` |
 
 ### Parallelism
@@ -107,6 +113,13 @@ block size. Historical single-engine references retain `kv_cache.block_size`.
 Pass the matched value to the simulator as `--block-size` or an instance override.
 :::
 
+The benchmark CLI does not expose every vLLM engine option. In particular,
+`gpu_memory_utilization` inherits the installed vLLM default; there is no
+`--gpu-memory-utilization` flag. The committed RTXPRO6000 references record
+0.92, so invoking the current wrapper is not an exact reconstruction of their
+settings. Verify effective settings and observed KV capacity for every new
+reference, including when using an explicit `--kv-cache-memory-bytes` budget.
+
 ### Workload and output
 
 Normal serving runs save `engine_start.json` before submitting requests,
@@ -125,6 +138,8 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
 
 ```
 <output-dir>/
+  engine_start.json  normal replay startup snapshot, written before submission;
+                     not a completion marker
   meta.json          run metadata plus what vLLM *resolved*: kv_cache
                      (num_gpu_blocks, block_size, num_kv_tokens,
                      gpu_memory_utilization, qualified capacity), hardware (device name,
@@ -136,8 +151,9 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
   requests.jsonl     per request: request_id, input_toks, output_toks,
                      arrival_time, queued_ts, scheduled_ts,
                      first_token_ts, last_token_ts
-  timeseries.csv     per tick: t, prompt_throughput, gen_throughput,
-                     running, waiting, kv_cache_pct
+  timeseries.csv     per tick: t, prompt_throughput,
+                     prompt_compute_throughput, prompt_cached_throughput,
+                     gen_throughput, running, waiting, preempted, kv_cache_pct
   gate_stats.json    --record-gate-stats only: the measured curve
                      (tokens -> mean distinct experts, samples) plus
                      model / num_experts / num_experts_per_tok, so a
@@ -145,6 +161,11 @@ is not overwritten. Final results require `meta.json`, `requests.jsonl` and
   moe_activated.jsonl  --record-gate-stats only: phase markers and raw per-call log
                      gate_stats.json was reduced from
 ```
+
+`preempted` counts preemption events during the tick, summed over DP engines.
+The prompt compute/cache throughput columns distinguish computed prompt tokens
+from prefix-cache hits. Older recordings can omit these three columns; inspect
+the CSV header before using them.
 
 ### Serving graph metadata
 

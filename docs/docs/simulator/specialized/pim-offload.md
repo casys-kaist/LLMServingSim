@@ -8,8 +8,8 @@ sidebar_position: 1
 Processing-in-memory (PIM) puts compute units physically inside DRAM,
 turning a traditionally memory-bandwidth-bound kernel into a
 compute-on-data-path operation. LLMServingSim models PIM as a
-separate device that can take over **attention** specifically, the
-rest of the layer still runs on the GPU.
+separate device that can take over **decode attention**. Prefill attention
+and the rest of the layer still run on the GPU.
 
 This page describes how the PIM path lives inside the simulator. The
 *configuration* angle (what flag to pass, how to wire up a PIM
@@ -23,12 +23,13 @@ When `--enable-attn-offloading` is on:
 | Layer | Where it runs |
 | --- | --- |
 | `embedding`, `layernorm`, `qkv_proj`, `qk_norm`, `rotary_emb` | NPU |
-| `attention` | **PIM** |
+| `attention` for decode requests | **PIM** |
+| `attention` for prefill queries | NPU |
 | `o_proj`, `gate_up_proj`, `act_fn`, `down_proj` | NPU |
 | `final_layernorm`, `lm_head`, `sampler` | NPU |
 | MoE block (if applicable) | NPU |
 
-So only attention itself moves to PIM. The KV cache for attention
+So only decode attention compute moves to PIM. The KV cache for attention
 moves with it, KV blocks live in PIM memory rather than NPU memory,
 which frees up NPU memory for weights or larger batches.
 
@@ -44,7 +45,7 @@ flowchart LR
     subgraph BLOCK["One transformer block"]
         direction LR
         QKV["qkv_proj<br/>(NPU)"]
-        ATTN["attention<br/>PIM channel 0..k"]
+        ATTN["decode attention<br/>PIM channels"]
         OPROJ["o_proj<br/>(NPU + ALLREDUCE)"]
         MLP["MLP<br/>(NPU)"]
         QKV --> ATTN
@@ -55,15 +56,16 @@ flowchart LR
 
 `trace_generator._emit_sequence` walks the architecture YAML's layer
 list. When it sees an `attention` layer **and**
-`enable_attn_offloading=True`, it swaps in a PIM block before the
-NPU attention kernel:
+`enable_attn_offloading=True`, it emits PIM blocks for decode work and
+retains the NPU attention kernel for any prefill queries:
 
-```
+```text
 ... qkv_proj_3 ... (NPU)
 PIM 0
-pim_attention_3   (PIM device, modeled latency)
+attention_4      (PIM device, modeled decode latency)
 PIM END
-... o_proj_3 ... (NPU, ALLREDUCE if TP > 1)
+... attention_6 ... (NPU, when prefill queries are present)
+... o_proj_7 ... (NPU, ALLREDUCE if TP > 1)
 ```
 
 The `PIM 0` / `PIM END` markers tell the Chakra converter that the
@@ -71,49 +73,44 @@ contained operation runs on the PIM device with channel 0. The
 converter emits a `COMP_NODE` for the PIM compute with memory access
 patterns reflecting the PIM substrate.
 
-The `pim_attention_<i>` entry's latency comes from the PIM model
-(see below), not from the NPU attention CSV.
+An `attention_<i>` row inside the PIM markers takes its latency from the
+PIM model below. NPU prefill attention still uses the profile table.
 
 ## The PIM model
 
-`serving/core/pim_model.py` defines `PIMModel`. It's instantiated per
-node when the cluster config has a
-`cpu_mem.pim_config: "<config_name>"` field. The constructor reads
-DRAMSim3 INI files at `configs/pim/<config_name>/`:
+`serving/core/pim_model.py` defines `PIMModel`. When the CLI or any instance
+enables attention offloading, cluster construction initializes a PIM model
+for every node. Each node must therefore supply `cpu_mem.pim_config`, even
+if its own instances do not offload. This names one file, without its extension:
 
-```
-configs/pim/DDR4_8GB_3200_pim/
-├── DDR4_8Gb_x16.ini    # DRAM device parameters
-├── system.ini          # bus / channel layout
-└── pim.ini             # PIM compute parameters
+```text
+configs/pim/DDR4_8GB_3200_pim.ini
 ```
 
-The INI files specify:
+The flat INI reader derives channel capacity from bank, row, column and
+bus geometry; bandwidth from bus width and data rate; and read latency from
+`CL * tCK`. The INI also supplies PIM power values. See the
+[PIM config reference](/docs/reference/pim-config) for fields and formulas.
 
-- **DRAM timing**: `tCAS`, `tRCD`, `tRP`, refresh interval, etc.
-- **Layout**: banks per chip, channel count, row size, column size.
-- **PIM compute**: operations per cycle per bank, instruction set
-  caps.
-
-`PIMModel` exposes the timing parameters to the trace generator,
-which uses them to compute per-attention latency on PIM. The model
-is intentionally simple, it's not a cycle-accurate DRAM model, but
-captures bandwidth, parallelism (banks × channels), and operation
-throughput well enough to compare PIM-vs-NPU attention paths.
+Decode attention latency uses a separate fitted linear model selected by
+the INI filename. `estimate_with_linear` scales its slope by the GQA ratio,
+its intercept by total query-head width (`num_attention_heads * head_dim`),
+and divides by the channel split.
+The fitted coefficients are not recomputed from DRAM timing fields.
+Only names with a coefficient entry are accepted for this latency model;
+adding an INI alone does not define a new device's attention timing.
 
 ## Multiple PIM channels
 
-A node's PIM device can have multiple channels. Each channel has its
-own bank-level parallelism, so different attention heads can run on
-different channels in parallel. The trace generator distributes
-attention work across channels by:
+The trace uses the integer number of channels that fit in the node's
+configured memory capacity. Each decode request is split into
+`min(channel_count, num_key_value_heads)` work items. The load balancer
+visits requests from longest to shortest and assigns each item to the
+currently least-loaded channel, adding that request's length to its load.
+It does not assign channels by a fixed attention-head index formula.
 
-```
-channel_for_head(h) = h * num_channels // num_attention_heads
-```
-
-This becomes the `PIM <channel>` marker in the trace. ASTRA-Sim sees
-multiple `PIM 0`, `PIM 1`, ... blocks and runs them in parallel.
+The emitter wraps each channel's work in `PIM <channel>` markers and closes
+the group with `PIM END`; ASTRA-Sim models the channel branches in parallel.
 
 ## KV cache in PIM memory
 
@@ -133,19 +130,15 @@ This is what makes PIM offload memory-attractive for long-context
 workloads: the GPU's HBM is freed up to hold larger weights or more
 in-flight requests.
 
-## Why TPOT often improves but TTFT regresses
+## Comparing performance
 
-- **Decode** is memory-bandwidth-bound. PIM has high *aggregate*
-  bandwidth (compute is co-located with the bytes), even if its raw
-  GB/s per channel is lower than HBM. On long-context decode, PIM
-  attention often beats GPU attention.
-- **Prefill** is compute-bound on attention (long sequences scaled
-  quadratically). PIM's narrower compute per channel doesn't help -
-  in fact, it hurts. Workloads with mostly-prefill traffic regress
-  on PIM offload.
+Compare TTFT, TPOT and throughput under the same workload and memory settings.
+Results depend on the fitted decode latency, transfers, batching and available
+cache capacity. Prefill attention remains on the NPU, so a TTFT change cannot
+be attributed to executing prefill attention on PIM.
 
-The standard fix is **sub-batch interleaving**: overlap GPU compute
-on one half of the batch with PIM attention on the other half. See
+**Sub-batch interleaving** models overlap between GPU compute on one half
+of the batch and PIM decode attention on the other half. See
 [Examples → Sub-batch interleaving](/docs/examples/advanced/sub-batch-interleaving).
 
 ## What PIM offload does *not* add to the log
@@ -173,17 +166,17 @@ a slowdown to PIM:
 1. **PIM offload is per-node.** `cpu_mem.pim_config` lives on the
    node, not the instance. Multiple instances on the same node share
    the same PIM device.
-2. **`--enable-attn-offloading` is the CLI default.** Individual
-   instances can override it with `enable_attn_offloading` in the
-   cluster config, but any node that uses PIM offload still needs a
-   `cpu_mem.pim_config`.
-3. **The PIM CSV bundle isn't a thing.** Unlike NPU, PIM attention
-   latency is computed analytically from the DRAMSim3 parameters
-   plus `pim_model.py`'s arithmetic. Profiling a real PIM device is
-   future work.
-4. **Sub-batch interleaving requires PIM offload.** Without
-   `--enable-attn-offloading`, `--enable-sub-batch-interleaving` is a
-   no-op (everything's on NPU, there's nothing to overlap).
+2. **Attention offloading defaults to off.** The CLI flag supplies
+   the run's default; individual instances can override it with `enable_attn_offloading` in the
+   cluster config. If the CLI or any instance enables it, current cluster
+   construction requires `cpu_mem.pim_config` on every node.
+3. **PIM does not consume an NPU-style profile CSV.** Decode latency uses
+   the named fitted coefficients in `pim_model.py`; INI geometry and timing
+   control the separately derived memory configuration.
+4. **Sub-batch interleaving requires PIM offload and PP=1.** An instance
+   enabling interleaving without attention offloading, or with `pp_size > 1`,
+   is rejected before simulation. Attention offloading also requires target
+   CUDA graph mode `NONE`; an explicit graph replay mode is rejected.
 5. **DRAMSim3 INI tweaks land at next startup.** The simulator reads
    them once at boot. Changing parameters mid-run requires a
    restart.
@@ -193,4 +186,4 @@ a slowdown to PIM:
 - **[Examples → PIM attention offload](/docs/examples/disaggregated/pim-attention-offload)** -
   the configuration walkthrough.
 - **[Power model](./power-model)**: PIM has its own idle / active
-  power parameters in the node `power` block.
+  power values in its INI; the node's `power` block enables cluster energy accounting.

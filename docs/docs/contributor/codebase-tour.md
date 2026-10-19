@@ -20,7 +20,7 @@ LLMServingSim/
 ├── profiler/     Profiler        Python, vLLM-based latency capture
 ├── bench/        Bench           Python, real vLLM run + sim validation
 ├── workloads/    Workloads       JSONL traces + generators
-├── configs/      Configs         JSON: cluster / model / PIM
+├── configs/      Configs         Cluster/model JSON and PIM INI
 ├── scripts/      Env scripts     Docker launchers + builders
 └── astra-sim/    Backend         C++ analytical network simulator
 ```
@@ -40,6 +40,7 @@ serving/
     ├── scheduler.py         vLLM-style continuous batching
     ├── trace_generator.py   Profile lookup -> trace rows
     ├── memory_model.py      KV / weight / CXL byte accounting
+    ├── component_sizes.py   Contextual component loading and byte accounting
     ├── graph_generator.py   Trace rows -> Chakra protobuf
     ├── controller.py        ASTRA-Sim subprocess IPC
     ├── router.py            Request routing across instances
@@ -81,6 +82,10 @@ profiler/
 ├── __main__.py              Model, coverage, skew and hardware CLI dispatch
 ├── core/                    internals (runner, engine, categories, skew_calibration)
 │   ├── catalog_path.py      model_type -> yaml resolution   (shared with serving/)
+│   ├── component_layouts.py Runtime-selected canonical component layouts
+│   ├── context_tables.py    Contextual category publication and metadata
+│   ├── context_lookup.py    Strict contextual category loading and lookup
+│   ├── callable_profile.py Declared callable acquisition and lookup
 │   └── stack.py             per-layer block resolution      (shared with serving/)
 ├── models/<model_type>.yaml Architecture catalogs with declared aliases
 ├── perf/<hw>/<model>/...    Output bundles (CSV per category)
@@ -97,11 +102,13 @@ results; audit imports and run regression validation.
 
 | Intent | Edit |
 | --- | --- |
-| Add a new hardware target | Run the profiler with `HARDWARE=` set; output lands in `profiler/perf/<hw>/`. See **[Profiler / Adding hardware](/docs/profiler/adding-hardware)** |
+| Add a new hardware target | Run `python -m profiler profile <model> --hardware <hw>`, or edit `MODEL` and `HARDWARE` inside `profiler/profile.sh`; output lands in `profiler/perf/<hw>/`. See **[Profiler / Adding hardware](/docs/profiler/adding-hardware)** |
 | Add a new model architecture | Drop a YAML in `profiler/models/<model_type>.yaml`, then `python -m profiler coverage <model> --hardware <hw>` until it binds every kernel. See **[Profiler / Adding model architecture](/docs/profiler/adding-model-architecture)** |
 | Teach the layer resolver a new per-layer rule | `profiler/core/stack.py` — read the rule out of vLLM's source, never guess; the vendors' conventions genuinely disagree |
 | Change the default skew calibration | `profiler/core/skew_calibration.py` |
 | Change what categories get profiled | `profiler/core/categories.py` + `profiler/core/runner.py` |
+| Change runtime-selected component boundaries | `core/component_layouts.py`, `core/callable_profile.py`, `core/hooks/runtime_admission.py` |
+| Change contextual category publication or lookup | `core/context_tables.py`, `core/context_lookup.py`, `serving/core/component_sizes.py` |
 | Change output CSV columns | `core/writer.py` (and `_load_perf_db()` in `serving/core/trace_generator.py` to consume them) |
 
 ## Bench (`bench/`)
@@ -144,8 +151,8 @@ workloads/
 ```
 
 Adding a new workload generator is a contained change: a new module
-under `generators/`, runnable as
-`python -m workloads.generators.<your_module>`. See
+under `generators/`, registered in `generators/__main__.py` and runnable as
+`python -m workloads.generators <name>`. See
 **[Workloads / ShareGPT generators](/docs/workloads/sharegpt-generators)**
 for the existing pattern.
 

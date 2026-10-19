@@ -31,6 +31,10 @@ Bare metal (vLLM side only):
 source .venv/bin/activate
 ```
 
+Run `bench/bench.sh` after entering the vLLM container or activating the venv;
+the benchmark template uses the current environment's `python3` and does not
+launch Docker or activate an environment itself.
+
 The installer requires a uv version supporting `--torch-backend cu130` and a
 compatible NVIDIA driver. Docker remains the reference environment; a successful
 dependency installation does not establish model/backend acquisition coverage.

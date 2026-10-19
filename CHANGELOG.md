@@ -5,195 +5,96 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+The upcoming v1.3.0 update targets vLLM 0.31.0 / CUDA 13, reduces profiling
+overhead, adds Kimi-K3 catalog and duration-replay integration, and improves
+model-specific acquisition, trace accounting and benchmark accuracy.
+The shipped simulator remains the Python frontend with ASTRA-Sim; the
+in-house network backend is not part of this update.
+
+### Added
+
+- Kimi-K3 configuration and catalog with admitted local eager profiling,
+  configuration-derived KDA/MLA/residual geometry and opt-in contextual duration
+  replay. Ordinary serving, resident-capacity admission and distributed accuracy
+  are not certified by this path. Native DeepSeek-V3.2 acquisition similarly
+  uses an explicit duration-only replay contract.
+- Declarative function, method and native-operator capture boundaries, exact
+  invocation contexts and coordinated fused/unfused component layouts. CUDA
+  activity supplies latency; CPU scopes establish ownership only.
+- Recorded worker CUDA-graph observations and CPU-only `import-execution` for
+  matching profile bundles. Explicit instance settings remain authoritative.
+
 ### Changed
 
-- Refresh RTXPRO6000 Llama, Qwen3-32B and Qwen3-30B TP1/TP2 profiles with
-  vLLM 0.31.0 measurements; preserve emitted values with portable dataset and
-  local model path identifiers. Update
-  the Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 references. Adopt
-  primitive-calibrated hardware links, reproducible target graph and KV-capacity
-  settings, and updated validation tables and plots. Preserve recorded backend
-  settings and the provenance of historical MoE fallback data and older examples.
-- Reject synthetic profiling shots that exceed engine request, token or context
-  bounds before GPU work; validate every fixed layout/coverage probe before
-  its first worker call and report the required acquisition envelope.
-- Include target serving CUDA graph coordinates in eager acquisition grids,
-  preferring matching completed worker captures unless explicitly overridden.
-  Record observed and derived sampling provenance separately; map native MoE
-  coordinates through target DP/SP geometry and retain independent expert axes.
-  Prefer captures on MoE token axes and sample eager-only ranges geometrically,
-  retaining DP-cancellation coverage, compiler-SP bounds and feasible endpoints.
-  Default geometric spacing to doubling except attention request counts, which
-  retain square-root-of-two spacing. Add `--grid-factor` and target-only
-  `--cudagraph` options; graph coordinates do not make timings graph measurements.
-- Default eager native MoE profiling to DP1, with deployment targets selected by
-  `--tp`, `--dp` and optional `--ep`, independent input-row/active-expert/assignment
-  grids and cached physical-coordinate interpolation. Remove isolated graph and
-  whole-block acquisition while preserving historical reads and modular DP+EP
-  behavior. Add a capability-admitted live TP1/DP1/EP1 path that retains native
-  processed quantized weights/backend and measures shared/latent wrapper work
-  separately from gate/routing and routed experts. Require exact native-method
-  output checks, unchanged state and storage-preserving conditioned banks.
-  Summed CUDA work durations do not model concurrent elapsed latency. Bound the
-  isolated engine's KV allocation without reducing requested limits or replacing
-  main cache metadata; native capacity checks remain mandatory. Fresh bundles
-  require complete matching components, and fallback requires an existing
-  whole-block table. See the [component contract](https://llmservingsim.ai/docs/profiler/native-moe-components).
-- Record completed worker CUDA-graph observations in new benchmarks and allow
-  explicit CPU-only import into profile metadata. Reuse matching serving policies
-  separately from eager acquisition settings; preserve explicit instance overrides
-  and retain derived defaults when observations are unavailable or incompatible.
-- Model vLLM 0.31 MRV2 decode capture candidates and DP synchronization separately
-  from historical MRV1 behavior, including non-grid-aligned request limits. These
-  are execution-shape rules, not new graph timings or benchmark accuracy claims.
-- Reorganize the profiler README around a short overview and topic-based
-  measurement, execution-scope and resume sections, retaining CLI and support details.
-- Keep new profiling CSVs limited to coordinates and timings; store descriptive
-  collector, CUDA-union aggregation, dummy-input preparation and runtime facts in
-  the variant-root `meta.yaml`, with per-TP measurement, category, contextual,
-  callable, skew and native MoE records. Replace new metadata sidecars with shared
-  root updates while retaining narrow historical reads and unchanged timing CSVs.
-  Publish compact MoE conditioning summaries rather than individual control points
-  and timings; preserve quality checks, acquisition settings and CSV integrity.
-  Stop loading `skew.meta.yaml`; skew acquisition and calibration metadata live
-  in the root document.
-  Use descriptive stored method, policy and format names without old-name aliases;
-  retain actual library/model versions and numeric structural schemas.
-  Keep raw repetition checkpoints where acquisition resume needs them.
-  Retain semantic acquisition and native API/backend/layout
-  checks without using source-file hashes or exact library versions as execution
-  vetoes or folder identities. Preserve historical measurements and completed-table
-  integrity checks; table paths locate data rather than defining compatibility.
-  Share strict metadata loading with serving without changing numerical behavior.
-- Select native profiles through architecture catalogs, sharing category completion,
-  exact-context callable acquisition and local duration replay. Derive Kimi-K3's
-  prefix, residual roles and tensor geometry from the supplied configuration and
-  observed layouts while retaining native API/backend admission checks. Preserve joined
-  MLA timing and separate KDA components; reject incomplete coverage, malformed or
-  duplicate partial rows and incompatible catalog/runtime semantics. Changed
-  semantics and publication schemas require fresh acquisition, not relabeling.
-  This does not certify distributed serving, resident capacity or benchmark accuracy.
-- Add runtime-admitted native DeepSeek-V3.2 profiling with site-aware component
-  boundaries and coordinated dense, head and attention tables, plus independently
-  published native MoE components. Preserve historical whole-block completion
-  checks and Kimi's separate contextual completion; admit explicit local DP1/EP1
-  selectors without enabling distributed native execution. Preserve
-  historical decompositions; expose explicit duration-only trace replay with
-  native sampler output widths, rejecting unsupported serving/capacity modes.
-- Allow catalogs to declare exact function/method capture boundaries and timing
-  normalization, including explicit argument/layout contexts and isolated native
-  callable acquisition, without model-specific collector code. Derive latency only from CUDA activity,
-  report unavailable targets and actual per-forward calls separately from timing
-  divisors, and reject incompatible acquisition resumes.
-- Preserve runtime ownership through common direct methods and exact native
-  operator scopes without adding CPU latency. Coordinate alternative component
-  layouts across category tables, resume interrupted starts and reject incomplete
-  acquisitions. Size the packed GDN core and reject unsupported
-  attention-wide sequence parallelism. Historical timings remain unchanged;
-  skew resume binds the effective catalog and capture contexts, and
-  changed acquisition identities require remeasurement.
-- Target vLLM 0.31.0 / CUDA 13 for new GPU acquisitions and benchmarks, aligning
-  Docker and bare-metal dependency pins and source patches. Remove the upstream-fixed
-  SM120 sparse-MLA backport; retain the MiniMax-M3 MTP namespace fix and optional
-  diagnostics. Existing profile and benchmark data keep their recorded versions.
-- Preserve vLLM's default communication backend selection in new benchmarks instead of
-  forcing NCCL-only. Custom all-reduce can be disabled explicitly; inherited
-  environment and resolved engine settings remain recorded. Keep the existing
-  all-reduce/RMS and GEMM/communication compiler fusions disabled.
-- Use lightweight PyTorch/Kineto collection for ordinary and skew profiling,
-  retaining per-call GPU interval accounting and existing CSV lookup semantics.
-  Native activity coverage includes copies, memsets and unscoped runner work;
-  incompatible acquisitions cannot be mixed on resume.
+- Align Docker and bare-metal GPU environments on vLLM 0.31.0 / CUDA 13.
+  Remove the upstream-fixed SM120 sparse-MLA backport; retain the MiniMax-M3
+  MTP namespace patch and optional diagnostic patches.
+- Replace layerwise tracing with lightweight PyTorch/Kineto capture for
+  ordinary and skew profiling, including CUDA copies and memsets. Keep eager
+  measurements distinct from target graph replay and its execution-shape rules.
+- Include serving capture coordinates in acquisition grids. Uncovered ranges
+  default to geometric factor 2, with square-root-of-two attention request
+  spacing; users can override the factors and target `--cudagraph` settings.
+  Match observed policies when available and model MRV1/MRV2 dispatch separately.
+- Default new MoE acquisition to eager native components at DP1. Select
+  deployments with `--tp`, `--dp` and optional `--ep`; independently sample
+  input rows, active local experts and local assignments. Preserve native
+  quantized weights/backends in admitted local execution. Historical
+  whole-block tables remain readable, but are no longer acquired.
+- Consolidate measurement methods, runtime facts and per-TP publication records
+  in the variant-root `meta.yaml`; CSVs hold coordinates and timings. Use
+  descriptive policy names and semantic/API/backend guards instead of exact
+  library-version or source-hash execution vetoes.
+- Preserve vLLM's default benchmark communication-backend choice, with explicit
+  custom-all-reduce opt-out. Keep all-reduce/RMS and GEMM/communication compiler
+  fusions disabled and retain observed settings and inherited environment.
+- Refresh RTXPRO6000 Llama and Qwen TP1/TP2 profiles, primitive-calibrated
+  hardware links and official benchmark artifacts. The Llama TP1, Qwen3-32B
+  TP2 and Qwen3-30B TP1/DP2/EP2 examples are within 2% on every reported
+  statistic; other deployments and historical data retain their own scope.
+  See the [validation results](https://llmservingsim.ai/docs/validation).
 
 ### Fixed
 
 - Forward the ShareGPT generator's repetition-penalty option to vLLM sampling,
   including its default of `1.1`; `1.0` disables the penalty. Existing workload
   files are unchanged; newly generated outputs can differ.
-- Retain native MoE deployment tables and interpolation support across batch
-  views, avoiding repeated metadata parsing and surface construction without
-  changing simulated timings, routing or coverage checks.
-- Preserve TP-stable replicas when starting or resuming ordinary higher-TP
-  categories, not only coupled layouts. Copied rows keep their source identity
-  and never substitute for unmeasured local shots.
-- Preserve native attention head width through TP configuration file reloads,
-  including derived widths and nested text backbones. Check the actual native
-  reconstruction rather than an in-memory update; incorrectly shaped projection,
-  attention and skew tables require fresh acquisition, not metadata relabelling.
-- Bind ordinary CSV replacement and TP-stable replication to a pending data
-  checksum before publication, preventing interrupted forced remeasurement from
-  accepting old timings under new metadata. Resume matching pending data without
-  restamping older metadata; reject mismatched generations. Measurement timing
-  and category-coverage requirements are unchanged. Seal fully saved skew plans
-  after interrupted completion without new measurement provenance. Preserve MoE
-  no-op runtime observations; record later validated acquisition contexts separately
-  from completed-row counts.
-- Normalize DeepSeek/GLM native sparse-cache labels onto the catalog attention
-  axis without changing sparse-indexer selection or native execution. Preserve
-  TP-stable rows' source acquisition metadata when local measurement begins or
-  resumes beside them; replicas do not become locally measured coverage.
-- Size admitted native DSA matrix payloads at their configured FP8 or BF16 width,
-  including expert matrices, without changing activation/cache contracts or
-  claiming a new model/backend is runtime-certified.
-- Shard separately declared dense-MLP intermediate widths during TP shape
-  emulation and reject ambiguous catalog claims even when a filename matches.
-  Previously mis-shaped measurements require remeasurement, not restamping.
-- Prepare native MXFP4 dummy expert weights and KDA derived buffers before
-  unchanged vLLM postload processing. Bound staging memory, validate supported
-  native API/layout contracts and record preparation separately from forward checks;
-  ordinary models retain native initialization. Changed acquisition identities
-  require remeasurement.
-- Validate native KDA recurrent metadata without requiring GDN-only prefill
-  views. Preserve query/history and state-page checks, reject unsupported
-  metadata modes, and require remeasurement after acquisition identity changes.
-- Record source-qualified per-engine KV capacities at benchmark startup,
-  distinguishing vLLM 0.31's DP aggregate from an individual scheduler pool.
-  Preserve raw fields and report unsupported or incomplete observations explicitly.
-- Apply nested backbone overrides through the materialized config without
-  assigning them again to wrapper properties. Preserve root/shared overrides
-  and flat-model behavior, and retain the authoritative engine's resolved text
-  config in per-TP metadata. Changed acquisition identities require remeasurement.
-- Bind new MiniMax-M3 sparse-prefill lookup caps to the measured native backend
-  per TP. The native vLLM 0.31 Triton BF16 contract uses the configured
-  selected-block count with 128-token blocks (2048 for the shipped config);
-  unmarked historical tables retain 2176. Recognize the current ordinary
-  acquisition protocol alongside supported historical ordinary/skew protocols
-  without relaxing identity checks. Preserve raw CSV
-  coordinates and timings, reject incomplete or mismatched contracts, and share
-  the resolver across serving, skew planning and fitting. Empty skew plans do
-  not publish a new acquisition or replace existing artifacts.
-- Correct MiniMax-M3 indexer trace bytes for its independent BF16 query/cache
-  dtype and int32 per-head block selections. Preserve exact request histories
-  and cap sparse-attention bytes per request before summing. Profile latencies,
-  lookup coordinates and KV capacity accounting are unchanged.
-- Preserve native routing weights and scaling in whole-block MoE profiling,
-  changing only the synthetic expert IDs. Keep native routing GPU work and
-  reject bypassed hooks; changed ordinary acquisition identities require remeasurement.
-- Keep quantized profiler bundle names separate from floating activation
-  overrides. Treat explicit `dtype=auto` like omission; require intentional
-  labels for ambiguous HF precision/nested overrides. Existing data is unchanged.
-- Initialize supported NVIDIA packed MLA/indexer history with vLLM dummy payloads
-  and native scale/layout rules. Route floating MLA indexer caches through typed
-  shape and non-overlapping-stride validation for views that omit a singleton
-  head axis, allowing padded and permuted storage. Preserve
-  null/unassigned pages; unsupported packed formats remain rejected.
-- Restore the missing TP AllReduce after Qwen GDN's output projection through
-  a catalog declaration. Use the full projection output at activation dtype;
-  stored profile timings and TP1 traces are unchanged.
-- Check native MoE deferred finalization through vLLM's effective boolean
-  capability, retaining explicit rejection of unsupported execution modes
-  across the 0.28 and 0.31 APIs.
-- Preserve native attention head dimensions during single-GPU TP emulation,
-  applying user overrides and nested text shapes before sharding. Acquisition
-  records retain resolved geometry; affected rows need remeasurement.
-- Keep Phi-MoE decoder residual timings separate from already measured
-  routing, normalization and attention work; old dense rows need remeasurement.
-- Allocate synthetic requests from the shared physical KV block pool, reserving
-  the null block and preventing cache groups from overwriting one another.
-  Initialize only assigned pages, including typed logical cache views in newer
-  engines; incompatible acquisition semantics require remeasurement.
-- Preserve explicit layer-type prefixes in reduced profiling models, including
-  nested text configurations and overrides reapplied by vLLM.
+- Preserve attention head widths, explicit layer-type prefixes, nested config
+  overrides, dense-MLP TP widths and checkpoint precision through native config
+  reloads; reject ambiguous catalog claims.
+- Allocate synthetic histories from the shared physical KV pool without
+  overwriting null or other groups' pages. Prepare typed/packed MLA/indexer
+  caches, native packed dummy experts and KDA buffers under their layout rules.
+- Correct GPU-activity ownership and Phi-MoE residual accounting; restore the
+  Qwen GDN output-projection TP reduction. Bind MiniMax-M3 sparse lookups to
+  measured backend semantics and correct indexer/sparse-attention trace bytes.
+- Preserve TP-stable replicas and acquisition provenance during resumes.
+  Protect CSV replacement with pending checksums, recover completed skew plans,
+  reject infeasible shots before GPU execution and retain native routing work.
+- Cache native MoE tables and interpolation support across batches without
+  changing routing or simulated timings. Keep local input rows distinct from
+  routed expert assignments.
+- Record source-qualified per-engine KV capacity for DP benchmarks instead of
+  interpreting the client aggregate as an individual scheduler pool.
+- Correct CLI examples, defaults and rejected combinations across the guides;
+  distinguish catalog availability, duration replay and validated serving.
+  Clarify flat-only benchmark replay, reference capacity matching, decode-only
+  PIM offloading, inherited memory fields and backend write requirements.
+
+### Upgrade notes
+
+- Existing timings keep their original provenance. Changed acquisition
+  geometry, methods or layouts require remeasurement, not metadata relabelling.
+  New component bundles must cover the deployment; historical MoE fallback
+  requires an existing whole-block table.
+- Replace `--moe-ep-degrees` with `--ep`. Skew metadata is root-only;
+  the old `skew.meta.yaml` fallback and old policy-name aliases are removed.
+  Raw repetition checkpoints still support acquisition resume.
+- Kimi and native DeepSeek duration replay are not a substitute for a
+  distributed serving benchmark. CUDA-work sums also do not model concurrent
+  branch elapsed latency. Consult the [bundle](https://llmservingsim.ai/docs/profiler/output-bundle)
+  and [MoE](https://llmservingsim.ai/docs/profiler/native-moe-components) contracts
+  before using a newly acquired architecture.
 
 ## [v1.2.0] - 2026-10-06
 

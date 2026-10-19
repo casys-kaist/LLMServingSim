@@ -48,9 +48,10 @@ separately below; it is not included in the four headline configurations.
 | **Target graphs** | Explicit V2 `FULL_AND_PIECEWISE` policy and capture grid in the RTXPRO6000 example configs |
 | **KV capacity** | Llama and Qwen3-32B use `mem_util: 0.92`; Qwen3-30B and RTX 4090 match recorded block counts as described below |
 
-Inputs and outputs (vLLM token IDs, sampling params, per-request
-timings) are pinned via `bench`'s strict-replay path so both runs
-process exactly the same prompts in the same order.
+The strict-replay path fixes each request's input token IDs and requested output
+length, and schedules it at the dataset's arrival offset. Generated output token
+content and per-request timing are measured outcomes, not pinned values. These
+comparisons use flat request workloads; the benchmark skips agentic-session rows.
 
 :::caution[Match capacity from recorded engine observations]
 `npu_mem.mem_util` sizes the simulated KV cache. The simulator does not model

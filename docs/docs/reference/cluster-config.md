@@ -166,7 +166,7 @@ before; what changed is that the guess is now visible as one.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mem_size` | float | ✓ | Capacity per device in **GB** |
+| `mem_size` | float | ✓ | Capacity per device in **GiB** |
 | `mem_bw` | float | ✓ | Bandwidth per device in **GB/s** |
 | `mem_latency` | float | ✓ | Access latency in **ns** |
 | `num_devices` | int | optional (default `1`) | Number of CXL devices (`cxl:0` through `cxl:N-1`) |
@@ -179,10 +179,14 @@ field.
 ```json
 {
   "num_instances": 2,
-  "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+  "cpu_mem": {
+    "mem_size": 512,
+    "mem_bw": 256,
+    "mem_latency": 0,
+    "pim_config": "DDR4_8GB_3200_pim"
+  },
   "instances": [...],
-  "power": {...},
-  "cpu_mem.pim_config": "DDR4_8GB_3200_pim"
+  "power": {...}
 }
 ```
 
@@ -197,10 +201,15 @@ field.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mem_size` | float | ✓ | Host CPU memory capacity in **GB** |
+| `mem_size` | float | ✓ | Host CPU memory capacity in **GiB** |
 | `mem_bw` | float | ✓ | CPU memory bandwidth in **GB/s** |
 | `mem_latency` | float | ✓ | CPU memory latency in **ns** |
 | `pim_config` | string | optional | Name of a PIM device config in `configs/pim/`. See **[PIM config](./pim-config)** |
+
+When the CLI or any instance enables attention offloading, cluster construction
+requires `pim_config` on every node and derives its CPU-memory bandwidth and
+latency from that INI. Capacity values use GiB (`1024^3` bytes); memory
+bandwidth remains decimal GB/s.
 
 ### `power` (optional)
 
@@ -268,16 +277,21 @@ Three rules the table cannot show:
 }
 ```
 
-### Required fields
+### Identity and memory fields
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `model_name` | string | HF id. Must match a config at `configs/model/<model_name>.json` (see **[Model config](./model-config)**) |
 | `hardware` | string | Hardware label. Must match `profiler/perf/<hardware>/` |
-| `npu_mem.mem_size` | float | Per-GPU NPU memory in **GB** |
-| `npu_mem.mem_bw` | float | Per-GPU NPU memory bandwidth in **GB/s** |
-| `npu_mem.mem_latency` | float | Per-GPU NPU memory latency in **ns** |
+| `npu_mem.mem_size` | float | Per-GPU NPU memory in **GiB**; inherited from hardware data when omitted |
+| `npu_mem.mem_bw` | float | Per-GPU NPU memory bandwidth in **GB/s**; inherited when omitted |
+| `npu_mem.mem_latency` | float | Per-GPU NPU memory latency in **ns**; inherited when omitted |
 | `pd_type` | string \| null | `"prefill"`, `"decode"`, or `null` (combined) |
+
+`model_name`, `hardware` and `pd_type` must be supplied. The `npu_mem`
+object and its hardware fields may be omitted when the hardware file supplies
+them; any unresolved required field fails at startup. `mem_util` has its
+separate CLI default and is not inherited from hardware data.
 
 ### Parallelism (at least one of `num_npus` / `tp_size`)
 
@@ -548,8 +562,10 @@ Structural, in `config_builder.py`:
 - `link_bw` and `link_latency` must both resolve at top level after hardware
   defaults are applied; they need not be written explicitly in the input config.
 - Every instance needs `model_name`, `hardware`, `npu_mem`, and
-  `pd_type`; `npu_mem` needs `mem_size`, `mem_bw`, `mem_latency`. Same
-  three keys are required in `cpu_mem` and, if present, `cxl_mem`.
+  `pd_type` after hardware defaults are applied; `npu_mem` then needs
+  `mem_size`, `mem_bw`, `mem_latency`. The same three keys are required in
+  ordinary `cpu_mem` and, if present, `cxl_mem`; the PIM path instead derives
+  CPU-memory bandwidth and latency from `pim_config`.
 - `num_npus == tp_size * pp_size`, and `pp_size <= num_hidden_layers`.
 - `dp_group` must be a string or `null`, and all instances sharing one
   `dp_group` must agree on `tp_size`, `pp_size` **and** `ep_size`.
