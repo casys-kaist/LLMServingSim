@@ -130,14 +130,15 @@ matching the model you'll run in the simulator:
 | `--vllm-max-num-batched-tokens` | `16384` | `max_num_batched_tokens`, likewise high for throughput |
 | `--vllm-max-model-len` | model's max | Override `max_model_len` |
 | `--vllm-temperature` | `0.0` | Sampling temperature. `0` = greedy, which makes generation reproducible for a given seed |
-| `--vllm-repetition-penalty` | `1.1` | Down-weights already-emitted tokens. `1.0` disables it |
+| `--vllm-repetition-penalty` | `1.1` | Passed to `SamplingParams.repetition_penalty`; `1.0` disables the penalty, values above `1.0` discourage repetition |
 
-:::note[Why the repetition penalty defaults above 1.0]
-Free generation at `1.0` tends to ramble past the natural stopping
-point, so EOS never fires and every request runs to
-`--max-output-toks`. `1.1` keeps natural EOS landing at typical
-ShareGPT lengths (~500–1000 tokens), which is what makes the resulting
-output-length distribution look like the real dataset's.
+:::note[Repetition penalty and output lengths]
+The generator passes the configured value directly to vLLM alongside
+`max_tokens`, `temperature` and `seed`. A value above `1.0` discourages
+repetition but does not guarantee EOS or a particular output length.
+This applies only with `--use-vllm` and without `--fix-len`; existing workloads
+are unchanged. The output JSONL records tokens and lengths, not generation
+settings.
 :::
 
 The five `--vllm-*` engine knobs above are throughput settings for the

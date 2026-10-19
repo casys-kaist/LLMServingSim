@@ -46,6 +46,7 @@ Complete CLI references: [simulator](https://llmservingsim.ai/docs/reference/cli
 [profiler](https://llmservingsim.ai/docs/profiler/running#calling-python--m-profiler-directly),
 [bench](https://llmservingsim.ai/docs/reference/bench-cli), and
 [workload generator](https://llmservingsim.ai/docs/workloads/sharegpt-generators).
+Workload generation supports explicit vLLM sampling controls, including repetition penalties.
 When updating an existing clone, synchronize its recursive submodules and
 rebuild ASTRA-Sim and Chakra together; see the
 [update instructions](https://llmservingsim.ai/docs/contributor/pr-workflow#publishing-submodule-changes).

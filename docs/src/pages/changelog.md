@@ -110,6 +110,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Forward the ShareGPT generator's repetition-penalty option to vLLM sampling,
+  including its default of `1.1`; `1.0` disables the penalty. Existing workload
+  files are unchanged; newly generated outputs can differ.
 - Retain native MoE deployment tables and interpolation support across batch
   views, avoiding repeated metadata parsing and surface construction without
   changing simulated timings, routing or coverage checks.

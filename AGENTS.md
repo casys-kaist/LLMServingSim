@@ -2783,6 +2783,15 @@ after headings and before lists or code blocks. Do not rewrite dependency
 READMEs for cosmetic consistency. Latest News links completed work to its PR;
 in-progress entries are roadmap statements, not supported behavior or accuracy claims.
 
+## Workload generation
+
+ShareGPT free generation forwards `--vllm-repetition-penalty` to
+`SamplingParams.repetition_penalty` with the parsed default of `1.1`;
+`1.0` disables the penalty. Keep registered sampling options connected to
+the generation call and check both defaults and explicit overrides. This path
+requires `--use-vllm` without `--fix-len`; existing workload files are unchanged.
+Do not promise an output length or EOS behavior from the penalty alone.
+
 ## Commit & Pull Request Guidelines
 
 - Short imperative commit messages: `Fix incorrect evict_size accumulation`,
