@@ -42,8 +42,9 @@ upgrade requirements explicit. See the
 Accuracy claims refer to the recorded bundles and workloads on the
 [validation page](docs/validation.md), not every architecture catalog or newly
 acquired profile. Keep GPU recording separate from CPU-only comparison in setup
-instructions. The root README is a short entry point; detailed contracts live
-in the guides below. Follow the shared
+instructions. Root Getting Started keeps runnable commands, runtime requirements
+and documentation links; measurement details, model-specific limits and
+contribution policies stay in the topic guides. Follow the shared
 [README formatting conventions](docs/contributor/conventions.md#readme-and-markdown-formatting)
 for directory trees and examples. Directory introductions stay short; detailed
 contracts belong under topic headings after the usage entry points.

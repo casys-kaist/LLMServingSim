@@ -2779,7 +2779,9 @@ The repo has two documentation surfaces with deliberate scope:
   Contact / Changelog) point everything else out to the website. **Do not
   re-add detailed content (CLI flag tables, dataset schema, profiler
   walkthroughs, validation plots, etc.) to the README** — it lives on the
-  website now.
+  website now. Keep Getting Started to runnable commands, the CPU/GPU boundary,
+  runtime versions and documentation links. Measurement internals, model-specific
+  limits and contribution policies belong in the guides.
 - **`docs/`** — the public docs site (Docusaurus 3, deployed at
   `https://llmservingsim.ai`). All long-form content lives here. See
   `docs/AGENTS.md` for site-specific conventions.

@@ -3,13 +3,15 @@
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
-## [Unreleased]
+## [v1.3.0] - 2026-10-19
 
-The upcoming v1.3.0 update targets vLLM 0.31.0 / CUDA 13, reduces profiling
-overhead, adds Kimi-K3 catalog and duration-replay integration, and improves
-model-specific acquisition, trace accounting and benchmark accuracy.
+Version 1.3.0 upgrades profiling and benchmarking to vLLM 0.31.0 / CUDA 13
+and accelerates acquisition with a lightweight profiler. It adds Kimi-K3
+catalog and duration-replay integration, improves DeepSeek-V3.2, MiniMax-M3
+and Qwen hybrid-model handling, and refreshes Llama and Qwen profiles and
+benchmark accuracy ([#77](https://github.com/casys-kaist/LLMServingSim/pull/77)).
 The shipped simulator remains the Python frontend with ASTRA-Sim; the
-in-house network backend is not part of this update.
+native simulator and replacement network backend are not part of this update.
 
 ### Added
 
@@ -32,6 +34,10 @@ in-house network backend is not part of this update.
 - Replace layerwise tracing with lightweight PyTorch/Kineto capture for
   ordinary and skew profiling, including CUDA copies and memsets. Keep eager
   measurements distinct from target graph replay and its execution-shape rules.
+- Reduce recorded Qwen3-32B TP2 end-to-end skew acquisition from 17 h 12 min
+  to 2 h 41 min (roughly 7x), for approximately 25,500 batch configurations
+  with nine timed forwards each. This includes preparation, timing, extraction
+  and checkpoint writing within the skew stage, not the entire profiling sweep.
 - Include serving capture coordinates in acquisition grids. Uncovered ranges
   default to geometric factor 2, with square-root-of-two attention request
   spacing; users can override the factors and target `--cudagraph` settings.
@@ -49,9 +55,10 @@ in-house network backend is not part of this update.
   custom-all-reduce opt-out. Keep all-reduce/RMS and GEMM/communication compiler
   fusions disabled and retain observed settings and inherited environment.
 - Refresh RTXPRO6000 Llama and Qwen TP1/TP2 profiles, primitive-calibrated
-  hardware links and official benchmark artifacts. The Llama TP1, Qwen3-32B
-  TP2 and Qwen3-30B TP1/DP2/EP2 examples are within 2% on every reported
-  statistic; other deployments and historical data retain their own scope.
+  hardware links and official benchmark artifacts. Maximum absolute errors
+  across the fifteen TTFT, TPOT and latency statistics are 0.682% for Llama
+  TP1, 0.456% for Qwen3-32B TP2 and 1.197% for Qwen3-30B TP1/DP2/EP2;
+  these results apply to the recorded workloads and deployment configurations.
   See the [validation results](https://llmservingsim.ai/docs/validation).
 
 ### Fixed

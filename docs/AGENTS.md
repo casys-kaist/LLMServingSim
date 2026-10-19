@@ -199,7 +199,10 @@ step is silently a no-op if the source is set to anything else.
   the contributor guide's README and Markdown formatting section. Keep the opening
   introduction brief and place detailed contracts under topic headings after usage
   entry points, rather than appending implementation changes to the introduction. Keep roadmap
-  announcements distinct from implemented and validated behavior.
+  announcements distinct from implemented and validated behavior. Root Getting
+  Started contains only setup/run commands, runtime requirements and links;
+  do not expand it with measurement details, model-specific restrictions or
+  contribution-policy text.
 - **Language**: English only. Match the rest of the LLMServingSim repo.
 - **Changelog**: edit the root source, not the generated page. Keep each change
   category once per release, summarize final user-visible effects, and retain
