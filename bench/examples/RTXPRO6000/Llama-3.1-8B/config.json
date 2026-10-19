@@ -1,25 +1,67 @@
 {
-    "num_nodes": 1,
-    "nodes": [
+  "num_nodes": 1,
+  "nodes": [
+    {
+      "num_instances": 1,
+      "cpu_mem": {
+        "mem_size": 512,
+        "mem_bw": 256,
+        "mem_latency": 0
+      },
+      "instances": [
         {
-            "num_instances": 1,
-            "cpu_mem": {
-                "mem_size": 512,
-                "mem_bw": 256,
-                "mem_latency": 0
-            },
-            "instances": [
-                {
-                    "model_name": "meta-llama/Llama-3.1-8B",
-                    "hardware": "RTXPRO6000",
-                    "npu_mem": {
-                        "mem_util": 0.9
-                    },
-                    "num_npus": 1,
-                    "tp_size": 1,
-                    "pd_type": null
-                }
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {
+            "mem_util": 0.92
+          },
+          "num_npus": 1,
+          "tp_size": 1,
+          "pd_type": null,
+          "cudagraph": {
+            "runner": "v2",
+            "mode": "FULL_AND_PIECEWISE",
+            "enable_sp": false,
+            "capture_sizes": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              24,
+              32,
+              40,
+              48,
+              56,
+              64,
+              72,
+              80,
+              88,
+              96,
+              104,
+              112,
+              120,
+              128,
+              136,
+              144,
+              152,
+              160,
+              168,
+              176,
+              184,
+              192,
+              200,
+              208,
+              216,
+              224,
+              232,
+              240,
+              248,
+              256
             ]
+          }
         }
-    ]
+      ]
+    }
+  ]
 }

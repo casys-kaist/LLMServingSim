@@ -58,6 +58,11 @@ ASTRA-Sim before using these settings.
 The RTXPRO6000 Qwen3-32B and Qwen3-30B configs under `bench/examples/` omit
 `link_bw`, `link_latency` and `collective_links` to use the measured operation
 defaults directly. No per-model bandwidth or extra enable flag is required.
+Their canonical example configs also set the target V2 graph policy and
+capture grid explicitly. Qwen3-30B's instance memory fractions reproduce the
+recorded per-engine KV blocks; its benchmark metadata keeps the original
+engine utilization. These example settings do not replace the explicit
+topology assumptions in the general scenarios in this directory.
 
 ### Per-node fields
 
@@ -143,8 +148,8 @@ model*. Serving two precisions of one model is two **model configs**.
 > bench run's `meta.json` and match its instance's startup block count through
 > `mem_util`. Do not treat a DP frontend aggregate as one pool. Historical
 > single-engine references retain `kv_cache.num_gpu_blocks`.
-> On the bundled RTX 4090 example the matched value is `0.833919`, and it is
-> the difference between -20.7% and +0.6% on TTFT mean.
+> On the bundled RTX 4090 example, `mem_util: 0.833919` matches the recorded
+> capacity of 2,588 blocks.
 
 **`npu_mem.mem_util` is the nested CLI override.** The other runtime overrides are plain instance keys;
 `mem_util` lives inside `npu_mem` because its only job is to scale `mem_size`. It must be a

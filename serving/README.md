@@ -157,6 +157,11 @@ It and the Qwen3-32B TP2 example omit link overrides, so the measured
 per-operation hardware defaults apply without an additional CLI switch.
 Historical multi-GPU example configs can pin their original links instead of
 inheriting the hardware folder's refreshed transport calibration.
+The refreshed RTXPRO6000 examples also declare their V2 target graph policy
+and capture grid explicitly. Their memory settings belong to each example:
+Llama and Qwen3-32B use the recorded utilization, while Qwen3-30B matches
+the complete per-engine KV capacity. The benchmark's original engine settings
+remain in its metadata; simulator capacity matching does not rewrite them.
 
 The per-instance `cudagraph` object describes target execution, independently
 of the profiler's eager engine. Explicit settings take priority; otherwise a

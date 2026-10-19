@@ -216,9 +216,15 @@ top-k while varying local work; they do not establish trained-routing numerical
 equivalence or arbitrary within-rank histogram coverage.
 The same table guide explains non-overlapping sparse-indexer glue ownership
 and the dense-category refresh needed for older DeepSeek/GLM glue rows.
-The [validation page](docs/validation.md) reports the bundled NCCL-only Qwen3-32B
-and native Qwen3-30B examples, both inheriting the same hardware operation defaults,
-and keeps each recorded reference matched to its transport calibration.
+The [validation page](docs/validation.md) reports refreshed vLLM 0.31.0
+RTXPRO6000 Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 profiles and
+references. The Qwen examples inherit the same measured hardware operation
+defaults; explicit graph and memory settings reproduce their serving scopes.
+Recorded custom-all-reduce settings remain distinct, and TP1 does not exercise
+that TP path. The three bundles include refreshed TP1 and TP2 acquisition
+data; the accuracy results cover only the listed deployments. Generated bundle
+values are preserved except portable dataset and local model path identifiers.
+The RTX 4090 reference remains historical.
 The [bench reference](docs/reference/bench-cli.md#parallelism) documents the
 vLLM-default backend selection, the explicit custom-all-reduce opt-out, the two
 retained disabled communication-fusion passes, and recorded inherited communicator

@@ -622,10 +622,11 @@ not structure.
 
 The four `vllm=0.19.0` bundles were never affected, which is what made them
 usable as the reference: the fix was verified against them before anything was
-rewritten. They are gone now — every RTXPRO6000 bundle has been re-profiled on
-0.28 so the whole tree carries one vLLM version, and only
-`RTX4090/meta-llama/Llama-3.1-8B` stays 0.19, because that card is no longer in
-the machine. **A re-profile can move recorded clocks.** Refresh affected
+rewritten. RTXPRO6000 acquisition versions now vary by model: Llama-3.1-8B,
+Qwen3-32B and Qwen3-30B have refreshed TP1/TP2 data recording 0.31, while
+other bundles and Qwen3-30B's historical whole-block fallback keep their
+recorded provenance. `RTX4090/meta-llama/Llama-3.1-8B` stays 0.19.
+**A re-profile can move recorded clocks.** Refresh affected
 regression baselines and example validation together when adopting new data;
 the suite also includes other architecture families and a DeepSeek diagnostic.
 Bandwidth efficiency is the estimated memory-time bound divided by measured
@@ -1214,8 +1215,11 @@ hypothetical explicit interconnect never silently gains the measured card's
 operation curves.
 
 The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples omit all three
-link keys and consume the measured operation defaults automatically. Refresh
-each example's recorded NCCL truth, simulator output, validation plots and
+link keys and consume the measured operation defaults automatically. Their
+vLLM 0.31 references preserve the recorded custom-all-reduce setting: disabled
+for Qwen3-32B TP2, not disabled for Llama TP1 or Qwen3-30B TP1/DP2/EP2.
+Neither TP1 deployment exercises the TP custom-all-reduce path. Refresh
+each example's recorded truth, simulator output, validation plots and
 regression digests together when adopting a changed interconnect. Do not
 pair refreshed hardware defaults with an older transport reference.
 
@@ -1827,12 +1831,13 @@ arrival time to avoid busy-looping.
   pool in the bench run's `meta.json` before comparing latency at all.** New runs
   record `kv_cache.capacity.per_engine`; require its complete status rather than
   interpreting a DP client aggregate as one pool. Historical single-engine
-  references retain their recorded `kv_cache.num_gpu_blocks`. On the bundled RTX 4090 example
-  (24 GB, pinned at its ceiling) the matched value is `0.833919`, which moves TTFT mean
-  from -20.7% to +0.6% and TPOT mean from +12.9% to +0.2% against the same vLLM run. The
-  RTXPRO6000 examples peak at 58-97% of budget on a 96 GB card and stay at `0.9` --
-  calibrating them would change nothing, so do not treat `mem_util` as a general
-  explanation for validation error
+  references retain their recorded `kv_cache.num_gpu_blocks`. The RTX 4090
+  example matches 2,588 blocks with `mem_util: 0.833919`. The refreshed Qwen3-30B
+  example matches 38,256 blocks per DP rank; Llama and Qwen3-32B retain the
+  recorded utilization without claiming a complete per-engine capacity match.
+  Inspect preemption and request scheduling before attributing latency error
+  to capacity; heartbeat occupancy percentages have different cache accounting
+  from vLLM and do not establish equivalent pools.
 - `block_pool.py` / `kv_cache_manager.py` own everything about which blocks exist and where.
   `memory_model.py` keeps the static sizing math and a byte-level view; `npu_used` is a
   property over the pool, so there is one ledger per tier
@@ -2800,6 +2805,8 @@ in-progress entries are roadmap statements, not supported behavior or accuracy c
   changes and limitations only. Never publish session diaries, investigation
   checkpoints or intermediate experiment notes, including on contributor pages
   or in this file.
+  Public documentation and reproduction instructions must not reference or
+  depend on private archives or untracked intermediate experiment scripts/results.
 - Keep one changelog section per release and one heading per change category.
   Consolidate related Unreleased entries into short, user-facing summaries;
   retain migration requirements, limitations and contributor credit. Link to
@@ -2901,6 +2908,20 @@ shot counts are examples, not current-default runtime estimates.
 
 The example wrappers discover `bench/examples/*/*/config.json`, including
 stored diagnostics beyond the headline benchmarks. Reproduction uses the
+example's target graph policy and memory configuration. The RTXPRO6000 headline
+configs inherit transport from the hardware bundle. Llama and both Qwen
+bundles contain refreshed TP1 and TP2 acquisition data; headline validation
+covers Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 only. Preserve
+adopted generated values and rows: profile and hardware metadata, measurement
+tables, benchmark metadata, simulation outputs, validation files and logs.
+The only publication exception is portable identifiers for environment-dependent
+dataset and local model paths. Use repository-relative dataset paths and canonical
+model identifiers where equivalent; temporary sharded-model identifiers must
+retain their TP-shape semantics. Do not prune records or change measurements,
+settings, hashes or validation results. Publish the runtime tables
+described by the generated bundle metadata. Qwen3-30B's
+instance memory fractions match the complete per-engine READY block counts,
+not the aggregate client count or an end-to-end latency target. Reproduction uses the
 recorded `kv_cache.block_size` unless `BLOCK_SIZE` explicitly overrides it.
 If that metadata is absent, omit the flag so serving resolves its default;
 do not force a dense-only page size onto sparse or hybrid examples.

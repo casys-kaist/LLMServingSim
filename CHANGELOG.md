@@ -7,6 +7,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Changed
 
+- Refresh RTXPRO6000 Llama, Qwen3-32B and Qwen3-30B TP1/TP2 profiles with
+  vLLM 0.31.0 measurements; preserve emitted values with portable dataset and
+  local model path identifiers. Update
+  the Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2 references. Adopt
+  primitive-calibrated hardware links, reproducible target graph and KV-capacity
+  settings, and updated validation tables and plots. Preserve recorded backend
+  settings and the provenance of historical MoE fallback data and older examples.
 - Reject synthetic profiling shots that exceed engine request, token or context
   bounds before GPU work; validate every fixed layout/coverage probe before
   its first worker call and report the required acquisition envelope.

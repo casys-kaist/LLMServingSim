@@ -113,9 +113,11 @@ or KV-capacity admission; historical bundles retain their existing behavior.
 The [validation results](https://llmservingsim.ai/docs/validation) describe the
 committed profile bundles and recorded workloads, not a complete remeasurement
 with every current profiler change. Architecture support and fresh-profile
-accuracy are separate checks. The launcher upgrade does not remeasure existing
-data: the RTXPRO6000 headline references retain vLLM 0.28.0, and the RTX 4090
-reference retains vLLM 0.19.0.
+accuracy are separate checks. The RTXPRO6000 headline examples use refreshed
+vLLM 0.31.0 profiles, acquired at TP1 and TP2 for Llama and both Qwen models.
+Recorded accuracy covers Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2;
+other acquisition scopes require their own validation. The RTX 4090 reference
+remains on vLLM 0.19.0.
 
 Contributions follow the [commit policy](https://llmservingsim.ai/docs/contributor/pr-workflow#commit-hygiene):
 every commit includes documentation updates; intermediate experiments and

@@ -305,17 +305,16 @@ same block count. The bundled RTX 4090 / Llama-3.1-8B example is exactly this
 case — 24 GB, pinned at its ceiling for most of the run — and the matched value
 is `0.833919`, not `0.9`:
 
-| | KV tokens | blocks | TTFT mean | TPOT mean | Latency mean |
-| --- | --- | --- | --- | --- | --- |
-| vLLM (measured) | 41,408 | 2,588 | — | — | — |
-| `mem_util: 0.9` | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
-| `mem_util: 0.833919` | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
+The refreshed RTXPRO6000 Qwen3-30B example matches the complete READY
+observations of 38,256 blocks per DP rank through its instance memory settings.
+Llama and Qwen3-32B retain the recorded utilization without claiming a complete
+per-engine capacity match. The [validation page](/docs/validation) reports
+the canonical results and each example's memory settings.
 
-Same profile bundle, same workload, same engine flags — only the capacity
-differs. The bundled RTXPRO6000 examples, by contrast, peak at 58-97% of their
-budget, so they are left at `0.9`: there is nothing for a calibration to
-change. Read the peak `Each NPU Memory Usage` percentage off the heartbeat to
-tell which case you are in — remember its ceiling is `mem_util * 100`, not 100.
+Inspect preemption and request scheduling when assessing memory pressure.
+The simulator heartbeat includes cached-but-free blocks, while vLLM's
+`kv_cache_pct` counts pinned blocks; their percentages alone do not establish
+whether capacity changes the schedule.
 :::
 
 The scheduler takes `ceil(tokens / block_size)` blocks per active request

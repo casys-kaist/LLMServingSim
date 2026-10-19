@@ -73,8 +73,9 @@ the inherited `VLLM_ALLREDUCE_USE_FLASHINFER`,
 under `hardware.all_reduce_environment`. A null value means unset: the installed
 vLLM resolves its default. These settings describe configuration, not a measured
 per-collective dispatch trace; check runtime backend selection when establishing
-a communication baseline. Historical NCCL-only examples remain unchanged and
-must not be treated as default-backend measurements.
+a communication baseline. Preserve each reference's recorded backend settings;
+a custom-all-reduce-disabled reference must not be relabelled as a measurement
+of default backend selection. TP1 does not exercise the TP custom-all-reduce path.
 
 ### Scheduler and precision
 
@@ -317,7 +318,7 @@ Positional, with three environment overrides:
 
 ## Committed examples
 
-`bench/examples/` holds four end-to-end runs, keyed
+`bench/examples/` holds four headline end-to-end runs plus stored diagnostics, keyed
 `<hardware>/<model>` — a dense single-GPU baseline, a TP=2 dense run and
 a DP+EP MoE run on RTXPRO6000, plus the same dense baseline on an
 RTX 4090 — each bundling its cluster `config.json`, the vLLM artifacts,

@@ -429,8 +429,9 @@ block count through `mem_util`. Do not treat a DP client aggregate as one pool;
 see the [capacity metadata contract](bench-cli.md#kv-capacity-metadata).
 Historical single-engine references retain `kv_cache.num_gpu_blocks`.
 On the bundled RTX 4090 example — 24 GB, pinned at its ceiling — the value is
-`0.833919`, and it takes the run from -20.7% TTFT / +12.9% TPOT to
-+0.6% / +0.2%. See [Validation](../validation) and
+`0.833919`, matching its recorded 2,588 blocks. The Qwen3-30B example matches
+its complete per-engine observations separately for each DP rank.
+See [Validation](../validation) and
 [KV cache and memory](../simulator/scheduling/kv-cache-and-memory).
 :::
 #### `0` means unlimited, with one caveat

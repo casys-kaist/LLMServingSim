@@ -84,11 +84,13 @@ Use per-instance `cudagraph` settings to describe the effective target worker
 mode and capture grid; the profiler's eager configuration is not that target.
 A simulator-side refresh preserves the recorded vLLM truth.
 
-The RTXPRO6000 Qwen3-32B TP2 and Qwen3-30B DP2/EP2 examples use NCCL-only
-references under the calibrated host interconnect. Both omit link overrides
-and inherit the hardware bundle's per-operation bandwidths and common latency;
-the MoE example also includes native component measurements. Keep recorded
-references and their interconnect calibration matched when refreshing examples.
+The RTXPRO6000 headline examples pair refreshed vLLM 0.31.0 profiles with
+recorded references and explicit target graph settings. Qwen3-32B TP2 records
+custom all-reduce disabled; Llama TP1 and Qwen3-30B TP1/DP2/EP2 retain the
+default setting and do not exercise the TP custom-all-reduce path. The Qwen
+examples inherit the hardware bundle's primitive-calibrated per-operation
+bandwidths and common latency. Keep each reference's recorded communication
+settings and interconnect calibration matched.
 
 ```bash
 # Inside the vLLM container (scripts/docker-vllm.sh).
@@ -264,14 +266,15 @@ bench artifacts, the simulator output, and the resulting
 | Example | Parallelism | Workload (300 reqs) | TTFT mean | TPOT mean | Latency mean |
 | --- | --- | --- | --- | --- | --- |
 | `RTX4090/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.5% | +0.4% | +0.5% |
-| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +1.0% | +0.1% | +0.3% |
-| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -1.0% | -0.7% | -0.8% |
-| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | -1.1% | +0.2% | +0.1% |
+| `RTXPRO6000/Llama-3.1-8B` | TP=1 dense | `sharegpt-llama-3.1-8b-300-sps10.jsonl` | +0.7% | +0.3% | +0.4% |
+| `RTXPRO6000/Qwen3-32B` | TP=2 dense | `sharegpt-qwen3-32b-300-sps10.jsonl` | -0.2% | +0.2% | +0.1% |
+| `RTXPRO6000/Qwen3-30B-A3B-Instruct-2507` | DP=2, EP=2 MoE | `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | -0.2% | -0.3% | -0.3% |
 
-The dense RTXPRO6000 bundles include broader measured skew geometry and
-reference-aligned calibration. Check all fifteen statistics, not just these
-means: all headline examples are within 5% on every statistic, with the MoE
-example's largest displayed absolute error at 2.6%. Additional stored diagnostics
+Check all fifteen statistics, not just these means. The largest absolute
+errors for the RTXPRO6000 Llama, Qwen3-32B and Qwen3-30B references are
+0.682%, 0.456% and 1.197%, respectively. These results cover the recorded
+workloads and deployment scopes, not every acquired TP or MoE deployment.
+Additional stored diagnostics
 include a reduced DeepSeek model with larger errors. See the public validation page
 for those results and the limits of these workload-specific comparisons.
 
@@ -301,8 +304,17 @@ and its own `config.json`. Both wrappers discover `*/*/config.json` rather
 than a fixed model list; additional stored diagnostics are included too.
 `BLOCK_SIZE` overrides the recorded `kv_cache.block_size`; otherwise the
 recorded value is passed to the simulator. If it is missing, the wrapper
-omits `--block-size` and lets the simulator resolve its default. Thus the
-simulator runs against the exact same workload and engine configuration
-as the original vLLM bench. To regenerate the vLLM side from scratch,
+omits `--block-size` and lets the simulator resolve its default. Published
+examples use repository-relative dataset paths and equivalent canonical model
+identifiers in place of machine-local paths. The instance config supplies
+the target graph policy and memory settings; the wrapper does not reconstruct
+every engine option from metadata. Llama and Qwen3-32B use `mem_util: 0.92`;
+Qwen3-30B matches 38,256 recorded KV blocks per rank with
+`mem_util: 0.9043190002441406`, while its benchmark retains the recorded 0.92.
+To regenerate the vLLM side from scratch,
 use `bench/bench.sh` (or `python -m bench run`) from inside the vLLM
 container.
+
+Apart from portable dataset and local model path identifiers, adopted outputs
+retain their emitted values and rows, including measurements, engine settings,
+hashes, validation results and logs.

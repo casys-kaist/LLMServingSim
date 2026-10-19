@@ -96,6 +96,8 @@ The hardware file retains raw graphed and isolated timings, the timing source,
 fit version and assumptions, and per-size/per-collective residuals. The legacy
 key `bandwidth_gbps` is retained, but `bandwidth_unit: GiB/s` makes its actual
 unit explicit. Inherited defaults also record their units.
+The bundled hardware file preserves the measured output unchanged, including
+its raw samples and residual arrays.
 
 A retained-data bandwidth refresh can instead hold an independently calibrated
 latency fixed. The bundled post-configuration-change RTXPRO6000 calibration uses

@@ -473,6 +473,19 @@ does not fit coefficients against model benchmarks. See the
 for the formulas, assumptions and saved metadata. Updating the code alone
 does not rewrite existing hardware measurements or defaults.
 
+The refreshed RTXPRO6000 Llama-3.1-8B, Qwen3-32B and Qwen3-30B bundles
+contain vLLM 0.31.0 acquisition data at TP1 and TP2, including the TP1 sources
+for stable entries. Qwen3-30B also includes native TP1/DP1/EP1 and TP1/DP2/EP2
+component data. Generated `meta.yaml` preserves emitted values except portable
+identifiers for environment-dependent paths; temporary sharded-model identifiers
+retain their TP-shape semantics. Per-TP records describe the measurements and
+matching runtime tables without pruning acquisition records or changing settings.
+The retained Qwen3-30B whole-block `moe.csv` remains a historical fallback.
+Eager CUDA activity measurements are separate from target serving graph settings.
+Headline accuracy covers Llama TP1, Qwen3-32B TP2 and Qwen3-30B TP1/DP2/EP2;
+the other acquisition scopes require separate end-to-end validation. See the
+[recorded comparisons](../docs/docs/validation.md).
+
 **Two GPUs are the floor** — a link has two ends. On a single-GPU machine the
 command still writes the spec section, records `interconnect: null` with the
 reason, and **exits non-zero** so a script notices. A cluster config on that
