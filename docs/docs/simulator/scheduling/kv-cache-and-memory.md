@@ -256,9 +256,13 @@ full-attention layer is 1/16.
 
 Where `kv_fp` is:
 
-- 2 bytes for `bfloat16` / `float16` — the checkpoint's weight dtype,
-  which the KV cache inherits unless the config says otherwise; 4 for
-  `float32`.
+- 2 bytes for `bfloat16` / `float16` — the checkpoint's floating dtype
+  (`torch_dtype` / `dtype`), which the KV cache inherits unless the config
+  says otherwise; 4 for `float32`. On a weight-only quantized checkpoint
+  that is the activation dtype, not the quantized weight dtype:
+  DeepSeek-R1's fp8 weights keep a bf16 cache. Sparse-MLA models
+  (`index_topk`, DeepSeek-V3.2 and GLM-5) are the exception and keep the
+  weight dtype, because vLLM picks their cache format per attention backend.
 - **1 byte when the checkpoint declares an fp8 KV cache**
   (`quantization_config.kv_cache_scheme` or `kv_cache_quant_algo`),
   which halves KV memory against

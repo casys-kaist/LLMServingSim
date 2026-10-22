@@ -9,7 +9,7 @@ from .utils import (
 )
 import pandas as pd
 import yaml
-from .memory_model import calculate_sizes
+from .memory_model import calculate_sizes, kv_element_bytes
 from .communication import dtype_bytes, vocab_shard_size
 from .gate_function import GateRouter
 from .config_builder import get_device
@@ -1235,7 +1235,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         enable_attn_offloading=enable_attn_offloading,
         power_model=power_model, pim_model=pim_model, pim_channels=pim_channels,
         n_head=n_head, kv_head=kv_head, head_dim=head_dim, is_moe=is_moe,
-        kv_fp=(1 if kv_cache_dtype == 'fp8' else fp),
+        kv_fp=kv_element_bytes(config, fp, kv_cache_dtype),
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         dp_rank=dp_rank,

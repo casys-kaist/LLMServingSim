@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
+## [Unreleased]
+
+### Fixed
+
+- Size the KV cache of a weight-only quantized checkpoint at its activation
+  dtype, as vLLM's `auto` does. An FP8-weight, bf16-activation checkpoint was
+  given a 1-byte cache, half its real footprint. Declared KV schemes and
+  sparse-MLA models (`index_topk`) are unchanged, and no shipped configuration
+  moves. See [KV cache and memory](https://llmservingsim.ai/docs/simulator/scheduling/kv-cache-and-memory).
+
 ## [v1.3.0] - 2026-10-19
 
 Version 1.3.0 upgrades profiling and benchmarking to vLLM 0.31.0 / CUDA 13
