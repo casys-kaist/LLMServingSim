@@ -3061,9 +3061,11 @@ emitted, and the stacks are 60-78 deep.
   (`cd astra-sim/extern/graph_frontend/chakra && pip3 install .`)
 - **Don't commit large files**: generated traces, `.et` files and scratch run
   output are gitignored (`outputs/*` with `!outputs/example_*.csv`,
-  `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run unless you
-  pass `--keep-inputs` (or `--save-trace-text`, which implies it), either of
-  which can leave gigabytes behind
+  `bench/results/`). `astra-sim/inputs/runs/` is cleaned per run, and each
+  batch's workload folder already during the run once `pp_size + 1` newer ones
+  of the same instance or DP group have been handed out, unless you pass
+  `--keep-inputs` (or `--save-trace-text`, which implies it), either of which
+  can leave gigabytes behind
 - **Don't use machine-specific absolute paths** in configs or code — use relative paths
   rooted at the repo
 - **Don't add `getattr` fallbacks** for Request attributes — initialize all attributes

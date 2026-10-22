@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
+## [Unreleased]
+
+### Fixed
+
+- Delete each batch's ASTRA-Sim workload folder during the run, once
+  `pp_size + 1` newer ones of the same instance or DP group have been handed
+  out, instead of keeping every batch's graph until the end. A long simulation's
+  inputs no longer grow with its batch count. `--keep-inputs` and
+  `--save-trace-text` keep everything as before, and simulated clocks are
+  unchanged. See the [request lifecycle](https://llmservingsim.ai/docs/simulator/request-lifecycle).
+
 ## [v1.3.0] - 2026-10-19
 
 Version 1.3.0 upgrades profiling and benchmarking to vLLM 0.31.0 / CUDA 13
