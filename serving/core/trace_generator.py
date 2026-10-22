@@ -1464,15 +1464,18 @@ def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
     """Compute TP communication size. Returns (comm_size, comm_type)."""
     if ctx.tp_size <= 1:
         return 0, 'NONE'
+    # What crosses the link is the layer's output activation, so its width is
+    # the activation dtype whatever the weights are stored in: on an FP8
+    # checkpoint (DeepSeek-R1) o_proj and down_proj still reduce bf16.
+    element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
     entry = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {})
     if entry.get("tp_output_reduction") == "all_reduce":
         # RowParallelLinear reduces the full hidden-state output, not its
-        # sharded input. Activation precision is independent of weight dtype.
-        element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
+        # sharded input.
         _, _, out = calculate_sizes(ctx.model, layer_name, total_len,
                                     parallel=ctx.tp_size, fp=element_bytes)
         return out, 'ALLREDUCE'
-    _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=ctx.fp)
+    _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=element_bytes)
     return out, collective
 
 

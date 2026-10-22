@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
   given a 1-byte cache, half its real footprint. Declared KV schemes and
   sparse-MLA models (`index_topk`) are unchanged, and no shipped configuration
   moves. See [KV cache and memory](https://llmservingsim.ai/docs/simulator/scheduling/kv-cache-and-memory).
+- Size every dense TP all-reduce (`o_proj`, `down_proj`) at the activation
+  dtype. On a weight-only quantized checkpoint they were sized at the weight
+  dtype, half the bytes vLLM reduces; only declared `tp_output_reduction`
+  entries had the activation dtype. Unquantized checkpoints and the shipped
+  TP1 FP8 scenarios are unchanged. See
+  [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
 
 ## [v1.3.0] - 2026-10-19
 

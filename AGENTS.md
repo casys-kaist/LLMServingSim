@@ -2199,7 +2199,8 @@ use an absolute path when selecting a separate intermediate directory.
 ASTRA-Sim's data-size convention depends on the collective: AllReduce and
 ReduceScatter take the full pre-partition tensor; AllGather takes a local chunk.
 Ring divides the former by its rank count, not the AllGather chunk.
-- ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
+- ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size at
+  activation dtype. An FP8-weight checkpoint still reduces its bf16 output
 - Dense `tp_output_reduction: all_reduce` entries reduce their full projection
   output at activation dtype, not the sharded input. For Qwen `gdn_out_proj`,
   that is effective token rows × hidden size × activation bytes.
