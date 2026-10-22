@@ -44,9 +44,10 @@ When `tp_size > 1`, the trace generator attaches an ALLREDUCE
 - Catalogued `tp_output_reduction: all_reduce` projections, such as GDN's `gdn_out_proj`
 
 Each computes a partial hidden-state output that must be summed across TP ranks.
-For a declared reduction, the payload is the full projection output at activation
-dtype, not the sharded input or quantized weight size. For Qwen's `gdn_out_proj`,
-this is effective token rows × hidden size × activation bytes. TP1 emits none.
+The payload is the full projection output at activation dtype, not the sharded
+input or quantized weight size: an FP8-weight checkpoint with bf16 activations
+reduces 2 bytes per element. For Qwen's `gdn_out_proj`, this is effective token
+rows × hidden size × activation bytes. TP1 emits none.
 
 The `comm_size` on each ALLREDUCE is the full output tensor size
 (not per-rank, ASTRA-Sim divides internally based on
