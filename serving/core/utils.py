@@ -204,8 +204,9 @@ def config_kv_cache_dtype(config):
     ``kv_cache_scheme``, a dict; ModelOpt writes ``kv_cache_quant_algo``, a
     string (``modelopt.py:287`` and ``:300``, which maps a
     ``type: float, num_bits: 8`` scheme onto the string form). A weight-only
-    quantized checkpoint -- DeepSeek-V3.2-Exp is one -- declares neither and
-    keeps an unquantized KV cache, so fp8 *weights* do not imply an fp8 cache.
+    quantized checkpoint -- DeepSeek-R1 is one -- declares neither and keeps
+    an unquantized KV cache, so fp8 *weights* do not imply an fp8 cache;
+    ``memory_model.kv_element_bytes`` sizes it.
     """
     quant = config.get("quantization_config")
     if not isinstance(quant, dict):

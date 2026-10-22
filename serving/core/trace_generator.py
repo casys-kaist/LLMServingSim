@@ -9,7 +9,7 @@ from .utils import (
 )
 import pandas as pd
 import yaml
-from .memory_model import calculate_sizes
+from .memory_model import calculate_sizes, kv_element_bytes
 from .communication import dtype_bytes, vocab_shard_size
 from .gate_function import GateRouter
 from .config_builder import get_device
@@ -1235,7 +1235,7 @@ def _build_trace_ctx(hardware, model, config, tp_size, pp_size, local_ep, ep_tot
         enable_attn_offloading=enable_attn_offloading,
         power_model=power_model, pim_model=pim_model, pim_channels=pim_channels,
         n_head=n_head, kv_head=kv_head, head_dim=head_dim, is_moe=is_moe,
-        kv_fp=(1 if kv_cache_dtype == 'fp8' else fp),
+        kv_fp=kv_element_bytes(config, fp, kv_cache_dtype),
         pd_type=pd_type,
         tp_size=tp_size, pp_size=pp_size, local_ep=local_ep, ep_total=ep_total,
         dp_rank=dp_rank,
@@ -1464,15 +1464,18 @@ def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
     """Compute TP communication size. Returns (comm_size, comm_type)."""
     if ctx.tp_size <= 1:
         return 0, 'NONE'
+    # What crosses the link is the layer's output activation, so its width is
+    # the activation dtype whatever the weights are stored in: on an FP8
+    # checkpoint (DeepSeek-R1) o_proj and down_proj still reduce bf16.
+    element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
     entry = ctx.perf_db["architecture"]["catalog"].get("dense", {}).get(layer_name, {})
     if entry.get("tp_output_reduction") == "all_reduce":
         # RowParallelLinear reduces the full hidden-state output, not its
-        # sharded input. Activation precision is independent of weight dtype.
-        element_bytes = dtype_bytes(ctx.config.get('torch_dtype', ctx.config.get('dtype')), ctx.fp)
+        # sharded input.
         _, _, out = calculate_sizes(ctx.model, layer_name, total_len,
                                     parallel=ctx.tp_size, fp=element_bytes)
         return out, 'ALLREDUCE'
-    _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=ctx.fp)
+    _, _, out = calculate_sizes(ctx.model, layer_name, total_len, parallel=ctx.tp_size, fp=element_bytes)
     return out, collective
 
 

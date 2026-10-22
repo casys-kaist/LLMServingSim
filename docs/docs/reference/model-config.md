@@ -83,7 +83,7 @@ per-rank MoE work and EP collective size. See
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `torch_dtype` / `dtype` | string | Floating dtype, read legacy spelling first. There is no simulator `--dtype` flag. `quantization_config.quant_method` wins for weight precision when present; the floating dtype then describes activations |
+| `torch_dtype` / `dtype` | string | Floating dtype, read legacy spelling first. There is no simulator `--dtype` flag. `quantization_config.quant_method` wins for weight precision when present; the floating dtype then describes activations, and the KV cache unless a KV scheme is declared (sparse-MLA models with `index_topk` excepted) |
 | `quantization_config.kv_cache_scheme` / `.kv_cache_quant_algo` | dict / string | Declares an **fp8 KV cache**. The only way to get one, since there is no `--kv-cache-dtype`. Mirrors vLLM's promotion at `attention.py:281` |
 | `mamba_cache_dtype` | string | Conv-state dtype. `auto` (the default) means the weight dtype |
 | `mamba_ssm_dtype` | string | Recurrent-state dtype. `auto` means the **conv** dtype, not the weight dtype. Qwen3.8-27B declares `float32`, and the recurrent state is 98% of the per-sequence state, so reading this wrong halves it |

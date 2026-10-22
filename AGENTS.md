@@ -2030,7 +2030,7 @@ holds the whole table; every rule below is vLLM's, verified against its source:
 | Cache | Source | vLLM |
 |-------|--------|------|
 | weights | `quantization_config.quant_method`, then `torch_dtype` / `dtype` | on a quantized checkpoint the dtype fields are the *activation* dtype |
-| KV cache | `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` → fp8 | `attention.py:281` promotes exactly this when the flag is `auto` |
+| KV cache | `quantization_config.kv_cache_scheme` / `kv_cache_quant_algo` → fp8, otherwise `torch_dtype` / `dtype` (the *activation* dtype on a weight-only quantized checkpoint) | `attention.py:281` promotes a declared scheme when the flag is `auto`; otherwise `auto` is `model_config.dtype` (`platforms/interface.py`), so DeepSeek-R1's fp8 weights keep a bf16 cache. Sparse-MLA models (`index_topk`) keep the weight dtype: vLLM picks their format per backend (`fp8_ds_mla` on SM120) |
 | mamba conv state | `mamba_cache_dtype`, `auto` → weight dtype | `mamba_utils.py::_mamba_state_dtype` |
 | mamba recurrent state | `mamba_ssm_dtype`, `auto` → **conv** dtype (not the weight dtype) | same, plus `models/config.py::Qwen3_5ForConditionalGenerationConfig` bridging the HF field |
 | sparse-indexer side cache | fixed by the model | DeepSeek/GLM `torch.uint8`, M3 `resolve_indexer_kv_dtype("bf16")` — neither follows the KV dtype |
@@ -2199,7 +2199,8 @@ use an absolute path when selecting a separate intermediate directory.
 ASTRA-Sim's data-size convention depends on the collective: AllReduce and
 ReduceScatter take the full pre-partition tensor; AllGather takes a local chunk.
 Ring divides the former by its rank count, not the AllGather chunk.
-- ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size
+- ALLREDUCE on `o_proj` and `down_proj`: pass full output tensor size at
+  activation dtype. An FP8-weight checkpoint still reduces its bf16 output
 - Dense `tp_output_reduction: all_reduce` entries reduce their full projection
   output at activation dtype, not the sharded input. For Qwen `gdn_out_proj`,
   that is effective token rows × hidden size × activation bytes.
