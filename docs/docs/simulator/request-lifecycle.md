@@ -174,8 +174,11 @@ Full mechanics on **[Trace generation](./trace-generation)**.
 handing it the trace rows, producing
 `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
 An identical trace reuses the graph it already converted. Chakra workloads
-remain available while ASTRA-Sim consumes them; the run directory is removed
-after a successful simulation unless `--keep-inputs` is set.
+remain available while ASTRA-Sim consumes them. A batch's folder is deleted
+once `pp_size + 1` newer folders of the same instance or DP group have been
+handed out, since an instance holds at most `pp_size` batches in flight, and
+the run directory is removed after a successful simulation. `--keep-inputs`
+keeps both.
 
 The Chakra converter creates:
 

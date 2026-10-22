@@ -10,6 +10,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Delete each batch's ASTRA-Sim workload folder during the run, once
+  `pp_size + 1` newer ones of the same instance or DP group have been handed
+  out, instead of keeping every batch's graph until the end. A long simulation's
+  inputs no longer grow with its batch count. `--keep-inputs` and
+  `--save-trace-text` keep everything as before, and simulated clocks are
+  unchanged. See the [request lifecycle](https://llmservingsim.ai/docs/simulator/request-lifecycle).
 - Size the KV cache of a weight-only quantized checkpoint at its activation
   dtype, as vLLM's `auto` does. An FP8-weight, bf16-activation checkpoint was
   given a 1-byte cache, half its real footprint. Declared KV schemes and

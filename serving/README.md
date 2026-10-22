@@ -527,7 +527,9 @@ ASTRA-Sim input files under `astra-sim/inputs/runs/<run_id>/`: `network/network.
 `memory/memory_expansion.json`, and `system/system.json`.
 Per-iteration text traces are not produced at all by default -- the Chakra
 converter takes the trace rows straight from the trace generator -- and the
-generated run directory is removed after a successful simulation. Use
+generated run directory is removed after a successful simulation. Each batch's
+workload folder is already deleted during the run, once `pp_size + 1` newer ones
+of the same instance or DP group have been handed to ASTRA-Sim. Use
 `--save-trace-text` to write the text for inspection (it implies `--keep-inputs`),
 or `--keep-inputs` alone to preserve the Chakra workloads and input configs.
 For DP groups, generates a multi-dimensional network topology, innermost dimension
