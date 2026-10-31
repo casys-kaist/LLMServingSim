@@ -174,8 +174,21 @@ class ReadyResponseCapture:
         parallel = cfg.parallel_config
         if client.vllm_config is not cfg:
             raise ValueError("client and frontend configurations differ")
+        singleton_local_rank = (
+            parallel.data_parallel_rank_local is not None
+            and all(_integer(value) and value == expected for value, expected in (
+                (parallel.data_parallel_size, 1),
+                (parallel.tensor_parallel_size, 1),
+                (parallel.pipeline_parallel_size, 1),
+                (parallel.data_parallel_rank_local, 0),
+                (parallel.data_parallel_rank, 0),
+                (parallel.nnodes, 1),
+                (parallel.node_rank, 0),
+            ))
+            and not parallel.data_parallel_hybrid_lb
+        )
         if (parallel.data_parallel_external_lb or parallel.local_engines_only
-                or parallel.data_parallel_rank_local is not None
+                or (parallel.data_parallel_rank_local is not None and not singleton_local_rank)
                 or parallel.enable_elastic_ep or parallel.enable_fault_tolerance):
             raise ValueError("external, local-only, offline or dynamic topology is unsupported")
         dp = parallel.data_parallel_size

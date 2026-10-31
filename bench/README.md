@@ -168,13 +168,14 @@ summary into a subdirectory of the bench run.
 
 `validate.sh` sets `--output-subdir`, `--title` and `--log-level` from the
 `OUTPUT_SUBDIR` / `TITLE` / `LOG_LEVEL` environment variables. The module
-itself takes all seven directly:
+itself accepts the options below directly:
 
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--bench-dir` | required | a finished `bench run` output directory |
 | `--sim-csv` | required | simulator `--output` CSV |
 | `--sim-log` | required | simulator stdout, parsed for per-tick running / waiting |
+| `--strict-workload` | unset | Check declared input eligibility against this workload before plotting |
 | `--output-subdir` | `validation` | subdirectory under `--bench-dir` |
 | `--prefix` | `""` | filename prefix for plots and summary |
 | `--title` | `vLLM vs LLMServingSim` | plot title suffix |
@@ -332,3 +333,27 @@ but its resolved capacity must still be verified.
 Apart from portable dataset and local model path identifiers, adopted outputs
 retain their emitted values and rows, including measurements, engine settings,
 hashes, validation results and logs.
+
+## Strict recorded-run comparison
+
+Pass `--strict-workload workloads/<dataset>.jsonl` to `python -m bench validate`
+to check declared whole-workload request correspondence before rendering plots.
+Metadata is required; capped/subset replays are not supported by this audit. Ineligible
+inputs return exit code 2 with all detected errors; no new comparison report is
+generated. Omitting the option retains the existing comparison behavior.
+
+Numeric representations must be accepted by the downstream readers. Native
+latencies are checked for finite, nonnegative values using the report
+implementation, including its existing clock conversion.
+
+The check binds metadata to the workload hash and verifies IDs, declared model
+and token counts, scheduled simulator arrivals, finite ordered lifecycle times
+and simulator duration identities. It does not certify actual returned tokens,
+clock synchronization, matching batches/cache state, native fault labels or
+online prediction. See the [CLI reference](https://llmservingsim.ai/docs/reference/bench-cli).
+
+The native READY collector also admits the fully observed TP1/PP1/DP1
+single-node rank-zero path when vLLM sets the local DP rank to zero. The same
+client identity, engine coverage, response decoding and capacity-sum checks
+apply. Other explicit local-rank topologies remain unsupported; no engine
+configuration or request timing path is changed.

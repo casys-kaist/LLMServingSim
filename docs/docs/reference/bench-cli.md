@@ -195,6 +195,12 @@ scheduler-pool counts, not tensor traffic or physical per-GPU memory measurement
 The simulator does not model the activation peak, so equal `mem_util` values do
 not ensure equal capacity; see **[KV cache and memory](/docs/simulator/scheduling/kv-cache-and-memory)**.
 
+The complete single-node TP1/PP1/DP1 path accepts an explicitly supplied local
+DP rank zero only when the global rank, native client and sole managed engine
+also identify rank zero. Hybrid/external load balancing, local-only and dynamic
+topologies remain unsupported. This adds observation scope without changing
+engine configuration or the request path.
+
 The observer retains bounded native READY payloads only while `AsyncLLM`
 constructs, restoring its callback before decoding or request submission. No
 worker RPC or request instrumentation is added. Unsupported callback/response
@@ -219,6 +225,26 @@ for the same workload, derives TTFT / TPOT / end-to-end latency on both
 sides under matched definitions, and writes plots and a numeric summary
 into a subdirectory of the bench run.
 
+### Optional strict workload check
+
+Add `--strict-workload workloads/<dataset>.jsonl` to require declared request
+correspondence before plotting. This mode requires metadata and a whole-workload
+comparison; capped or subset replays are outside its supported scope. The check binds the recorded workload hash and
+verifies IDs, declared token counts/model, scheduled simulator arrivals, finite
+ordered timestamps and duration arithmetic. Invalid inputs return exit code 2
+with detected errors and generate no new reports. Without this option, the
+existing legacy-compatible comparison behavior is unchanged.
+
+Native JSON numeric fields must be JSON numbers, and simulator token counts
+must use the integer syntax accepted by the CSV reader. Derived native
+latencies must be finite and nonnegative under the existing report conversion.
+
+This is an offline input check. It does not attest actual returned token counts,
+simulator token identities, matching batches/cache state, clock synchronization
+or prospective fault detection. Latency computation retains the existing
+upstream definitions and clock-offset estimate.
+
+
 ### Required
 
 | Flag | Type | Description |
@@ -231,6 +257,7 @@ into a subdirectory of the bench run.
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--strict-workload` | path | unset | Check declared input eligibility against this workload before plotting |
 | `--output-subdir` | string | `validation` | Subdirectory under `--bench-dir` for plots and summary |
 | `--prefix` | string | `""` | Filename prefix for the generated files |
 | `--title` | string | `vLLM vs LLMServingSim` | Plot title suffix |
