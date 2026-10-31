@@ -36,6 +36,9 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    help="Simulator per-request CSV output.")
     p.add_argument("--sim-log", required=True, dest="sim_log",
                    help="Simulator log (parsed for per-tick running/waiting).")
+    p.add_argument("--strict-workload", metavar="JSONL",
+                   help="Require matching request IDs, workload hash, token/model declarations, "
+                        "arrivals and timestamp consistency before generating reports.")
     p.add_argument("--output-subdir", default="validation",
                    dest="output_subdir",
                    help="Subdirectory under bench-dir to write plots/summary "
@@ -58,6 +61,13 @@ def run(args: argparse.Namespace) -> int:
     )
 
     bench_dir = Path(args.bench_dir)
+    strict_workload = getattr(args, "strict_workload", None)
+    if strict_workload is not None:
+        from bench.core.comparison_audit import audit_comparison
+        audit = audit_comparison(bench_dir, args.sim_csv, strict_workload)
+        if not audit["eligible"]:
+            log.error("Strict comparison rejected: %s", json.dumps(audit["errors"]))
+            return 2
     _require_e2e_control(bench_dir)
     output_dir = bench_dir / args.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)

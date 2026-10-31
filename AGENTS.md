@@ -2895,6 +2895,13 @@ callback signature and response fields; exact version equality is not required.
 These startup scheduler-pool facts neither measure physical per-GPU allocation
 nor track later elastic changes. Do not relabel historical benchmark metadata.
 
+The optional `bench validate --strict-workload` audit checks declared request
+correspondence before plots are written. Match downstream numeric parsing and
+check derived latencies with the shared report implementation; do not change the default path or
+claim actual-token, clock, batch/cache or online guarantees. The singleton READY
+exception is limited to TP1/PP1/DP1 on one node with global/local rank zero;
+retain all native identity, complete coverage, decoding and sum checks.
+
 Use `bench/core/validate.py::_bench_latencies`, the implementation shared by
 `bench validate` and committed summaries, rather than ad hoc metric formulas.
 

@@ -34,6 +34,12 @@ separately below; it is not included in the four headline configurations.
 > **[For Contributors → Validating your changes](/docs/contributor/validating-changes)**
 > for the regression workflow.
 
+For optional declared-input checks before numerical comparison, use
+`bench validate --strict-workload` as described in the
+[bench CLI reference](/docs/reference/bench-cli). A successful numerical report
+alone is not an input-integrity certificate; strict eligibility is not a
+prediction-accuracy or online-validity guarantee.
+
 ## Setup
 
 | Knob | Value |

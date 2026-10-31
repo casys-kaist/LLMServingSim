@@ -32,6 +32,8 @@ LLMServingSim is a cycle-level simulator for LLM serving infrastructure. It pair
 
 ## Getting Started
 
+Recorded-run comparison supports optional strict workload checks; see the [bench CLI guide](https://llmservingsim.ai/docs/reference/bench-cli).
+
 ```bash
 git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
 cd LLMServingSim

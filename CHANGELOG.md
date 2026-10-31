@@ -5,7 +5,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Added
+
+- Add optional strict workload checks before recorded native/simulator comparisons.
+  Ineligible declared inputs return exit code 2 before plots are generated;
+  numeric representations must match the readers, and derived native latency
+  must be finite and nonnegative. Default behavior and metric definitions are
+  unchanged. See the
+  [bench CLI](https://llmservingsim.ai/docs/reference/bench-cli).
+
 ### Fixed
+
+- Recognize the fully observed single-node TP1/PP1/DP1 READY path when vLLM
+  supplies local DP rank zero. Native identity, engine coverage, response and
+  capacity checks remain required; unsupported topologies remain unknown.
 
 - Delete each batch's ASTRA-Sim workload folder during the run, once
   `pp_size + 1` newer ones of the same instance or DP group have been handed
