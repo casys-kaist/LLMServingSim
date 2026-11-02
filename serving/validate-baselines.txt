@@ -45,7 +45,7 @@ moe_dp_tp_pp 1730954266
 dual_node_moe_dp_ep 1475884259
 dp_pp_uneven 14587370533
 moe_dp_pp_uneven 8771488360
-moe_dp_tp_pp_uneven 11598613521
+moe_dp_tp_pp_uneven 11598613574
 moe_dp_ep_uneven 15970244339
 pd 1662365757
 pd_per_instance_config 1662365757

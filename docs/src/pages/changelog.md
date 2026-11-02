@@ -10,6 +10,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Fixed
 
+- Delay an ASTRA-Sim instance's tail-rank completion report until every rank
+  has completed the same workload iteration. Rank-local work after the final
+  TP collective can no longer let faster boundary ranks retire a batch, free
+  its scheduler state and under-report latency while a middle rank is still
+  running. PP lookahead remains available because ranks already executing a
+  later iteration count as complete for earlier iterations. See
+  [parallelism mechanics](https://llmservingsim.ai/docs/simulator/parallelism-mechanics).
 - Delete each batch's ASTRA-Sim workload folder during the run, once
   `pp_size + 1` newer ones of the same instance or DP group have been handed
   out, instead of keeping every batch's graph until the end. A long simulation's
