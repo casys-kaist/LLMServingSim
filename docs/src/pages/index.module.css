@@ -4,7 +4,7 @@
  */
 
 .heroBanner {
-  padding: 6rem 0 5rem;
+  padding: 4rem 0 2rem;
   text-align: center;
   position: relative;
   overflow: hidden;
@@ -65,3 +65,224 @@
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
+/* Two-project split: LLMServingSim (manual, verified) vs Simthesizer
+   (automatic, fast). Each half fills the viewport width equally and
+   stacks vertically on narrow screens. */
+.split {
+  --manual-accent: #4f46e5;
+  --manual-tint: rgba(79, 70, 229, 0.07);
+  --auto-accent: #0d9488;
+  --auto-tint: rgba(13, 148, 136, 0.08);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .split {
+  --manual-accent: #818cf8;
+  --manual-tint: rgba(129, 140, 248, 0.10);
+  --auto-accent: #2dd4bf;
+  --auto-tint: rgba(45, 212, 191, 0.09);
+}
+
+.panel {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 3rem 3rem 3rem;
+}
+
+.panelManual {
+  background: var(--manual-tint);
+  border-right: 1px solid var(--ifm-color-emphasis-200);
+  --accent: var(--manual-accent);
+  --tint: var(--manual-tint);
+}
+
+.panelAuto {
+  background: var(--auto-tint);
+  --accent: var(--auto-accent);
+  --tint: var(--auto-tint);
+}
+
+.panelInner {
+  max-width: 520px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.panelEyebrow {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+}
+
+.panelTitle {
+  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  letter-spacing: -0.02em;
+  margin-bottom: 1.25rem;
+}
+
+.panelLead {
+  font-size: 1.2rem;
+  line-height: 1.55;
+  color: var(--ifm-color-emphasis-800);
+  margin-bottom: 1.75rem;
+}
+
+/* "Choose X when ..." callout. Pushed to the bottom of the panel so the
+   callouts and buttons line up across both halves regardless of how long
+   each lead paragraph is. */
+.panelChoose {
+  margin-top: auto;
+  margin-bottom: 2rem;
+  width: 100%;
+  padding: 1rem 1.25rem;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--ifm-background-color);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.panelChooseLabel {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.panelChooseText {
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ifm-color-emphasis-900);
+  margin: 0;
+  min-height: 3em;
+}
+
+.panelButtons {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btnManual,
+.btnAuto {
+  color: #fff;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+}
+
+[data-theme='dark'] .btnManual,
+[data-theme='dark'] .btnAuto {
+  color: #0b0b12;
+}
+
+.btnManual:hover,
+.btnAuto:hover {
+  color: #fff;
+  filter: brightness(1.08);
+}
+
+[data-theme='dark'] .btnManual:hover,
+[data-theme='dark'] .btnAuto:hover {
+  color: #0b0b12;
+}
+
+.btnGhost {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  background: transparent;
+}
+
+.btnGhost:hover {
+  color: var(--accent);
+  background: var(--tint);
+}
+
+@media screen and (max-width: 996px) {
+  .split {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .panel {
+    padding: 3rem 1.5rem;
+  }
+
+  .panelManual {
+    border-right: none;
+    border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  }
+}
+
+/* Announcement strip directly above the two-project split. */
+.newsBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.9rem;
+  padding: 0.9rem 1.5rem;
+  background: #fde047;
+  color: #422006;
+  border-top: 1px solid #facc15;
+  font-size: 1.05rem;
+  text-align: center;
+  transition: background 0.15s ease;
+}
+
+.newsBanner:hover {
+  background: #fcd34d;
+  color: #422006;
+  text-decoration: none;
+}
+
+[data-theme='dark'] .newsBanner {
+  background: #facc15;
+  color: #1c1917;
+  border-top-color: #eab308;
+}
+
+[data-theme='dark'] .newsBanner:hover {
+  background: #fbbf24;
+  color: #1c1917;
+}
+
+.newsBadge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: #422006;
+  color: #fde047;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+[data-theme='dark'] .newsBadge {
+  background: #1c1917;
+  color: #facc15;
+}
+
+.newsText strong {
+  font-weight: 800;
+}
+
+.newsCta {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+

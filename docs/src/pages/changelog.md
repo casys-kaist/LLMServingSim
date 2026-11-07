@@ -8,6 +8,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ## [Unreleased]
 
+### Added
+
+- Announce Simthesizer on the website's landing page. A news banner and a
+  two-panel split below the hero compare LLMServingSim 2.0, which is
+  expert-verified for detailed performance and bottleneck analysis, with
+  [Simthesizer](https://simthesizer.ai/), an LLM serving simulator structured
+  for coding agents to extend, for quickly exploring and simulating new ideas.
+
 ### Fixed
 
 - Delay an ASTRA-Sim instance's tail-rank completion report until every rank

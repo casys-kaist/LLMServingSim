@@ -91,7 +91,7 @@ docs/
 │   ├── reference/             includes the bench CLI reference
 │   └── contributor/
 ├── src/
-│   ├── pages/index.tsx         landing page (Hero + feature cards)
+│   ├── pages/index.tsx         landing page (hero, news banner, project split, feature cards)
 │   ├── pages/index.module.css  landing page styles
 │   ├── components/
 │   │   └── HomepageFeatures/   the four feature cards on the landing page
@@ -157,10 +157,13 @@ default with a CSS `invert(1) hue-rotate(180deg)` filter for dark mode.
 
 ## Editing the landing page
 
-- **Hero** (title, tagline, buttons): `src/pages/index.tsx`
+- **Hero** (wordmark, tagline, GitHub stats): `src/pages/index.tsx`
+- **News banner and project split** (the yellow announcement strip and the
+  LLMServingSim / Simthesizer panels with their buttons):
+  `NewsBanner` and `ProjectSplit` in `src/pages/index.tsx`.
 - **Feature cards** (the four icons + text below the hero):
   `src/components/HomepageFeatures/index.tsx` — edit the `FeatureList` array.
-- **Hero / card styles**: `src/pages/index.module.css` and
+- **Hero / banner / panel / card styles**: `src/pages/index.module.css` and
   `src/components/HomepageFeatures/styles.module.css`.
 - **Global colors / fonts**: `src/css/custom.css`.
 
