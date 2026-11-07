@@ -4,11 +4,67 @@ import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
+import {ArrowRight, Check} from 'lucide-react';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import GithubStats from '@site/src/components/GithubStats';
+import ValidationHighlights from '@site/src/components/ValidationHighlights';
 import Recognition from '@site/src/components/Recognition';
 
 import styles from './index.module.css';
+
+const LLMSERVINGSIM_REPO = 'https://github.com/casys-kaist/LLMServingSim';
+const SIMTHESIZER_SITE = 'https://simthesizer.ai/';
+const SIMTHESIZER_REPO = 'https://github.com/casys-kaist/Simthesizer';
+
+// Key points on each half of the project split. The 1.2% bound is the
+// largest "worst of 15" value in the headline table of docs/validation.md;
+// keep the two in sync when the committed bench examples are refreshed.
+const LLMSERVINGSIM_POINTS: ReactNode[] = [
+  <>
+    Validated against real vLLM with a max error of <strong>1.2%</strong>
+  </>,
+  <>
+    Detailed <strong>memory hierarchy</strong> and <strong>KV-cache</strong>{' '}
+    models
+  </>,
+  <>
+    Network simulation based on <strong>ASTRA-Sim</strong>
+  </>,
+  <>
+    Heterogeneous systems, including <strong>CXL</strong> and{' '}
+    <strong>PIM</strong>
+  </>,
+];
+
+const SIMTHESIZER_POINTS: ReactNode[] = [
+  <>
+    <strong>Coding-agent-friendly</strong> architecture
+  </>,
+  <>
+    <strong>Modular</strong> serving components
+  </>,
+  <>
+    <strong>Rapid prototyping</strong> of new models, policies and mechanisms
+  </>,
+];
+
+function PointList({points}: {points: ReactNode[]}) {
+  return (
+    <ul className={styles.points}>
+      {points.map((point, idx) => (
+        <li key={idx} className={styles.point}>
+          <Check
+            size={18}
+            strokeWidth={2.25}
+            className={styles.pointIcon}
+            aria-hidden="true"
+          />
+          <span>{point}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
@@ -18,93 +74,103 @@ function HomepageHeader() {
   return (
     <header className={clsx('hero', styles.heroBanner)}>
       <div className="container">
-        <img
-          src={wordmark}
-          alt={siteConfig.title}
-          className={styles.heroWordmark}
-        />
+        <h1 className={styles.heroTitle}>
+          <img
+            src={wordmark}
+            alt={siteConfig.title}
+            className={styles.heroWordmark}
+          />
+        </h1>
         <p className={styles.heroSubtitle}>{siteConfig.tagline}</p>
-        <GithubStats />
+        <GithubStats
+          action={
+            <Link
+              className={styles.heroAction}
+              to="/docs/getting-started/overview">
+              Get Started
+              <ArrowRight size={16} strokeWidth={2.25} aria-hidden="true" />
+            </Link>
+          }
+        />
       </div>
     </header>
   );
 }
 
-function NewsBanner() {
-  return (
-    <Link
-      className={styles.newsBanner}
-      href="https://github.com/casys-kaist/Simthesizer">
-      <span className={styles.newsBadge}>News!</span>
-      <span className={styles.newsText}>
-        We released a new project, <strong>Simthesizer</strong>: a
-        coding-agent-native LLM serving simulator.
-      </span>
-      <span className={styles.newsCta}>Check it out →</span>
-    </Link>
-  );
-}
-
 function ProjectSplit() {
   return (
-    <section className={styles.split} aria-label="Choose a simulator">
-      <div className={clsx(styles.panel, styles.panelManual)}>
+    <section
+      className={styles.split}
+      aria-label="LLMServingSim and Simthesizer">
+      <div className={clsx(styles.panel, styles.panelPrimary)}>
         <div className={styles.panelInner}>
-          <span className={styles.panelEyebrow}>Manual · Human-verified · Accurate</span>
+          <span className={styles.panelEyebrow}>
+            High-fidelity · Validated · Heterogeneous systems
+          </span>
           <h2 className={styles.panelTitle}>LLMServingSim 2.0</h2>
           <p className={styles.panelLead}>
-            Every model catalog, profiling contract and hardware fit is
-            written and reviewed by experts, then validated end to end
-            against real vLLM benchmark runs.
+            A full-stack LLM serving simulator grounded in real GPU
+            measurements, scaling from a single GPU to heterogeneous,
+            disaggregated clusters.
           </p>
-          <div className={styles.panelChoose}>
-            <span className={styles.panelChooseLabel}>Choose LLMServingSim when</span>
-            <p className={styles.panelChooseText}>
-              you need trustworthy numbers for detailed performance and
-              bottleneck analysis of your LLM serving system.
-            </p>
-          </div>
-          <div className={styles.panelButtons}>
-            <Link
-              className={clsx('button button--lg', styles.btnManual)}
-              to="/docs/getting-started/overview">
-              Get Started
-            </Link>
-            <Link
-              className={clsx('button button--lg', styles.btnGhost)}
-              href="https://github.com/casys-kaist/LLMServingSim">
-              GitHub
-            </Link>
+          <PointList points={LLMSERVINGSIM_POINTS} />
+          <div className={styles.panelFooter}>
+            <div className={styles.panelUse}>
+              <span className={styles.panelUseLabel}>Best for</span>
+              <p className={styles.panelUseText}>
+                Trustworthy numbers for detailed performance and bottleneck
+                analysis of your LLM serving system.
+              </p>
+            </div>
+            <div className={styles.panelButtons}>
+              <Link
+                className={clsx('button button--lg', styles.btnSolid)}
+                to="/docs/getting-started/overview">
+                Explore LLMServingSim
+              </Link>
+              <Link
+                className={clsx('button button--lg', styles.btnGhost)}
+                href={LLMSERVINGSIM_REPO}
+                aria-label="LLMServingSim on GitHub">
+                GitHub
+              </Link>
+            </div>
           </div>
         </div>
       </div>
-      <div className={clsx(styles.panel, styles.panelAuto)}>
+      <div className={clsx(styles.panel, styles.panelSibling)}>
         <div className={styles.panelInner}>
-          <span className={styles.panelEyebrow}>Coding-agent native · Automatic · Fast</span>
+          <span className={styles.panelEyebrow}>
+            Agent-native · Modular · Rapid prototyping
+          </span>
           <h2 className={styles.panelTitle}>Simthesizer</h2>
           <p className={styles.panelLead}>
-            An LLM serving simulator structured for coding agents to
-            extend: an agent can add new models, hardware and serving
-            features quickly.
+            An LLM serving simulator structured so that coding agents can
+            quickly add new models, hardware and serving features to one
+            shared, extensible codebase.
           </p>
-          <div className={styles.panelChoose}>
-            <span className={styles.panelChooseLabel}>Choose Simthesizer when</span>
-            <p className={styles.panelChooseText}>
-              you want to quickly explore your own ideas or requirements
-              and simulate them right away.
-            </p>
-          </div>
-          <div className={styles.panelButtons}>
-            <Link
-              className={clsx('button button--lg', styles.btnAuto)}
-              href="https://simthesizer.ai/">
-              Get Started
-            </Link>
-            <Link
-              className={clsx('button button--lg', styles.btnGhost)}
-              href="https://github.com/casys-kaist/Simthesizer">
-              GitHub
-            </Link>
+          <PointList points={SIMTHESIZER_POINTS} />
+          <div className={styles.panelFooter}>
+            <div className={styles.panelUse}>
+              <span className={styles.panelUseLabel}>Best for</span>
+              <p className={styles.panelUseText}>
+                Quickly exploring your own ideas or requirements and
+                simulating them right away.
+              </p>
+            </div>
+            <div className={styles.panelButtons}>
+              <Link
+                className={clsx('button button--lg', styles.btnSolid)}
+                href={SIMTHESIZER_SITE}>
+                Explore Simthesizer
+              </Link>
+              <Link
+                className={clsx('button button--lg', styles.btnGhost)}
+                href={SIMTHESIZER_REPO}
+                aria-label="Simthesizer on GitHub">
+                GitHub
+              </Link>
+            </div>
           </div>
         </div>
       </div>
@@ -119,9 +185,9 @@ export default function Home(): ReactNode {
       title={siteConfig.title}
       description="Toward unified simulation of heterogeneous and disaggregated LLM serving infrastructure">
       <HomepageHeader />
-      <NewsBanner />
       <ProjectSplit />
       <main>
+        <ValidationHighlights />
         <HomepageFeatures />
         <Recognition />
       </main>

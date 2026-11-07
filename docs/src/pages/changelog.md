@@ -10,11 +10,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) co
 
 ### Added
 
-- Announce Simthesizer on the website's landing page. A news banner and a
-  two-panel split below the hero compare LLMServingSim 2.0, which is
-  expert-verified for detailed performance and bottleneck analysis, with
-  [Simthesizer](https://simthesizer.ai/), an LLM serving simulator structured
-  for coding agents to extend, for quickly exploring and simulating new ideas.
+- Introduce [Simthesizer](https://simthesizer.ai/), a sibling project for
+  coding-agent-driven simulator development, on the website's landing page.
+  An equal-width split below the LLMServingSim hero presents LLMServingSim 2.0
+  for detailed performance and bottleneck analysis, and Simthesizer for
+  quickly prototyping new ideas with coding agents. The hero gains a Get
+  Started button for LLMServingSim.
+- Show recorded end-to-end accuracy on the landing page: the largest TTFT,
+  TPOT or latency error against real vLLM for each headline deployment in
+  [Validation](https://llmservingsim.ai/docs/validation), with its scope. The
+  feature section now covers measured profiles, the memory hierarchy and KV
+  cache, ASTRA-Sim networking, heterogeneous and disaggregated systems, model
+  architectures and workloads, and the research section lists all three
+  LLMServingSim publications.
 
 ### Fixed
 

@@ -91,10 +91,13 @@ docs/
 │   ├── reference/             includes the bench CLI reference
 │   └── contributor/
 ├── src/
-│   ├── pages/index.tsx         landing page (hero, news banner, project split, feature cards)
+│   ├── pages/index.tsx         landing page (hero, project split, validation, features, research)
 │   ├── pages/index.module.css  landing page styles
 │   ├── components/
-│   │   └── HomepageFeatures/   the four feature cards on the landing page
+│   │   ├── GithubStats/        LLMServingSim star / fork / watcher counts (+ optional action) under the hero
+│   │   ├── ValidationHighlights/  per-deployment worst-of-15 errors vs. vLLM
+│   │   ├── HomepageFeatures/   the six "Inside LLMServingSim 2.0" feature cards
+│   │   └── Recognition/        publication / award counts and the publication list
 │   └── css/custom.css          global theme overrides (primary color, etc.)
 └── static/
     ├── CNAME                   custom domain (llmservingsim.ai)
@@ -157,14 +160,30 @@ default with a CSS `invert(1) hue-rotate(180deg)` filter for dark mode.
 
 ## Editing the landing page
 
-- **Hero** (wordmark, tagline, GitHub stats): `src/pages/index.tsx`
-- **News banner and project split** (the yellow announcement strip and the
-  LLMServingSim / Simthesizer panels with their buttons):
-  `NewsBanner` and `ProjectSplit` in `src/pages/index.tsx`.
-- **Feature cards** (the four icons + text below the hero):
+The page belongs to LLMServingSim: its hero, validation, feature and
+research sections describe LLMServingSim only. Simthesizer, a sibling
+project, appears in the right half of the project split and nowhere else.
+
+- **Hero** (wordmark, tagline, GitHub stats and the LLMServingSim
+  Get Started pill passed to `GithubStats` as its `action`, which stays
+  visible when the counts fail to load): `src/pages/index.tsx`
+- **Project split** (the equal-width LLMServingSim 2.0 / Simthesizer panels,
+  their key-point lists and both projects' buttons): `ProjectSplit` and the
+  `LLMSERVINGSIM_POINTS` / `SIMTHESIZER_POINTS` arrays in
+  `src/pages/index.tsx`.
+- **Validation highlights**: the `DEPLOYMENTS` array in
+  `src/components/ValidationHighlights/index.tsx`. Its values reproduce the
+  headline table in `docs/validation.md`; refresh both, and the 1.2% in
+  `LLMSERVINGSIM_POINTS`, whenever the committed `bench/examples` change.
+- **Feature cards** (the six icons + text):
   `src/components/HomepageFeatures/index.tsx` — edit the `FeatureList` array.
-- **Hero / banner / panel / card styles**: `src/pages/index.module.css` and
-  `src/components/HomepageFeatures/styles.module.css`.
+  Describe supported behavior there; keep accuracy claims in the validation
+  section, where their scope is stated.
+- **Publications and awards**: the `STATS` and `PUBLICATIONS` arrays in
+  `src/components/Recognition/index.tsx`, which mirror the README's
+  Publications section.
+- **Styles**: `src/pages/index.module.css` and each component's
+  `styles.module.css`.
 - **Global colors / fonts**: `src/css/custom.css`.
 
 ## Editing navbar / footer / metadata

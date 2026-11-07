@@ -19,6 +19,11 @@
     linear-gradient(180deg, var(--ifm-background-color) 0%, var(--ifm-background-color) 100%);
 }
 
+.heroTitle {
+  margin: 0;
+  line-height: 1;
+}
+
 .heroWordmark {
   display: block;
   width: min(100%, 720px);
@@ -52,64 +57,99 @@
   }
 }
 
+/* LLMServingSim call to action at the end of the GitHub stats row, in
+   the same pill shape and height as the stats. */
+.heroAction,
+.heroAction:hover {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--ifm-color-primary);
+  background: var(--ifm-color-primary);
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.heroAction {
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.heroAction:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+[data-theme='dark'] .heroAction,
+[data-theme='dark'] .heroAction:hover {
+  color: #0b0b12;
+}
+
+@media screen and (max-width: 480px) {
+  .heroAction,
+  .heroAction:hover {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+  }
+}
+
 @media screen and (max-width: 996px) {
   .heroBanner {
     padding: 3rem 1.5rem;
   }
 }
 
-.buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
 
-/* Two-project split: LLMServingSim (manual, verified) vs Simthesizer
-   (automatic, fast). Each half fills the viewport width equally and
-   stacks vertically on narrow screens. */
+
+/* LLMServingSim / Simthesizer split below the hero. Both halves share one
+   width, one row height and one type scale; the page hierarchy comes from
+   the LLMServingSim hero above, the left position, the role labels and the
+   LLMServingSim-only sections below. The two accents are the site's own
+   primary indigo and a teal kept local to the Simthesizer half. */
 .split {
-  --manual-accent: #4f46e5;
-  --manual-tint: rgba(79, 70, 229, 0.07);
-  --auto-accent: #0d9488;
-  --auto-tint: rgba(13, 148, 136, 0.08);
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  min-height: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border-top: 1px solid var(--ifm-color-emphasis-200);
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
 }
 
-[data-theme='dark'] .split {
-  --manual-accent: #818cf8;
-  --manual-tint: rgba(129, 140, 248, 0.10);
-  --auto-accent: #2dd4bf;
-  --auto-tint: rgba(45, 212, 191, 0.09);
-}
-
 .panel {
   display: flex;
-  align-items: stretch;
   justify-content: center;
-  padding: 3rem 3rem 3rem;
+  padding: 3rem;
 }
 
-.panelManual {
-  background: var(--manual-tint);
+.panelPrimary {
+  --accent: var(--ifm-color-primary);
+  --accent-contrast: #fff;
+  --tint: rgba(79, 70, 229, 0.06);
+  background: var(--tint);
   border-right: 1px solid var(--ifm-color-emphasis-200);
-  --accent: var(--manual-accent);
-  --tint: var(--manual-tint);
 }
 
-.panelAuto {
-  background: var(--auto-tint);
-  --accent: var(--auto-accent);
-  --tint: var(--auto-tint);
+.panelSibling {
+  --accent: #0f766e;
+  --accent-contrast: #fff;
+  --tint: rgba(13, 148, 136, 0.06);
+  background: var(--tint);
+}
+
+[data-theme='dark'] .panelPrimary {
+  --accent-contrast: #0b0b12;
+  --tint: rgba(129, 140, 248, 0.09);
+}
+
+[data-theme='dark'] .panelSibling {
+  --accent: #2dd4bf;
+  --accent-contrast: #0b0b12;
+  --tint: rgba(45, 212, 191, 0.07);
 }
 
 .panelInner {
-  max-width: 520px;
+  max-width: 540px;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -117,57 +157,90 @@
 }
 
 .panelEyebrow {
-  display: inline-block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 0.75rem;
 }
 
 .panelTitle {
-  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  font-size: clamp(2rem, 3.5vw, 2.8rem);
   letter-spacing: -0.02em;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
 }
 
 .panelLead {
-  font-size: 1.2rem;
-  line-height: 1.55;
+  font-size: 1.12rem;
+  line-height: 1.6;
   color: var(--ifm-color-emphasis-800);
-  margin-bottom: 1.75rem;
+  margin-bottom: 1.5rem;
 }
 
-/* "Choose X when ..." callout. Pushed to the bottom of the panel so the
-   callouts and buttons line up across both halves regardless of how long
-   each lead paragraph is. */
-.panelChoose {
+/* Key-point lists on both halves. */
+.points {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.point {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 1.02rem;
+  line-height: 1.5;
+  color: var(--ifm-color-emphasis-800);
+}
+
+.pointIcon {
+  flex-shrink: 0;
+  margin-top: 0.2rem;
+  color: var(--accent);
+}
+
+/* Keywords in the half's accent color, kept whole on narrow screens. */
+.point strong {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* "Best for" callout and buttons, pushed to the bottom of each half so they
+   line up across the row however long the content above is. */
+.panelFooter {
   margin-top: auto;
-  margin-bottom: 2rem;
   width: 100%;
-  padding: 1rem 1.25rem;
+}
+
+.panelUse {
+  margin-bottom: 1.75rem;
+  padding: 0.9rem 1.2rem;
   border-left: 4px solid var(--accent);
   border-radius: 0 8px 8px 0;
   background: var(--ifm-background-color);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
-.panelChooseLabel {
+.panelUseLabel {
   display: block;
-  font-size: 0.95rem;
+  font-size: 0.8rem;
   font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 0.25rem;
 }
 
-.panelChooseText {
-  font-size: 1.1rem;
+.panelUseText {
+  font-size: 1.05rem;
   font-weight: 600;
   line-height: 1.5;
   color: var(--ifm-color-emphasis-900);
   margin: 0;
-  min-height: 3em;
 }
 
 .panelButtons {
@@ -176,113 +249,52 @@
   flex-wrap: wrap;
 }
 
-.btnManual,
-.btnAuto {
-  color: #fff;
+.btnSolid,
+.btnSolid:hover {
+  color: var(--accent-contrast);
   border: 1px solid var(--accent);
   background: var(--accent);
 }
 
-[data-theme='dark'] .btnManual,
-[data-theme='dark'] .btnAuto {
-  color: #0b0b12;
-}
-
-.btnManual:hover,
-.btnAuto:hover {
-  color: #fff;
+.btnSolid:hover {
   filter: brightness(1.08);
 }
 
-[data-theme='dark'] .btnManual:hover,
-[data-theme='dark'] .btnAuto:hover {
-  color: #0b0b12;
+.btnGhost,
+.btnGhost:hover {
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 .btnGhost {
-  color: var(--accent);
-  border: 1px solid var(--accent);
   background: transparent;
 }
 
 .btnGhost:hover {
-  color: var(--accent);
   background: var(--tint);
 }
 
 @media screen and (max-width: 996px) {
   .split {
-    grid-template-columns: 1fr;
-    min-height: auto;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .panel {
-    padding: 3rem 1.5rem;
+    padding: 2.5rem 1.5rem;
   }
 
-  .panelManual {
+  .panelPrimary {
     border-right: none;
     border-bottom: 1px solid var(--ifm-color-emphasis-200);
   }
 }
 
-/* Announcement strip directly above the two-project split. */
-.newsBanner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 0.6rem 0.9rem;
-  padding: 0.9rem 1.5rem;
-  background: #fde047;
-  color: #422006;
-  border-top: 1px solid #facc15;
-  font-size: 1.05rem;
-  text-align: center;
-  transition: background 0.15s ease;
-}
+@media screen and (max-width: 480px) {
+  .panelTitle {
+    font-size: 1.75rem;
+  }
 
-.newsBanner:hover {
-  background: #fcd34d;
-  color: #422006;
-  text-decoration: none;
+  .panelButtons :global(.button) {
+    white-space: normal;
+  }
 }
-
-[data-theme='dark'] .newsBanner {
-  background: #facc15;
-  color: #1c1917;
-  border-top-color: #eab308;
-}
-
-[data-theme='dark'] .newsBanner:hover {
-  background: #fbbf24;
-  color: #1c1917;
-}
-
-.newsBadge {
-  display: inline-block;
-  padding: 0.15rem 0.6rem;
-  border-radius: 999px;
-  background: #422006;
-  color: #fde047;
-  font-size: 0.8rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-[data-theme='dark'] .newsBadge {
-  background: #1c1917;
-  color: #facc15;
-}
-
-.newsText strong {
-  font-weight: 800;
-}
-
-.newsCta {
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
