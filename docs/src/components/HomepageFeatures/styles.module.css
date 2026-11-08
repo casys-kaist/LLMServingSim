@@ -1,6 +1,26 @@
 .features {
-  padding: 4rem 0 5rem;
+  padding: 4.5rem 0 4rem;
   width: 100%;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.eyebrow {
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+  margin: 0 0 0.7rem;
+}
+
+.title {
+  text-align: center;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ifm-color-emphasis-900);
+  margin: 0 0 2.5rem;
 }
 
 .featureCol {

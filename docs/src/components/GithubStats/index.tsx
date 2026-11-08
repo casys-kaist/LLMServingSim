@@ -49,7 +49,13 @@ function writeCache(data: Stats): void {
   }
 }
 
-export default function GithubStats(): ReactNode {
+type Props = {
+  // Rendered at the end of the row, and on its own while the counts are
+  // loading or unavailable, so a call to action never disappears with them.
+  action?: ReactNode;
+};
+
+export default function GithubStats({action}: Props): ReactNode {
   const [stats, setStats] = useState<Stats | null>(() => readCache());
   const [error, setError] = useState(false);
 
@@ -81,14 +87,15 @@ export default function GithubStats(): ReactNode {
     };
   }, [stats]);
 
-  // Fail silently, if the API is rate-limited or down, skip the row
+  // Fail silently, if the API is rate-limited or down, skip the counts
   // rather than showing a broken state on the homepage.
   if (error || !stats) {
+    if (action) return <div className={styles.row}>{action}</div>;
     return <div className={styles.placeholder} aria-hidden="true" />;
   }
 
   return (
-    <div className={styles.row} aria-label="GitHub repository stats">
+    <div className={styles.row} aria-label="LLMServingSim on GitHub">
       <a
         className={styles.item}
         href={`${REPO_URL}/stargazers`}
@@ -116,6 +123,7 @@ export default function GithubStats(): ReactNode {
         <span className={styles.value}>{format(stats.watchers)}</span>
         <span className={styles.label}>Watchers</span>
       </a>
+      {action}
     </div>
   );
 }

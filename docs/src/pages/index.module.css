@@ -4,7 +4,7 @@
  */
 
 .heroBanner {
-  padding: 6rem 0 5rem;
+  padding: 4rem 0 2rem;
   text-align: center;
   position: relative;
   overflow: hidden;
@@ -17,6 +17,11 @@
   background:
     radial-gradient(1200px 500px at 50% -10%, rgba(99, 102, 241, 0.28), transparent 60%),
     linear-gradient(180deg, var(--ifm-background-color) 0%, var(--ifm-background-color) 100%);
+}
+
+.heroTitle {
+  margin: 0;
+  line-height: 1;
 }
 
 .heroWordmark {
@@ -52,16 +57,244 @@
   }
 }
 
+/* LLMServingSim call to action at the end of the GitHub stats row, in
+   the same pill shape and height as the stats. */
+.heroAction,
+.heroAction:hover {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--ifm-color-primary);
+  background: var(--ifm-color-primary);
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.heroAction {
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.heroAction:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+[data-theme='dark'] .heroAction,
+[data-theme='dark'] .heroAction:hover {
+  color: #0b0b12;
+}
+
+@media screen and (max-width: 480px) {
+  .heroAction,
+  .heroAction:hover {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+  }
+}
+
 @media screen and (max-width: 996px) {
   .heroBanner {
     padding: 3rem 1.5rem;
   }
 }
 
-.buttons {
+
+
+/* LLMServingSim / Simthesizer split below the hero. Both halves share one
+   width, one row height and one type scale; the page hierarchy comes from
+   the LLMServingSim hero above, the left position, the role labels and the
+   LLMServingSim-only sections below. The two accents are the site's own
+   primary indigo and a teal kept local to the Simthesizer half. */
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.panel {
   display: flex;
-  align-items: center;
   justify-content: center;
+  padding: 3rem;
+}
+
+.panelPrimary {
+  --accent: var(--ifm-color-primary);
+  --accent-contrast: #fff;
+  --tint: rgba(79, 70, 229, 0.06);
+  background: var(--tint);
+  border-right: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.panelSibling {
+  --accent: #0f766e;
+  --accent-contrast: #fff;
+  --tint: rgba(13, 148, 136, 0.06);
+  background: var(--tint);
+}
+
+[data-theme='dark'] .panelPrimary {
+  --accent-contrast: #0b0b12;
+  --tint: rgba(129, 140, 248, 0.09);
+}
+
+[data-theme='dark'] .panelSibling {
+  --accent: #2dd4bf;
+  --accent-contrast: #0b0b12;
+  --tint: rgba(45, 212, 191, 0.07);
+}
+
+.panelInner {
+  max-width: 540px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.panelEyebrow {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+}
+
+.panelTitle {
+  font-size: clamp(2rem, 3.5vw, 2.8rem);
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+
+.panelLead {
+  font-size: 1.12rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-800);
+  margin-bottom: 1.5rem;
+}
+
+/* Key-point lists on both halves. */
+.points {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.point {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 1.02rem;
+  line-height: 1.5;
+  color: var(--ifm-color-emphasis-800);
+}
+
+.pointIcon {
+  flex-shrink: 0;
+  margin-top: 0.2rem;
+  color: var(--accent);
+}
+
+/* Keywords in the half's accent color, kept whole on narrow screens. */
+.point strong {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* "Best for" callout and buttons, pushed to the bottom of each half so they
+   line up across the row however long the content above is. */
+.panelFooter {
+  margin-top: auto;
+  width: 100%;
+}
+
+.panelUse {
+  margin-bottom: 1.75rem;
+  padding: 0.9rem 1.2rem;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--ifm-background-color);
+}
+
+.panelUseLabel {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.panelUseText {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ifm-color-emphasis-900);
+  margin: 0;
+}
+
+.panelButtons {
+  display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.btnSolid,
+.btnSolid:hover {
+  color: var(--accent-contrast);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+}
+
+.btnSolid:hover {
+  filter: brightness(1.08);
+}
+
+.btnGhost,
+.btnGhost:hover {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.btnGhost {
+  background: transparent;
+}
+
+.btnGhost:hover {
+  background: var(--tint);
+}
+
+@media screen and (max-width: 996px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel {
+    padding: 2.5rem 1.5rem;
+  }
+
+  .panelPrimary {
+    border-right: none;
+    border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  }
+}
+
+@media screen and (max-width: 480px) {
+  .panelTitle {
+    font-size: 1.75rem;
+  }
+
+  .panelButtons :global(.button) {
+    white-space: normal;
+  }
 }

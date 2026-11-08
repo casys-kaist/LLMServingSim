@@ -1,0 +1,112 @@
+.validation {
+  padding: 5rem 0 4rem;
+  width: 100%;
+}
+
+.eyebrow {
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+  margin: 0 0 0.7rem;
+}
+
+.title {
+  text-align: center;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ifm-color-emphasis-900);
+  margin: 0 auto 2.5rem;
+}
+
+.titleAccent {
+  color: var(--ifm-color-primary);
+}
+
+.grid {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 2rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  padding: 1.5rem 1.4rem;
+  border-radius: 12px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-card-background-color, var(--ifm-background-surface-color));
+  display: flex;
+  flex-direction: column;
+}
+
+.worstRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.worst {
+  font-size: clamp(2.2rem, 4vw, 2.75rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--ifm-color-primary);
+  font-feature-settings: 'tnum' 1;
+}
+
+.worstLabel {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.model {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--ifm-color-emphasis-900);
+  margin-bottom: 0.2rem;
+}
+
+.meta {
+  font-size: 0.92rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.scope {
+  text-align: center;
+  max-width: 760px;
+  margin: 0 auto;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.scope a {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media screen and (max-width: 1100px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media screen and (max-width: 560px) {
+  .validation {
+    padding: 3.5rem 0 3rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
